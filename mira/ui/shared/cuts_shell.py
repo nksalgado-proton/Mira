@@ -44,7 +44,13 @@ from mira.ui.base.surface import back_button
 from mira.ui.i18n import tr
 from mira.ui.shared.cut_detail_page import CutDetailPage
 from mira.ui.shared.cut_session_page import CutSessionPage, _fmt_mmss
-from mira.ui.shared.new_cut_dialog import NewCutDialog
+# spec/65 §3.13 / §5.1: the New Cut dialog routes through an adapter
+# that wraps the redesigned page (mira/ui/pages/new_cut_dialog.py).
+# The legacy dialog at mira.ui.shared.new_cut_dialog stays around for
+# its tests and provides the CutDraft dataclass the adapter still
+# returns, so this whole module's call sites (NewCutDialog(...).exec()
+# + .draft()) are unchanged.
+from mira.ui.shared.new_cut_dialog_adapter import NewCutDialog
 
 log = logging.getLogger(__name__)
 

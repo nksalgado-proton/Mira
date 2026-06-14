@@ -138,6 +138,7 @@ GLYPH_EYE = GLYPHS_DIR / "eye.svg"
 GLYPH_CHECK = GLYPHS_DIR / "check.svg"
 GLYPH_CROSS = GLYPHS_DIR / "cross.svg"
 GLYPH_EVENT = GLYPHS_DIR / "event.svg"
+GLYPH_CUT = GLYPHS_DIR / "cut.svg"
 
 # Phase glyphs — drawn for Surface 01's open-card pipeline rows so the
 # mockup's `📥 / ⭐ / 🎨 / 📤` emojis become real line-icons (spec/65
@@ -157,6 +158,7 @@ __all__ = [
     "GLYPH_CHECK",
     "GLYPH_CROSS",
     "GLYPH_CROSS_EVENT",
+    "GLYPH_CUT",
     "GLYPH_EVENT",
     "GLYPH_EYE",
     "GLYPH_SEARCH",

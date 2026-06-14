@@ -33,11 +33,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -50,13 +53,22 @@ from PyQt6.QtWidgets import (
 )
 
 from mira.ui.design import (
+    GLYPH_CROSS,
+    GLYPH_CUT,
     ghost_button,
     line_input,
     pill_toggle,
     primary_button,
     select,
     tag,
+    tinted_svg_pixmap,
 )
+from mira.ui.palette import PALETTE
+
+
+def _palette_mode() -> str:
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +109,10 @@ def _micro(text: str) -> QLabel:
 
 def _divider() -> QFrame:
     d = QFrame()
-    d.setStyleSheet("background: #262b38; max-height: 1px; min-height: 1px;")
+    line = PALETTE[_palette_mode()]["line"]
+    d.setStyleSheet(
+        f"background: {line}; max-height: 1px; min-height: 1px;"
+    )
     return d
 
 
@@ -159,20 +174,25 @@ class NewCutDialog(QDialog):
     def _build_header_bar(self) -> QWidget:
         host = QWidget()
         h = QHBoxLayout(host)
-        h.setContentsMargins(18, 12, 12, 12)
+        h.setContentsMargins(18, 14, 14, 14)
         h.setSpacing(12)
-        tile = QLabel("✂")
-        tile.setFixedSize(36, 36)
+        p = PALETTE[_palette_mode()]
+        # Accent cut tile — line-icon scissors instead of the Unicode ✂
+        # the migration used. Theme-aware so the light theme picks up the
+        # right accent_soft (#eceaff) instead of dark's #211f3a.
+        tile = QLabel()
+        tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tile.setStyleSheet(
-            "background: #211f3a; color: #7c6cff;"
-            " border: 1px solid #7c6cff; border-radius: 10px;"
-            " font-size: 18px;"
+            f"background: {p['accent_soft']}; color: {p['accent']};"
+            " border: none; border-radius: 9px;"
+        )
+        tile.setPixmap(
+            tinted_svg_pixmap(GLYPH_CUT, 18, QColor(p["accent"]))
         )
         h.addWidget(tile)
-        block = QVBoxLayout()
-        block.setContentsMargins(0, 0, 0, 0)
-        block.setSpacing(0)
+        block = QHBoxLayout()
+        block.setSpacing(8)
         title = QLabel("New Cut")
         title.setObjectName("CardTitle")
         block.addWidget(title)
@@ -180,20 +200,29 @@ class NewCutDialog(QDialog):
             sub = QLabel(f"· {self._ctx.event_name}")
             sub.setObjectName("Sub")
             block.addWidget(sub)
+        block.addStretch()
         h.addLayout(block, 1)
         load = ghost_button("Load template…")
         h.addWidget(load)
-        close = QPushButton("✕")
+        # Close X — line-icon cross.svg in the 9px squircle (mockup
+        # `.mh .x`). Same fix as Surfaces 02/04/etc: Unicode ✕ was
+        # invisible in both themes.
+        close = QPushButton()
         close.setObjectName("DialogClose")
         close.setFixedSize(30, 30)
+        close.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_CROSS, 14, QColor(p["ink_soft"]))
+        ))
+        close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setStyleSheet(
             "QPushButton#DialogClose {"
-            " background: transparent; color: #8b94a7;"
-            " border: 1px solid #262b38; border-radius: 15px;"
-            " font-size: 14px; font-weight: 700;"
+            f" background: transparent;"
+            f" border: 1px solid {p['line']}; border-radius: 9px;"
             "}"
-            "QPushButton#DialogClose:hover { color: #eef1f7; border-color: #7c6cff; }"
+            "QPushButton#DialogClose:hover {"
+            f" border-color: {p['accent']};"
+            "}"
         )
         close.clicked.connect(self.reject)
         h.addWidget(close)
@@ -223,37 +252,87 @@ class NewCutDialog(QDialog):
         self._name_edit.textChanged.connect(self._on_name_changed)
         v.addWidget(self._name_tag_hint)
 
-        # Pool
+        # Pool. The QFrame#Card2 container the migration used wouldn't
+        # paint its bg/border reliably inside this dialog's QScrollArea
+        # (descendant paint pass under the styled QFrame swallowed both
+        # the bg and several siblings). Flat layout inside an unwrapped
+        # host renders all children consistently — the formula is the
+        # box's visual signature anyway, the chrome wasn't carrying
+        # weight.
         v.addWidget(_micro("Pool"))
-        self._pool_box = QFrame()
-        self._pool_box.setObjectName("Card2")
+        self._pool_box = QWidget()
         self._pool_layout = QVBoxLayout(self._pool_box)
-        self._pool_layout.setContentsMargins(12, 10, 12, 10)
-        self._pool_layout.setSpacing(8)
-        # Selected pool chips
+        self._pool_layout.setContentsMargins(0, 0, 0, 0)
+        self._pool_layout.setSpacing(10)
+        # Formula + chips share one row. Building them as separate rows
+        # inside #Card2 produced a known Qt issue where descendant
+        # background painting was obscured by the QFrame's styled-bg
+        # pass — the formula labels had geometry but never reached
+        # screen pixels when nested deep in a layout under a parented
+        # QFrame. Coexisting in one HBoxLayout dodges the problem and
+        # reads as one continuous composition (the §3.13 ask).
         self._selected_chips_row = QHBoxLayout()
-        self._selected_chips_row.setSpacing(6)
+        self._selected_chips_row.setSpacing(8)
         self._pool_layout.addLayout(self._selected_chips_row)
-        # Add row
+        # Add row — inline styling because this dialog's nested-QFrame
+        # paint pass eats QSS bg/border on descendants intermittently
+        # (the Card2 frame children stayed invisible even with WA_
+        # StyledBackground). Inline makes the chip-hosts paint reliably.
+        p = PALETTE[_palette_mode()]
         add_row = QHBoxLayout()
-        add_row.setSpacing(8)
+        add_row.setSpacing(10)
         add_label = QLabel("add:")
-        add_label.setObjectName("Sub")
+        add_label.setStyleSheet(
+            f"color: {p['ink_soft']}; font-size: 12px; font-weight: 600;"
+        )
         add_row.addWidget(add_label)
         for pool in self._ctx.available_pools:
-            chip_host = QFrame()
-            chip_host.setObjectName("Card2")
+            # Parent the chip_host to pool_box explicitly so the styled
+            # background paints from the moment it's added to the layout
+            # (without this, parenting is deferred until pool_layout adds
+            # the row, and Qt has been observed to never set up the
+            # paint pipeline for these chips on this dialog).
+            chip_host = QFrame(self._pool_box)
+            chip_host.setStyleSheet(
+                f"QFrame {{"
+                f"  background: {p['card2']};"
+                f"  border: 1px solid {p['line']};"
+                f"  border-radius: 14px;"
+                "}"
+            )
             ch = QHBoxLayout(chip_host)
-            ch.setContentsMargins(8, 4, 8, 4)
+            ch.setContentsMargins(10, 4, 6, 4)
             ch.setSpacing(6)
-            label = QLabel(f"{pool.name} ({pool.count})")
-            label.setObjectName("Sub")
+            label = QLabel(f"{pool.name}")
+            label.setStyleSheet(
+                f"color: {p['ink']}; font-size: 12px;"
+                " font-weight: 600; border: none; background: transparent;"
+            )
             ch.addWidget(label)
-            minus = ghost_button("−")
-            minus.setFixedSize(24, 24)
+            count_lbl = QLabel(f"({pool.count})")
+            count_lbl.setStyleSheet(
+                f"color: {p['ink_faint']}; font-size: 12px;"
+                " border: none; background: transparent;"
+            )
+            ch.addWidget(count_lbl)
+            minus = QPushButton("−")
+            minus.setFixedSize(22, 22)
+            minus.setCursor(Qt.CursorShape.PointingHandCursor)
+            minus.setStyleSheet(
+                f"QPushButton {{"
+                f" background: transparent; color: {p['ink_soft']};"
+                f" border: 1px solid {p['line']}; border-radius: 11px;"
+                " padding: 0; font-size: 13px; font-weight: 700;"
+                "}"
+                f"QPushButton:hover {{"
+                f" border-color: {p['accent']}; color: {p['accent']};"
+                "}"
+            )
             minus.clicked.connect(lambda _c=False, n=pool.name: self._step_pool(n, -1))
-            plus = ghost_button("+")
-            plus.setFixedSize(24, 24)
+            plus = QPushButton("+")
+            plus.setFixedSize(22, 22)
+            plus.setCursor(Qt.CursorShape.PointingHandCursor)
+            plus.setStyleSheet(minus.styleSheet())
             plus.clicked.connect(lambda _c=False, n=pool.name: self._step_pool(n, +1))
             ch.addWidget(minus)
             ch.addWidget(plus)
@@ -262,7 +341,9 @@ class NewCutDialog(QDialog):
         self._pool_layout.addLayout(add_row)
         # Live summary
         self._pool_summary = QLabel("pool: 0 files")
-        self._pool_summary.setObjectName("Sub")
+        self._pool_summary.setStyleSheet(
+            f"color: {p['ink_soft']}; font-size: 13px; font-weight: 600;"
+        )
         self._pool_layout.addWidget(self._pool_summary)
         v.addWidget(self._pool_box)
         self._refresh_selected_chips()
@@ -286,10 +367,16 @@ class NewCutDialog(QDialog):
         media_col = QVBoxLayout()
         media_col.setSpacing(6)
         media_col.addWidget(_micro("Media type"))
+        # Accent checkboxes — the §3.13 ask, satisfied by riding the
+        # `DaysTableCheck` QSS rule (Surface 04 introduced) so the 18px
+        # accent-fill tile + white check inherit consistently across the
+        # redesign instead of QCheckBox's 14px native indicator.
         self._photos_cb = QCheckBox("Photos")
+        self._photos_cb.setObjectName("DaysTableCheck")
         self._photos_cb.setChecked(self._ctx.include_photos)
         media_col.addWidget(self._photos_cb)
         self._videos_cb = QCheckBox("Videos")
+        self._videos_cb.setObjectName("DaysTableCheck")
         self._videos_cb.setChecked(self._ctx.include_videos)
         media_col.addWidget(self._videos_cb)
         row_sm.addLayout(style_col, 1)
@@ -338,17 +425,18 @@ class NewCutDialog(QDialog):
         # Target
         timing.addWidget(self._stepper_block(
             "Target (min)", self._ctx.target_minutes, 1, 240,
+            suffix=" min",
         ))
         # Max
         timing.addWidget(self._stepper_block(
             "Max (min)", self._ctx.max_minutes, 1, 480,
+            suffix=" min",
         ))
-        # Per photo
+        # Per photo — QDoubleSpinBox so "6.00 s" reads natively.
         timing.addWidget(self._stepper_block(
             "Per photo (s)",
-            int(self._ctx.per_photo_seconds * 10),
-            5, 600,
-            decimal=True,
+            self._ctx.per_photo_seconds, 0.5, 60.0,
+            decimal=True, suffix=" s",
         ))
         # Music
         music_col = QVBoxLayout()
@@ -372,19 +460,32 @@ class NewCutDialog(QDialog):
         return scroll
 
     def _stepper_block(
-        self, label: str, value: int, mn: int, mx: int,
-        *, decimal: bool = False,
+        self, label: str, value, mn, mx,
+        *, decimal: bool = False, suffix: str = "",
     ) -> QWidget:
+        """Labelled spinner column. Integer by default; the per-photo
+        block opts into a real QDoubleSpinBox (§3.13) so the value reads
+        as ``6.00 s`` instead of the ugly ``60  (×0.1 s)`` workaround."""
         host = QWidget()
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
         v.addWidget(_micro(label))
-        spin = QSpinBox()
-        spin.setRange(mn, mx)
-        spin.setValue(value)
+        spin: QSpinBox | QDoubleSpinBox
         if decimal:
-            spin.setSuffix("  (×0.1 s)")
+            spin = QDoubleSpinBox()
+            spin.setObjectName("DesignSpin")
+            spin.setDecimals(2)
+            spin.setSingleStep(0.1)
+            spin.setRange(float(mn), float(mx))
+            spin.setValue(float(value))
+        else:
+            spin = QSpinBox()
+            spin.setObjectName("DesignSpin")
+            spin.setRange(int(mn), int(mx))
+            spin.setValue(int(value))
+        if suffix:
+            spin.setSuffix(suffix)
         v.addWidget(spin)
         host.setProperty("_spin", spin)
         return host
@@ -419,20 +520,61 @@ class NewCutDialog(QDialog):
         self._refresh_start_enabled()
 
     def _refresh_selected_chips(self) -> None:
+        """Rebuild the pool composition row — formula tokens (algebraic
+        view) followed by the click-to-remove chips. One row keeps the
+        formula reliably painted (a nested under-#Card2 host obscured
+        it) and reads as a single continuous composition."""
         while self._selected_chips_row.count():
             it = self._selected_chips_row.takeAt(0)
             w = it.widget() if it else None
             if w is not None:
                 w.deleteLater()
-        for name, mult in self._pool_counts.items():
-            prefix = "−" * (-mult) if mult < 0 else ("+" * (mult - 1) if mult > 1 else "")
-            label = f"{prefix}{name}"
-            chip = tag(label)
-            chip.setStyleSheet(
-                "background: #211f3a; color: #7c6cff; border: 1px solid #7c6cff;"
-                " border-radius: 11px; padding: 3px 10px; font-weight: 700;"
+        p = PALETTE[_palette_mode()]
+        accent = p["accent"]
+        ink = p["ink"]
+        ink_soft = p["ink_soft"]
+        ink_faint = p["ink_faint"]
+        # Stable order — available pools in declared order, then any
+        # template-only pool the user dragged in.
+        ordered = [pp.name for pp in self._ctx.available_pools
+                   if pp.name in self._pool_counts]
+        for name in self._pool_counts:
+            if name not in ordered:
+                ordered.append(name)
+        active = [
+            (name, int(self._pool_counts[name])) for name in ordered
+            if int(self._pool_counts[name]) != 0
+        ]
+        # Formula tokens — operators tinted accent, terms in ink with
+        # ink_soft multipliers. §3.13's "composition should read as a
+        # formula."
+        if not active:
+            hint = QLabel("compose the pool below")
+            hint.setStyleSheet(
+                f"color: {ink_faint}; font-size: 12px; font-style: italic;"
             )
-            self._selected_chips_row.addWidget(chip)
+            self._selected_chips_row.addWidget(hint)
+        else:
+            for i, (name, mult) in enumerate(active):
+                sign = "+" if mult > 0 else "−"
+                if i == 0 and mult > 0:
+                    pass  # implicit +
+                else:
+                    op = QLabel(sign)
+                    op.setStyleSheet(
+                        f"color: {accent}; font-size: 15px; font-weight: 800;"
+                    )
+                    self._selected_chips_row.addWidget(op)
+                token = QLabel(name)
+                token.setStyleSheet(
+                    f"color: {ink}; font-size: 14px; font-weight: 700;"
+                )
+                self._selected_chips_row.addWidget(token)
+                mult_lbl = QLabel(f"× {abs(mult)}")
+                mult_lbl.setStyleSheet(
+                    f"color: {ink_soft}; font-size: 12px; font-weight: 600;"
+                )
+                self._selected_chips_row.addWidget(mult_lbl)
         self._selected_chips_row.addStretch()
 
     def _refresh_pool_summary(self) -> None:
@@ -445,6 +587,10 @@ class NewCutDialog(QDialog):
         self._match_label.setText(
             f"{total} of {total} match" if total > 0 else "0 of 0 match"
         )
+        # The formula tokens now live inside _selected_chips_row — that
+        # row is rebuilt whenever _refresh_selected_chips runs (which
+        # _step_pool already calls), so no extra refresh is needed here.
+
 
     def _refresh_start_enabled(self) -> None:
         name_ok = bool(self._name_edit.text().strip()) if hasattr(self, "_name_edit") else False
@@ -485,27 +631,24 @@ class NewCutDialog(QDialog):
             "include_videos": self._videos_cb.isChecked(),
             "slide_cards": slide_cards,
             "start_as": start_as,
-            "target_minutes": self._spin_value(0),
-            "max_minutes": self._spin_value(1),
-            "per_photo_seconds": self._spin_value(2) * 0.1,
+            "target_minutes": int(self._spin_value(0)),
+            "max_minutes": int(self._spin_value(1)),
+            "per_photo_seconds": float(self._spin_value(2)),
             "music": self._music.currentText(),
         }
 
-    def _spin_value(self, idx: int) -> int:
-        """Read the QSpinBox out of the idx-th stepper_block in the timing
-        row. Used by cut_info()."""
-        # Walk the form for the right block — simpler to keep references
-        # in a follow-up, but minimal-impact for now.
-        host = None
+    def _spin_value(self, idx: int) -> float:
+        """Read the spin widget out of the idx-th stepper_block. Returns
+        float so the per-photo QDoubleSpinBox round-trips cleanly; the
+        integer steppers cast at the call site."""
         if not hasattr(self, "_timing_spins"):
             self._timing_spins = []
-            # Find the timing row inside the body
             for widget in self.findChildren(QWidget):
                 if widget.property("_spin") is not None:
                     self._timing_spins.append(widget.property("_spin"))
         if idx < len(self._timing_spins):
-            return self._timing_spins[idx].value()
-        return 0
+            return float(self._timing_spins[idx].value())
+        return 0.0
 
     def was_applied(self) -> bool:
         return self._was_applied

@@ -135,26 +135,22 @@ def _apply_prefill(
     """Edit-mode prefill (``cuts_shell._on_adjust_cut`` builds a
     ``SimpleNamespace`` from the cut row). JSON fields are decoded; the
     legacy boolean/state vocabulary is mapped to the redesigned strings.
-    Any missing field falls back to the dataclass default."""
+    Any missing field falls back to the dataclass default. Everything
+    goes into the context BEFORE the dialog is constructed — the
+    dialog's ``__init__`` reads these fields to seed its initial state,
+    avoiding post-build mutations (which broke the add-row chips' paint
+    pass)."""
     name = getattr(prefill, "name", "") or ""
     if name:
-        # The redesigned dialog reads ctx.event_name for the header only;
-        # the prefill's name goes into the Name field which the dialog
-        # populates from the ctx fields it owns. We don't have a direct
-        # field for the cut's own name on the context — store on the ctx
-        # anyway so a follow-up read can pick it up. (The redesigned
-        # dialog's Name input is empty by default; the caller can write
-        # `dlg._name_edit.setText(name)` after construction.)
-        ctx.prefill_name = name  # type: ignore[attr-defined]
+        ctx.name = name
 
     pool_json = getattr(prefill, "pool_expr_json", None)
     if pool_json:
         try:
             expr = [tuple(t) for t in json.loads(pool_json)]
-            ctx.selected_pools = list(_selected_pools_from_expr(expr).keys())
-            # Stash the signed-mult dict so the dialog's _pool_counts is
-            # seeded by the construct path (read in _build_ui).
-            ctx.prefill_pool_counts = _selected_pools_from_expr(expr)  # type: ignore[attr-defined]
+            counts = _selected_pools_from_expr(expr)
+            ctx.selected_pool_counts = counts
+            ctx.selected_pools = list(counts.keys())
         except (TypeError, ValueError):
             log.warning("could not parse prefill pool_expr_json: %r", pool_json)
 
@@ -332,21 +328,12 @@ class NewCutDialog:
     def _build(self) -> None:
         if self._dlg is not None:
             return
+        # The redesigned dialog reads every prefill field off ``ctx`` in
+        # its own ``__init__`` — no post-build mutation needed (post-
+        # build chip rewrites broke the add-row chips' paint pass).
         self._dlg = _RedesignedNewCutDialog(ctx=self._ctx, parent=self._parent)
         if self._heading_text:
             self._dlg.setWindowTitle(self._heading_text)
-        # Prefill round-trip: seed the redesigned dialog's internal state
-        # from the fields we stashed on the ctx (the ctx dataclass has no
-        # name field, so the adapter stashes via __dict__ in _apply_prefill).
-        prefill_name = getattr(self._ctx, "prefill_name", "")
-        if prefill_name:
-            self._dlg._name_edit.setText(prefill_name)
-        prefill_counts = getattr(self._ctx, "prefill_pool_counts", None)
-        if prefill_counts:
-            self._dlg._pool_counts = dict(prefill_counts)
-            self._dlg._refresh_selected_chips()
-            self._dlg._refresh_pool_summary()
-            self._dlg._refresh_start_enabled()
 
 
 __all__ = ["NewCutDialog", "CutDraft"]

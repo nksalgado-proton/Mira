@@ -191,6 +191,16 @@ QTableWidget#EventDaysTable QHeaderView::section:last { border-right: none; }
 QTableWidget#EventDaysTable QTableCornerButton::section {
     background: {card2}; border: none; border-bottom: 1px solid {line}; }
 
+/* New Cut dialog pool-chip — the "available pool" add row uses these
+ * tile-like containers with a card2 fill + line border + 14px radius.
+ * Lives in the global stylesheet (not inline on the widget) so the
+ * cascade reaches it reliably inside the QScrollArea + QDialog nest. */
+QFrame#PoolChipHost {
+    background: {card2};
+    border: 1px solid {line};
+    border-radius: 14px;
+}
+
 /* Custom days-table checkbox — bumped to the mockup's 20px tile + 6px
  * radius + accent fill on :checked. The check tick comes from the
  * legacy ``QCheckBox::indicator:checked`` rule's ``image:`` (it knows

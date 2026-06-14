@@ -28,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
@@ -66,7 +66,9 @@ def main() -> int:
     for mode in ("dark", "light"):
         apply_theme(app, mode)
 
-        # New-Cut shape — empty name, exported-only pool, default timing.
+        # Edit-Cut shape via prefill — name + composed pool come through
+        # the context cleanly (no post-build mutation). This is the same
+        # path cuts_shell._on_adjust_cut takes for an existing cut.
         dlg = NewCutDialog(
             existing_cuts=_existing_cuts(),
             exported_count=23,
@@ -75,33 +77,27 @@ def main() -> int:
             pool_probe=lambda e: 23,
             totals_probe=lambda *_: cb.ShowTotals(),
             event_label="Inseto na Varanda",
+            prefill=_edit_prefill(),
         )
-        # Add a couple of pools so the formula actually has content to draw.
         dlg._build()
-        dlg._dlg._step_pool("#best_macro", +1)
-        dlg._dlg._step_pool("#all_time_best_macro", -1)
-        dlg._dlg._name_edit.setText("Best macro shots")
 
-        root = QWidget()
-        root.setObjectName("RedesignRoot")
-        root.resize(720, 980)
-        rl = QVBoxLayout(root)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(0)
-        dlg._dlg.setWindowFlags(Qt.WindowType.Widget)
-        dlg._dlg.setFixedSize(660, 920)
-        rl.addStretch()
-        rl.addWidget(dlg._dlg, 0, Qt.AlignmentFlag.AlignHCenter)
-        rl.addStretch()
-        root.show()
+        # IMPORTANT: render the dialog as a top-level QDialog (its
+        # natural shape) and grab it directly. Wrapping it in a parent
+        # QWidget with addStretch + AlignHCenter caused several styled
+        # descendants (the add: chips + pool count line in the Pool
+        # box) to drop out of the paint pass — a Qt rendering oddity
+        # specific to nested-styled-frames-under-a-parent-layout. The
+        # production path (exec() as a modal) always uses the
+        # top-level shape, so this is what the user actually sees.
+        dlg._dlg.show()
         for _ in range(3):
             app.processEvents()
-        pm = root.grab()
+        pm = dlg._dlg.grab()
         out = out_dir / f"smoke_surface_13_{mode}.png"
         pm.save(str(out), "PNG")
         print(f"wrote {out}")
-        root.close()
-        root.deleteLater()
+        dlg._dlg.close()
+        dlg._dlg.deleteLater()
     return 0
 
 

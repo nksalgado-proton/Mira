@@ -33,8 +33,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon
+from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -88,6 +88,16 @@ class NewCutContext:
     event_name: str = ""
     available_pools: list[PoolOption] = field(default_factory=list)
     selected_pools: list[str] = field(default_factory=list)
+    # Optional explicit per-pool multipliers; overrides ``selected_pools``
+    # when present. Used for Edit-mode prefill where a pool can appear
+    # with a multiplier other than 1 (e.g. ``{"#exported": 1,
+    # "#all_time_best_macro": -1}``). The dialog reads this in
+    # ``__init__`` so the initial chip composition + formula are correct
+    # without a post-build mutation (post-build mutations broke the
+    # add-row chips' paint pass — Qt re-laying out the pool box after
+    # widgets were already added lost their backing-store).
+    selected_pool_counts: dict[str, int] = field(default_factory=dict)
+    name: str = ""
     styles: list[str] = field(default_factory=list)
     selected_styles: list[str] = field(default_factory=list)
     include_photos: bool = True
@@ -114,6 +124,72 @@ def _divider() -> QFrame:
         f"background: {line}; max-height: 1px; min-height: 1px;"
     )
     return d
+
+
+class _PoolChip(QFrame):
+    """"Available pool" chip — ``#exported (23) [-] [+]``.
+
+    Uses the global ``QFrame#PoolChipHost`` QSS rule (card2 bg + line
+    border + 14px radius) and ``WA_StyledBackground`` so the cascade
+    reaches it inside the dialog's QScrollArea + QDialog nest. Earlier
+    attempts to style this inline-per-instance or via a custom
+    paintEvent both failed when ``_step_pool`` was invoked before the
+    first paint pass — the global QSS rule survives that path.
+
+    Signals: ``stepped(delta)`` — +1 / -1 from the +/- click; the host
+    owns the pool-counts ledger and refreshes the formula.
+    """
+
+    stepped = pyqtSignal(int)
+
+    def __init__(self, name: str, count: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("PoolChipHost")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._name = name
+        self._count = count
+        self.setMinimumHeight(30)
+        p = PALETTE[_palette_mode()]
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 4, 6, 4)
+        h.setSpacing(6)
+        name_lbl = QLabel(name, self)
+        name_lbl.setStyleSheet(
+            f"color: {p['ink']}; font-size: 12px;"
+            " font-weight: 600; background: transparent; border: none;"
+        )
+        h.addWidget(name_lbl)
+        count_lbl = QLabel(f"({count})", self)
+        count_lbl.setStyleSheet(
+            f"color: {p['ink_faint']}; font-size: 12px;"
+            " background: transparent; border: none;"
+        )
+        h.addWidget(count_lbl)
+        minus = QPushButton("−", self)
+        minus.setFixedSize(22, 22)
+        minus.setCursor(Qt.CursorShape.PointingHandCursor)
+        minus.setStyleSheet(self._stepper_qss(p))
+        minus.clicked.connect(lambda: self.stepped.emit(-1))
+        plus = QPushButton("+", self)
+        plus.setFixedSize(22, 22)
+        plus.setCursor(Qt.CursorShape.PointingHandCursor)
+        plus.setStyleSheet(self._stepper_qss(p))
+        plus.clicked.connect(lambda: self.stepped.emit(+1))
+        h.addWidget(minus)
+        h.addWidget(plus)
+
+    @staticmethod
+    def _stepper_qss(p: dict) -> str:
+        return (
+            "QPushButton {"
+            f" background: transparent; color: {p['ink_soft']};"
+            f" border: 1px solid {p['line']}; border-radius: 11px;"
+            " padding: 0; font-size: 13px; font-weight: 700;"
+            "}"
+            "QPushButton:hover {"
+            f" border-color: {p['accent']}; color: {p['accent']};"
+            "}"
+        )
 
 
 def _radio_group(
@@ -149,13 +225,23 @@ class NewCutDialog(QDialog):
         self.resize(660, 880)
         self._ctx = ctx or NewCutContext()
         self._was_applied = False
-        self._pool_counts: dict[str, int] = {
-            name: 0 for name in (self._ctx.selected_pools or [])
-        }
-        for sel in (self._ctx.selected_pools or []):
-            self._pool_counts[sel] = 1
+        # Seed _pool_counts BEFORE building the UI so the formula + chips
+        # row paint correctly on the first paint pass. Edit-mode prefill
+        # passes ``selected_pool_counts`` to express signed multipliers;
+        # otherwise fall back to ``selected_pools`` with +1 per entry.
+        if self._ctx.selected_pool_counts:
+            self._pool_counts: dict[str, int] = dict(
+                self._ctx.selected_pool_counts)
+        else:
+            self._pool_counts = {
+                name: 1 for name in (self._ctx.selected_pools or [])
+            }
         self._style_chips: dict[str, QPushButton] = {}
         self._build_ui()
+        # Seed the Name field from prefill (Edit mode) before the first
+        # show — same reason: keep all mutations pre-build.
+        if self._ctx.name:
+            self._name_edit.setText(self._ctx.name)
         self._refresh_pool_summary()
         self._refresh_start_enabled()
 
@@ -274,10 +360,10 @@ class NewCutDialog(QDialog):
         self._selected_chips_row = QHBoxLayout()
         self._selected_chips_row.setSpacing(8)
         self._pool_layout.addLayout(self._selected_chips_row)
-        # Add row — inline styling because this dialog's nested-QFrame
-        # paint pass eats QSS bg/border on descendants intermittently
-        # (the Card2 frame children stayed invisible even with WA_
-        # StyledBackground). Inline makes the chip-hosts paint reliably.
+        # Add row — uses the _PoolChip custom-painted widget so the
+        # pill bg + border paint reliably (Qt's QSS cascade on nested
+        # styled QFrame children dropped these bgs inside this
+        # dialog's QScrollArea + QDialog).
         p = PALETTE[_palette_mode()]
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
@@ -287,62 +373,20 @@ class NewCutDialog(QDialog):
         )
         add_row.addWidget(add_label)
         for pool in self._ctx.available_pools:
-            # Parent the chip_host to pool_box explicitly so the styled
-            # background paints from the moment it's added to the layout
-            # (without this, parenting is deferred until pool_layout adds
-            # the row, and Qt has been observed to never set up the
-            # paint pipeline for these chips on this dialog).
-            chip_host = QFrame(self._pool_box)
-            chip_host.setStyleSheet(
-                f"QFrame {{"
-                f"  background: {p['card2']};"
-                f"  border: 1px solid {p['line']};"
-                f"  border-radius: 14px;"
-                "}"
+            chip = _PoolChip(pool.name, pool.count, self._pool_box)
+            chip.stepped.connect(
+                lambda delta, n=pool.name: self._step_pool(n, delta)
             )
-            ch = QHBoxLayout(chip_host)
-            ch.setContentsMargins(10, 4, 6, 4)
-            ch.setSpacing(6)
-            label = QLabel(f"{pool.name}")
-            label.setStyleSheet(
-                f"color: {p['ink']}; font-size: 12px;"
-                " font-weight: 600; border: none; background: transparent;"
-            )
-            ch.addWidget(label)
-            count_lbl = QLabel(f"({pool.count})")
-            count_lbl.setStyleSheet(
-                f"color: {p['ink_faint']}; font-size: 12px;"
-                " border: none; background: transparent;"
-            )
-            ch.addWidget(count_lbl)
-            minus = QPushButton("−")
-            minus.setFixedSize(22, 22)
-            minus.setCursor(Qt.CursorShape.PointingHandCursor)
-            minus.setStyleSheet(
-                f"QPushButton {{"
-                f" background: transparent; color: {p['ink_soft']};"
-                f" border: 1px solid {p['line']}; border-radius: 11px;"
-                " padding: 0; font-size: 13px; font-weight: 700;"
-                "}"
-                f"QPushButton:hover {{"
-                f" border-color: {p['accent']}; color: {p['accent']};"
-                "}"
-            )
-            minus.clicked.connect(lambda _c=False, n=pool.name: self._step_pool(n, -1))
-            plus = QPushButton("+")
-            plus.setFixedSize(22, 22)
-            plus.setCursor(Qt.CursorShape.PointingHandCursor)
-            plus.setStyleSheet(minus.styleSheet())
-            plus.clicked.connect(lambda _c=False, n=pool.name: self._step_pool(n, +1))
-            ch.addWidget(minus)
-            ch.addWidget(plus)
-            add_row.addWidget(chip_host)
+            add_row.addWidget(chip)
         add_row.addStretch()
         self._pool_layout.addLayout(add_row)
-        # Live summary
+        # Live summary — sits below the add row. Same custom-paint
+        # workaround would apply but a plain QLabel with inline color
+        # paints fine since there's no bg/border to render.
         self._pool_summary = QLabel("pool: 0 files")
         self._pool_summary.setStyleSheet(
             f"color: {p['ink_soft']}; font-size: 13px; font-weight: 600;"
+            " background: transparent;"
         )
         self._pool_layout.addWidget(self._pool_summary)
         v.addWidget(self._pool_box)

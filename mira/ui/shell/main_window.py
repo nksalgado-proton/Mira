@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 log = logging.getLogger(__name__)
 
 from mira.gateway import Gateway
-from mira.ui.picked.pick_page import PickPage
+from mira.ui.pages.picker_page import PickerPage
 
 
 def _peek_target_from_settings(default: int = 20) -> int:
@@ -170,17 +170,20 @@ class MainWindow(QMainWindow):
 
         # spec/70 Phase 3 — Days Grid (Surface 06). The redesigned grid
         # absorbs the gateway/engine wiring the legacy DayGridView
-        # carried; single-item clicks bridge to the legacy PickPage
-        # photo surface until Surface 07 (Picker) lands the redesigned
-        # shell.
+        # carried; single-item clicks bridge to PickerPage (Surface 07,
+        # also redesigned) via :meth:`_on_days_grid_item_activated`.
         self.days_grid_page = DaysGridPage(self.gateway)
         self.page_stack.add_page(
             self._DAYS_GRID_PAGE_KEY, self.days_grid_page)
 
-        # Slice A (2026-06-06): the per-camera Cull picker is retired. The
-        # Select tile opens the unified Select surface directly.
-        self.pick_page = PickPage(self.gateway)
-        self.page_stack.add_page(self._SELECT_PAGE_KEY, self.pick_page)
+        # spec/70 Phase 3 §2 — Surface 07 (Picker) is now the redesigned
+        # PickerPage: PhotoViewport + the absorbed PickPhotoSurface wiring
+        # (decision persistence, sharpness honesty, visited stamping,
+        # cluster cover expansion, sweep-with-peaking, F10 lens). The
+        # legacy ``mira/ui/picked/pick_page.py`` + ``pick_photo_surface.py``
+        # stay in tree for the Quick Sweep session that comes next.
+        self.picker_page = PickerPage(self.gateway)
+        self.page_stack.add_page(self._SELECT_PAGE_KEY, self.picker_page)
 
         from mira.ui.edited.edit_host_page import EditHostPage
         self.edit_page = EditHostPage(self.gateway)
@@ -208,10 +211,10 @@ class MainWindow(QMainWindow):
         # which door the user came in through; ``_on_curate_closed``
         # routes Back accordingly.
         self._cuts_entry_door: str = self._ACTIVITY_PAGE_KEY
-        # spec/70 Phase 3 — when the user enters the legacy PickPage
-        # via the Days Grid (Surface 06) item-click bridge, Back from
-        # the Picker returns to the Days Grid, not Phases. Cleared
-        # whenever the user lands on Days Grid via the normal route.
+        # spec/70 Phase 3 — when the user enters PickerPage via the
+        # Days Grid (Surface 06) item-click bridge, Back from the Picker
+        # returns to the Days Grid, not Phases. Cleared whenever the
+        # user lands on Days Grid via the normal route.
         self._days_grid_bridge_active: bool = False
 
         row.addWidget(self.page_stack, stretch=1)
@@ -262,9 +265,8 @@ class MainWindow(QMainWindow):
         self.days_lists_page.day_skip_all_requested.connect(
             self._on_days_lists_day_skip_all_stub)
         # spec/70 Phase 3 — DaysGridPage signal wiring. Back returns to
-        # Days Lists; an item click bridges to the legacy PickPage
-        # photo surface (Surface 07 next swaps this for the redesigned
-        # Picker shell).
+        # Days Lists; an item click bridges to PickerPage (Surface 07,
+        # redesigned + PhotoViewport-backed).
         self.days_grid_page.back_requested.connect(
             self._on_days_grid_back)
         self.days_grid_page.item_activated.connect(
@@ -275,8 +277,8 @@ class MainWindow(QMainWindow):
             lambda: self._on_days_grid_step_day(+1))
         self.days_grid_page.new_pass_requested.connect(
             self._on_days_lists_new_pass_stub)
-        self.pick_page.closed.connect(self._on_select_closed)
-        self.pick_page.fullscreen_changed.connect(self._on_select_fullscreen)
+        self.picker_page.closed.connect(self._on_select_closed)
+        self.picker_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
         self.edit_page.fullscreen_changed.connect(self._on_process_fullscreen)
         self.export_page.closed.connect(self._on_export_closed)
@@ -1741,16 +1743,16 @@ class MainWindow(QMainWindow):
 
     def _open_days_lists_for(self, event_id: str) -> None:
         """Build the per-day snapshots from the live gateway and route to
-        the Days Lists dashboard. Falls back to opening Pick directly if
-        the snapshot build fails (the user shouldn't be stranded with
-        a partial dashboard)."""
+        the Days Lists dashboard. On a snapshot-build failure the user
+        is left on Phases with a logged warning — the legacy fallback
+        into the retired PickPage shell is gone (Surface 07 absorbed
+        the engine into PickerPage and PickerPage opens per-item, not
+        per-event)."""
         snapshots = self._build_day_snapshots(event_id)
         if snapshots is None:
             log.warning(
-                "Days Lists snapshot build failed for %s; falling back to "
-                "PickPage direct", event_id)
-            if self.pick_page.open_event(event_id):
-                self.page_stack.show_page(self._SELECT_PAGE_KEY)
+                "Days Lists snapshot build failed for %s; staying on Phases",
+                event_id)
             return
         event_name = self._lookup_event_name(event_id) or tr("Event")
         self.days_lists_page.setEventForPreview(event_name, snapshots)
@@ -1874,17 +1876,10 @@ class MainWindow(QMainWindow):
             title=title, date_iso=date_iso,
         ):
             log.warning(
-                "DaysGridPage.open_for_day(%s, %s) failed; "
-                "falling back to PickPage",
+                "DaysGridPage.open_for_day(%s, %s) failed; staying on "
+                "Days Lists. (The legacy PickPage fallback retired with "
+                "spec/70 Phase 3 §2.)",
                 self._current_event_id, day_number)
-            if not self.pick_page.open_event(self._current_event_id):
-                return
-            self.page_stack.show_page(self._SELECT_PAGE_KEY)
-            try:
-                self.pick_page._open_day(day_number)
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "PickPage._open_day(%s) fallback failed", day_number)
             return
         self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
         self.days_grid_page.setFocus()
@@ -1955,25 +1950,46 @@ class MainWindow(QMainWindow):
 
     def _on_days_grid_item_activated(self, item_id: str) -> None:
         """Single-photo / video click on the Days Grid bridges into the
-        legacy photo / video surface via :meth:`PickPage.open_to_item`.
+        redesigned :class:`PickerPage` (spec/70 Phase 3 §2 surface 07).
 
-        ``open_to_item`` skips the "Ready to pick" resume summary and
-        the legacy days/clusters compute (the new grid owns those
-        levels) and routes straight to the photo / video surface.
-        Back from that surface emits :sig:`closed` which routes us
-        right back to the Days Grid via the bridge flag in
-        :meth:`_on_select_closed`. Surface 07 next replaces this hop
-        with the redesigned Picker shell."""
+        Three routes:
+
+        * Day mode + photo → ``picker_page.open_to_item(...)`` opens a
+          synthetic 1-item bucket so the Picker chrome + viewport
+          navigate within just that item.
+        * Cluster sub-grid mode + photo → ``picker_page.open_to_cluster(...)``
+          opens the REAL cluster bucket so Enter sweep, intra-cluster
+          ← →, and Combined preview (exposure brackets) all work.
+        * Video → today still routes via the legacy ``video_pick_page``
+          on PickPage (the Video Picker reconciliation is Phase 4).
+
+        Back from the Picker emits :sig:`closed` which routes the user
+        back to the Days Grid (refreshed) via the bridge flag in
+        :meth:`_on_select_closed`."""
         event_id = self.days_grid_page.current_event_id()
         day_number = self.days_grid_page.current_day_number()
         if event_id is None:
             return
-        if not self.pick_page.open_to_item(event_id, day_number, item_id):
+        # If the user is inside a cluster sub-grid and clicked a member,
+        # route to the cluster-bucket entry so in-cluster nav works.
+        cluster = self.days_grid_page.current_cluster()
+        if cluster is not None:
+            entry_idx = next(
+                (i for i, m in enumerate(cluster.members)
+                 if m.item_id == item_id),
+                0,
+            )
+            ok = self.picker_page.open_to_cluster(
+                event_id, day_number, cluster, entry_idx=entry_idx)
+        else:
+            ok = self.picker_page.open_to_item(
+                event_id, day_number, item_id)
+        if not ok:
             log.warning(
-                "open_to_item(%s, %s, %s) failed",
+                "PickerPage open from Days Grid failed (%s, %s, %s)",
                 event_id, day_number, item_id)
             return
-        # Mark the bridge as active so PickPage.closed returns to the
+        # Mark the bridge as active so PickerPage.closed returns to the
         # Days Grid (refreshed). Cleared by _on_select_closed.
         self._days_grid_bridge_active = True
         self.page_stack.show_page(self._SELECT_PAGE_KEY)

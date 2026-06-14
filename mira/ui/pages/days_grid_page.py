@@ -440,12 +440,21 @@ class DaysGridPage(QWidget):
 
     def current_day_number(self) -> int:
         """Day the page is currently rendering (used by the host's
-        single-item handoff to PickPage to know which day to open)."""
+        single-item handoff to the Picker to know which day to open)."""
         return self._day_number
 
     def current_event_id(self) -> Optional[str]:
         """Event id the page is currently rendering."""
         return self._event_id
+
+    def current_cluster(self) -> Optional[CullCluster]:
+        """The cluster currently drilled into (cluster sub-grid mode), or
+        ``None`` in flat day mode. The host uses this to route a cluster
+        member click into :meth:`PickerPage.open_to_cluster` so Enter
+        sweep + intra-cluster ← → + Combined preview all work."""
+        if self._mode == "cluster":
+            return self._cluster
+        return None
 
     # ── Public API (smoke / mock path — kept for test ergonomics) ──────
 

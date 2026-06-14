@@ -36,7 +36,7 @@ def test_pick_top_bar_help_button_role_is_correct(qapp):
 def test_quick_sweep_page_has_help_button_in_viewer_top_bar(qapp):
     """Quick Sweep's viewer chrome gains a "?" — F1 and ? keys also
     open the dialog (covered by the keyPressEvent below)."""
-    from mira.ui.picked.quick_sweep_page import QuickSweepPage
+    from mira.ui.pages.quick_sweep_page import QuickSweepPage
     page = QuickSweepPage()
     btns = _help_buttons(page)
     # Two could exist if other helpers live somewhere; assert ≥1 so a

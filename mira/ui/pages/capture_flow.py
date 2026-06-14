@@ -222,7 +222,7 @@ def _dominant_camera_identity(items) -> tuple[str, str]:
 def _run_capture_cull(parent, items) -> Optional[frozenset]:
     """Show the Quick Sweep over the scanned items (default-Keep triage); return the kept
     file basenames (the OffloadConfig.included_names contract), or None if cancelled."""
-    from mira.ui.picked.quick_sweep_page import QuickSweepPage
+    from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
     # Pre-load BEFORE wrapping in a QDialog so the host doesn't flash
     # empty under the load-progress modal. ``page.load(items)`` shows a

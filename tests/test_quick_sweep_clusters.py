@@ -1,25 +1,29 @@
 """Quick Sweep cluster expansion + batch ops (spec/52 slice C, Nelson 2026-06-09).
 
-Covers the slice-C wiring on top of the slice-B cluster cells:
+**SKIPPED in spec/70 Phase 3 (Nelson 2026-06-14):** the entire 5-page
+stack (days panel + day grid + cluster sub-grid + compare) that this
+suite covered moved out of ``QuickSweepPage`` into the shared
+:class:`~mira.ui.pages.days_grid_page.DaysGridPage` (Surface 06) — the
+same widget the Picker uses. ``QuickSweepPage`` is now just the leaf
+single-photo viewer; cluster expansion + batch ops + compare run on
+DaysGridPage. Tests that should survive (cluster aggregate colours,
+border-click cycle, etc.) belong in a future DaysGridPage suite.
 
-* Centre-click on a cluster cell opens the cluster sub-grid (a second
-  :class:`DayGridView` instance) with the cluster's members.
-* Sub-grid Pick all / Skip all bulk-mutates every member.
-* Day-grid Pick all / Skip all bulk-mutates every item in the current day.
-* Day-grid border-click on a cluster cell bulk-cycles the cluster's K/D/C.
-* Centre-click on a sub-grid member opens the single-item viewer scoped
-  to the cluster's members; Back returns to the sub-grid, not the day grid.
-
-Tests instantiate ``QuickSweepPage`` against the session-scoped ``qapp``
-fixture (conftest) and stub ``build_fast_days`` so the day model is
-deterministic (no scanner / EXIF reading required).
-
-NOTE: this file is intentionally separate from ``test_quick_sweep_buckets``
-because the latter sits on the legacy Slice-B bulk-skip list in
-``tests/conftest.py``. The fixtures + helpers here are duplicated rather
-than imported so the file stands alone.
+The file stays in-tree as a TODO marker for that port. See
+``mira/ui/pages/quick_sweep_page.py`` for the new contract.
 """
 from __future__ import annotations
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason=(
+        "spec/70 Phase 3 QS pivot — 5-page stack moved to DaysGridPage. "
+        "Tests should be ported to a DaysGridPage suite covering cluster "
+        "expansion + batch ops + compare. QuickSweepPage is now leaf "
+        "viewer only; its tests live in test_quick_sweep_viewer.py."
+    )
+)
 
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +38,7 @@ from core.cull_state import (
 from core.fresh_source import SourceItem
 from mira.picked.model import CullBucket, CullItem, PickDay
 from mira.picked.status import BADGE_UNTOUCHED, BucketStatus
-from mira.ui.picked.quick_sweep_page import QuickSweepPage
+from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
 
 # ─── fixture paths ───────────────────────────────────────────────────────────
@@ -98,7 +102,7 @@ def stub_burst_day(monkeypatch):
     solo = _flat_bucket("1|i|s", [_SOLO])
     days = [_day([burst, solo])]
     monkeypatch.setattr(
-        "mira.ui.picked.quick_sweep_page.build_fast_days",
+        "mira.ui.pages.quick_sweep_page.build_fast_days",
         lambda items, **kw: days,
     )
     return days
@@ -520,7 +524,7 @@ def test_quick_sweep_default_state_setting_drives_initial_state(
             return Settings(quick_sweep_default_state="skipped")
 
     monkeypatch.setattr(
-        "mira.ui.picked.quick_sweep_page.SettingsRepo",
+        "mira.ui.pages.quick_sweep_page.SettingsRepo",
         lambda: _StubRepo(),
     )
     page = QuickSweepPage()
@@ -548,7 +552,7 @@ def test_quick_sweep_default_state_default_is_picked(
             return Settings()    # all defaults
 
     monkeypatch.setattr(
-        "mira.ui.picked.quick_sweep_page.SettingsRepo",
+        "mira.ui.pages.quick_sweep_page.SettingsRepo",
         lambda: _StubRepo(),
     )
     page = QuickSweepPage()

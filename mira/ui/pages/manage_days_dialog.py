@@ -424,7 +424,7 @@ class ManageDaysDialog(QDialog):
 
     def _open_day_browser(self, items) -> None:
         """Host the read-only Quick Sweep (browse mode) over the day's items."""
-        from mira.ui.picked.quick_sweep_page import QuickSweepPage
+        from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
         host = QDialog(self)
         host.setWindowTitle(tr("Browse day"))

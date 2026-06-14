@@ -24,7 +24,7 @@ from mira.ui.base.plan_editor_dialog import (
     COL_COUNTRY,
     PlanEditorDialog,
 )
-from mira.ui.picked.quick_sweep_page import QuickSweepPage
+from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
 
 def _legacy_days():
@@ -180,11 +180,15 @@ def test_country_code_normalises_typed_lowercase_name(qapp):
 
 
 def test_fast_culler_browse_mode_hides_kd_controls(qapp):
+    """Browse mode hides every K/D control. In the redesigned vocabulary
+    that means the action cluster (Pick / Skip / Compare buttons) +
+    the Save button. Bulk K/D buttons dropped 2026-06-05 — Day Grid
+    replaces them; no bulk equivalent in the new model (deliberately)."""
     page = QuickSweepPage(browse_mode=True)
-    assert not page._state_pill.isVisible()
-    # Bulk K/D buttons dropped 2026-06-05 — Day Grid replaces them; no
-    # bulk equivalent in the new model (deliberately, per Nelson). The
-    # legacy `_save_btn` also retired with the bulk-action surface.
+    assert not page._pick_btn.isVisible()
+    assert not page._skip_btn.isVisible()
+    assert not page._compare_btn.isVisible()
+    assert not page._export_btn.isVisible()
 
 
 # ── MainWindow provider ───────────────────────────────────────────────────────

@@ -96,7 +96,7 @@ def test_pick_photo_surface_film_transport_is_canonical(qapp):
 
 
 def test_quick_sweep_page_transport_is_canonical(qapp):
-    from mira.ui.picked.quick_sweep_page import QuickSweepPage
+    from mira.ui.pages.quick_sweep_page import QuickSweepPage
     page = QuickSweepPage()
     b = page._play_btn
     assert b.objectName() == "TransportButton"

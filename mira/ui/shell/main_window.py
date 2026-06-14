@@ -97,6 +97,10 @@ class MainWindow(QMainWindow):
     # spec/66 §1.1 — the Export phase is its own surface (slice 5).
     _EXPORT_PAGE_KEY = "__export__"
     _CURATE_PAGE_KEY = "__curate__"
+    # spec/70 Phase 3 — Quick Sweep (Collect-phase triage), redesigned.
+    # Hosts both menu entries: "Standalone Quick Sweep…" (events list)
+    # and "Quick Sweep this event…" (per-event).
+    _QUICK_SWEEP_PAGE_KEY = "__quick_sweep__"
 
     def __init__(self, gateway: Optional[Gateway] = None, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -184,6 +188,23 @@ class MainWindow(QMainWindow):
         # stay in tree for the Quick Sweep session that comes next.
         self.picker_page = PickerPage(self.gateway)
         self.page_stack.add_page(self._SELECT_PAGE_KEY, self.picker_page)
+
+        # spec/70 Phase 3 — Quick Sweep (Collect-phase triage). Redesigned
+        # over the SAME DaysLists → DaysGrid → viewer route the Picker
+        # uses (Nelson 2026-06-14). The QuickSweepPage is the leaf viewer;
+        # DaysListsPage + DaysGridPage carry the nav levels (paths mode
+        # for standalone via setEventForPreview / setDay; gateway mode
+        # for per-event).
+        from mira.ui.pages.quick_sweep_page import QuickSweepPage
+        self.quick_sweep_page = QuickSweepPage()
+        self.page_stack.add_page(
+            self._QUICK_SWEEP_PAGE_KEY, self.quick_sweep_page)
+        # Per-session Quick Sweep state — None when no QS session is
+        # running, dict when active. Carries dest + event_id (mode), the
+        # K/D ledger, and the per-day item lists so day cards can rebuild
+        # the grid without re-scanning. ``_quick_sweep_current_day_items``
+        # is the list the viewer walks.
+        self._quick_sweep: Optional[dict] = None
 
         from mira.ui.edited.edit_host_page import EditHostPage
         self.edit_page = EditHostPage(self.gateway)
@@ -284,6 +305,15 @@ class MainWindow(QMainWindow):
         self.export_page.closed.connect(self._on_export_closed)
         self.export_page.fullscreen_changed.connect(self._on_export_fullscreen)
         self.curate_page.closed.connect(self._on_curate_closed)
+        # Quick Sweep — page-stack hosting: saved → mode-aware finalize
+        # (copy keepers for standalone, log + leave the gateway alone
+        # for per-event); cancelled / closed → return to whichever door
+        # the user came in through.
+        self.quick_sweep_page.saved.connect(self._on_quick_sweep_saved)
+        self.quick_sweep_page.cancelled.connect(
+            self._on_quick_sweep_cancelled)
+        self.quick_sweep_page.fullscreen_changed.connect(
+            self._on_quick_sweep_fullscreen)
 
         # Land on Dashboard, shown explicitly (single source of truth for the start page).
         self.page_stack.show_page(ENTRY_DASHBOARD)
@@ -313,9 +343,10 @@ class MainWindow(QMainWindow):
             self._open_settings()
             return
         if key == ENTRY_FAST_CULLER_STANDALONE:
-            from mira.ui.picked.standalone_pick import run_standalone_fast_cull
-            run_standalone_fast_cull(self)
-            self.page_stack.show_page(ENTRY_DASHBOARD)
+            # spec/70 Phase 3 — the standalone Quick Sweep now hosts
+            # the redesigned page on the stack. The legacy modal-window
+            # path was retired with the Surface 07 cadence.
+            self._open_quick_sweep_standalone()
             return
         if key == ENTRY_CULLER_STANDALONE:
             from PyQt6.QtWidgets import QMessageBox
@@ -532,7 +563,7 @@ class MainWindow(QMainWindow):
             surface=self._SURFACE_PER_EVENT)
         self._add_menu_action(
             pick_menu, tr("&Quick Sweep this event…"),
-            lambda: self._coming_next(tr("Quick Sweep this event")),
+            self._open_quick_sweep_for_event,
             surface=self._SURFACE_PER_EVENT)
 
         # ── Edit ───────────────────────────────────────────────────────────
@@ -1860,13 +1891,25 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_days_lists_back(self) -> None:
-        """Back from Days Lists returns to Phases (Surface 03)."""
+        """Back from Days Lists. During a QS session this is the
+        outermost-back → confirm and finalize (copy_kept for standalone,
+        log for per-event). Else returns to Phases (Surface 03)."""
+        if self._quick_sweep is not None:
+            self._qs_finalize_via_back()
+            return
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
 
     def _on_days_lists_day_activated(self, day_number: int) -> None:
         """Day card clicked → open the redesigned Days Grid (Surface 06)
-        for that day. The grid embeds the spec/32 cell engine; single-
-        item clicks bridge into the legacy Picker (Surface 07 next)."""
+        for that day. During a QS session :meth:`_qs_open_day` handles
+        both standalone (paths mode via setDay) and per-event (gateway
+        via open_for_day) routing — same widgets, different source."""
+        # Quick Sweep session in flight (standalone or per-event)
+        # routes through the QS opener so the day items list is built
+        # for the leaf QS viewer.
+        if self._quick_sweep is not None:
+            self._qs_open_day(day_number)
+            return
         if self._current_event_id is None:
             return
         title, date_iso = self._lookup_day_meta(
@@ -1914,7 +1957,10 @@ class MainWindow(QMainWindow):
 
     def _on_days_grid_back(self) -> None:
         """Back from the Days Grid returns to Days Lists. Releases the
-        page's event gateway so the next day-card click opens fresh."""
+        page's event gateway (no-op in paths mode) so the next day-card
+        click opens fresh. During a QS session the DaysListsPage carries
+        the QS chrome already (setEventForPreview / gateway-built
+        snapshots) so we don't rebuild here."""
         self.days_grid_page.close_event()
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
 
@@ -1949,8 +1995,14 @@ class MainWindow(QMainWindow):
         self._on_days_lists_day_activated(days[idx])
 
     def _on_days_grid_item_activated(self, item_id: str) -> None:
-        """Single-photo / video click on the Days Grid bridges into the
-        redesigned :class:`PickerPage` (spec/70 Phase 3 §2 surface 07).
+        """Single-photo / video click on the Days Grid. Routes by
+        active mode:
+
+        * **Quick Sweep session active** → open the redesigned QS
+          viewer with the current day's items (DaysLists → DaysGrid →
+          QS viewer flow, spec/70 Phase 3).
+        * **Picker bridge active** → bridge into :class:`PickerPage`
+          (Surface 07) as before.
 
         Three routes:
 
@@ -1966,6 +2018,13 @@ class MainWindow(QMainWindow):
         Back from the Picker emits :sig:`closed` which routes the user
         back to the Days Grid (refreshed) via the bridge flag in
         :meth:`_on_select_closed`."""
+        # Quick Sweep session — route to the QS viewer instead of
+        # Picker. The QS viewer carries the day's items + the K/D
+        # ledger; Back from it refreshes this Days Grid via
+        # :meth:`_qs_return_to_days_grid`.
+        if self._quick_sweep is not None:
+            self._qs_open_viewer_for_item(item_id)
+            return
         event_id = self.days_grid_page.current_event_id()
         day_number = self.days_grid_page.current_day_number()
         if event_id is None:
@@ -2864,7 +2923,7 @@ class MainWindow(QMainWindow):
         """
         from PyQt6.QtWidgets import QDialog, QVBoxLayout
         from core.fresh_source import SourceItem
-        from mira.ui.picked.quick_sweep_page import QuickSweepPage
+        from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
         checked_dates = {r.date for r in edited_rows if r.checked}
         items = []
@@ -4400,6 +4459,517 @@ class MainWindow(QMainWindow):
 
     def _on_select_fullscreen(self, on: bool) -> None:
         """Immersive select: mirror the cull fullscreen behaviour."""
+        self.menuBar().setVisible(not on)
+
+    # ── Quick Sweep entry points (spec/70 Phase 3) ────────────────────
+    #
+    # Quick Sweep rides the SAME DaysLists → DaysGrid → viewer route the
+    # Picker uses. ``self._quick_sweep`` is the per-session state dict
+    # that flags the route into QS mode (so the shared DaysLists /
+    # DaysGrid signal handlers know to open the QS viewer instead of
+    # the Picker). Two modes:
+    #
+    # * **Standalone** — folder picker + scan; paths-driven nav (no
+    #   gateway). DaysListsPage.setEventForPreview + DaysGridPage.setDay
+    #   carry the smoke-mode API.
+    # * **Per-event** — re-uses ``_open_days_lists_for(event_id)``; the
+    #   gateway-driven path is identical to the Picker's, with the QS
+    #   flag set so item clicks open the QS viewer instead of Picker.
+
+    def _open_quick_sweep_standalone(self) -> None:
+        """Standalone Quick Sweep: pop the folder picker, scan the source,
+        bucket into days, hand the day snapshots to DaysListsPage and let
+        the user pick which day to sweep. The Picker's exact nav route,
+        with QS chrome on the leaf viewer."""
+        from PyQt6.QtWidgets import QMessageBox
+        from mira.ui.pages.quick_sweep_page import StandaloneCullSetupDialog
+        from mira.ui.base.progress import run_with_progress
+        from core.fresh_source import read_source_items
+
+        dlg = StandaloneCullSetupDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        source, dest = dlg.source_path(), dlg.dest_path()
+
+        ok, items = run_with_progress(
+            self, tr("Quick Sweep"),
+            lambda report: read_source_items(source),
+            label=tr("Reading {p}…").replace("{p}", source.name),
+        )
+        if not ok:
+            QMessageBox.warning(
+                self, tr("Quick Sweep"),
+                tr("Could not read that folder (see log)."))
+            return
+        if not items:
+            QMessageBox.information(
+                self, tr("Quick Sweep"),
+                tr("No photos or videos found in that folder."))
+            return
+
+        # Bucket the scanned items into PickDays so DaysListsPage can
+        # show one card per source day.
+        from mira.picked.quick_sweep_buckets import build_fast_days
+        # Initial state ledger — every source path starts at the Quick
+        # Sweep default (Pick, the permissive contract).
+        from mira.settings.repo import SettingsRepo
+        try:
+            default = SettingsRepo().load().quick_sweep_default_state
+        except Exception:                                          # noqa: BLE001
+            default = "picked"
+        from core.cull_state import (
+            STATE_DISCARDED as STATE_SKIPPED_LEGACY,
+            STATE_KEPT as STATE_PICKED_LEGACY,
+        )
+        default_state = (
+            STATE_SKIPPED_LEGACY if default == "skipped"
+            else STATE_PICKED_LEGACY
+        )
+        state_ledger: dict[Path, str] = {
+            it.path: default_state for it in items
+        }
+        days = build_fast_days(
+            items, state_for=lambda p: state_ledger.get(p, default_state))
+        if not days:
+            QMessageBox.information(
+                self, tr("Quick Sweep"),
+                tr("No photos or videos found in that folder."))
+            return
+
+        # Group SourceItems by day so day-card clicks can rebuild the
+        # grid without re-scanning.
+        items_by_day: dict[int, list] = {}
+        for day in days:
+            wanted = {
+                Path(ci.item_id)
+                for b in day.buckets for ci in b.items
+            }
+            items_by_day[day.day_number] = [
+                it for it in items if it.path in wanted
+            ]
+
+        self._quick_sweep = {
+            "mode": "standalone",
+            "dest": dest,
+            "event_id": None,
+            "state": state_ledger,
+            "items_by_day": items_by_day,
+            "days": days,
+            "current_day": None,
+            "current_day_items": [],
+        }
+
+        # Days Lists in paths (smoke) mode — setEventForPreview takes the
+        # event name + DaySnapshot list and renders without a gateway.
+        snapshots = self._qs_build_day_snapshots(days)
+        self.days_lists_page.setEventForPreview(
+            tr("Quick Sweep — {p}").replace("{p}", source.name),
+            snapshots,
+        )
+        self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
+
+    def _open_quick_sweep_for_event(self) -> None:
+        """Quick Sweep this event: route through the gateway-driven
+        DaysLists / DaysGrid stack (the exact Picker route), with the
+        QS flag set so item clicks open the QS viewer instead of the
+        Picker. The per-event ``saved`` semantics (write-back to the
+        gateway) live in a follow-up session — for now we log the kept
+        set on Back."""
+        event_id = self._current_event_id
+        if event_id is None:
+            return
+        # Empty state ledger to start — per-event QS reads the current
+        # decision from the gateway on viewer entry; the ledger only
+        # captures what the user changes during this session.
+        self._quick_sweep = {
+            "mode": "per_event",
+            "dest": None,
+            "event_id": event_id,
+            "state": {},
+            "items_by_day": {},
+            "days": None,
+            "current_day": None,
+            "current_day_items": [],
+        }
+        # Re-use the Picker's DaysLists entry — gateway-driven snapshot
+        # build + route. The flag we just set takes over routing in the
+        # shared DaysLists / DaysGrid handlers.
+        self._open_days_lists_for(event_id)
+
+    def _qs_build_day_snapshots(self, days) -> list:
+        """Build a list of :class:`DaySnapshot` from a paths-mode
+        PickDay list (standalone QS only)."""
+        from mira.ui.pages.days_lists_page import DaySnapshot
+        out: list = []
+        for d in days:
+            items_count = sum(
+                len(b.items) for b in d.buckets)
+            bucket_count = len(d.buckets)
+            # Build a 24-hour capture-time histogram for the spark line.
+            hours = [0] * 24
+            for b in d.buckets:
+                for ci in b.items:
+                    ts = ci.capture_time_corrected
+                    if not ts:
+                        continue
+                    try:
+                        from datetime import datetime
+                        h = datetime.fromisoformat(ts).hour
+                        if 0 <= h < 24:
+                            hours[h] += 1
+                    except (ValueError, TypeError):
+                        continue
+            # Per-source-day "label" carries the date in the legacy
+            # ``PickDay.label`` (e.g. "Day 1 — 2026-05-27"); split into
+            # title + date for the snapshot.
+            label = d.label or f"Day {d.day_number}"
+            date_iso = ""
+            title = label
+            if " — " in label:
+                title, date_iso = label.split(" — ", 1)
+            out.append(DaySnapshot(
+                day_number=d.day_number,
+                title=title.strip(),
+                date_iso=date_iso.strip(),
+                picked=0, skipped=0,
+                buckets=bucket_count,
+                items=items_count,
+                capture_hours=hours,
+            ))
+        return out
+
+    def _qs_open_day(self, day_number: int) -> None:
+        """Open ``day_number`` in DaysGridPage from a QS session — both
+        standalone (paths mode via setDay) and per-event (gateway mode
+        via open_for_day) end up here."""
+        if self._quick_sweep is None:
+            return
+        if self._quick_sweep["mode"] == "standalone":
+            # Paths mode — synthesise GridItems for the day's items.
+            day_items = self._quick_sweep["items_by_day"].get(day_number, [])
+            self._quick_sweep["current_day"] = day_number
+            self._quick_sweep["current_day_items"] = day_items
+            snap = next(
+                (s for s in self._qs_build_day_snapshots(
+                    self._quick_sweep["days"])
+                 if s.day_number == day_number),
+                None,
+            )
+            title = snap.title if snap is not None else f"Day {day_number}"
+            date_iso = snap.date_iso if snap is not None else ""
+            grid_items = self._qs_build_grid_items(day_items)
+            self.days_grid_page.setDay(
+                day_number, title, date_iso, grid_items)
+            self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+            self.days_grid_page.setFocus()
+            return
+        # Per-event mode — gateway-driven open_for_day (same as Picker).
+        event_id = self._quick_sweep["event_id"]
+        if event_id is None:
+            return
+        title, date_iso = self._lookup_day_meta(event_id, day_number)
+        if not self.days_grid_page.open_for_day(
+            event_id, day_number, title=title, date_iso=date_iso,
+        ):
+            log.warning(
+                "QS per-event: open_for_day(%s, %s) failed",
+                event_id, day_number)
+            return
+        # Per-event mode tracks the day items list so the QS viewer
+        # has a Sequence to walk. Build it from the gateway items.
+        from datetime import datetime
+        from core.fresh_source import SourceItem
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "QS per-event: gateway open failed for %s", event_id)
+            return
+        try:
+            event_root = Path(eg.event_root)
+            day_items = []
+            for it in eg.items():
+                if not it.origin_relpath:
+                    continue
+                if (getattr(it, "day_number", None) is not None
+                        and it.day_number != day_number):
+                    continue
+                path = event_root / it.origin_relpath
+                ts = None
+                if it.capture_time_corrected:
+                    try:
+                        ts = datetime.fromisoformat(
+                            it.capture_time_corrected)
+                    except (ValueError, TypeError):
+                        ts = None
+                day_items.append(SourceItem(
+                    path=path, timestamp=ts,
+                    camera_id=it.camera_id or "",
+                ))
+        finally:
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+        self._quick_sweep["current_day"] = day_number
+        self._quick_sweep["current_day_items"] = day_items
+        self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+        self.days_grid_page.setFocus()
+
+    def _qs_build_grid_items(self, items) -> list:
+        """SourceItem list → list[GridItem] for paths-mode DaysGridPage."""
+        from mira.ui.pages.days_grid_page import GridItem
+        from core.cull_state import (
+            STATE_CANDIDATE as STATE_CANDIDATE_LEGACY,
+            STATE_DISCARDED as STATE_SKIPPED_LEGACY,
+            STATE_KEPT as STATE_PICKED_LEGACY,
+        )
+        # Map legacy QS state values to the Thumb's state key.
+        state_to_thumb = {
+            STATE_PICKED_LEGACY: "picked",
+            STATE_SKIPPED_LEGACY: "skipped",
+            STATE_CANDIDATE_LEGACY: "compare",
+        }
+        is_video_ext = {
+            ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".mts", ".mpg",
+            ".mpeg",
+        }
+        ledger = self._quick_sweep["state"] if self._quick_sweep else {}
+        out: list = []
+        for it in items:
+            kind = (
+                "video" if it.path.suffix.lower() in is_video_ext
+                else "photo"
+            )
+            s = ledger.get(it.path, STATE_PICKED_LEGACY)
+            out.append(GridItem(
+                item_id=str(it.path),
+                item_kind=kind,
+                state=state_to_thumb.get(s),
+                visited=False,
+                exported=False,
+                _path=it.path,
+            ))
+        return out
+
+    def _qs_open_viewer_for_item(self, item_id: str) -> None:
+        """Click on a Days Grid cell from a QS session → open the
+        redesigned QS viewer, walking the current day's items."""
+        if self._quick_sweep is None:
+            return
+        items = self._quick_sweep["current_day_items"]
+        if not items:
+            return
+        if self._quick_sweep["mode"] == "standalone":
+            # In paths mode, item_id == str(path).
+            target = Path(item_id)
+            start_idx = next(
+                (i for i, it in enumerate(items) if it.path == target), 0,
+            )
+        else:
+            # Gateway mode — item_id is the gateway item-id; map by
+            # iterating eg.items()'s origin_relpath.
+            event_id = self._quick_sweep["event_id"]
+            target_path: Optional[Path] = None
+            try:
+                eg = self.gateway.open_event(event_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "QS per-event: gateway open failed during item open")
+                return
+            try:
+                it = eg.item(item_id)
+                if it is not None and it.origin_relpath:
+                    target_path = Path(eg.event_root) / it.origin_relpath
+            finally:
+                try:
+                    eg.close()
+                except Exception:                                  # noqa: BLE001
+                    pass
+            if target_path is None:
+                return
+            start_idx = next(
+                (i for i, s in enumerate(items) if s.path == target_path),
+                0,
+            )
+        # Load the viewer with the day's items + the ledger (so prior
+        # decisions persist across re-entries) and show.
+        self.quick_sweep_page.load(
+            items, start_index=start_idx,
+            state=self._quick_sweep["state"],
+        )
+        self.page_stack.show_page(self._QUICK_SWEEP_PAGE_KEY)
+        self.quick_sweep_page.setFocus()
+
+    def _on_quick_sweep_saved(self, kept) -> None:
+        """Save fired from the QS viewer. Updates the per-session ledger,
+        then routes the save dialog only when the user later backs out
+        of DaysLists. The viewer itself just emits saved + cancelled to
+        flow back to the grid; the finalize gate is at the DaysLists
+        Back."""
+        if self._quick_sweep is None:
+            return
+        # The viewer already updated the shared ledger via _state.
+        # Returning to the grid is enough; the user can keep sweeping
+        # other days. The finalize dialog gates at the outermost Back.
+        log.info(
+            "QS viewer Save: %d kept in current day's ledger",
+            len(kept) if kept else 0,
+        )
+        self._qs_return_to_days_grid()
+
+    def _on_quick_sweep_cancelled(self) -> None:
+        """Back / Esc from the QS viewer — return to the DaysGridPage
+        (refreshed with the latest state from the ledger)."""
+        if self._quick_sweep is None:
+            return
+        self._qs_return_to_days_grid()
+
+    def _qs_return_to_days_grid(self) -> None:
+        """Re-render the day grid with the latest K/D state from the
+        ledger, then show it. Standalone mode rebuilds GridItems; per-
+        event mode re-opens the gateway-driven day so the gateway-side
+        state colours pick up (the QS write-back to phase_state is
+        deferred, so the gateway state is unchanged — but re-opening
+        is consistent)."""
+        if self._quick_sweep is None:
+            return
+        if self._quick_sweep["mode"] == "standalone":
+            day_number = self._quick_sweep.get("current_day")
+            if day_number is None:
+                self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
+                return
+            day_items = self._quick_sweep["current_day_items"]
+            snap = next(
+                (s for s in self._qs_build_day_snapshots(
+                    self._quick_sweep["days"])
+                 if s.day_number == day_number),
+                None,
+            )
+            title = snap.title if snap is not None else f"Day {day_number}"
+            date_iso = snap.date_iso if snap is not None else ""
+            grid_items = self._qs_build_grid_items(day_items)
+            self.days_grid_page.setDay(
+                day_number, title, date_iso, grid_items)
+        else:
+            # Per-event — re-open is consistent + cheap.
+            event_id = self._quick_sweep.get("event_id")
+            day_number = self._quick_sweep.get("current_day")
+            if event_id is not None and day_number is not None:
+                title, date_iso = self._lookup_day_meta(
+                    event_id, day_number)
+                self.days_grid_page.open_for_day(
+                    event_id, day_number,
+                    title=title, date_iso=date_iso,
+                )
+        self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+        self.days_grid_page.setFocus()
+
+    def _qs_finalize_via_back(self) -> None:
+        """Outermost-Back from DaysListsPage during a QS session. For
+        standalone, pop the confirm dialog + copy_kept. For per-event,
+        just log the ledger and return to Phases."""
+        from PyQt6.QtWidgets import QMessageBox
+        from core.standalone_cull_copy import CopyItem, copy_kept
+        from mira.ui.base.progress import run_with_progress
+
+        if self._quick_sweep is None:
+            self.page_stack.show_page(ENTRY_DASHBOARD)
+            return
+        mode = self._quick_sweep["mode"]
+        ledger = self._quick_sweep["state"]
+        from core.cull_state import (
+            STATE_CANDIDATE as _C, STATE_DISCARDED as _D,
+            STATE_KEPT as _K,
+        )
+        kept_set = {p for p, s in ledger.items() if s in (_K, _C)}
+        skipped = sum(1 for s in ledger.values() if s == _D)
+        total = len(ledger)
+
+        if mode == "standalone":
+            dest = self._quick_sweep["dest"]
+            self._quick_sweep = None
+            if not ledger:
+                self.page_stack.show_page(ENTRY_DASHBOARD)
+                return
+            # Confirm dialog.
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.NoIcon)
+            box.setWindowTitle(tr("Finish Quick Sweep"))
+            box.setText(tr("Quick Sweep — ready to copy."))
+            bits = [
+                tr("{n} of {total} item(s) will be copied.")
+                .replace("{n}", str(len(kept_set)))
+                .replace("{total}", str(total)),
+            ]
+            if skipped:
+                bits.append(
+                    tr("{n} discarded item(s) will not be copied.")
+                    .replace("{n}", str(skipped)))
+            bits.append("")
+            bits.append(tr("Copy and finish?"))
+            box.setInformativeText("\n".join(bits))
+            copy_btn = box.addButton(
+                tr("Copy and finish"),
+                QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(
+                tr("Stay in Quick Sweep"),
+                QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(copy_btn)
+            box.exec()
+            if box.clickedButton() is not copy_btn:
+                # User backed out — return to events list and drop the
+                # session. The ledger is gone (no undo).
+                self.page_stack.show_page(ENTRY_DASHBOARD)
+                return
+            if not kept_set:
+                QMessageBox.information(
+                    self, tr("Quick Sweep"),
+                    tr("Nothing kept — nothing copied."))
+                self.page_stack.show_page(ENTRY_DASHBOARD)
+                return
+            copy_items = [
+                CopyItem(source=p, style="", rel_dest=Path(p.name))
+                for p in kept_set
+            ]
+            ok, result = run_with_progress(
+                self, tr("Quick Sweep"),
+                lambda report: copy_kept(
+                    copy_items, dest,
+                    progress=lambda msg, cur, tot:
+                        report(cur, tot, msg)),
+                label=tr("Copying kept files…"),
+            )
+            if not ok:
+                QMessageBox.warning(
+                    self, tr("Quick Sweep"),
+                    tr("Copy failed (see log)."))
+                self.page_stack.show_page(ENTRY_DASHBOARD)
+                return
+            QMessageBox.information(
+                self, tr("Quick Sweep — done"),
+                tr("Copied {n} kept file(s) to:\n{dest}")
+                .replace("{n}", str(result.ok_count))
+                .replace("{dest}", str(dest)),
+            )
+            self.page_stack.show_page(ENTRY_DASHBOARD)
+            return
+        # Per-event — write-back deferred; log + return to Phases.
+        event_id = self._quick_sweep.get("event_id")
+        self._quick_sweep = None
+        log.info(
+            "QS per-event finish: ledger size=%d (write-back deferred)",
+            total,
+        )
+        if event_id is not None:
+            self.phases_page.set_event(event_id)
+            self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
+        else:
+            self.page_stack.show_page(ENTRY_DASHBOARD)
+
+    def _on_quick_sweep_fullscreen(self, on: bool) -> None:
+        """Immersive Quick Sweep: mirror the cull/select fullscreen
+        behaviour (hide the menu bar)."""
         self.menuBar().setVisible(not on)
 
     def _on_process_closed(self) -> None:

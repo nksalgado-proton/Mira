@@ -32,7 +32,7 @@ from mira.picked.status import (
     STATE_SKIPPED,
     STATE_PICKED,
 )
-from mira.ui.picked.quick_sweep_page import QuickSweepPage
+from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
 _P1 = Path("/src/p1.jpg")
 _P2 = Path("/src/p2.jpg")
@@ -97,7 +97,7 @@ def stub_multi_day(monkeypatch):
         _day(2, "Day 2 — 2026-05-28", _bucket("2|i|b", [_P3])),
     ]
     monkeypatch.setattr(
-        "mira.ui.picked.quick_sweep_page.build_fast_days",
+        "mira.ui.pages.quick_sweep_page.build_fast_days",
         lambda items, **kw: days,
     )
     return days
@@ -108,7 +108,7 @@ def stub_single_day(monkeypatch):
     """One-day structure with three items (p1, p2, v1)."""
     days = [_day(1, "Day 1 — 2026-05-27", _bucket("1|i|a", [_P1, _P2, _V1]))]
     monkeypatch.setattr(
-        "mira.ui.picked.quick_sweep_page.build_fast_days",
+        "mira.ui.pages.quick_sweep_page.build_fast_days",
         lambda items, **kw: days,
     )
     return days

@@ -21,7 +21,7 @@ from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtTest import QTest
 
 from core.fresh_source import SourceItem
-from mira.ui.picked.quick_sweep_page import QuickSweepPage
+from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
 
 @pytest.fixture(autouse=True)

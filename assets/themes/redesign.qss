@@ -59,11 +59,18 @@ QComboBox#DesignSelect::drop-down { border: none; width: 22px; }
 /* ---- Chips / tags / pill toggles ---- */
 QLabel#Tag         { background: {accent_soft}; color: {accent}; border-radius: {radius_sm}px;
                      padding: 3px 8px; font-size: 11px; font-weight: 700; }
-QLabel#ChipOpen    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
-QLabel#ChipClosed  { background: rgba(255,93,162,0.16); color: {pink};   border-radius: 11px; padding: 4px 11px; font-weight: 700; }
-QLabel#ChipDone    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
-QLabel#ChipProg    { background: rgba(251,191,36,0.18); color: {amber};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
-QLabel#ChipIdle    { background: {card2};                color: {ink_faint}; border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+QLabel#ChipOpen    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
+QLabel#ChipClosed  { background: rgba(255,93,162,0.16); color: {pink};   border-radius: 13px; padding: 5px 11px; font-weight: 700; }
+QLabel#ChipDone    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
+QLabel#ChipProg    { background: rgba(251,191,36,0.18); color: {amber};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
+QLabel#ChipIdle    { background: {card2};                color: {ink_soft};  border-radius: 13px; padding: 5px 11px; font-weight: 600; }
+
+/* Pipeline percentage labels — phase-identity colour (spec/66); faint at 0% */
+QLabel#PctCollect  { color: {blue};      font-weight: 700; }
+QLabel#PctPick     { color: {accent};    font-weight: 700; }
+QLabel#PctEdit     { color: {amber};     font-weight: 700; }
+QLabel#PctExport   { color: {green};     font-weight: 700; }
+QLabel#PctZero     { color: {ink_faint}; font-weight: 700; }
 
 QPushButton#PillToggle            { background: {card2}; border: 1px solid {line}; color: {ink};
                                     border-radius: 16px; padding: 6px 14px; font-weight: 600; }

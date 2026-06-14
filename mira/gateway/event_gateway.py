@@ -52,7 +52,7 @@ from mira.store.repo import EventStore
 
 log = logging.getLogger(__name__)
 
-_PHASES = ("pick", "pick", "edit", "share")
+_PHASES = ("pick", "edit")  # decision phases with derived caches (spec/66; 'export' joins when its surface lands)
 
 
 def _utc_now_iso() -> str:
@@ -333,11 +333,16 @@ class EventGateway:
         captured items on that day, ``decided`` the ones with an explicit mark. Both
         aggregates read ``visible_item`` so a hidden day contributes nothing (spec/14 §5C.1).
 
-        **Process special case (Q3 locked 2026-06-08):** Process has no phase_state
-        writes — the per-item ``Adjustment.edit_exported`` flag is the signal.
-        After the phase_state pass we OVERRIDE the ``process`` entry with a count
-        from ``adjustment``, so the dashboard Process tile shows a real donut
-        after exports (otherwise it would stay at 0%).
+        **Buckets (spec/66 — Collect/Pick/Edit/Export):**
+        - ``pick`` — decided / **captured** (review completeness), from
+          ``phase_state`` rows with ``phase='pick'``.
+        - ``edit`` — *developed* (items with an ``adjustment`` row) / **picked**.
+        - ``export`` — *exported* files (``adjustment.edit_exported``) / **picked**.
+
+        Edit and Export use the day's **picked** keepers as the denominator
+        ("among picked"). There is **no ``share`` bucket** — Share is a
+        closed-event state, not a phase (spec/66). Collect is derived by the
+        caller from day totals.
         """
         conn = self.store.conn
         totals = {
@@ -346,52 +351,74 @@ class EventGateway:
                 "WHERE provenance='captured' GROUP BY day_number"
             )
         }
+        # Picked keepers per day — the denominator for Edit / Export %.
+        picked_by_day = {
+            r["dn"]: r["n"] for r in conn.execute(
+                "SELECT item.day_number AS dn, COUNT(*) AS n "
+                "FROM phase_state ps JOIN visible_item item ON item.id = ps.item_id "
+                "WHERE ps.phase = 'pick' AND ps.state = 'picked' "
+                "GROUP BY item.day_number"
+            )
+        }
         out: Dict[str, Dict[Optional[int], Dict[str, int]]] = {}
+
+        # ---- Pick: decided / captured (review completeness) ----
+        pick_map: Dict[Optional[int], Dict[str, int]] = {}
         for r in conn.execute(
-            "SELECT ps.phase AS phase, item.day_number AS dn, COUNT(*) AS decided, "
+            "SELECT item.day_number AS dn, COUNT(*) AS decided, "
             "SUM(CASE WHEN ps.committed_at IS NOT NULL THEN 1 ELSE 0 END) AS committed, "
             "SUM(CASE WHEN ps.state='picked' THEN 1 ELSE 0 END) AS picked "
             "FROM phase_state ps JOIN visible_item item ON item.id = ps.item_id "
-            "GROUP BY ps.phase, item.day_number"
-        ):
-            cell = out.setdefault(r["phase"], {}).setdefault(
-                r["dn"], {"total": 0, "decided": 0, "committed": 0, "picked": 0})
-            cell["decided"] = r["decided"]
-            cell["committed"] = r["committed"] or 0
-            cell["picked"] = r["picked"] or 0
-        # Process override — count edit_exported per day from adjustment.
-        process_map: Dict[Optional[int], Dict[str, int]] = {}
-        for r in conn.execute(
-            "SELECT item.day_number AS dn, COUNT(*) AS exp "
-            "FROM adjustment a JOIN visible_item item ON item.id = a.item_id "
-            "WHERE a.edit_exported = 1 "
+            "WHERE ps.phase = 'pick' "
             "GROUP BY item.day_number"
         ):
-            process_map[r["dn"]] = {
-                "total": totals.get(r["dn"], 0),
-                "decided": r["exp"],
-                "committed": r["exp"],
-                "picked": r["exp"],
+            pick_map[r["dn"]] = {
+                "total": totals.get(r["dn"], r["decided"]),
+                "decided": r["decided"],
+                "committed": r["committed"] or 0,
+                "picked": r["picked"] or 0,
             }
-        # Fill in zero rows for days with no exports so the tile shows
-        # "0/N done" instead of being absent.
         for dn, t in totals.items():
-            process_map.setdefault(
+            pick_map.setdefault(
                 dn, {"total": t, "decided": 0, "committed": 0, "picked": 0})
-        out["edit"] = process_map
+        out["pick"] = pick_map
 
-        # spec/52 + spec/61: the Share-phase share_tag override is retired.
-        # Cuts replace the Curate concept and per-Cut membership lives in
-        # cut_member (file-based, → lineage); the per-day Share progress
-        # widget will be redesigned with the Cuts surfaces. Until then
-        # phase_day_progress emits no 'share' bucket — callers that read
-        # pdp['share'] should expect KeyError now.
+        # ---- Edit: developed (has an adjustment) / picked ----
+        developed_by_day = {
+            r["dn"]: r["n"] for r in conn.execute(
+                "SELECT item.day_number AS dn, COUNT(DISTINCT a.item_id) AS n "
+                "FROM adjustment a JOIN visible_item item ON item.id = a.item_id "
+                "GROUP BY item.day_number"
+            )
+        }
+        out["edit"] = {
+            dn: {
+                "total": picked_by_day.get(dn, 0),
+                "decided": developed_by_day.get(dn, 0),
+                "committed": developed_by_day.get(dn, 0),
+                "picked": developed_by_day.get(dn, 0),
+            }
+            for dn in set(picked_by_day) | set(developed_by_day)
+        }
 
-        for phase, phase_map in out.items():
-            if phase == "edit":
-                continue
-            for dn, cell in phase_map.items():
-                cell["total"] = totals.get(dn, cell["decided"])
+        # ---- Export: exported files (edit_exported) / picked ----
+        exported_by_day = {
+            r["dn"]: r["n"] for r in conn.execute(
+                "SELECT item.day_number AS dn, COUNT(*) AS n "
+                "FROM adjustment a JOIN visible_item item ON item.id = a.item_id "
+                "WHERE a.edit_exported = 1 "
+                "GROUP BY item.day_number"
+            )
+        }
+        out["export"] = {
+            dn: {
+                "total": picked_by_day.get(dn, 0),
+                "decided": exported_by_day.get(dn, 0),
+                "committed": exported_by_day.get(dn, 0),
+                "picked": exported_by_day.get(dn, 0),
+            }
+            for dn in set(picked_by_day) | set(exported_by_day)
+        }
         return out
 
     # ----- buckets -------------------------------------------------------- #

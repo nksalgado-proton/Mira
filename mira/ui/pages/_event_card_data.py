@@ -18,7 +18,7 @@ from mira.ui.base.event_card import EventCardData
 
 log = logging.getLogger(__name__)
 
-_PHASES = ("pick", "edit", "share")
+_PHASES = ("pick", "edit", "export")
 
 
 def _parse_date(s: Optional[str]) -> Optional[date]:

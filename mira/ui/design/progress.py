@@ -37,6 +37,7 @@ class StageProgress(QWidget):
         super().__init__(parent)
         self._value = 0
         self._state: str | None = None
+        self._color_token: str | None = None
         self.setMinimumHeight(_BAR_HEIGHT + 4)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -60,17 +61,30 @@ class StageProgress(QWidget):
     def state(self) -> str | None:
         return self._state
 
+    def setColorToken(self, token: str | None) -> None:
+        """Force the fill to a fixed PALETTE colour token (e.g. ``'accent'``,
+        ``'amber'``, ``'green'``, ``'blue'``), resolved live per theme so it
+        follows theme toggles. Overrides the state-based colour; pass ``None``
+        to revert to state colouring. Used for phase-identity bars (spec/66 —
+        bars encode phase, length encodes progress, not a done/in-progress
+        state)."""
+        self._color_token = token
+        self.update()
+
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
         app = QApplication.instance()
         mode = (app.property("theme") if app else None) or "dark"
         p = PALETTE[mode]
         track = QColor(p["track"])
-        chunk = QColor(
-            p["green"] if self._state == "done"
-            else p["amber"] if self._state == "prog"
-            else p["red"] if self._state == "skip"
-            else p["accent"]
-        )
+        if self._color_token:
+            chunk = QColor(p.get(self._color_token, p["accent"]))
+        else:
+            chunk = QColor(
+                p["green"] if self._state == "done"
+                else p["amber"] if self._state == "prog"
+                else p["red"] if self._state == "skip"
+                else p["accent"]
+            )
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

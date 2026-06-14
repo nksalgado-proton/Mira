@@ -65,12 +65,27 @@ _CATEGORY_ICONS_DIR = (
 )
 
 
-_PHASES = ("collect", "pick", "edit", "share")
+_PHASES = ("collect", "pick", "edit", "export")
 _PHASE_LABEL = {
     "collect": "Collect",
     "pick": "Pick",
     "edit": "Edit",
-    "share": "Share",
+    "export": "Export",
+}
+# Per-phase identity colours (spec/66) — same language as the closed-card stat
+# tiles: Collect blue · Pick accent · Edit amber · Export green. PALETTE tokens
+# so the bars follow theme toggles.
+_PHASE_COLOR_TOKEN = {
+    "collect": "blue",
+    "pick": "accent",
+    "edit": "amber",
+    "export": "green",
+}
+_PHASE_PCT_ROLE = {
+    "collect": "PctCollect",
+    "pick": "PctPick",
+    "edit": "PctEdit",
+    "export": "PctExport",
 }
 
 
@@ -267,7 +282,8 @@ class EventCardRedesign(Card):
         right.setSpacing(6)
         right.setAlignment(Qt.AlignmentFlag.AlignRight)
         status_chip = (
-            chip_closed("Closed") if self._data.is_closed else chip_open("Open")
+            chip_closed("✓ Closed") if self._data.is_closed
+            else chip_open("● Open")
         )
         status_chip.setCursor(Qt.CursorShape.PointingHandCursor)
         status_chip.mousePressEvent = (
@@ -337,15 +353,20 @@ class EventCardRedesign(Card):
             label.setFixedWidth(52)
             row.addWidget(label)
             bar = StageProgress()
-            percent, state = _stage_value(
+            percent, _state = _stage_value(
                 self._data.status_by_phase.get(phase, {})
                 if self._data.status_by_phase else None
             )
             bar.setValue(percent)
-            bar.setState(state)
+            # Bars encode PHASE (fixed colour), length encodes progress — no
+            # done/in-progress state (spec/66: phases advance freely).
+            bar.setColorToken(_PHASE_COLOR_TOKEN[phase])
             row.addWidget(bar, 1)
             pct_label = QLabel(f"{percent}%")
-            pct_label.setObjectName("Faint")
+            # Percentage in the phase colour when there's progress, faint at 0%.
+            pct_label.setObjectName(
+                _PHASE_PCT_ROLE[phase] if percent > 0 else "PctZero"
+            )
             pct_label.setMinimumWidth(40)
             pct_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -391,13 +412,15 @@ class EventCardRedesign(Card):
         picked = d.picked_count or 0
         edited = d.edited_count or 0
         exported = d.exported_count or 0
+        # Stat-tile value colors per the mockup: Collected blue · Picked
+        # accent · Edited amber · Exported green.
         rows = [
             ("Collected", str(collected), "#5b8def", None),
-            ("Picked", str(picked), "#34d399",
+            ("Picked", str(picked), "#7c6cff",
              f"· {int(picked / collected * 100)}%" if collected else None),
             ("Edited", str(edited), "#fbbf24",
              f"· {int(edited / picked * 100)}%" if picked else None),
-            ("Exported", str(exported), "#7c6cff",
+            ("Exported", str(exported), "#34d399",
              f"· {int(exported / picked * 100)}%" if picked else None),
         ]
         for col, (label, value, color, suffix) in enumerate(rows):

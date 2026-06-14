@@ -56,6 +56,7 @@ from mira.event_classification import (
     PHASE_PICK,
     PHASE_SHARE,
 )
+from mira.ui.pages.days_grid_page import DaysGridPage
 from mira.ui.pages.days_lists_page import DaySnapshot, DaysListsPage
 from mira.ui.pages.events_page import EventsPage
 from mira.ui.pages.phases_page import PhasesPage
@@ -87,6 +88,10 @@ class MainWindow(QMainWindow):
     _ACTIVITY_PAGE_KEY = "__activity_dashboard__"
     # spec/65 §3.5 — Days Lists sits between Phases (03) and Pick (07).
     _DAYS_LISTS_PAGE_KEY = "__days_lists__"
+    # spec/70 Phase 3 — Days Grid (Surface 06) sits between Days Lists
+    # (05) and the legacy Pick surface. The redesigned DaysGridPage
+    # absorbs the gateway/engine wiring the legacy DayGridView carried.
+    _DAYS_GRID_PAGE_KEY = "__days_grid__"
     _SELECT_PAGE_KEY = "__select__"
     _PROCESS_PAGE_KEY = "__process__"
     # spec/66 §1.1 — the Export phase is its own surface (slice 5).
@@ -163,6 +168,15 @@ class MainWindow(QMainWindow):
         self.page_stack.add_page(
             self._DAYS_LISTS_PAGE_KEY, self.days_lists_page)
 
+        # spec/70 Phase 3 — Days Grid (Surface 06). The redesigned grid
+        # absorbs the gateway/engine wiring the legacy DayGridView
+        # carried; single-item clicks bridge to the legacy PickPage
+        # photo surface until Surface 07 (Picker) lands the redesigned
+        # shell.
+        self.days_grid_page = DaysGridPage(self.gateway)
+        self.page_stack.add_page(
+            self._DAYS_GRID_PAGE_KEY, self.days_grid_page)
+
         # Slice A (2026-06-06): the per-camera Cull picker is retired. The
         # Select tile opens the unified Select surface directly.
         self.pick_page = PickPage(self.gateway)
@@ -194,6 +208,11 @@ class MainWindow(QMainWindow):
         # which door the user came in through; ``_on_curate_closed``
         # routes Back accordingly.
         self._cuts_entry_door: str = self._ACTIVITY_PAGE_KEY
+        # spec/70 Phase 3 — when the user enters the legacy PickPage
+        # via the Days Grid (Surface 06) item-click bridge, Back from
+        # the Picker returns to the Days Grid, not Phases. Cleared
+        # whenever the user lands on Days Grid via the normal route.
+        self._days_grid_bridge_active: bool = False
 
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
@@ -242,6 +261,20 @@ class MainWindow(QMainWindow):
             self._on_days_lists_day_pick_all_stub)
         self.days_lists_page.day_skip_all_requested.connect(
             self._on_days_lists_day_skip_all_stub)
+        # spec/70 Phase 3 — DaysGridPage signal wiring. Back returns to
+        # Days Lists; an item click bridges to the legacy PickPage
+        # photo surface (Surface 07 next swaps this for the redesigned
+        # Picker shell).
+        self.days_grid_page.back_requested.connect(
+            self._on_days_grid_back)
+        self.days_grid_page.item_activated.connect(
+            self._on_days_grid_item_activated)
+        self.days_grid_page.prev_day_requested.connect(
+            lambda: self._on_days_grid_step_day(-1))
+        self.days_grid_page.next_day_requested.connect(
+            lambda: self._on_days_grid_step_day(+1))
+        self.days_grid_page.new_pass_requested.connect(
+            self._on_days_lists_new_pass_stub)
         self.pick_page.closed.connect(self._on_select_closed)
         self.pick_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
@@ -1829,21 +1862,153 @@ class MainWindow(QMainWindow):
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
 
     def _on_days_lists_day_activated(self, day_number: int) -> None:
-        """Day card clicked → open PickPage and jump straight to that
-        day's grid. ``_open_day`` is the Picker's own internal handler
-        for "navigator clicked a day"; we reuse it so the navigator
-        skip is identical to the user clicking the day inside Pick."""
+        """Day card clicked → open the redesigned Days Grid (Surface 06)
+        for that day. The grid embeds the spec/32 cell engine; single-
+        item clicks bridge into the legacy Picker (Surface 07 next)."""
         if self._current_event_id is None:
             return
-        if not self.pick_page.open_event(self._current_event_id):
+        title, date_iso = self._lookup_day_meta(
+            self._current_event_id, day_number)
+        if not self.days_grid_page.open_for_day(
+            self._current_event_id, day_number,
+            title=title, date_iso=date_iso,
+        ):
+            log.warning(
+                "DaysGridPage.open_for_day(%s, %s) failed; "
+                "falling back to PickPage",
+                self._current_event_id, day_number)
+            if not self.pick_page.open_event(self._current_event_id):
+                return
+            self.page_stack.show_page(self._SELECT_PAGE_KEY)
+            try:
+                self.pick_page._open_day(day_number)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "PickPage._open_day(%s) fallback failed", day_number)
             return
-        self.page_stack.show_page(self._SELECT_PAGE_KEY)
+        self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+        self.days_grid_page.setFocus()
+
+    def _lookup_day_meta(
+        self, event_id: str, day_number: int,
+    ) -> tuple[str, str]:
+        """Day title + ISO date for the day-navigator pill on the
+        redesigned grid. Empty strings on lookup failure — the pill
+        still renders ("Day N · 0 items") so the user isn't stranded."""
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Days Grid: cannot open event %s for meta", event_id)
+            return "", ""
+        try:
+            for d in eg.trip_days():
+                if d.day_number == day_number:
+                    return (
+                        d.description or f"Day {day_number}",
+                        str(d.date) if d.date else "",
+                    )
+        except Exception:                                          # noqa: BLE001
+            log.exception("trip_days lookup failed for %s", event_id)
+        finally:
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+        return "", ""
+
+    def _on_days_grid_back(self) -> None:
+        """Back from the Days Grid returns to Days Lists. Releases the
+        page's event gateway so the next day-card click opens fresh."""
+        self.days_grid_page.close_event()
+        self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
+
+    def _on_days_grid_step_day(self, delta: int) -> None:
+        """Day navigator pill ‹ / ›. Walks to the previous/next day in
+        the event's TripDay axis. No-op at the boundaries."""
+        if self._current_event_id is None:
+            return
+        cur = self.days_grid_page.current_day_number()
+        try:
+            eg = self.gateway.open_event(self._current_event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Days Grid: cannot open event %s to step day",
+                self._current_event_id)
+            return
+        try:
+            days = sorted(
+                d.day_number for d in eg.trip_days()
+                if d.day_number is not None
+            )
+        finally:
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+        if cur not in days:
+            return
+        idx = days.index(cur) + delta
+        if idx < 0 or idx >= len(days):
+            return
+        self._on_days_lists_day_activated(days[idx])
+
+    def _on_days_grid_item_activated(self, item_id: str) -> None:
+        """Single-photo / video click on the Days Grid bridges to the
+        legacy Picker (the legacy DayGridView is opened just so the
+        photo surface can pick up the cell context — Surface 07 next
+        replaces this hop with the redesigned Picker shell).
+        """
+        event_id = self.days_grid_page.current_event_id()
+        day_number = self.days_grid_page.current_day_number()
+        if event_id is None:
+            return
+        if not self.pick_page.open_event(event_id):
+            return
+        # Mark the bridge as active so PickPage.closed returns to the
+        # Days Grid (refreshed) rather than to Phases. Cleared when the
+        # user actually lands on the Days Grid via _on_select_closed.
+        self._days_grid_bridge_active = True
+        # Run the legacy ``_open_day`` synchronously so we can find the
+        # cell index that matches ``item_id`` and call the legacy
+        # activation handler in the same turn. The "Preparing the
+        # page…" overlay is irrelevant here — the user is mid-click,
+        # not staring at a blank page.
+        was_deferred = self.pick_page._defer_open_work
+        self.pick_page._defer_open_work = False
         try:
             self.pick_page._open_day(day_number)
         except Exception:                                          # noqa: BLE001
             log.exception(
-                "PickPage._open_day(%s) failed; leaving user on navigator",
-                day_number)
+                "PickPage._open_day(%s) bridge failed", day_number)
+            self.pick_page._defer_open_work = was_deferred
+            return
+        finally:
+            self.pick_page._defer_open_work = was_deferred
+        # Find the cell whose item_id matches. The legacy engine
+        # returns the same ordered list as day_grid_cells, so the
+        # index is identical to what DaysGridPage rendered (minus
+        # cluster covers, which collapse to their members on the
+        # legacy side — but item clicks are flat items, not clusters).
+        cells = self.pick_page._current_day_cells
+        idx = next(
+            (i for i, c in enumerate(cells) if c.item_id == item_id),
+            None,
+        )
+        self.page_stack.show_page(self._SELECT_PAGE_KEY)
+        if idx is None:
+            # The clicked item didn't map onto any cell — leave the
+            # user on the legacy day grid rather than a blank surface.
+            log.warning(
+                "Days Grid bridge: no legacy cell for %s on day %s",
+                item_id, day_number)
+            return
+        try:
+            self.pick_page._on_day_cell_activated(idx)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Days Grid bridge: legacy cell activation failed for %s",
+                item_id)
 
     def _on_days_lists_new_pass_stub(self) -> None:
         """+ Start a new pass… — out of scope for the route-swap. Logs
@@ -4224,7 +4389,27 @@ class MainWindow(QMainWindow):
         box.exec()
 
     def _on_select_closed(self) -> None:
-        """Back from the Select surface → the per-event phase grid (refreshed)."""
+        """Back from the Select surface → the per-event phase grid
+        (refreshed). spec/70 Phase 3: when the bridge from the redesigned
+        Days Grid is active, return to the Days Grid instead — the user
+        entered the legacy Picker from there and expects to land back on
+        the surface they came from. The bridge flag is consumed here."""
+        if self._days_grid_bridge_active:
+            self._days_grid_bridge_active = False
+            event_id = self.days_grid_page.current_event_id()
+            day_number = self.days_grid_page.current_day_number()
+            if event_id is not None:
+                title, date_iso = self._lookup_day_meta(event_id, day_number)
+                # Re-open to pull fresh phase_state into the cells so
+                # the user sees their Pick/Skip decisions reflected on
+                # the borders right away.
+                if self.days_grid_page.open_for_day(
+                    event_id, day_number, title=title, date_iso=date_iso,
+                ):
+                    self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+                    self.days_grid_page.setFocus()
+                    return
+            # Bridge return failed — fall through to the legacy path.
         if self._current_event_id is not None:
             self.phases_page.set_event(self._current_event_id)
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)

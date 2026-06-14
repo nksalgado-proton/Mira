@@ -41,6 +41,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFrame,
@@ -58,13 +59,17 @@ from PyQt6.QtWidgets import (
 from mira import event_classification
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
+    GLYPH_CROSS,
+    GLYPH_EVENT,
     ghost_button,
     line_input,
     pill_toggle,
     primary_button,
     select,
+    tinted_svg_pixmap,
 )
 from mira.ui.i18n import tr
+from mira.ui.palette import PALETTE
 
 log = logging.getLogger(__name__)
 
@@ -86,11 +91,25 @@ _FOCUS_ICON_NAME = {
 }
 
 
+def _palette_mode() -> str:
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
+
+
 def _micro(text: str, *, required: bool = False) -> QLabel:
     """Uppercase micro label above a form control, with optional accent
-    asterisk when the field is required."""
+    asterisk when the field is required. The asterisk is intentionally
+    larger and bolder than the surrounding caps so the required-field
+    signal actually carries (spec/65 §3.2 — the prior small-* read as
+    decorative)."""
+    p = PALETTE[_palette_mode()]
+    accent = p["accent"]
     if required:
-        lbl = QLabel(f"{text.upper()} <span style='color:#7c6cff'>*</span>")
+        lbl = QLabel(
+            f"{text.upper()}"
+            f"<span style='color:{accent}; font-size: 14px;"
+            f" font-weight: 800; vertical-align: -1px;'>&nbsp;*</span>"
+        )
         lbl.setTextFormat(Qt.TextFormat.RichText)
     else:
         lbl = QLabel(text.upper())
@@ -98,17 +117,51 @@ def _micro(text: str, *, required: bool = False) -> QLabel:
     return lbl
 
 
-def _section_header(text: str) -> QLabel:
-    """Section divider header: small uppercase accent label sitting above
-    a group of related form fields. Three sections in this dialog:
-    IDENTITY · LOGISTICS · TAGS."""
-    lbl = QLabel(text.upper())
-    lbl.setObjectName("SectionHeader")
-    lbl.setStyleSheet(
-        "color: #7c6cff; font-size: 10px; font-weight: 800;"
-        " letter-spacing: 1.5px; padding-top: 6px;"
-    )
-    return lbl
+class _SectionHeader(QWidget):
+    """Section divider — small uppercase accent label + a thin accent
+    underline rule + a touch of breathing room above.
+
+    Spec/65 §3.2: the bare-label section dividers read as decoration;
+    the rule beneath each one is what turns them into a real visual
+    cleft. The accent fades out across the row so the rule reads as a
+    soft underline, not a hard divider — matches the design-system's
+    quieter group rules.
+    """
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 14, 0, 4)
+        v.setSpacing(6)
+        p = PALETTE[_palette_mode()]
+        lbl = QLabel(text.upper())
+        lbl.setObjectName("SectionHeader")
+        lbl.setStyleSheet(
+            f"color: {p['accent']}; font-size: 10px; font-weight: 800;"
+            " letter-spacing: 1.5px;"
+        )
+        v.addWidget(lbl)
+        rule = QFrame()
+        rule.setFixedHeight(1)
+        rule.setStyleSheet(
+            "background: qlineargradient("
+            f"x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 {_with_alpha(p['accent'], 90)},"
+            f" stop:0.6 {_with_alpha(p['accent'], 28)},"
+            f" stop:1 {_with_alpha(p['line'], 0)});"
+            " border: none;"
+        )
+        v.addWidget(rule)
+
+
+def _with_alpha(hex_color: str, alpha255: int) -> str:
+    c = QColor(hex_color)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{alpha255 / 255:.3f})"
+
+
+def _section_header(text: str) -> QWidget:
+    """Back-compat wrapper so the body builder stays declarative."""
+    return _SectionHeader(text)
 
 
 def _tinted_svg_icon(icon_stem: str, color_hex: str, size: int = 18) -> QIcon:
@@ -190,22 +243,32 @@ class EventHeaderDialog(QDialog):
         d = QFrame()
         d.setFrameShape(QFrame.Shape.HLine)
         d.setObjectName("DialogDivider")
-        d.setStyleSheet("background: #262b38; max-height: 1px; min-height: 1px;")
+        line = PALETTE[_palette_mode()]["line"]
+        d.setStyleSheet(
+            f"background: {line}; max-height: 1px; min-height: 1px;"
+        )
         return d
 
     def _build_header_bar(self) -> QWidget:
         host = QWidget()
         h = QHBoxLayout(host)
-        h.setContentsMargins(18, 12, 12, 12)
+        h.setContentsMargins(18, 14, 14, 14)
         h.setSpacing(12)
-        # Accent icon tile
-        tile = QLabel("✎")
-        tile.setFixedSize(36, 36)
+        p = PALETTE[_palette_mode()]
+        # Accent icon tile — the mockup uses a calendar/event SVG (rect +
+        # day-divider + tear-off tab), NOT the Unicode pencil the migration
+        # used. The tile reads colour tokens from the live palette so the
+        # light theme picks up accent_soft = #eceaff instead of dark's
+        # #211f3a (the prior inline hex broke the tile in light mode).
+        tile = QLabel()
+        tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tile.setStyleSheet(
-            "background: #211f3a; color: #7c6cff;"
-            " border: 1px solid #7c6cff; border-radius: 10px;"
-            " font-size: 16px; font-weight: 700;"
+            f"background: {p['accent_soft']}; color: {p['accent']};"
+            " border: none; border-radius: 9px;"
+        )
+        tile.setPixmap(
+            tinted_svg_pixmap(GLYPH_EVENT, 18, QColor(p["accent"]))
         )
         h.addWidget(tile)
 
@@ -223,21 +286,28 @@ class EventHeaderDialog(QDialog):
         h.addLayout(text_col)
         h.addStretch()
 
-        close = QPushButton("✕")
+        # Close X — mockup uses a 30x30 rounded-square (9px radius). The
+        # glyph is the line-icon family's cross.svg (spec/65 §2.1 — no
+        # Unicode `✕` placeholders); rendered via QIcon so the X tints
+        # correctly per theme and never falls back to a glyph the font
+        # can't render.
+        close = QPushButton()
         close.setObjectName("DialogClose")
         close.setFixedSize(30, 30)
+        close.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_CROSS, 14, QColor(p["ink_soft"]))
+        ))
+        close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setToolTip(tr("Cancel and close"))
-        # Inline because this is the only place this exact circular close
-        # affordance occurs; promoting it to a design-system role would
-        # widen the catalog unnecessarily.
         close.setStyleSheet(
             "QPushButton#DialogClose {"
-            " background: transparent; color: #8b94a7;"
-            " border: 1px solid #262b38; border-radius: 15px;"
-            " font-size: 14px; font-weight: 700;"
+            f" background: transparent;"
+            f" border: 1px solid {p['line']}; border-radius: 9px;"
             "}"
-            "QPushButton#DialogClose:hover { color: #eef1f7; border-color: #7c6cff; }"
+            "QPushButton#DialogClose:hover {"
+            f" border-color: {p['accent']};"
+            "}"
         )
         close.clicked.connect(self.reject)
         h.addWidget(close)

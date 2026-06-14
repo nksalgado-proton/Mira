@@ -56,6 +56,26 @@ QPlainTextEdit#DesignText:focus,
 QTextEdit#DesignText:focus {
     border: 1px solid {accent}; }
 QComboBox#DesignSelect::drop-down { border: none; width: 22px; }
+/* Editable QComboBox routes its display through an inner QLineEdit; without
+   this rule the line-edit reads its own padding/background and the Subtype
+   field drifts visibly from the Type field next to it (spec/65 §3.2). */
+QComboBox#DesignSelect QLineEdit {
+    background: transparent; color: {ink}; border: none;
+    padding: 0; margin: 0; selection-background-color: {accent_soft}; }
+/* Dropdown popup — the items the user sees when the combo opens. The Qt
+   default reads as Windows-native chrome (white box, blue selection).
+   Mockup wants design-system: card surface, soft accent hover, generous
+   item padding. Applies to every QComboBox#DesignSelect across the app. */
+QComboBox#DesignSelect QAbstractItemView {
+    background: {card}; color: {ink};
+    border: 1px solid {line}; border-radius: {radius_md}px;
+    padding: 4px; outline: none; }
+QComboBox#DesignSelect QAbstractItemView::item {
+    background: transparent; color: {ink};
+    padding: 8px 12px; border-radius: {radius_sm}px; }
+QComboBox#DesignSelect QAbstractItemView::item:hover,
+QComboBox#DesignSelect QAbstractItemView::item:selected {
+    background: {accent_soft}; color: {accent}; }
 
 /* ---- Chips / tags / pill toggles ---- */
 QLabel#Tag         { background: {accent_soft}; color: {accent}; border-radius: {radius_sm}px;

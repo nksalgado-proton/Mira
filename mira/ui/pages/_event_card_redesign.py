@@ -377,6 +377,19 @@ class EventCardRedesign(Card):
         date_wrap.setLayout(date_box)
         date_wrap.setMinimumWidth(120)
         date_wrap.setMaximumWidth(150)
+        # Restore the legacy left-zone link to the Days Table dialog —
+        # the legacy EventCard treated the dates column as its
+        # "Plan / Days Table" door (mira/ui/base/event_card.py:706
+        # "Left zone — dates + TZ → emits info_clicked. Opens the plan
+        # editor"). The redesign kept the same door on the top-right
+        # "N days" chip but lost the left-zone affordance; restoring it
+        # here so users who internalised the legacy gesture still land
+        # on the right place. Same plan_requested signal as the chip.
+        date_wrap.setCursor(Qt.CursorShape.PointingHandCursor)
+        date_wrap.setToolTip("Open the event's Days Table")
+        date_wrap.mousePressEvent = (
+            lambda _evt: self.plan_requested.emit(self._data.event_id)
+        )
         body.addWidget(date_wrap, 0)
 
         # Vertical line separator between dates and pipeline. Mockup uses
@@ -440,9 +453,14 @@ class EventCardRedesign(Card):
 
     @staticmethod
     def _palette_color(token: str) -> str:
+        return PALETTE[
+            EventCardRedesign._palette_mode_str()
+        ].get(token, "#7c6cff")
+
+    @staticmethod
+    def _palette_mode_str() -> str:
         app = QApplication.instance()
-        mode = (app.property("theme") if app else None) or "dark"
-        return PALETTE[mode].get(token, "#7c6cff")
+        return (app.property("theme") if app else None) or "dark"
 
     # ── closed body ─────────────────────────────────────────────────────
 
@@ -473,15 +491,18 @@ class EventCardRedesign(Card):
         picked = d.picked_count or 0
         edited = d.edited_count or 0
         exported = d.exported_count or 0
-        # Stat-tile value colors per the mockup: Collected blue · Picked
-        # accent · Edited amber · Exported green.
+        # Stat-tile value colours — phase identity (spec/66): Collected
+        # blue · Picked accent · Edited amber · Exported green. Read
+        # from the live palette so the Collect cyan stays in sync with
+        # the open card's pipeline bar.
+        p = PALETTE[self._palette_mode_str()]
         rows = [
-            ("Collected", str(collected), "#5b8def", None),
-            ("Picked", str(picked), "#7c6cff",
+            ("Collected", str(collected), p["blue"], None),
+            ("Picked", str(picked), p["accent"],
              f"· {int(picked / collected * 100)}%" if collected else None),
-            ("Edited", str(edited), "#fbbf24",
+            ("Edited", str(edited), p["amber"],
              f"· {int(edited / picked * 100)}%" if picked else None),
-            ("Exported", str(exported), "#34d399",
+            ("Exported", str(exported), p["green"],
              f"· {int(exported / picked * 100)}%" if picked else None),
         ]
         for col, (label, value, color, suffix) in enumerate(rows):

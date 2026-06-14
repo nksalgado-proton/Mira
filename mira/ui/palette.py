@@ -33,7 +33,14 @@ PALETTE: dict[str, dict[str, str]] = {
         "ink": "#eef1f7", "ink_soft": "#8b94a7", "ink_faint": "#5a6173",
         "line": "#262b38", "accent": "#7c6cff", "accent_soft": "#211f3a",
         "green": "#34d399", "amber": "#fbbf24", "red": "#ef4444",
-        "pink": "#ff5da2", "blue": "#5b8def", "track": "#222734",
+        # `blue` carries the Collect phase identity (events-card pipeline
+        # bar + closed-card stat tile + Phases hero chip). Bumped to a
+        # cyan-leaning blue (~60° hue separation from `accent`) — the
+        # prior #5b8def sat right next to the accent purple #7c6cff and
+        # the two read as the same hue at the bar widths the event cards
+        # use. The cyan also reads cleanly as "intake/input" alongside
+        # Pick=accent / Edit=amber / Export=green.
+        "pink": "#ff5da2", "blue": "#22d3ee", "track": "#222734",
         # top-corner glow for the app background radial (mockup --bg-grad)
         "bg_glow": "#1a1f2e",
         # photo-state borders — FIXED, never re-map (design-system §5a)
@@ -46,7 +53,10 @@ PALETTE: dict[str, dict[str, str]] = {
         "ink": "#1a1f2b", "ink_soft": "#5e6679", "ink_faint": "#9aa1b1",
         "line": "#e6e9f0", "accent": "#6a5cff", "accent_soft": "#eceaff",
         "green": "#16a34a", "amber": "#d97706", "red": "#dc2626",
-        "pink": "#e0468a", "blue": "#3b82f6", "track": "#eceef4",
+        # Light-theme companion to dark's #22d3ee — darker so the
+        # Collect tokens (bar / stat tile / chip) stay legible on the
+        # white card2 background.
+        "pink": "#e0468a", "blue": "#0891b2", "track": "#eceef4",
         "bg_glow": "#ffffff",
         "picked": "#16a34a", "skipped": "#dc2626", "compare": "#ea7317",
         "mixed": "#d4a017",

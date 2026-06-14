@@ -66,9 +66,19 @@ CAPTURED_SUBDIRS: tuple[str, ...] = (
 # card-derived subtrees beside it stay untouchable.
 MERGED_SUBDIR_NAME = "Merged"
 
-# Edit's export target. External editors (LRC-class) return their
-# work into a subdir here (spec/57 §3.1).
+# Edit candidates — external editors (LRC-class) return their work
+# into a subdir here (spec/57 §3.1). spec/66 §1.2 (2026-06-14) made
+# this the **inbox** for third-party returns; the shipped set lives
+# in `Exported Media/` below.
 EDITED_MEDIA_DIR_NAME = "Edited Media"
+
+# spec/66 §1.2 — the SHIPPED set. The Export phase materialises
+# green-selected finals here (Mira-rendered in-place; third-party
+# returns hardlinked from Edited Media/). The folder is exactly the
+# `#exported` Cut universe (spec/61 §1.1) and the PTE hand-off folder.
+# Lineage rows produced by the Export run carry `export_relpath` under
+# this tier; Edited-Media-only relpaths denote mere edit candidates.
+EXPORTED_MEDIA_DIR_NAME = "Exported Media"
 
 # The DERIVED links projection of Pick state — the external tools'
 # doorway (spec/57 §2): flat root of day+camera-prefixed links plus
@@ -234,9 +244,19 @@ def merged_dir(event_root: Path) -> Path:
 
 
 def edited_media_dir(event_root: Path) -> Path:
-    """``Edited Media/`` — Edit's export target; external editors
-    return into a subdir here."""
+    """``Edited Media/`` — the third-party-return inbox / edit
+    candidates tier (spec/57 §3.1, spec/66 §1.2). Mira's own
+    development is non-destructive params in the DB; this tier carries
+    only externally-edited returns (LRC / Helicon / stacker outputs)."""
     return event_root / EDITED_MEDIA_DIR_NAME
+
+
+def exported_media_dir(event_root: Path) -> Path:
+    """``Exported Media/`` — the shipped set (spec/66 §1.2). Holds
+    exactly the green selections from the Export phase: Mira-rendered
+    finals + hardlinks to third-party returns. Equivalent to the
+    ``#exported`` Cut universe and the PTE hand-off folder."""
+    return event_root / EXPORTED_MEDIA_DIR_NAME
 
 
 def picked_media_dir(event_root: Path) -> Path:
@@ -373,17 +393,19 @@ def extracted_dir(event_root: Path, day: TripDay) -> Path:
 
 
 def ensure_event_tree(event_root: Path) -> None:
-    """Idempotently create the spec/57 event skeleton under an existing
-    ``event_root``: ``Original Media/{_cameras,_phones,_other}`` +
-    ``Edited Media`` + ``Cuts``. The single tree-birthing helper — every
-    creation/restore path calls this so an event always reads the same
-    in Explorer. ``Picked Media`` (built on entering Edit) and
-    ``Original Media/Merged`` (first stack adoption) stay lazy."""
+    """Idempotently create the spec/57 + spec/66 event skeleton under an
+    existing ``event_root``: ``Original Media/{_cameras,_phones,_other}``
+    + ``Edited Media`` + ``Exported Media`` + ``Cuts``. The single
+    tree-birthing helper — every creation/restore path calls this so an
+    event always reads the same in Explorer. ``Picked Media`` (built on
+    entering Edit) and ``Original Media/Merged`` (first stack adoption)
+    stay lazy."""
     original = original_media_dir(event_root)
     original.mkdir(parents=True, exist_ok=True)
     for sub in CAPTURED_SUBDIRS:
         (original / sub).mkdir(exist_ok=True)
     edited_media_dir(event_root).mkdir(exist_ok=True)
+    exported_media_dir(event_root).mkdir(exist_ok=True)
     cuts_dir(event_root).mkdir(exist_ok=True)
 
 
@@ -399,6 +421,7 @@ RESERVED_DIR_NAMES = frozenset({
     ORIGINAL_MEDIA_DIR_NAME,
     PICKED_MEDIA_DIR_NAME,
     EDITED_MEDIA_DIR_NAME,
+    EXPORTED_MEDIA_DIR_NAME,
     CUTS_DIR_NAME,
     MERGED_SUBDIR_NAME,
     "00 - Captured",

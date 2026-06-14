@@ -326,6 +326,19 @@ class EventGateway:
         ).fetchone()
         return int(row["n"] or 0)
 
+    def phase_decided_count(self, phase: str) -> int:
+        """Number of items the user has *decided* at ``phase`` — any explicit
+        state (picked / skipped / compare), visibility-filtered. This is the
+        review-completeness numerator (spec/66: Pick% = decided / captured),
+        distinct from :meth:`phase_picked_count` which counts only keepers."""
+        row = self.store.conn.execute(
+            "SELECT COUNT(*) AS n FROM phase_state ps "
+            "JOIN visible_item v ON v.id = ps.item_id "
+            "WHERE ps.phase = ?",
+            (phase,),
+        ).fetchone()
+        return int(row["n"] or 0)
+
     def phase_day_progress(self) -> Dict[str, Dict[Optional[int], Dict[str, int]]]:
         """Per-phase, per-day decided/total/committed/kept counts for the events-list
         card's phase × day heatmap — two ``GROUP BY``s (no Python loops over every row).
@@ -684,11 +697,16 @@ class EventGateway:
         return self.store.all(m.Adjustment)
 
     def exported_item_ids(self) -> set:
-        """Item ids with at least one **edit-phase lineage row** — the
-        Exported-watermark driver (spec/59 §8): "an exported or
-        externally-associated version of this photo exists." All four
-        writers record it (as-you-go export, batch export, the return
-        scan's third-party associations, the from-Edited backfill).
+        """Item ids with at least one **SHIPPED** lineage row — items
+        that made it through the spec/66 §1.1 Export phase (the Export
+        surface's green set materialised under ``Exported Media/``).
+
+        The Exported-watermark (spec/59 §8) follows this set: only items
+        that shipped wear the badge. Third-party returns sitting in
+        ``Edited Media/`` are mere **edit candidates** until the user
+        picks them green and the Export run materialises (hardlinks)
+        them into ``Exported Media/`` — at which point a new lineage
+        row appears here and the watermark lights up.
 
         Deliberately NOT ``Adjustment.edit_exported`` — that flag is
         freshness (reset on every adjustment change) and keeps its chip.
@@ -696,9 +714,42 @@ class EventGateway:
         the watermark is per-photo (spec/59 §8)."""
         rows = self.store.conn.execute(
             "SELECT DISTINCT source_item_id FROM lineage "
-            "WHERE phase = 'edit' AND source_item_id IS NOT NULL"
+            "WHERE phase = 'edit' AND source_item_id IS NOT NULL "
+            "AND export_relpath LIKE 'Exported Media/%'"
         ).fetchall()
         return {r["source_item_id"] for r in rows}
+
+    def edit_candidate_item_ids(self) -> set:
+        """Item ids that have a third-party return sitting under
+        ``Edited Media/`` (spec/57 §3 — LRC / Helicon outputs the
+        scanner adopted) but **have not been shipped yet**.
+
+        These are the "edit candidates": Mira holds a rendered version
+        of them, but the user hasn't picked them green in the Export
+        phase. They're the input to the spec/66 §1.2 hardlink path —
+        the Export run, on shipping a candidate, hardlinks its file from
+        ``Edited Media/`` into ``Exported Media/`` instead of
+        re-rendering (which would re-process an already-finished file)."""
+        rows = self.store.conn.execute(
+            "SELECT DISTINCT source_item_id FROM lineage "
+            "WHERE phase = 'edit' AND source_item_id IS NOT NULL "
+            "AND export_relpath LIKE 'Edited Media/%'"
+        ).fetchall()
+        return {r["source_item_id"] for r in rows}
+
+    def edit_candidate_relpath(self, item_id: str) -> Optional[str]:
+        """The newest ``Edited Media/`` relpath for an item, or
+        ``None`` if no third-party return exists. The Export surface
+        uses this to decide whether to hardlink (return exists) or
+        render (no return) for a given green cell."""
+        row = self.store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE phase = 'edit' AND source_item_id = ? "
+            "AND export_relpath LIKE 'Edited Media/%' "
+            "ORDER BY exported_at DESC LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        return row["export_relpath"] if row else None
 
     # ----- share / cuts queries (spec/61) ---------------------------------- #
     # Membership is FILE-based: cut_member rows reference lineage (exported
@@ -722,14 +773,18 @@ class EventGateway:
 
     def exported_files(self) -> List[m.Lineage]:
         """#exported — the built-in live-query Cut (spec/61 §1.1): every
-        edit-phase final in chronological show order. Never stored, never
-        stale; computed from lineage on demand. Item-sourced rows read
-        through ``visible_item`` (hidden day ⇒ its files leave the universe);
-        bracket-sourced rows pass (their day rides the merged output item)."""
+        **shipped** lineage row in chronological show order. spec/66
+        §1.2: only rows under ``Exported Media/`` count — third-party
+        returns sitting in ``Edited Media/`` are inbox candidates, not
+        the ship set. Never stored, never stale; computed from lineage
+        on demand. Item-sourced rows read through ``visible_item`` (a
+        hidden day's files drop out of the universe); bracket-sourced
+        rows pass (their day rides the merged output item)."""
         sql = (
             "SELECT l.* FROM lineage l "
             + self._CUT_SOURCE_JOIN +
             "WHERE l.phase = 'edit' "
+            "AND l.export_relpath LIKE 'Exported Media/%' "
             "AND (l.source_kind = 'bracket' OR si.id IS NOT NULL) "
             + self._CUT_SHOW_ORDER
         )

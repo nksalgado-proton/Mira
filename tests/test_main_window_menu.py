@@ -247,14 +247,40 @@ def test_collect_edit_event_and_edit_plan_are_separate_actions(main_window):
     assert edit_event is not edit_plan
 
 
-def test_share_menu_per_event_has_open_phase_and_audio(main_window):
+def test_share_menu_hidden_when_event_open(main_window):
+    """spec/66 §4 — Share is a closed-event STATE (Cuts assembly on
+    closed events). When the open event is still active, the Share
+    menu items hide; the empty-children rule then hides the whole
+    top-level."""
     main_window._current_event_id = "fake-evt-id"
     with patch.object(MainWindow, "_event_is_closed_now", return_value=False):
         main_window._refresh_menu_state()
         labels = _action_labels("share", main_window)
-    assert "Open Share phase" in labels
+    assert "Open Cuts" not in labels
+    assert "New Cut…" not in labels
+    assert "Audio…" not in labels
+
+
+def test_share_menu_visible_on_closed_event(main_window):
+    """spec/66 §4 — closed events unlock the Share menu so the user can
+    assemble Cuts from the shipped finals."""
+    main_window._current_event_id = "fake-evt-id"
+    with patch.object(MainWindow, "_event_is_closed_now", return_value=True):
+        main_window._refresh_menu_state()
+        labels = _action_labels("share", main_window)
+    assert "Open Cuts" in labels
     assert "New Cut…" in labels
     assert "Audio…" in labels
+
+
+def test_export_menu_visible_per_event(main_window):
+    """spec/66 §1.1 — Export is its own phase. The menu's keyboard door
+    appears whenever an event is open."""
+    main_window._current_event_id = "fake-evt-id"
+    with patch.object(MainWindow, "_event_is_closed_now", return_value=False):
+        main_window._refresh_menu_state()
+        labels = _action_labels("export", main_window)
+    assert "Open Export phase" in labels
 
 
 # ─── F-024 closed-event filter ──────────────────────────────────────────────

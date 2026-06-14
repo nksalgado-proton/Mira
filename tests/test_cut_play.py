@@ -30,7 +30,7 @@ def gw(tmp_path):
     counter = itertools.count(1)
     g = EventGateway(store, event_root=tmp_path, now=_now,
                      new_id=lambda: f"id-{next(counter)}")
-    g.set_cut_members("cut-s", ["Edited Media/e1.jpg", "Edited Media/e3a.jpg"])
+    g.set_cut_members("cut-s", ["Exported Media/e1.jpg", "Exported Media/e3a.jpg"])
     yield g
     g.close()
 
@@ -50,8 +50,8 @@ def test_show_entries_is_the_wysiwyg_sequence(gw):
     entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
     assert [(k, getattr(p, "export_relpath", p)) for k, p in entries] == [
         ("opener", None),
-        ("sep", 1), ("file", "Edited Media/e1.jpg"),
-        ("sep", 2), ("file", "Edited Media/e3a.jpg")]
+        ("sep", 1), ("file", "Exported Media/e1.jpg"),
+        ("sep", 2), ("file", "Exported Media/e3a.jpg")]
     bare = show_entries(gw, gw.cut("cut-s"), separators_on=False)
     assert [k for k, _ in bare] == ["file", "file"]
 

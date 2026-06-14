@@ -88,6 +88,9 @@ _PHASE_DISPLAY_LABELS: dict[str, str] = {
     "collect": "Collect",
     "pick":    "Pick",
     "edit":    "Edit",
+    "export":  "Export",
+    # spec/66: "share" survives only as the closed-event Cuts state; if
+    # a legacy caller still iterates past it, label it for parity.
     "share":   "Share",
 }
 

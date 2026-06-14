@@ -90,14 +90,14 @@ def test_render_separator_image_shape(qapp):
 
 def test_entries_interleave_opener_and_separators(qapp, gw, tmp_path):
     page = _detail(gw, members=[
-        "Edited Media/e1.jpg",                       # day 1
-        "Edited Media/e3a.jpg", "Edited Media/v1.mp4",   # day 2
+        "Exported Media/e1.jpg",                       # day 1
+        "Exported Media/e3a.jpg", "Exported Media/v1.mp4",   # day 2
     ])
     kinds = [k for k, _ in page._entries]
     ids = [c.item_id for c in page._cells]
     assert kinds == ["opener", "sep", "file", "sep", "file", "file"]
     assert ids[0] == "opener" and ids[1] == "sep:1" and ids[3] == "sep:2"
-    assert ids[2] == "Edited Media/e1.jpg"
+    assert ids[2] == "Exported Media/e1.jpg"
     # nothing is being decided here — every ring is neutral
     assert all(c.color is CellColor.UNTOUCHED for c in page._cells)
     # the opener + separator tiles carry their rendered cards already
@@ -108,7 +108,7 @@ def test_entries_interleave_opener_and_separators(qapp, gw, tmp_path):
 
 def test_separators_off_means_files_only(qapp, gw, tmp_path):
     page = _detail(gw, members=[
-        "Edited Media/e1.jpg", "Edited Media/e3a.jpg"], separators_on=False)
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg"], separators_on=False)
     assert [k for k, _ in page._entries] == ["file", "file"]
 
 
@@ -117,7 +117,7 @@ def test_single_view_opens_cards_and_steps_in_show_order(qapp, gw, tmp_path):
     any slide, and stepping walks the SHOW order — cards included
     (arrows live in the embedded viewport since spec/63 slice 2)."""
     page = _detail(gw, members=[
-        "Edited Media/e1.jpg", "Edited Media/e3a.jpg"])
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg"])
     vp = page._single._viewport
     # entries: opener, sep:1, e1, sep:2, e3a
     page._open_single(0)                             # the opener card
@@ -128,13 +128,13 @@ def test_single_view_opens_cards_and_steps_in_show_order(qapp, gw, tmp_path):
     assert "Day 1" in page._single._title.text()
     vp._go(+1)
     assert (page._single.current_file().export_relpath
-            == "Edited Media/e1.jpg")
+            == "Exported Media/e1.jpg")
     vp._go(+1)                                       # the day-2 card
     assert "Day 2" in page._single._title.text()
     assert page._single.current_file() is None       # cards aren't files
     vp._go(+1)
     assert (page._single.current_file().export_relpath
-            == "Edited Media/e3a.jpg")
+            == "Exported Media/e3a.jpg")
     vp._go(-1)
     assert "Day 2" in page._single._title.text()
 
@@ -149,7 +149,7 @@ def test_play_button_visible_on_the_detail_grid(qapp, gw, tmp_path):
 
 
 def test_adjust_emits_cut_id(qapp, gw, tmp_path):
-    page = _detail(gw, members=["Edited Media/e1.jpg"])
+    page = _detail(gw, members=["Exported Media/e1.jpg"])
     got = []
     page.adjust_requested.connect(got.append)
     page.adjust_requested.emit(page._cut_id)

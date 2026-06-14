@@ -147,7 +147,7 @@ def test_session_flow_commits_and_returns_to_list(qapp, gw, tmp_path):
     session = CutSession.from_draft(gw, _draft())
     shell._start_session(session)
     assert shell._stack.currentWidget() is shell._session_page
-    shell._session_page._session.set_state("Edited Media/e2.jpg", True)
+    shell._session_page._session.set_state("Exported Media/e2.jpg", True)
     shell._session_page._on_create()
     assert shell._session_page is None
     assert shell._stack.currentWidget() is shell.list_page
@@ -175,7 +175,7 @@ def test_adjust_goes_dialog_first_then_session(qapp, gw, tmp_path):
     assert seen["existing"] == []
     page = shell._session_page
     assert page is not None and page._session.cut_id == "cut-s"
-    assert page._session.is_picked("Edited Media/e1.jpg")
+    assert page._session.is_picked("Exported Media/e1.jpg")
     assert page._session.target_s == 240            # the dialog's new value
     page._on_cancel()                               # no decisions → no confirm
     assert shell._session_page is None

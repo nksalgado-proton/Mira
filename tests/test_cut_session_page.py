@@ -54,7 +54,7 @@ def test_start_lands_on_the_first_day_grid(qapp, gw, tmp_path):
     the first day's grid opens immediately; days panel is one Back away."""
     page = _page(gw, tmp_path)
     assert page._stack.currentIndex() == 1
-    assert page._cells and page._cells[0].item_id == "Edited Media/e2.jpg"
+    assert page._cells and page._cells[0].item_id == "Exported Media/e2.jpg"
     page._back_to_days()
     assert page._stack.currentIndex() == 0
 
@@ -69,7 +69,7 @@ def test_open_day_builds_file_cells_with_session_colors(qapp, gw, tmp_path):
     page._open_day(1)                           # day 2: e3a, e3b, v1
     assert page._stack.currentIndex() == 1
     assert [c.item_id for c in page._cells] == [
-        "Edited Media/e3a.jpg", "Edited Media/e3b.jpg", "Edited Media/v1.mp4"]
+        "Exported Media/e3a.jpg", "Exported Media/e3b.jpg", "Exported Media/v1.mp4"]
     assert all(c.color is CellColor.DISCARDED for c in page._cells)
     assert page._cells[2].item_kind == "video"
     assert "Day 2" in page._grid.header_text()
@@ -80,7 +80,7 @@ def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):
     page._open_day(1)
     assert "0 picked" in page._budget._label.text()
     page._toggle_cell(0)                        # e3a → picked
-    assert page._session.is_picked("Edited Media/e3a.jpg")
+    assert page._session.is_picked("Exported Media/e3a.jpg")
     assert page._cells[0].color is CellColor.KEPT
     assert "1 picked" in page._budget._label.text()
     # (1 photo + 1 separator) × 6 s = 12 s of the 40 s target → green
@@ -115,17 +115,17 @@ def test_single_view_set_state_and_step(qapp, gw, tmp_path):
     assert "not in the Cut" in page._single._state.text()
     assert page._single._frame.property("status") == "skipped"
     # P = pick (SET, not toggle — the Picker's grammar); twice stays picked
-    page._set_relpath_state("Edited Media/e3a.jpg", True)
-    page._set_relpath_state("Edited Media/e3a.jpg", True)
+    page._set_relpath_state("Exported Media/e3a.jpg", True)
+    page._set_relpath_state("Exported Media/e3a.jpg", True)
     assert "✓ in the Cut" in page._single._state.text()
     assert page._single._frame.property("status") == "picked"
-    assert page._session.is_picked("Edited Media/e3a.jpg")
-    page._set_relpath_state("Edited Media/e3a.jpg", False)
+    assert page._session.is_picked("Exported Media/e3a.jpg")
+    page._set_relpath_state("Exported Media/e3a.jpg", False)
     assert page._single._frame.property("status") == "skipped"
     page._single._viewport._go(+1)              # arrows live in the viewport
-    assert page._single.current_file().export_relpath == "Edited Media/e3b.jpg"
+    assert page._single.current_file().export_relpath == "Exported Media/e3b.jpg"
     page._single._viewport._go(+5)              # past the edge → stays
-    assert page._single.current_file().export_relpath == "Edited Media/e3b.jpg"
+    assert page._single.current_file().export_relpath == "Exported Media/e3b.jpg"
 
 
 def test_single_view_keys_speak_the_locked_map(qapp, gw, tmp_path):
@@ -139,17 +139,17 @@ def test_single_view_keys_speak_the_locked_map(qapp, gw, tmp_path):
     page._open_single(0)
     vp = page._single._viewport
     QTest.keyClick(vp, Qt.Key.Key_P)
-    assert page._session.is_picked("Edited Media/e3a.jpg")
+    assert page._session.is_picked("Exported Media/e3a.jpg")
     assert page._single._frame.property("status") == "picked"
     QTest.keyClick(vp, Qt.Key.Key_X)
-    assert not page._session.is_picked("Edited Media/e3a.jpg")
+    assert not page._session.is_picked("Exported Media/e3a.jpg")
     assert page._single._frame.property("status") == "skipped"
     QTest.keyClick(vp, Qt.Key.Key_Space)        # toggle → picked
-    assert page._session.is_picked("Edited Media/e3a.jpg")
+    assert page._session.is_picked("Exported Media/e3a.jpg")
     QTest.keyClick(vp, Qt.Key.Key_C)            # cycle ≡ toggle here
-    assert not page._session.is_picked("Edited Media/e3a.jpg")
+    assert not page._session.is_picked("Exported Media/e3a.jpg")
     QTest.keyClick(vp, Qt.Key.Key_Right)        # step → chrome follows
-    assert page._single.current_file().export_relpath == "Edited Media/e3b.jpg"
+    assert page._single.current_file().export_relpath == "Exported Media/e3b.jpg"
     assert "e3b" in page._single._title.text()
 
 
@@ -167,9 +167,9 @@ def test_single_view_wheel_steps_like_the_picker(qapp, gw, tmp_path):
     page._open_day(1)
     page._open_single(0)
     _wheel(page._single._viewport, -120)        # wheel down = next
-    assert page._single.current_file().export_relpath == "Edited Media/e3b.jpg"
+    assert page._single.current_file().export_relpath == "Exported Media/e3b.jpg"
     _wheel(page._single._viewport, +120)        # wheel up = previous
-    assert page._single.current_file().export_relpath == "Edited Media/e3a.jpg"
+    assert page._single.current_file().export_relpath == "Exported Media/e3a.jpg"
 
 
 def test_touched_decisions_repaint_their_cells_on_back(qapp, gw, tmp_path):
@@ -179,9 +179,9 @@ def test_touched_decisions_repaint_their_cells_on_back(qapp, gw, tmp_path):
     page = _page(gw, tmp_path)
     page._open_day(1)                           # all skipped → DISCARDED
     page._open_single(0)
-    page._set_relpath_state("Edited Media/e3a.jpg", True)
+    page._set_relpath_state("Exported Media/e3a.jpg", True)
     page._single._viewport._go(+1)
-    page._set_relpath_state("Edited Media/e3b.jpg", True)
+    page._set_relpath_state("Exported Media/e3b.jpg", True)
     assert page._cells[0].color is CellColor.DISCARDED   # not yet repainted
     page._back_to_grid()
     assert page._cells[0].color is CellColor.KEPT
@@ -196,7 +196,7 @@ def test_undo_reverts_and_repaints(qapp, gw, tmp_path):
     assert page._cells[0].color is CellColor.KEPT
     page._on_undo()
     assert page._cells[0].color is CellColor.DISCARDED
-    assert not page._session.is_picked("Edited Media/e3a.jpg")
+    assert not page._session.is_picked("Exported Media/e3a.jpg")
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +215,7 @@ def test_create_commits_and_emits_finished(qapp, gw, tmp_path):
     cut = got[0]
     assert cut.tag == "passaros_2026"
     assert [ln.export_relpath for ln in gw.cut_member_files(cut.id)] == [
-        "Edited Media/e3a.jpg"]
+        "Exported Media/e3a.jpg"]
 
 
 def test_cancel_emits_without_writing(qapp, gw, tmp_path):

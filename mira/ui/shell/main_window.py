@@ -52,6 +52,7 @@ from mira.ui.i18n import tr
 from mira.event_classification import (
     PHASE_COLLECT,
     PHASE_EDIT,
+    PHASE_EXPORT,
     PHASE_PICK,
     PHASE_SHARE,
 )
@@ -276,6 +277,10 @@ class MainWindow(QMainWindow):
     _SURFACE_EVENTS_LIST = "events_list"
     _SURFACE_PER_EVENT = "per_event"
     _SURFACE_BOTH = "both"
+    # spec/66 §4 + spec/68 — Share is a closed-event STATE (Cuts live
+    # there). The Share menu items are visible only when the open event
+    # is closed; the empty-children rule then hides the whole top-level.
+    _SURFACE_CLOSED_EVENT = "closed_event"
 
     # ────────────────────────────────────────────────────────────────────────
 
@@ -494,24 +499,38 @@ class MainWindow(QMainWindow):
             lambda: self._scan_external_returns(quiet=False),
             surface=self._SURFACE_PER_EVENT)
 
+        # ── Export ─────────────────────────────────────────────────────────
+        # Per-event only (spec/66 §1.1): the green/red ship decision over
+        # all picked keepers. The trigger lives on the surface; this menu
+        # entry is the keyboard-friendly door.
+        export_menu = self.menuBar().addMenu(tr("E&xport"))
+        self._menus["export"] = export_menu
+        self._add_menu_action(
+            export_menu, tr("&Open Export phase"),
+            lambda: self._on_phase_activated(PHASE_EXPORT),
+            surface=self._SURFACE_PER_EVENT)
+
         # ── Share ──────────────────────────────────────────────────────────
-        # Per-event only: Open Share phase · New Cut · Audio.
-        # Hides on the events list (empty in cross-event context).
+        # spec/66: Share is a closed-event STATE, not a phase. The menu
+        # appears ONLY when the open event is closed (the empty-children
+        # rule hides the whole top-level on open events + the events list).
         share_menu = self.menuBar().addMenu(tr("&Share"))
         self._menus["share"] = share_menu
         self._add_menu_action(
-            share_menu, tr("&Open Share phase"),
+            share_menu, tr("&Open Cuts"),
             lambda: self._on_phase_activated(PHASE_SHARE),
-            surface=self._SURFACE_PER_EVENT)
+            surface=self._SURFACE_CLOSED_EVENT,
+            tooltip=tr(
+                "Assemble Cuts from the exported files for hand-off."))
         self._add_menu_action(
             share_menu, tr("&New Cut…"),
             self._menu_new_cut,
-            surface=self._SURFACE_PER_EVENT)
+            surface=self._SURFACE_CLOSED_EVENT)
         share_menu.addSeparator()
         self._add_menu_action(
             share_menu, tr("&Audio…"),
             lambda: self._on_entry(ENTRY_AUDIO),
-            surface=self._SURFACE_PER_EVENT)
+            surface=self._SURFACE_CLOSED_EVENT)
 
         # ── Help ───────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu(tr("&Help"))
@@ -599,6 +618,11 @@ class MainWindow(QMainWindow):
                 action.setVisible(not in_event)
             elif action_surface == self._SURFACE_PER_EVENT:
                 action.setVisible(in_event)
+            elif action_surface == self._SURFACE_CLOSED_EVENT:
+                # spec/66: Share is a closed-event STATE. Visible only
+                # when the open event is closed; the empty-children rule
+                # (Step 4) hides the whole top-level otherwise.
+                action.setVisible(in_event and is_closed)
 
         # Step 2 — F-024 closed-event modification filter.
         if in_event and is_closed:

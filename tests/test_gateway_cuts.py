@@ -62,15 +62,15 @@ def _doc() -> m.EventDocument:
     # entries, spec/61 §1.2); the video once. p4 has no lineage. One
     # share-phase row proves #exported is edit-phase only.
     doc.lineage = [
-        m.Lineage(export_relpath="Edited Media/e1.jpg", phase="edit",
+        m.Lineage(export_relpath="Exported Media/e1.jpg", phase="edit",
                   source_kind="item", source_item_id="p1", exported_at="t1"),
-        m.Lineage(export_relpath="Edited Media/e2.jpg", phase="edit",
+        m.Lineage(export_relpath="Exported Media/e2.jpg", phase="edit",
                   source_kind="item", source_item_id="p2", exported_at="t2"),
-        m.Lineage(export_relpath="Edited Media/e3a.jpg", phase="edit",
+        m.Lineage(export_relpath="Exported Media/e3a.jpg", phase="edit",
                   source_kind="item", source_item_id="p3", exported_at="t3"),
-        m.Lineage(export_relpath="Edited Media/e3b.jpg", phase="edit",
+        m.Lineage(export_relpath="Exported Media/e3b.jpg", phase="edit",
                   source_kind="item", source_item_id="p3", exported_at="t4"),
-        m.Lineage(export_relpath="Edited Media/v1.mp4", phase="edit",
+        m.Lineage(export_relpath="Exported Media/v1.mp4", phase="edit",
                   source_kind="item", source_item_id="v1", exported_at="t5"),
         m.Lineage(export_relpath="Cuts/old/x.jpg", phase="share",
                   source_kind="item", source_item_id="p1", exported_at="t6"),
@@ -78,7 +78,7 @@ def _doc() -> m.EventDocument:
     doc.cuts = [m.Cut(id="cut-s", tag="short_version",
                       created_at=FIXED_NOW, updated_at=FIXED_NOW)]
     doc.cut_members = [m.CutMember(
-        cut_id="cut-s", export_relpath="Edited Media/e1.jpg", added_at=FIXED_NOW)]
+        cut_id="cut-s", export_relpath="Exported Media/e1.jpg", added_at=FIXED_NOW)]
     return doc
 
 
@@ -103,15 +103,15 @@ def test_exported_files_edit_phase_only_in_show_order(gw):
     # present (file-based universe); chronological by source capture time,
     # relpath breaks the equal-time tie between p3's two versions.
     assert rels == [
-        "Edited Media/e1.jpg", "Edited Media/e2.jpg",
-        "Edited Media/e3a.jpg", "Edited Media/e3b.jpg", "Edited Media/v1.mp4",
+        "Exported Media/e1.jpg", "Exported Media/e2.jpg",
+        "Exported Media/e3a.jpg", "Exported Media/e3b.jpg", "Exported Media/v1.mp4",
     ]
 
 
 def test_exported_files_respects_hidden_days(gw):
     gw.store.conn.execute("UPDATE trip_day SET hidden = 1 WHERE day_number = 2")
     rels = [ln.export_relpath for ln in gw.exported_files()]
-    assert rels == ["Edited Media/e1.jpg", "Edited Media/e2.jpg"]
+    assert rels == ["Exported Media/e1.jpg", "Exported Media/e2.jpg"]
 
 
 # --------------------------------------------------------------------------- #
@@ -122,8 +122,8 @@ def test_exported_files_respects_hidden_days(gw):
 def test_resolve_pool_exported_minus_cut(gw):
     rows = gw.resolve_pool([("+", "exported"), ("-", "short_version")])
     assert [ln.export_relpath for ln in rows] == [
-        "Edited Media/e2.jpg", "Edited Media/e3a.jpg",
-        "Edited Media/e3b.jpg", "Edited Media/v1.mp4",
+        "Exported Media/e2.jpg", "Exported Media/e3a.jpg",
+        "Exported Media/e3b.jpg", "Exported Media/v1.mp4",
     ]
 
 
@@ -131,7 +131,7 @@ def test_resolve_pool_unknown_tag_contributes_nothing(gw):
     # Recipes are a record of intent — a deleted/unknown tag shrinks
     # gracefully instead of raising.
     rows = gw.resolve_pool([("+", "short_version"), ("+", "no_such_cut")])
-    assert [ln.export_relpath for ln in rows] == ["Edited Media/e1.jpg"]
+    assert [ln.export_relpath for ln in rows] == ["Exported Media/e1.jpg"]
 
 
 def test_resolve_pool_bad_operator_raises(gw):
@@ -143,14 +143,14 @@ def test_resolve_pool_style_filter(gw):
     rows = gw.resolve_pool([("+", "exported")], style_filter=["macro"])
     # wildlife e2 and the unclassified video drop; both macro versions stay.
     assert [ln.export_relpath for ln in rows] == [
-        "Edited Media/e1.jpg", "Edited Media/e3a.jpg", "Edited Media/e3b.jpg",
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg", "Exported Media/e3b.jpg",
     ]
 
 
 def test_resolve_pool_type_filter(gw):
     assert [ln.export_relpath for ln in
             gw.resolve_pool([("+", "exported")], type_filter="video")] == [
-        "Edited Media/v1.mp4"]
+        "Exported Media/v1.mp4"]
     photos = gw.resolve_pool([("+", "exported")], type_filter="photo")
     assert all(not ln.export_relpath.endswith(".mp4") for ln in photos)
     assert len(photos) == 4
@@ -220,10 +220,10 @@ def test_card_style_lives_in_extras(gw):
 
 def test_set_cut_members_replaces_and_dedupes(gw):
     n = gw.set_cut_members("cut-s", [
-        "Edited Media/e2.jpg", "Edited Media/v1.mp4", "Edited Media/e2.jpg"])
+        "Exported Media/e2.jpg", "Exported Media/v1.mp4", "Exported Media/e2.jpg"])
     assert n == 2
     rels = [ln.export_relpath for ln in gw.cut_member_files("cut-s")]
-    assert rels == ["Edited Media/e2.jpg", "Edited Media/v1.mp4"]  # show order
+    assert rels == ["Exported Media/e2.jpg", "Exported Media/v1.mp4"]  # show order
 
 
 def test_delete_cut_cascades_membership(gw):
@@ -238,13 +238,13 @@ def test_deleting_export_record_drops_file_from_every_cut(gw):
     # spec/61 §1.4 — the relational win: the lineage row IS the file's
     # identity, so deleting it sweeps the file out of all memberships.
     gw.store.conn.execute(
-        "DELETE FROM lineage WHERE export_relpath = 'Edited Media/e1.jpg'")
+        "DELETE FROM lineage WHERE export_relpath = 'Exported Media/e1.jpg'")
     assert gw.cut_member_files("cut-s") == []
 
 
 def test_cut_show_totals_counts_days_and_clip_ms(gw):
     gw.set_cut_members("cut-s", [
-        "Edited Media/e1.jpg", "Edited Media/e3a.jpg", "Edited Media/v1.mp4"])
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg", "Exported Media/v1.mp4"])
     totals = gw.cut_show_totals("cut-s")
     assert totals.photo_count == 2
     assert totals.video_count == 1

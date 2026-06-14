@@ -5,9 +5,15 @@ from pathlib import Path
 
 from core.models import Event, TripDay
 from core.path_builder import (
+    EDITED_MEDIA_DIR_NAME,
+    EXPORTED_MEDIA_DIR_NAME,
+    RESERVED_DIR_NAMES,
     day_folder_name,
     day_folder_path,
+    edited_media_dir,
+    ensure_event_tree,
     event_root_path,
+    exported_media_dir,
     sanitize_folder_name,
 )
 
@@ -119,3 +125,35 @@ def test_event_root_path_uses_arbitrary_user_layout():
     )
     assert event_root_path("", event) == Path(
         "D:/Photos/mira/2026-Chapada")
+
+
+# ── spec/66 §1.2 — Exported Media/ tier ─────────────────────────────
+
+
+def test_exported_media_dir_distinct_from_edited(tmp_path):
+    """spec/66 §1.2 — Exported Media/ is the shipped set; Edited Media/
+    is the third-party return inbox. Two different folders, two
+    different roles."""
+    root = tmp_path / "Event"
+    assert exported_media_dir(root) == root / "Exported Media"
+    assert edited_media_dir(root) == root / "Edited Media"
+    assert exported_media_dir(root) != edited_media_dir(root)
+    assert EXPORTED_MEDIA_DIR_NAME == "Exported Media"
+    assert EDITED_MEDIA_DIR_NAME == "Edited Media"
+
+
+def test_ensure_event_tree_creates_exported_media(tmp_path):
+    """spec/66 §1.2 — the event skeleton must include Exported Media/
+    so the Export surface always has a destination root to write to."""
+    root = tmp_path / "Event"
+    root.mkdir()
+    ensure_event_tree(root)
+    assert exported_media_dir(root).is_dir()
+    assert edited_media_dir(root).is_dir()
+
+
+def test_reserved_dir_names_includes_exported_media():
+    """Walks of the event tree must skip Exported Media/ alongside the
+    other tier folders."""
+    assert "Exported Media" in RESERVED_DIR_NAMES
+    assert "Edited Media" in RESERVED_DIR_NAMES

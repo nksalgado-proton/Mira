@@ -309,16 +309,22 @@ def tag_presets_for(event_type: str) -> Tuple[str, ...]:
 PHASE_COLLECT = "collect"
 PHASE_PICK    = "pick"
 PHASE_EDIT    = "edit"
+# spec/66 §3 vocabulary delta — phase 4's internal key is now "export";
+# "share" survives as a STATE word (the Cuts surface on closed events).
+PHASE_EXPORT  = "export"
 PHASE_SHARE   = "share"
 
+# The four working phases (spec/66 §1). ``share`` is no longer in this
+# tuple — it's a closed-event state, reached through a closed event's
+# door, not stepped through. The Phases-page donuts read this order.
 ALL_PHASES: Tuple[str, ...] = (
-    PHASE_COLLECT, PHASE_PICK, PHASE_EDIT, PHASE_SHARE,
+    PHASE_COLLECT, PHASE_PICK, PHASE_EDIT, PHASE_EXPORT,
 )
 
 # Subset that records explicit pick/discarded decisions — the funnel +
 # PickedRatioDonut consume this (Collect has no K/D bookkeeping).
 DECISION_PHASES: Tuple[str, ...] = (
-    PHASE_PICK, PHASE_EDIT, PHASE_SHARE,
+    PHASE_PICK, PHASE_EDIT, PHASE_EXPORT,
 )
 
 

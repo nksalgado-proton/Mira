@@ -21,7 +21,7 @@ from mira.store.repo import EventStore
 
 from tests.test_gateway_cuts import _doc, _now
 
-MEMBERS = ["Edited Media/e1.jpg", "Edited Media/e3a.jpg", "Edited Media/v1.mp4"]
+MEMBERS = ["Exported Media/e1.jpg", "Exported Media/e3a.jpg", "Exported Media/v1.mp4"]
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def gw(tmp_path):
     store = EventStore.create(tmp_path / "event.db", event_id="evt-c")
     store.save_document(_doc())
     for ln in ("e1.jpg", "e2.jpg", "e3a.jpg", "e3b.jpg", "v1.mp4"):
-        p = tmp_path / "Edited Media" / ln
+        p = tmp_path / "Exported Media" / ln
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"FILE:" + ln.encode())
     counter = itertools.count(1)
@@ -83,10 +83,10 @@ def test_second_export_gets_fresh_snapshot_folder(gw, tmp_path):
 
 
 def test_missing_source_skipped_and_reported(gw, tmp_path):
-    (tmp_path / "Edited Media" / "e3a.jpg").unlink()
+    (tmp_path / "Exported Media" / "e3a.jpg").unlink()
     cut = gw.cut("cut-s")
     result = export_cut(gw, cut, event_root=tmp_path, separators_on=False)
-    assert result.missing == ["Edited Media/e3a.jpg"]
+    assert result.missing == ["Exported Media/e3a.jpg"]
     assert _names(result.folder) == ["001_e1.jpg", "002_v1.mp4"]
 
 

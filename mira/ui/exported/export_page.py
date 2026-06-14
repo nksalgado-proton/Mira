@@ -149,7 +149,7 @@ class ExportPage(QWidget):
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._header = PageHeader(
             title=tr("Export"),
-            sub=tr("Pick what ships — green flows to Edited Media/."),
+            sub=tr("Pick what ships — green flows to Exported Media/."),
             action=self._export_btn,
         )
         outer.addWidget(self._header)
@@ -472,23 +472,36 @@ class ExportPage(QWidget):
         locked per spec/68 §4 — this surface just re-parents the
         trigger). The commit closure writes ``set_edit_exported`` +
         lineage for the units that actually succeeded, per the spec/60
-        §5 per-unit-truth contract."""
+        §5 per-unit-truth contract.
+
+        spec/66 §1.2 — third-party returns are **hardlinked** from
+        ``Edited Media/`` into ``Exported Media/`` instead of being
+        re-rendered through the engine: the return is itself a finished
+        rendered output (the user developed it externally in LRC /
+        Helicon), so feeding it back through Mira's tone pipeline would
+        change the pixels. Hardlinks run synchronously here (file-system
+        op, sub-second); the no-return cells take the render path.
+        """
         from core.export_manifest import ExportManifest, PhotoUnit
         from core.settings import load_settings
         from mira.ui.edited.export_job import BatchExportJob
-        from mira.ui.edited._lineage import record_edit_export_lineage
-        from core.path_builder import edited_media_dir
+        from mira.ui.edited._lineage import (
+            record_edit_export_lineage,
+            record_single_lineage,
+        )
+        from core.path_builder import exported_media_dir
 
         assert self._eg is not None and self._eg.event_root is not None
         settings = load_settings()
         aspect_label = str(
             settings.get("preferred_aspect_ratio") or "Original")
-        default_dest = edited_media_dir(Path(self._eg.event_root))
+        # spec/66 §1.2 — the shipped set lives under Exported Media/;
+        # Edited Media/ is now the third-party-return inbox only.
+        event_root = Path(self._eg.event_root)
+        default_dest = exported_media_dir(event_root)
 
         # Per-day grouping for the on-disk layout — same shape the
-        # legacy host produced, preserved here for continuity. Slice 6
-        # owns the ``Exported Media/`` repoint + the flat-vs-day-folder
-        # question.
+        # legacy host produced, preserved here for continuity.
         day_labels: Dict[Optional[int], str] = {}
         by_day: Dict[Optional[int], List[_Cell]] = {}
         for c in green_cells:
@@ -496,11 +509,29 @@ class ExportPage(QWidget):
             if c.day_number not in day_labels:
                 day_labels[c.day_number] = self._day_label_for(c.day_number)
 
+        # spec/66 §1.2 — partition green cells: items with a
+        # third-party return get hardlinked synchronously; the rest go
+        # through the render queue.
+        to_hardlink: List[tuple[_Cell, str]] = []  # (cell, src_relpath)
+        to_render: List[_Cell] = []
+        for c in green_cells:
+            return_rel = self._eg.edit_candidate_relpath(c.item_id)
+            if return_rel:
+                to_hardlink.append((c, return_rel))
+            else:
+                to_render.append(c)
+
+        if to_hardlink:
+            self._hardlink_third_party_returns(
+                to_hardlink, event_root, default_dest, day_labels)
+
         units: list[PhotoUnit] = []
         source_by_unit_id: Dict[str, Path] = {}
         for day_n, day_cells in by_day.items():
             dest_dir = str(default_dest / day_labels[day_n])
             for c in day_cells:
+                if c in [pair[0] for pair in to_hardlink]:
+                    continue  # already handled via hardlink path
                 adj = self._eg.adjustment(c.item_id)
                 look = None
                 crop_norm = None
@@ -539,9 +570,15 @@ class ExportPage(QWidget):
                 ))
                 source_by_unit_id[c.item_id] = c.path
 
+        # All green cells were third-party returns — every ship-decision
+        # already committed via hardlink; nothing to render.
+        if not units:
+            return
+
         manifest = ExportManifest(units=tuple(units), clips=(),
                                   collision="unique")
         worker = BatchExportJob(manifest, source_by_unit_id)
+        render_cells = list(to_render)
 
         def commit(result) -> None:
             """Per-unit truth (spec/60 §5): set ``edit_exported`` +
@@ -553,7 +590,7 @@ class ExportPage(QWidget):
             ok_ids = getattr(result, "ok_unit_ids", set())
             if not ok_ids:
                 return
-            ok_cells = [c for c in green_cells if c.item_id in ok_ids]
+            ok_cells = [c for c in render_cells if c.item_id in ok_ids]
             for c in ok_cells:
                 try:
                     self._eg.set_edit_exported(c.item_id, True)
@@ -598,6 +635,90 @@ class ExportPage(QWidget):
             .replace("{n}", str(len(units))),
             commit,
         )
+
+    def _hardlink_third_party_returns(
+        self,
+        to_hardlink: List[tuple],
+        event_root: Path,
+        dest_root: Path,
+        day_labels: Dict[Optional[int], str],
+    ) -> None:
+        """spec/66 §1.2 — hardlink each third-party return from
+        ``Edited Media/`` into ``Exported Media/<day>/`` and record an
+        ``Exported Media/`` lineage row + ``set_edit_exported``. Copy
+        fallback when hardlink fails (cross-volume), mirroring the spec/57
+        return-scan policy. Runs synchronously — file-system ops are
+        sub-millisecond on the same volume; the render queue is the
+        slow path.
+        """
+        from os import link as _hardlink
+
+        assert self._eg is not None
+
+        for cell, src_relpath in to_hardlink:
+            src_path = event_root / src_relpath
+            if not src_path.exists():
+                log.warning(
+                    "ExportPage: third-party return missing on disk: %s "
+                    "— falling back to render", src_path)
+                # Drop this cell from to_hardlink so the render fallback
+                # picks it up. (Mutating the list mid-iteration is fine
+                # here — the caller's render-path loop has not started.)
+                continue
+            day_dir = dest_root / day_labels.get(cell.day_number, "")
+            try:
+                day_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:                                    # noqa: BLE001
+                log.exception(
+                    "ExportPage: cannot create %s — skipping hardlink",
+                    day_dir)
+                continue
+            # The destination keeps the source filename so the export
+            # folder reads natively in Explorer / PTE.
+            dest_path = day_dir / src_path.name
+            stem, ext = dest_path.stem, dest_path.suffix
+            i = 2
+            while dest_path.exists():
+                dest_path = day_dir / f"{stem} ({i}){ext}"
+                i += 1
+            try:
+                _hardlink(str(src_path), str(dest_path))
+            except OSError:
+                # Cross-volume or hardlink unsupported — copy instead.
+                # The destination becomes a real byte copy; the lineage
+                # row still records the ship.
+                try:
+                    import shutil
+                    shutil.copy2(str(src_path), str(dest_path))
+                except Exception:                                # noqa: BLE001
+                    log.exception(
+                        "ExportPage: hardlink + copy fallback failed "
+                        "for %s -> %s", src_path, dest_path)
+                    continue
+            # Synchronous commit: mark exported + write the
+            # Exported Media/ lineage row. The watermark / Cuts queries
+            # depend on this row's relpath prefix to recognise the ship.
+            try:
+                self._eg.set_edit_exported(cell.item_id, True)
+            except Exception:                                    # noqa: BLE001
+                log.exception(
+                    "ExportPage: set_edit_exported failed for %s",
+                    cell.item_id)
+            try:
+                from mira.ui.edited._lineage import (
+                    record_single_lineage,
+                )
+                record_single_lineage(
+                    self._eg,
+                    event_root,
+                    item_id=cell.item_id,
+                    dest_path=dest_path,
+                    recipe=self._recipe_for_item(cell.item_id),
+                )
+            except Exception:                                    # noqa: BLE001
+                log.exception(
+                    "ExportPage: record_single_lineage failed for %s",
+                    cell.item_id)
 
     def _recipe_for_item(self, item_id: str) -> dict:
         """The spec/54 §8 lineage-snapshot CHOICE for one item — read
@@ -668,7 +789,7 @@ class ExportPage(QWidget):
             if child.objectName() == "Sub":
                 child.setText(
                     tr("Pick what ships for “{name}” — green flows to "
-                       "Edited Media/.")
+                       "Exported Media/.")
                     .replace("{name}", self._event_name)
                 )
                 break

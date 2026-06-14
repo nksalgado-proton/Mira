@@ -63,19 +63,28 @@ def test_exported_item_ids_empty_without_lineage(tmp_path):
         eg.store.close()
 
 
-def test_exported_item_ids_covers_both_writer_shapes(tmp_path):
+def test_exported_item_ids_counts_only_exported_media_rows(tmp_path):
+    """spec/66 §1.2 — ``exported_item_ids()`` returns the SHIPPED set
+    (rows under ``Exported Media/``). Third-party returns sitting in
+    ``Edited Media/`` are mere edit candidates and do NOT count until
+    the Export run hardlinks them into ``Exported Media/``."""
     eg = _make_eg(tmp_path)
     try:
-        # In-app export shape (recipe snapshot present).
+        # Shipped (Mira-rendered, in-app export) → counts.
         eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/Dia 1/p1.jpg", phase="edit",
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
             source_kind="item", source_item_id="p1",
             recipe_json="{}", exported_at="t"))
-        # Return-scan / backfill shape (recipe NULL).
+        # Third-party return inbox (LRC/Helicon) → does NOT count.
         eg.record_lineage(m.Lineage(
             export_relpath="Edited Media/LRC/p2-edit.jpg", phase="edit",
             source_kind="item", source_item_id="p2"))
-        assert eg.exported_item_ids() == {"p1", "p2"}
+        # Shipped via hardlink-from-return → counts.
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p3.jpg", phase="edit",
+            source_kind="item", source_item_id="p3",
+            recipe_json="{}", exported_at="t"))
+        assert eg.exported_item_ids() == {"p1", "p3"}
     finally:
         eg.store.close()
 
@@ -85,10 +94,10 @@ def test_exported_item_ids_distinct_and_edit_only(tmp_path):
     try:
         # Two exports of the same photo → one id.
         eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/Dia 1/p1.jpg", phase="edit",
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
             source_kind="item", source_item_id="p1"))
         eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/Dia 1/p1 (2).jpg", phase="edit",
+            export_relpath="Exported Media/Dia 1/p1 (2).jpg", phase="edit",
             source_kind="item", source_item_id="p1"))
         # A share-phase row is NOT an Edit export.
         eg.record_lineage(m.Lineage(
@@ -105,6 +114,58 @@ def test_edit_exported_flag_is_not_the_driver(tmp_path):
     try:
         eg.set_edit_exported("p1", True)
         assert eg.exported_item_ids() == set()
+    finally:
+        eg.store.close()
+
+
+def test_edit_candidate_helpers_for_third_party_returns(tmp_path):
+    """spec/66 §1.2 — ``edit_candidate_item_ids`` returns items with a
+    third-party return sitting in ``Edited Media/`` (and not yet shipped);
+    ``edit_candidate_relpath`` returns the newest return relpath for an
+    item (the Export hardlink path consumes both)."""
+    eg = _make_eg(tmp_path)
+    try:
+        eg.record_lineage(m.Lineage(
+            export_relpath="Edited Media/LRC/p1-edit.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            exported_at="2026-06-14T08:00:00"))
+        # A newer return for the same item — the helper takes the latest.
+        eg.record_lineage(m.Lineage(
+            export_relpath="Edited Media/LRC/p1-edit-v2.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            exported_at="2026-06-14T09:00:00"))
+        # A shipped (Exported Media/) row should NOT register as a
+        # candidate — it's already past the inbox stage.
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p2.jpg", phase="edit",
+            source_kind="item", source_item_id="p2",
+            exported_at="2026-06-14T10:00:00"))
+        assert eg.edit_candidate_item_ids() == {"p1"}
+        assert eg.edit_candidate_relpath("p1") == (
+            "Edited Media/LRC/p1-edit-v2.jpg")
+        assert eg.edit_candidate_relpath("p2") is None
+        assert eg.edit_candidate_relpath("never-imported") is None
+    finally:
+        eg.store.close()
+
+
+def test_exported_files_excludes_edit_candidates(tmp_path):
+    """spec/66 §1.2 + spec/61 §1.1 — the ``#exported`` Cut universe
+    (returned by ``exported_files``) shows only shipped rows. A
+    third-party return that hasn't been promoted is invisible to Cuts."""
+    eg = _make_eg(tmp_path)
+    try:
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            exported_at="2026-06-14T08:00:00"))
+        eg.record_lineage(m.Lineage(
+            export_relpath="Edited Media/LRC/p2-edit.jpg", phase="edit",
+            source_kind="item", source_item_id="p2",
+            exported_at="2026-06-14T08:00:00"))
+        relpaths = [ln.export_relpath for ln in eg.exported_files()]
+        assert "Exported Media/Dia 1/p1.jpg" in relpaths
+        assert "Edited Media/LRC/p2-edit.jpg" not in relpaths
     finally:
         eg.store.close()
 

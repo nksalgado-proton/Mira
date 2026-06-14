@@ -134,6 +134,6 @@ def install_wheel_guard(app: QApplication) -> None:
     _FILTER_SINGLETON = _WheelGuardFilter(app)
     app.installEventFilter(_FILTER_SINGLETON)
     log.debug(
-        "Installed wheel guard for: %s",
+        "wheel_guard installed for: %s",
         [t.__name__ for t in GUARDED_TYPES],
     )

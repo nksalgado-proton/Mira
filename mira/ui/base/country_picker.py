@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QCursor, QWheelEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -37,6 +37,24 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class _GuardedComboBox(QComboBox):
+    """QComboBox that refuses to mutate its value on wheel unless it
+    actually holds focus (or its internal line-edit does, for editable
+    combos). Same 2026-06-14 rule the TzPicker subclass enforces — the
+    Qt-level event filters miss this dispatch path on QTableWidget cell
+    widgets, so the override at the widget itself is the only
+    bulletproof spot."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        line_edit = self.lineEdit()
+        if not self.hasFocus() and not (
+            line_edit is not None and line_edit.hasFocus()
+        ):
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.i18n import tr
@@ -81,8 +99,7 @@ def make_single_country_combo(initial_code: Optional[str] = None) -> QComboBox:
     type-to-search. ``userData`` on each entry is the alpha-2 code; an
     initial blank entry lets the user clear the field. Pre-selects
     ``initial_code`` when provided (case-insensitive)."""
-    from PyQt6.QtWidgets import QComboBox  # local — keep module-level imports stable
-    combo = QComboBox()
+    combo = _GuardedComboBox()
     combo.setEditable(True)
     combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
     combo.addItem("", "")  # blank entry

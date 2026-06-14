@@ -26,7 +26,7 @@ import logging
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QCursor, QWheelEvent
 from PyQt6.QtWidgets import QComboBox, QInputDialog, QWidget
 
 from core.tz_locations import (
@@ -158,6 +158,18 @@ class TzPicker(QComboBox):
             self._value = new
             if not self.signalsBlocked():
                 self.valueChanged.emit(new)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        """Ignore wheel events when the picker is not focused — the
+        2026-06-14 rule: focus (and value mutation) only on left-click
+        / Tab / Backtab / Shortcut, NEVER on hover-and-scroll. The
+        Qt-level filters bypass this dispatch on QTableWidget cell
+        widgets, so the override at the widget itself is the only
+        bulletproof spot."""
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
     def _on_activated(self, idx: int) -> None:
         """User picked a row. Only the sentinel needs work: prompt for

@@ -1,17 +1,12 @@
-"""spec/63 §4 on the Edit photo page (slice 6a — the key-map alignment).
+"""spec/66 §1.1 — Edit is creative-only.
 
-Edit's decision ledger is the binary marked-for-export status (spec/59
-§8: green flows to Share, red stays). The locked map lands here: P
-marks (SET), X unmarks (SET), Space toggles, C degrades to the toggle
-(no Compare state on this ledger). The legacy P-Preview binding moved
-to F10 (the truth key — in Edit, the developed full-resolution
-Preview), and the famous DEAD second Key_P branch (P-export, shadowed
-since birth — spec/63's named kill) is gone.
-
-6b (spec/63 §6.1): loading is ASYNC now — F10 is deliberately inert
-while the working copy preps (nothing honest to show), so the lens
-test waits for development first. The decision keys need no waiting
-(the ledger never depends on pixels).
+Slice 4 of the spec/66 implementation pass strips the marking-for-export
+grammar from EditPage. The locked-map decision keys (P / X / Space / C)
+are deliberately inert on this surface — the viewport still fires the
+verbs, the page just doesn't connect to them, since Edit no longer drives
+a Pick/Skip ledger. The truth key (F10) keeps opening the processed
+preview lens, and F / F11 stay fullscreen — those aren't ledger writes,
+they're view tools.
 
 NOTE this module's name is deliberately NOT on the conftest slice-B
 skip list (test_edit_page / test_edit_page_rebuild are) — these run.
@@ -30,8 +25,6 @@ from mira.gateway.event_gateway import EventGateway
 from mira.picked.model import CullBucket, CullItem
 from mira.picked.status import (
     BADGE_UNTOUCHED,
-    STATE_PICKED,
-    STATE_SKIPPED,
     BucketStatus,
 )
 from mira.store import models as m
@@ -130,42 +123,29 @@ def _wait_developed(page, timeout_s: float = 8.0) -> None:
     raise AssertionError("working copy never landed")
 
 
-def test_p_marks_and_x_unmarks_for_export(page, gw):
+def test_p_and_x_are_inert_on_edit(page, gw):
+    """spec/66 §1.1 — Edit is creative-only. P and X fire on the viewport
+    but the page does NOT connect to them, so no phase_state row appears."""
     QTest.keyClick(page, Qt.Key.Key_P)
-    assert _edit_state(gw, "e1") == STATE_PICKED
-    QTest.keyClick(page, Qt.Key.Key_P)              # SET, not toggle
-    assert _edit_state(gw, "e1") == STATE_PICKED
+    assert _edit_state(gw, "e1") is None
     QTest.keyClick(page, Qt.Key.Key_X)
-    assert _edit_state(gw, "e1") == STATE_SKIPPED
-    QTest.keyClick(page, Qt.Key.Key_X)
-    assert _edit_state(gw, "e1") == STATE_SKIPPED
+    assert _edit_state(gw, "e1") is None
 
 
-def test_space_and_c_toggle_the_binary_ledger(page, gw):
-    """Born-green default: an un-decided photo reads picked, so the
-    first toggle goes to skipped; C degrades to Space (spec/63 §4 —
-    binary ledger, no Compare)."""
+def test_space_and_c_are_inert_on_edit(page, gw):
+    """spec/66 §1.1 — no toggle either: Space / C don't write phase_state
+    rows from this surface (Edit's ledger moved to the Export surface)."""
     QTest.keyClick(page, Qt.Key.Key_Space)
-    assert _edit_state(gw, "e1") == STATE_SKIPPED
-    QTest.keyClick(page, Qt.Key.Key_Space)
-    assert _edit_state(gw, "e1") == STATE_PICKED
+    assert _edit_state(gw, "e1") is None
     QTest.keyClick(page, Qt.Key.Key_C)
-    assert _edit_state(gw, "e1") == STATE_SKIPPED
-    QTest.keyClick(page, Qt.Key.Key_C)
-    assert _edit_state(gw, "e1") == STATE_PICKED
+    assert _edit_state(gw, "e1") is None
 
 
-def test_f10_opens_the_processed_lens_preview_stays_a_button(
-        page, gw, monkeypatch):
+def test_f10_opens_the_processed_lens_preview_stays_a_button(page, gw):
     """Nelson 2026-06-12 standardisation: F10 opens the STANDARD modal
     lens with the PROCESSED, CROPPED image at FULL resolution (what
-    export produces) — clean, no zoom/peaking tools in Edit. This ADDS
-    to the in-canvas Toggle-Crop preview, which keeps existing,
-    button-driven, untouched. P only marks for export — it neither
-    previews nor reaches the old dead export branch."""
-    export_calls = []
-    monkeypatch.setattr(page, "_on_export",
-                        lambda: export_calls.append(True))
+    export produces) — clean, no zoom/peaking tools in Edit. The
+    in-canvas Toggle-Crop preview keeps existing, button-driven."""
     _wait_developed(page)        # F10 is inert in the 6b prep gap
     assert not page._preview_toggle.isChecked()
     QTest.keyClick(page, Qt.Key.Key_F10)
@@ -184,27 +164,28 @@ def test_f10_opens_the_processed_lens_preview_stays_a_button(
     assert page._lens is not None and page._lens.isVisible()
     page._lens.close()
 
-    # Point 1 confirmed in code: the in-canvas preview CONTINUES to
-    # exist — the button still toggles the full-res, canvas-fit render.
+    # The in-canvas preview CONTINUES to exist — the button still toggles
+    # the full-res, canvas-fit render.
     page._preview_toggle.click()
     assert page._preview_toggle.isChecked()
     page._preview_toggle.click()
     assert not page._preview_toggle.isChecked()
 
+    # And P / X still write nothing — they're inert here.
     QTest.keyClick(page, Qt.Key.Key_P)
-    assert not page._preview_toggle.isChecked()     # P no longer previews
-    assert export_calls == []                       # the dead branch is dead
-    assert _edit_state(gw, "e1") == STATE_PICKED    # P marks for export
+    assert _edit_state(gw, "e1") is None
 
 
-def test_decisions_persist_per_photo_across_navigation(page, gw):
-    QTest.keyClick(page, Qt.Key.Key_X)              # e1 → skipped
+def test_navigation_still_works(page, gw):
+    """The arrow / wheel browse keys are not part of the decision ledger
+    so they survive Slice 4 untouched. Cursor moves; no marks written."""
     QTest.keyClick(page, Qt.Key.Key_Right)          # → e2
-    QTest.keyClick(page, Qt.Key.Key_P)              # e2 → picked
-    assert _edit_state(gw, "e1") == STATE_SKIPPED
-    assert _edit_state(gw, "e2") == STATE_PICKED
-    QTest.keyClick(page, Qt.Key.Key_Left)           # back on e1
+    assert page._index == 1
+    QTest.keyClick(page, Qt.Key.Key_Left)           # → e1
     assert page._index == 0
+    # No phase-state rows landed during the walk.
+    assert _edit_state(gw, "e1") is None
+    assert _edit_state(gw, "e2") is None
 
 
 def test_f_and_f11_both_fullscreen(page):

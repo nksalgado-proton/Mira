@@ -1,35 +1,30 @@
-"""EditPage — the rebuilt non-destructive Process editor (spec/32 §6.3).
+"""EditPage — the non-destructive Edit photo surface.
 
-Mirrors the legacy ``ui/process/edit_page.py`` shape — the AdjustmentSurface
-composition, top bar, full-screen handling, keyboard map, debounced persistence,
-async export worker — but the data + navigation layers are rewired:
+spec/66 (2026-06-14): Edit is **purely creative** — correct classification,
+adjust tone, crop. The export status / batch-queue UI that spec/59 §8 put
+here MOVED OUT to the Export surface (slice 4 of the spec/66 implementation
+pass). Edit no longer triggers export, no longer carries the green/red
+mark-for-export border, no longer paints the Exported watermark, and the
+locked P/X/Space/C decision keys are inert here (a creative-only surface
+has no Pick/Skip ledger to drive). The keys still fire on the viewport —
+the page just doesn't connect to them.
+
+What stays:
 
 * **Data layer:** per-item state via the gateway's ``Adjustment`` row —
   the spec/54 CHOICE (``style`` / ``look`` / ``creative_filter``) +
-  ``crop_x/y/w/h``, ``crop_angle``, ``rotation``, ``aspect_label``,
-  ``edit_exported``.  No per-bucket JSON journal.
-
+  ``crop_x/y/w/h``, ``crop_angle``, ``rotation``, ``aspect_label``.
 * **Navigation layer:** opens a :class:`mira.picked.CullBucket` (synthetic
   single-item from Day-Grid centre-click OR a real bracket / burst from a
-  cluster sub-grid) — same shape as ``PickPhotoSurface.load(eg, bucket, ...)``.
-  At bucket-edges the page emits :attr:`navigate_at_edge` in ``day_grid``
-  context (parent steps the cursor) or stops in ``cluster`` context (spec/32
-  §2.7).
-
-* **Export scopes (Q2 locked 2026-06-08):** photo / day / event (no "bucket"
-  — buckets are gone).  Photo scope runs locally via the engine; day / event
-  are emitted as :attr:`export_scope_requested` so the parent
-  ``EditHostPage`` (which knows the day's items + the event's Select-kept
-  set) drives the worker.
+  cluster sub-grid). At bucket-edges the page emits :attr:`navigate_at_edge`
+  in ``day_grid`` context (parent steps the cursor) or stops in ``cluster``
+  context (spec/32 §2.7).
 
 The reusable :class:`mira.ui.edited.adjustment_surface.AdjustmentSurface`
-provides the editing chrome (canvas + crop overlay + Tone/Vibrance/Crop +
-Compare/Preview/Reset/Copy-Paste-Undo).  EditPage is the host: it composes
-the surface, dispatches its ``changed(kind)`` signal to gateway writes, and
-owns the export pipeline + nav.
-
-Layout (docs/25 §10): top bar; then the AdjustmentSurface (editing panels
-above, photo + native nav line below).
+provides the editing chrome (canvas + crop overlay + Look/Style/Filter +
+Crop + Compare/Preview/Reset/Copy-Paste-Undo). EditPage is the host: it
+composes the surface, dispatches its ``changed(kind)`` signal to gateway
+writes, and owns nav.
 """
 
 from __future__ import annotations
@@ -39,20 +34,17 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeyEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QMenu,
-    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from core.aspect_ratio import get_aspect_ratio
-from core.cull_export import ExportFileType
 # ``decode_image`` is no longer called on this module's UI thread —
 # the prep worker owns decoding (spec/63 §6.1) — but the import STAYS:
 # it is the pre-6b decode seam the era-portable net counts against.
@@ -61,7 +53,6 @@ from core.photo_render import Params, compute_default_crop
 from core.settings import load_settings
 
 from mira.picked import CullBucket, CullItem
-from mira.picked.status import STATE_PICKED
 from mira.gateway.event_gateway import EventGateway
 from mira.store import models as m
 from mira.ui.base.surface import (
@@ -70,7 +61,6 @@ from mira.ui.base.surface import (
     feature_toggle,
     help_button,
     populate_nav_row,
-    primary_action,
 )
 from mira.ui.i18n import tr
 from mira.ui.edited.adjustment_surface import (
@@ -103,11 +93,6 @@ class EditPage(QWidget):
     # spec/32 §2.7 edge nav — parent steps the day-cell cursor when context is
     # "day_grid"; "cluster" context stops at edges (no signal emitted).
     navigate_at_edge = pyqtSignal(int)
-    # Day / event scope hand-off: parent collects items and drives the export
-    # (it has the day's item list and the event's Select-kept set).
-    export_scope_requested = pyqtSignal(str)
-    # Local (photo-scope) export completed — parent re-projects the cell.
-    process_export_committed = pyqtSignal(str)  # item_id
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -122,14 +107,6 @@ class EditPage(QWidget):
         self._nav_label_suffix: str = ""
         self._bucket_index = 1
         self._bucket_count = 1
-        # spec/59 export-status — the configured edit default ("born
-        # green" out of the box); the host injects the live setting.
-        self._phase_default = "picked"
-        # spec/59 §8 Exported watermark — edit-lineage membership set
-        # (refreshed per bucket load + after an export commit) and the
-        # app-wide hide-setting gate (host-injected).
-        self._watermark_enabled = True
-        self._exported_ids: set = set()
         self._is_first_in_day = True
         self._is_last_in_day = True
         self._cached_path: Optional[Path] = None
@@ -140,15 +117,8 @@ class EditPage(QWidget):
         self._aspect_default = str(
             settings.get("preferred_aspect_ratio") or "Original")
 
-        # Re-entrancy guard for laggy ops (decode / full-res preview / export).
+        # Re-entrancy guard for laggy ops (decode / full-res preview).
         self._busy_flag = False
-        # Async export — photo scope runs locally.  Day / event handed off
-        # to the parent.
-        self._export_worker: Optional[_ExportWorker] = None
-        self._export_running = False
-        self._export_item_id: Optional[str] = None
-        self._export_source_path: Optional[Path] = None
-        self._export_total = 0
 
         self._fullscreen = False
 
@@ -167,15 +137,9 @@ class EditPage(QWidget):
         self._viewport = self._surface.display_widget()
         self._viewport.current_changed.connect(self._on_current_changed)
         self._viewport.edge_reached.connect(self._emit_edge)
-        # The locked-map verbs, translated by the viewport when it has
-        # focus (the page's own keyPressEvent stays as the stray-focus
-        # fallback — never a dead key on this surface).
-        self._viewport.pick_requested.connect(
-            lambda: self._set_export_status("picked"))
-        self._viewport.skip_requested.connect(
-            lambda: self._set_export_status("skipped"))
-        self._viewport.toggle_requested.connect(self._on_border_clicked)
-        self._viewport.cycle_requested.connect(self._on_border_clicked)
+        # spec/66 §1.1 — Edit is creative-only; P/X/Space/C are inert
+        # here (no Pick/Skip ledger to drive). The viewport still emits
+        # the locked-map verbs; the page just doesn't wire them.
         self._viewport.truth_requested.connect(self._open_processed_lens)
         self._viewport.fullscreen_requested.connect(self._toggle_fullscreen)
         self._viewport.back_requested.connect(self._on_back_key)
@@ -316,36 +280,15 @@ class EditPage(QWidget):
         self._chrome = BaseEditSurface()
         outer.addWidget(self._chrome)
 
-        # ── TOP_BAR — Back · [inline export progress] · stretch · Export → · ?
+        # ── TOP_BAR — Back · stretch · position · stretch · ?
+        # spec/66 §1.1 — no Export button, no inline progress here. The
+        # batch trigger + status line moved to the Export surface; the
+        # app-level BatchProgressLine below the menubar shows running
+        # jobs from every surface.
         self._back_btn = back_button()
         self._back_btn.setToolTip(tr("Return to the cluster list  (Esc)"))
         self._back_btn.clicked.connect(self.back_requested.emit)
         self._chrome.top_bar.layout().addWidget(self._back_btn)
-
-        # Inline async-export progress (docs/25 §8) — spec/42 Phase B
-        # merges the bar + label + Cancel into ONE container widget so
-        # the show/hide is atomic and the row only takes its slot when
-        # an export is running.
-        self._export_progress = QWidget()
-        self._export_progress.setObjectName("ProcessExportProgress")
-        prog_row = QHBoxLayout(self._export_progress)
-        prog_row.setContentsMargins(0, 0, 0, 0)
-        prog_row.setSpacing(6)
-        self._export_bar = QProgressBar()
-        self._export_bar.setObjectName("ProcessExportBar")
-        self._export_bar.setMaximumWidth(240)
-        prog_row.addWidget(self._export_bar)
-        self._export_label = QLabel("")
-        self._export_label.setObjectName("ProcessExportLabel")
-        prog_row.addWidget(self._export_label)
-        self._export_cancel = QPushButton(tr("Cancel"))
-        self._export_cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._export_cancel.setCursor(
-            QCursor(Qt.CursorShape.PointingHandCursor))
-        self._export_cancel.clicked.connect(self._on_export_cancel)
-        prog_row.addWidget(self._export_cancel)
-        self._export_progress.setVisible(False)
-        self._chrome.top_bar.layout().addWidget(self._export_progress)
 
         self._chrome.top_bar.layout().addStretch(1)
 
@@ -359,16 +302,6 @@ class EditPage(QWidget):
         self._chrome.top_bar.layout().addWidget(self._position_label)
 
         self._chrome.top_bar.layout().addStretch(1)
-
-        # spec/42 Phase B: ✓ Exported chip dropped — Phase C drives the
-        # MediaHost border colour from ``Adjustment.edit_exported``
-        # (green when exported, neutral otherwise).
-
-        self._export_btn = primary_action(tr("Export →"))
-        self._export_btn.setToolTip(tr(
-            "Materialise JPEGs to Edited Media/ — this photo / day / event."))
-        self._export_btn.clicked.connect(self._on_export)
-        self._chrome.top_bar.layout().addWidget(self._export_btn)
 
         self._help_btn = help_button()
         self._help_btn.setToolTip(tr("Keyboard shortcuts  (F1)"))
@@ -456,9 +389,9 @@ class EditPage(QWidget):
         self._nav_prev = nav.prev
         self._nav_next = nav.next
 
-        # spec/59 export-status: the border is a click target again —
-        # toggles this photo's marked-for-export status.
-        self._chrome.media_border_clicked.connect(self._on_border_clicked)
+        # spec/66 §1.1 — no border click target: there's no mark-for-
+        # export decision on the Edit surface (it moved to Export).
+        # The media border stays neutral (set_media_state(None)).
 
     def _install_keyboard_focus(self) -> None:
         from PyQt6.QtWidgets import QLineEdit
@@ -518,7 +451,6 @@ class EditPage(QWidget):
         self._bucket_count = max(1, int(bucket_count))
         self._is_first_in_day = bool(is_first_in_day)
         self._is_last_in_day = bool(is_last_in_day)
-        self._refresh_exported_ids()
 
         if not self._items:
             return
@@ -567,8 +499,6 @@ class EditPage(QWidget):
         (Q3), and the tools grey for the gap (Q1)."""
         self._index = index
         ci = self._current_item()
-        self._refresh_exported_chip()
-        self._refresh_watermark()
         self._refresh_position_label()
         developed = (
             ci is not None and ci.path == self._cached_path
@@ -810,16 +740,12 @@ class EditPage(QWidget):
                 adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h = rect
             else:
                 adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
             return
 
         if kind == "angle":
             adj.crop_angle = self._surface._box_angle or 0.0
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
             return
 
         if kind == "rotation":
@@ -831,9 +757,7 @@ class EditPage(QWidget):
             adj.rotation = int(self._surface._rotation or 0)
             adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
             adj.crop_angle = 0.0
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
             return
 
         if kind == "aspect":
@@ -843,9 +767,7 @@ class EditPage(QWidget):
                 adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h = rect
             else:
                 adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
             return
 
         if kind == "reset":
@@ -861,9 +783,7 @@ class EditPage(QWidget):
             adj.creative_filter = None
             adj.style = None
             adj.aspect_label = None
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
             return
 
     def _persist_choice(self) -> None:
@@ -884,9 +804,7 @@ class EditPage(QWidget):
             # omits the CHECK on existing rows.
             adj.look_strength = max(0.0, min(2.0, float(
                 getattr(state, "look_strength", 1.0))))
-            adj.edit_exported = False
             self._eg.save_adjustment(adj)
-            self._refresh_exported_chip()
         except Exception:  # noqa: BLE001
             log.exception("persist failed for %s", ci.item_id)
 
@@ -942,373 +860,6 @@ class EditPage(QWidget):
         if self._nav_context == "day_grid":
             self.navigate_at_edge.emit(delta)
         # cluster: stop. (Legacy bucket-list mode is gone — no buckets.)
-
-    # ── Export (docs/25 §8 + Q2 locked 2026-06-08) ───────────────────
-
-    def _on_export(self) -> None:
-        """Photo / day / event scope menu.  Photo runs locally; day / event
-        emit :attr:`export_scope_requested` for the parent."""
-        if self._busy_flag or self._export_running or not self._items:
-            return
-        menu = QMenu(self)
-        act_photo = menu.addAction(tr("Export this photo"))
-        menu.addSeparator()
-        act_day = menu.addAction(tr("Export this day"))
-        act_event = menu.addAction(tr("Export the whole event"))
-        chosen = menu.exec(QCursor.pos())
-        if chosen is act_photo:
-            self._export_current_item()
-        elif chosen is act_day:
-            self._persist_choice()
-            self.export_scope_requested.emit("day")
-        elif chosen is act_event:
-            self._persist_choice()
-            self.export_scope_requested.emit("event")
-
-    def _export_current_item(self) -> None:
-        """Async Process export for the single currently-shown photo."""
-        from PyQt6.QtWidgets import QMessageBox
-
-        from core.process_export_engine import ProcessBucketInput
-        from mira.ui.picked.crop_overlay import CropOverlay  # noqa: F401 — keeps import graph honest
-        from mira.ui.edited.export_dialog import ExportDialog
-
-        ci = self._current_item()
-        if ci is None or not is_supported(ci.path):
-            QMessageBox.information(
-                self, tr("Nothing to export"),
-                tr("No photos to export here."))
-            return
-
-        # Make sure the current choice is on the row before exporting.
-        self._persist_choice()
-
-        default_dest = self._export_default()
-        day_label = self._day_label()
-
-        def collision_probe(dest: Path) -> int:
-            day_dir = dest / day_label
-            return 1 if (day_dir / (ci.path.stem + ".jpg")).exists() else 0
-
-        choice = ExportDialog.ask(
-            default_dest,
-            default_file_type=ExportFileType.JPEG,
-            collision_probe=collision_probe,
-            scope_label=tr("this photo"),
-            parent=self,
-        )
-        if choice is None:
-            return
-
-        # Build a legacy-shaped journal from the gateway Adjustment so the
-        # existing engine path can run unchanged.  When the engine is updated
-        # to read Adjustment rows directly, this glue goes away.
-        journal = self._build_journal_for_items([ci])
-
-        bucket = ProcessBucketInput(
-            files=(ci.path,), journal=journal, day_label=day_label)
-
-        self._export_item_id = ci.item_id
-        self._export_source_path = ci.path
-        self._export_total = 1
-        worker = _ExportWorker(
-            buckets=[bucket], destination=choice.destination,
-            file_type=choice.file_type, jpeg_quality=int(choice.jpeg_quality),
-            collision=choice.collision,
-            # No-row fallback = fresh AUTO = the routed Natural
-            # (spec/54 §6 default).
-            auto_on=True,
-            aspect_label=self._aspect_label,
-        )
-        worker.progress.connect(self._on_export_progress)
-        worker.finished_result.connect(self._on_export_finished)
-        # Delete on QThread.finished (after run() returns), NOT from
-        # finished_result — the latter fires from inside run() before the
-        # thread winds down (legacy Cancel crash; same idiom as legacy).
-        worker.finished.connect(worker.deleteLater)
-        self._export_worker = worker
-
-        self._export_running = True
-        self._export_btn.setEnabled(False)
-        self._export_bar.setRange(0, self._export_total)
-        self._export_bar.setValue(0)
-        self._export_label.setText(
-            tr("Exporting 0/{t}…").replace("{t}", str(self._export_total)))
-        self._export_progress.setVisible(True)
-        worker.start()
-
-    def _build_journal_for_items(self, items: list[CullItem]) -> dict:
-        """Translate per-item ``Adjustment`` rows into the legacy
-        per-bucket journal shape the existing
-        :func:`core.process_export_engine.run_process_export` consumes.
-
-        Keyed by filename (engine API).  Decisions present iff the item has
-        an Adjustment row; missing means "use AUTO / no crop" (engine
-        defaults).  ``process_aspect_label`` reflects the page's current
-        ``_aspect_label`` (user-visible choice).
-        """
-        decisions: dict[str, dict] = {}
-        if self._eg is None:
-            return {
-                "process_decisions": decisions,
-                "process_aspect_label": self._aspect_label,
-                "edit_exported": [],
-            }
-        for ci in items:
-            adj = self._eg.adjustment(ci.item_id)
-            if adj is None:
-                continue
-            # The spec/54 CHOICE — the engine compiles it to Params at
-            # decode time (core.process_export_engine._render_one).
-            entry: dict = {"look": adj.look or "natural"}
-            if adj.style:
-                entry["style"] = adj.style
-            if adj.creative_filter:
-                entry["creative_filter"] = adj.creative_filter
-            # Nelson 2026-06-13 Look Strength — the engine reads it
-            # off the same CHOICE dict the manifest builds elsewhere
-            # (one path, one wire shape).
-            if abs(float(adj.look_strength) - 1.0) > 1e-6:
-                entry["strength"] = float(adj.look_strength)
-            if all(v is not None for v in (
-                    adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)):
-                entry["crop_norm"] = (
-                    adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)
-            if adj.crop_angle:
-                entry["crop_angle"] = adj.crop_angle
-            if adj.rotation:
-                entry["rotation"] = adj.rotation
-            decisions[ci.path.name] = entry
-        return {
-            "process_decisions": decisions,
-            "process_aspect_label": self._aspect_label,
-            "edit_exported": [],
-        }
-
-    def _on_export_progress(self, done: int, total: int, name: str) -> None:
-        self._export_bar.setRange(0, total)
-        self._export_bar.setValue(done)
-        self._export_label.setText(
-            tr("Exporting {d}/{t}: {n}")
-            .replace("{d}", str(done)).replace("{t}", str(total))
-            .replace("{n}", name))
-
-    def _on_export_finished(self, result) -> None:
-        from PyQt6.QtWidgets import QMessageBox
-
-        self._export_running = False
-        self._export_btn.setEnabled(True)
-        self._export_progress.setVisible(False)
-        worker = self._export_worker
-        self._export_worker = None
-        cancelled = bool(worker is not None and worker._cancel)
-
-        if result.ok_count > 0 and self._eg is not None \
-                and self._export_item_id is not None:
-            committed = False
-            try:
-                self._eg.set_edit_exported(self._export_item_id, True)
-                # spec/59: exporting IS marking — an exported photo must
-                # be visible in the next phase (as-you-go auto-green).
-                self._eg.set_phase_state(
-                    self._export_item_id, "edit", "picked")
-                self._refresh_exported_chip()
-                committed = True
-            except Exception:  # noqa: BLE001
-                log.exception(
-                    "set_edit_exported failed for %s",
-                    self._export_item_id)
-            # Record export→source lineage (single-item case) with the
-            # spec/54 §8 recipe + resolved-params snapshot.
-            try:
-                from mira.ui.edited._lineage import (
-                    record_edit_export_lineage,
-                )
-                record_edit_export_lineage(
-                    self._eg,
-                    Path(self._eg.event_root),
-                    items_with_sources=[(
-                        self._export_item_id,
-                        self._export_source_path,
-                    )] if self._export_source_path is not None else [],
-                    result=result,
-                    recipe_by_item={
-                        self._export_item_id:
-                            self._recipe_for_item(self._export_item_id)},
-                    resolved_by_stem=(
-                        worker.params_sink if worker is not None else None),
-                )
-            except Exception:  # noqa: BLE001
-                log.exception("record_edit_export_lineage failed")
-            # spec/59 §8 — the new lineage row IS the watermark driver.
-            self._refresh_exported_ids()
-            self._refresh_watermark()
-            # The host hears the commit SYNCHRONOUSLY and re-reads
-            # exported_item_ids() to repaint the grid cell — so the
-            # emit must come AFTER the lineage write, or the cell
-            # reprojects against a set that doesn't carry this item
-            # yet and the watermark never appears (Nelson 2026-06-11,
-            # "appears after the batch job, but not after a single
-            # export").
-            if committed:
-                self.process_export_committed.emit(self._export_item_id)
-        self._export_item_id = None
-        self._export_source_path = None
-
-        title = tr("Export cancelled") if cancelled else tr("Export finished")
-        QMessageBox.information(
-            self, title,
-            tr("Exported {n} of {t} photo(s).")
-            .replace("{n}", str(result.ok_count))
-            .replace("{t}", str(self._export_total)))
-
-    def _recipe_for_item(self, item_id: str) -> dict:
-        """The spec/54 §8 lineage-snapshot CHOICE for one item — read
-        from its Adjustment row (already flushed by the export path)."""
-        recipe: dict = {"look": "natural"}
-        if self._eg is None:
-            return recipe
-        adj = self._eg.adjustment(item_id)
-        if adj is None:
-            return recipe
-        recipe["look"] = adj.look or "natural"
-        if adj.style:
-            recipe["style"] = adj.style
-        if adj.creative_filter:
-            recipe["creative_filter"] = adj.creative_filter
-        if all(v is not None for v in (
-                adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)):
-            recipe["crop_norm"] = [
-                adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h]
-        if adj.crop_angle:
-            recipe["crop_angle"] = adj.crop_angle
-        if adj.rotation:
-            recipe["rotation"] = adj.rotation
-        if adj.aspect_label:
-            recipe["aspect_label"] = adj.aspect_label
-        return recipe
-
-    def _on_export_cancel(self) -> None:
-        if self._export_worker is not None:
-            self._export_worker.cancel()
-            self._export_label.setText(tr("Cancelling…"))
-
-    def _export_default(self) -> Path:
-        """Default destination = ``<event_root>/Edited Media`` (spec/57)."""
-        from core.path_builder import EDITED_MEDIA_DIR_NAME, edited_media_dir
-        if self._eg is not None and self._eg.event_root is not None:
-            return edited_media_dir(Path(self._eg.event_root))
-        return Path.cwd() / EDITED_MEDIA_DIR_NAME
-
-    def _day_label(self) -> str:
-        """Day-folder label for the export tree.
-
-        Uses the item's day_number resolved via the gateway's TripDay rows
-        if available (matches the spec/30 day labelling).  Falls back to
-        the item's parent folder name (Day 1 — Arrival) when the gateway
-        can't resolve.
-        """
-        ci = self._current_item()
-        if ci is None:
-            return "Dia 1"
-        if self._eg is not None:
-            try:
-                item = self._eg.item(ci.item_id)
-                if item is not None and item.day_number is not None:
-                    days = {d.day_number: d for d in self._eg.trip_days()}
-                    td = days.get(item.day_number)
-                    if td is not None:
-                        bits = [b for b in (
-                            f"Dia {td.day_number}", td.description, td.date,
-                        ) if b]
-                        return " — ".join(bits) if bits else f"Dia {td.day_number}"
-            except Exception:  # noqa: BLE001
-                log.debug("day_label fallback for %s", ci.item_id, exc_info=True)
-        # Defensive fallback: the path's parent folder name (per legacy).
-        if ci.path.parent and ci.path.parent.name:
-            return ci.path.parent.name
-        return "Dia 1"
-
-    # ── Export status ────────────────────────────────────────────────
-
-    def _refresh_exported_chip(self) -> None:
-        """Drive the MediaHost border from the photo's MARKED-FOR-EXPORT
-        status (spec/59 export-status, Nelson 2026-06-11): green =
-        marked (flows to the next phase), red = not. Supersedes the
-        spec/42 "border = exported" rule — already-exported moves to the
-        watermark (queued). The border is a CLICK TARGET again
-        (:meth:`_on_border_clicked`), the same grammar as Pick."""
-        ci = self._current_item()
-        if ci is None or self._eg is None:
-            self._chrome.set_media_state(None)
-            return
-        ps = self._eg.phase_state(ci.item_id, "edit")
-        state = (ps.state if ps is not None
-                 and ps.state in ("picked", "skipped")
-                 else self._phase_default)
-        self._chrome.set_media_state(
-            "picked" if state == "picked" else "skipped")
-
-    def set_phase_default(self, state: str) -> None:
-        """Inject the configured edit default (``default_state_for``,
-        spec/59 — "born green" out of the box)."""
-        if state in ("picked", "skipped"):
-            self._phase_default = state
-
-    # ── Exported watermark (spec/59 §8) ──────────────────────────────
-
-    def set_watermark_enabled(self, on: bool) -> None:
-        """Host-injected app-wide ``show_exported_watermark`` gate."""
-        self._watermark_enabled = bool(on)
-        self._refresh_watermark()
-
-    def _refresh_exported_ids(self) -> None:
-        if self._eg is None or not self._watermark_enabled:
-            self._exported_ids = set()
-            return
-        try:
-            self._exported_ids = self._eg.exported_item_ids()
-        except Exception:  # noqa: BLE001 — display-only
-            log.exception("exported_item_ids failed")
-            self._exported_ids = set()
-
-    def _refresh_watermark(self) -> None:
-        """Sync the canvas watermark to the CURRENT item's edit-lineage
-        membership ("an exported version exists")."""
-        ci = self._current_item()
-        on = (self._watermark_enabled and ci is not None
-              and ci.item_id in self._exported_ids)
-        try:
-            self._canvas.set_exported_watermark(on)
-        except Exception:  # noqa: BLE001 — display-only
-            log.exception("set_exported_watermark failed")
-
-    def _on_border_clicked(self) -> None:
-        """Toggle the photo's marked-for-export status (spec/59) — the
-        border click and the Space/C keys share this path (spec/63 §4;
-        Edit's ledger is binary, so C degrades to the toggle)."""
-        ci = self._current_item()
-        if ci is None or self._eg is None:
-            return
-        ps = self._eg.phase_state(ci.item_id, "edit")
-        cur = (ps.state if ps is not None
-               and ps.state in ("picked", "skipped")
-               else self._phase_default)
-        self._set_export_status("skipped" if cur == "picked" else "picked")
-
-    def _set_export_status(self, state: str) -> None:
-        """SET the photo's marked-for-export status (spec/63 §4: P and X
-        are set-verbs, never toggles — green flows to Share, red stays)."""
-        ci = self._current_item()
-        if ci is None or self._eg is None or state not in (
-                "picked", "skipped"):
-            return
-        try:
-            self._eg.set_phase_state(ci.item_id, "edit", state)
-        except Exception:  # noqa: BLE001
-            log.exception("export-status write failed for %s", ci.item_id)
-            return
-        self._refresh_exported_chip()
 
     # ── Full-screen ──────────────────────────────────────────────────
 
@@ -1435,25 +986,9 @@ class EditPage(QWidget):
             self._box_rotate(90)
             event.accept()
             return
-        # ── The decision verbs (spec/63 §4) on Edit's binary export
-        # ledger: P marks for export (SET), X unmarks (SET), Space
-        # toggles, C degrades to the toggle (no Compare state here).
-        # The legacy P-Preview binding moved to F10 (the truth key:
-        # in Edit, the developed full-resolution Preview) and the old
-        # DEAD second Key_P branch (P-export, shadowed since birth —
-        # spec/63's named kill) is gone.
-        if key == Qt.Key.Key_P:
-            self._set_export_status("picked")
-            event.accept()
-            return
-        if key == Qt.Key.Key_X:
-            self._set_export_status("skipped")
-            event.accept()
-            return
-        if key in (Qt.Key.Key_Space, Qt.Key.Key_C):
-            self._on_border_clicked()
-            event.accept()
-            return
+        # spec/66 §1.1 — Edit is creative-only: P/X/Space/C are inert
+        # here (no Pick/Skip ledger to drive). The viewport still owns
+        # the locked map; the page just doesn't handle them.
         if key == Qt.Key.Key_F10:
             # The standard lens (Nelson 2026-06-12): the processed,
             # cropped photo at full resolution — what export produces.
@@ -1474,11 +1009,6 @@ class EditPage(QWidget):
     def _show_shortcuts(self) -> None:
         from mira.ui.base.shortcuts import show_shortcuts
         show_shortcuts(self, tr("Edit — photo"), [
-            ("",                    tr("Marking")),
-            (tr("P / X"),           tr("Mark / unmark for export "
-                                       "(green flows to Share)")),
-            (tr("Space · C"),       tr("Toggle the mark")),
-            (tr("Click the border"), tr("Toggle the mark")),
             ("",                    tr("Navigate")),
             (tr("◀ / ▶ · ▲ / ▼"),    tr("Previous / next photo")),
             (tr("Home / End"),      tr("First / last photo")),
@@ -1496,70 +1026,6 @@ class EditPage(QWidget):
             (tr("Esc"),             tr("Back")),
             (tr("F1 · ?"),          tr("This help")),
         ])
-
-
-class _ExportWorker(QThread):
-    """Off-thread Process export — mirrors the legacy worker shape.
-
-    Runs ``core.process_export_engine.run_process_export`` so the page stays
-    usable.  Emits ``progress(done, total, name)`` per file and
-    ``finished_result(ExportResult)`` at the end.  ``cancel()`` is polled
-    via the engine's progress callback (returning False stops it).
-    """
-
-    progress = pyqtSignal(int, int, str)
-    finished_result = pyqtSignal(object)
-
-    def __init__(
-        self, *, buckets, destination, file_type, jpeg_quality,
-        collision, auto_on, aspect_label,
-        style_resolver=None,
-    ):
-        super().__init__()
-        self._buckets = buckets
-        self._destination = destination
-        self._file_type = file_type
-        self._jpeg_quality = jpeg_quality
-        self._collision = collision
-        self._auto_on = auto_on
-        self._aspect_label = aspect_label
-        # ``style_resolver(Path) -> Optional[str]`` lets the host pass a
-        # per-item style map (rebuild) so AUTO uses the right preset per
-        # photo.  Default ``None`` matches the legacy behaviour (style
-        # comes only from the journal entry).
-        self._style_resolver = style_resolver or (lambda p: None)
-        self._cancel = False
-        # Filled by the engine: {source filename: resolved-params dict}
-        # — the spec/54 §8 lineage snapshot's exact tone numbers.
-        self.params_sink: dict[str, dict] = {}
-
-    def cancel(self) -> None:
-        self._cancel = True
-
-    def run(self) -> None:  # noqa: D401
-        from core.process_export_engine import run_process_export
-
-        def cb(done: int, total: int, name: str) -> bool:
-            self.progress.emit(done, total, name)
-            return not self._cancel
-
-        try:
-            result = run_process_export(
-                self._buckets, self._destination,
-                file_type=self._file_type, jpeg_quality=self._jpeg_quality,
-                collision=self._collision, auto_on=self._auto_on,
-                aspect_label=self._aspect_label,
-                params_by_filename={}, crop_by_filename={},
-                rotation_by_filename={},
-                style_resolver=self._style_resolver,
-                gate_kept=False, progress=cb,
-                params_sink=self.params_sink,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("async export failed: %s", exc)
-            from core.cull_export import ExportResult
-            result = ExportResult()
-        self.finished_result.emit(result)
 
 
 __all__ = ["EditPage"]

@@ -227,60 +227,11 @@ def test_media_canvas_watermark_host_api(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# The single-export commit order (the grid-repaint contract)
+# The single-export commit order contract moves to the Export surface
+# (spec/66 Slice 5) — the equivalent pin will live in tests for that
+# surface once it lands. The old EditPage-side contract is gone with
+# Slice 4 (spec/66 §1.1 — Edit no longer triggers export).
 # --------------------------------------------------------------------------- #
-
-
-def test_single_export_commit_signal_fires_after_lineage(
-    qapp, tmp_path, monkeypatch,
-):
-    """spec/59 §8 regression (Nelson 2026-06-11: the watermark appeared
-    after a batch job but NOT after a single export). The host re-reads
-    ``exported_item_ids()`` SYNCHRONOUSLY on ``process_export_committed``
-    to repaint the grid cell — so the lineage row must already be
-    written when the signal fires. (Lives here, not in
-    test_edit_page_rebuild — that module is Slice-B bulk-skipped.)"""
-    from mira.ui.edited.edit_page import EditPage
-
-    eg = _make_eg(tmp_path)
-    try:
-        # Keep the page pixel-inert: the 6b pipeline preps on settle —
-        # stubbing the settle slot is the era's equivalent of the old
-        # synchronous ``_load_and_render_item`` stub (same intent: this
-        # test is about commit ORDER, not pixels).
-        monkeypatch.setattr(
-            EditPage, "_on_prep_settle", lambda self: None)
-        page = EditPage()
-        status = BucketStatus(
-            total=1, kept=0, candidate=0, discarded=0, untouched=1,
-            reviewed=False, browsed=False, badge="untouched")
-        src = tmp_path / "d" / "p1.jpg"
-        bucket = CullBucket(
-            bucket_key="1|individual|p1", kind="individual", title="p1",
-            items=(CullItem(
-                item_id="p1", path=src, kind="photo",
-                capture_time_corrected="2026-04-01T08:00:00"),),
-            status=status)
-        page.load(eg, bucket)
-        page._export_item_id = "p1"
-        page._export_source_path = src
-        page._export_total = 1
-
-        seen_at_emit: list = []
-        page.process_export_committed.connect(
-            lambda _iid: seen_at_emit.append(eg.exported_item_ids()))
-
-        dest = Path(eg.event_root) / "Edited Media" / "Dia 1" / "p1.jpg"
-        page._on_export_finished(SimpleNamespace(
-            ok_count=1, written=[dest], overwritten=[], renamed=[],
-            already_present=[]))
-
-        assert seen_at_emit, "process_export_committed never fired"
-        assert "p1" in seen_at_emit[0], (
-            "the commit signal fired BEFORE the lineage row was written "
-            "— the host repaints the cell against a stale exported set")
-    finally:
-        eg.store.close()
 
 
 # --------------------------------------------------------------------------- #

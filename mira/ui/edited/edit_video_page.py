@@ -46,7 +46,6 @@ from PyQt6.QtCore import (
     QRectF,
     QSizeF,
     Qt,
-    QThread,
     QTimer,
     QUrl,
     pyqtSignal,
@@ -67,7 +66,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -82,7 +80,6 @@ from core.photo_auto import (
 )
 from core.photo_decoder import decode_image
 from core.photo_render import Params
-from core.video_export import build_export_plan
 from core.video_extract import extract_frame, probe_video
 from core.video_segments import containing_segment, segment_bounds
 
@@ -485,8 +482,6 @@ class EditVideoPage(QWidget):
     fullscreen_changed = pyqtSignal(bool)
     navigate_at_edge = pyqtSignal(int)      # ±1
     finished = pyqtSignal()                  # EOF
-    # Emitted after a successful clip export — parent re-projects the cell.
-    clip_exported = pyqtSignal(str)         # item_id
 
     _SPEEDS = (0.25, 0.5, 1.0, 2.0, 4.0)
     # Selectable fade durations (seconds). Driving the audio_fade_ms column
@@ -532,9 +527,9 @@ class EditVideoPage(QWidget):
         self._dev_latch: Optional[tuple] = None
         self._last_ctx_seg = ""                    # containing-clip tracker
 
-        # Async export — same shape as the legacy worker.
-        self._export_worker: Optional[_VideoExportWorker] = None
-        self._export_running = False
+        # spec/66 §1.1 — the per-clip export trigger retired here; the
+        # batch export (spec/60) lives on the Export surface and walks
+        # picked segments + snapshots. No per-page export worker state.
 
         # ── Workshop model (spec/56 data; spec/59 surface) ─────────────
         # Markers + segment child items + snapshots of the LOADED source
@@ -681,7 +676,12 @@ class EditVideoPage(QWidget):
         tools.setVisible(False)
 
     def _build_top_bar(self) -> None:
-        """TOP_BAR: Back · info · [export progress] · stretch · Export → · ?"""
+        """TOP_BAR: Back · info · stretch · ⛶ · ?
+
+        spec/66 §1.1 (2026-06-14) — no inline export progress, no per-clip
+        Export button. Batch export moved to the Export surface; the app-
+        level BatchProgressLine below the menubar shows running jobs.
+        """
         tb = self._chrome.top_bar.layout()
 
         self._back_btn = back_button(tr("⟵ Back"))
@@ -692,34 +692,7 @@ class EditVideoPage(QWidget):
         self._info = info_label("")
         tb.addWidget(self._info)
 
-        # Inline async-export progress — same container shape as EditPage:
-        # bar + label + Cancel in one widget, hidden when no export is
-        # running.
-        self._export_progress = QWidget()
-        self._export_progress.setObjectName("ProcessExportProgress")
-        prow = QHBoxLayout(self._export_progress)
-        prow.setContentsMargins(0, 0, 0, 0)
-        prow.setSpacing(6)
-        self._export_bar = QProgressBar()
-        self._export_bar.setObjectName("ProcessExportBar")
-        self._export_bar.setMaximumWidth(240)
-        prow.addWidget(self._export_bar)
-        self._export_label = QLabel("")
-        self._export_label.setObjectName("ProcessExportLabel")
-        prow.addWidget(self._export_label)
-        self._export_cancel = QPushButton(tr("Cancel"))
-        self._export_cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._export_cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._export_cancel.clicked.connect(self._on_export_cancel)
-        prow.addWidget(self._export_cancel)
-        self._export_progress.setVisible(False)
-        tb.addWidget(self._export_progress)
-
         tb.addStretch(1)
-
-        # The per-clip Export button retired with the workshop (spec/56):
-        # bytes commit only at Export — the slice-4 walker renders picked
-        # segments + snapshots. The progress chrome + worker stay for it.
 
         # Fullscreen toggle — visible affordance so the user doesn't have
         # to know F11. The same handler is wired to the F11 key in
@@ -2344,139 +2317,6 @@ class EditVideoPage(QWidget):
         except Exception:  # noqa: BLE001
             log.exception("save_video_adjustment failed for %s", target)
 
-    # ── Export ───────────────────────────────────────────────────────
-
-    def _on_export_clip(self) -> None:
-        if (self._export_running or self._source is None
-                or self._processed_dir is None):
-            return
-        self._player.pause()
-        set_transport_playing(self._nav_play, False)
-        # Build a legacy-shaped "override" object for the export plan — the
-        # engine still expects this duck shape (params/crop_norm/box_angle/
-        # trim/audio/speed/stabilise).  Once the engine is rebuilt to consume
-        # VideoAdjustment directly, this shim goes away.
-        ov = _override_shim(
-            self._current_adjustment(),
-            self._resolved_params_for(self._current_adjustment()))
-        # The engine wants the clip range (s, e) — for the rebuild a clip IS
-        # its own file, so range is the full duration; trim deltas live on
-        # the override and the engine applies them.
-        s_ms = 0
-        e_ms = int(self._duration_ms) if self._duration_ms else None
-        if e_ms is None:
-            QMessageBox.warning(
-                self, tr("Couldn't probe duration"),
-                tr("Try waiting a moment, then export again."))
-            return
-        plan = build_export_plan(
-            ov, clip_start_ms=s_ms, clip_end_ms=e_ms, src_fps=self._src_fps)
-        out_path = self._export_output_path()
-        if out_path.exists():
-            resp = QMessageBox.question(
-                self, tr("Overwrite?"),
-                tr("{n} already exists. Overwrite it?")
-                .replace("{n}", out_path.name),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No)
-            if resp != QMessageBox.StandardButton.Yes:
-                return
-        worker = _VideoExportWorker(self._source, out_path, plan)
-        worker.progress.connect(self._on_export_progress)
-        worker.finished_result.connect(self._on_export_finished)
-        worker.finished.connect(worker.deleteLater)
-        self._export_worker = worker
-        self._export_running = True
-        # (Per-clip Export button retired with the workshop — slice 4
-        # rewires this worker behind the picked-segment walker.)
-        self._export_bar.setRange(0, 100)
-        self._export_bar.setValue(0)
-        self._export_label.setText(tr("Exporting…"))
-        self._export_progress.setVisible(True)
-        worker.start()
-
-    def _export_output_path(self) -> Path:
-        assert self._processed_dir is not None and self._source is not None
-        day_dir = (self._processed_dir / self._day_label
-                   if self._day_label else self._processed_dir)
-        name = (f"{self._source.stem}_processed.mp4")
-        return day_dir / name
-
-    def _on_export_progress(self, done: int, total: int) -> None:
-        pct = int(round(100.0 * done / max(1, total)))
-        self._export_bar.setValue(min(100, pct))
-        self._export_label.setText(
-            tr("Exporting… {p}%").replace("{p}", str(min(100, pct))))
-
-    def _on_export_finished(self, result) -> None:
-        ok, out_path, cancelled = result
-        self._export_running = False
-        pass  # Export button retired (spec/56) — nothing to re-enable.
-        self._export_progress.setVisible(False)
-        worker = self._export_worker
-        self._export_worker = None
-        # Worker self-deletes on QThread.finished.
-        committed = False
-        if ok and not cancelled and self._eg is not None:
-            try:
-                # Mirror the photo path's "exported = green cell" flag using
-                # the Adjustment row (Process colour resolver reads
-                # ``Adjustment.edit_exported`` — VideoAdjustment is a
-                # parallel state, but cell colour is driven from Adjustment).
-                self._eg.set_edit_exported(self._item_id, True)
-                self._refresh_media_border()
-                committed = True
-            except Exception:  # noqa: BLE001
-                log.exception(
-                    "set_edit_exported failed for %s", self._item_id)
-            # Record export→source lineage so Share can walk back from
-            # the clip on disk to its source video item.
-            try:
-                from mira.ui.edited._lineage import (
-                    record_single_lineage,
-                )
-                if out_path is not None and self._eg.event_root is not None:
-                    adj = self._current_adjustment()
-                    recipe: dict = {"look": "natural"}
-                    if adj is not None:
-                        recipe["look"] = adj.look or "natural"
-                        if adj.style:
-                            recipe["style"] = adj.style
-                        if adj.creative_filter:
-                            recipe["creative_filter"] = adj.creative_filter
-                        if adj.rep_frame_ms is not None:
-                            recipe["rep_frame_ms"] = adj.rep_frame_ms
-                    resolved = self._resolved_params_for(adj)
-                    record_single_lineage(
-                        self._eg,
-                        Path(self._eg.event_root),
-                        item_id=self._item_id,
-                        dest_path=Path(out_path),
-                        recipe=recipe,
-                        resolved_params=(
-                            {f: getattr(resolved, f)
-                             for f in resolved.__dataclass_fields__}
-                            if resolved is not None else None),
-                    )
-            except Exception:  # noqa: BLE001
-                log.exception("record_single_lineage failed")
-            # The host re-reads exported_item_ids() on this signal — it
-            # must fire AFTER the lineage write (the photo page had the
-            # emit-before-lineage order and the grid watermark never
-            # appeared after a single export; same contract here).
-            if committed:
-                self.clip_exported.emit(self._item_id)
-        title = tr("Export cancelled") if cancelled else tr("Export finished")
-        QMessageBox.information(
-            self, title,
-            tr("Clip exported.") if ok and not cancelled
-            else tr("Clip not exported."))
-
-    def _on_export_cancel(self) -> None:
-        if self._export_worker is not None:
-            self._export_worker.cancel()
-            self._export_label.setText(tr("Cancelling…"))
-
     # ── Navigation ───────────────────────────────────────────────────
 
     def _emit_edge(self, delta: int) -> None:
@@ -2684,44 +2524,6 @@ def _override_shim(
     adj: Optional[m.VideoAdjustment], params: Optional[Params],
 ) -> _OverrideShim:
     return _OverrideShim(adj, params)
-
-
-# --------------------------------------------------------------------------- #
-# Async video export worker
-# --------------------------------------------------------------------------- #
-
-
-class _VideoExportWorker(QThread):
-    """Off-thread ffmpeg export — mirrors the legacy worker."""
-
-    progress = pyqtSignal(int, int)
-    finished_result = pyqtSignal(object)
-
-    def __init__(self, source: Path, out_path: Path, plan) -> None:
-        super().__init__()
-        self._source = source
-        self._out_path = out_path
-        self._plan = plan
-        self._cancel = False
-
-    def cancel(self) -> None:
-        self._cancel = True
-
-    def run(self) -> None:  # noqa: D401
-        from core.video_export_run import export_processed_clip
-
-        def cb(done: int, total: int) -> bool:
-            self.progress.emit(done, total)
-            return not self._cancel
-
-        try:
-            ok = export_processed_clip(
-                self._source, self._out_path, self._plan, progress=cb)
-        except Exception:  # noqa: BLE001
-            log.exception("video export failed")
-            ok = False
-        cancelled = bool(self._cancel)
-        self.finished_result.emit((ok, self._out_path, cancelled))
 
 
 __all__ = ["EditVideoPage"]

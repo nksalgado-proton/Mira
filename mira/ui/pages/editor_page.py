@@ -110,12 +110,17 @@ class EditorStage(QWidget):
         self.setMinimumHeight(320)
 
         # Overlay children (visited eye, exported badge, nav arrows)
-        self._eye = QLabel("◉", self)
+        # spec/69 — visited eye uses the line-icon family glyph,
+        # tinted white against the fixed-dark pill (theme-independent
+        # by design so the chip reads on any photo backdrop).
+        from mira.ui.design import GLYPH_EYE, tinted_svg_pixmap
+        self._eye = QLabel(self)
         self._eye.setStyleSheet(
-            "background: rgba(8,10,16,0.74); color: #ffffff;"
+            "background: rgba(8,10,16,0.74);"
             " border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;"
             " padding: 4px 8px;"
         )
+        self._eye.setPixmap(tinted_svg_pixmap(GLYPH_EYE, 14, "#ffffff"))
         self._eye.hide()
         self._exported_chip = QLabel("↑ Exported", self)
         self._exported_chip.setStyleSheet(

@@ -1,9 +1,11 @@
 """Cluster icon loader (spec/32 §7).
 
-Loads the three SVG cluster icons (``burst.svg`` / ``focus.svg`` /
-``exposure.svg``) under ``assets/icons/clusters/`` and renders them to
-``QPixmap`` at any requested cell size, with a count badge composited in
-the bottom-right corner.
+Loads the SVG cluster icons (``burst.svg`` / ``focus.svg`` /
+``exposure.svg`` / ``repeated.svg``) from
+``assets/icons/clusters/badge/`` — the spec/69 canonical set the
+redesigned ``Thumb`` already consumes. Renders each to a ``QPixmap`` at
+any requested cell size, with a count badge composited in the
+bottom-right corner.
 
 The status border colour is **not** baked into the icon — the host
 ``DayGridCell`` paints it as a CSS border using the
@@ -34,22 +36,31 @@ log = logging.getLogger(__name__)
 # first three; only Quick Sweep produces ``repeat`` buckets today.
 CLUSTER_KINDS = ("burst", "focus_bracket", "exposure_bracket", "repeat")
 
-# Map cluster kinds to their SVG file stem.
+# Map cluster kinds to their SVG file stem. The badge/ filename
+# convention spells ``repeated`` (vs the legacy top-level ``repeat``);
+# spec/69 retired the top-level set in favour of ``badge/`` so this
+# mapping picks up the canonical filename.
 _FILE_STEM = {
     "burst": "burst",
     "focus_bracket": "focus",
     "exposure_bracket": "exposure",
-    "repeat": "repeat",
+    "repeat": "repeated",
 }
 
 
 def _icons_dir() -> Path:
-    """Locate ``<repo>/assets/icons/clusters/`` from this package's depth.
+    """Locate ``<repo>/assets/icons/clusters/badge/`` from this package's
+    depth. spec/69 chose ``badge/`` as the canonical cluster-icon set
+    (shared with :class:`mira.ui.design.Thumb`); the top-level
+    ``clusters/*.svg`` retired.
 
     ``__file__`` is ``…/mira/ui/base/cluster_icons.py`` → parents[3] is
     the repo root.
     """
-    return Path(__file__).resolve().parents[3] / "assets" / "icons" / "clusters"
+    return (
+        Path(__file__).resolve().parents[3]
+        / "assets" / "icons" / "clusters" / "badge"
+    )
 
 
 # Lazy global caches — keyed singletons so multiple DayGridCells share one

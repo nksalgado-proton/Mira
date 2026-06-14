@@ -33,8 +33,7 @@ from datetime import date
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -184,24 +183,19 @@ class _CategoryTile(QFrame):
             return
         # Tile is 46x46 with no border + 13px radius. Render the 24x24
         # source SVG at 26x26 centered, matching the mockup .cat-emoji
-        # ratio so the line family reads without crowding.
-        renderer = QSvgRenderer(str(self._icon_path))
-        if not renderer.isValid():
-            return
+        # ratio so the line family reads without crowding. The tint
+        # path is the shared helper (spec/69 §3) — same SourceIn pattern,
+        # cached per (path, size, color).
+        from mira.ui.design.icons import tinted_svg_pixmap
         icon_size = 26
-        buf = QImage(icon_size, icon_size, QImage.Format.Format_ARGB32)
-        buf.fill(0)
-        ip = QPainter(buf)
-        ip.setRenderHint(QPainter.RenderHint.Antialiasing)
-        renderer.render(ip)
-        ip.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        ip.fillRect(buf.rect(), self._tint)
-        ip.end()
+        pm = tinted_svg_pixmap(self._icon_path, icon_size, self._tint)
+        if pm.isNull():
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         x = (self.width() - icon_size) // 2
         y = (self.height() - icon_size) // 2
-        p.drawImage(x, y, buf)
+        p.drawPixmap(x, y, pm)
         p.end()
 
 

@@ -347,14 +347,12 @@ class Thumb(QWidget):
         if self._cluster_type is None and self._cluster_split is None:
             return
         if self._cluster_split is not None:
-            picked, skipped = self._cluster_split
-            text = f"{picked}✓·{skipped}✗"
-            chip_w = 64
-        elif self._cluster_count > 0:
-            text = f"×{self._cluster_count}"
-            chip_w = 38
-        else:
+            self._paint_split_chip(painter)
             return
+        if self._cluster_count <= 0:
+            return
+        text = f"×{self._cluster_count}"
+        chip_w = 38
         chip_rect = QRectF(
             self.width() - chip_w - 8,
             self.height() - 28,
@@ -373,3 +371,65 @@ class Thumb(QWidget):
             chip_rect,
             int(Qt.AlignmentFlag.AlignCenter), text,
         )
+
+    def _paint_split_chip(self, painter: QPainter) -> None:
+        """spec/69 — the mixed-cluster split chip: a count, the
+        line-icon check, an interpunct separator, the second count,
+        the line-icon cross. Replaces the Unicode `3✓·2✗` placeholder
+        so the symbols match the rest of the line-icon family."""
+        from mira.ui.design.icons import (
+            GLYPH_CHECK, GLYPH_CROSS, tinted_svg_pixmap,
+        )
+
+        picked, skipped = self._cluster_split  # type: ignore[misc]
+        picked_text = str(picked)
+        skipped_text = str(skipped)
+        sep = "·"
+
+        f = painter.font()
+        f.setPointSizeF(10)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        # Glyph + text dimensions — same line-height as the count chip
+        # so it sits on the same baseline as the ×N variant.
+        glyph_size = 12
+        spacing = 3
+        sep_gap = 5
+        picked_w = fm.horizontalAdvance(picked_text)
+        skipped_w = fm.horizontalAdvance(skipped_text)
+        sep_w = fm.horizontalAdvance(sep)
+        content_w = (
+            picked_w + spacing + glyph_size
+            + sep_gap + sep_w + sep_gap
+            + skipped_w + spacing + glyph_size
+        )
+        pad_x = 8
+        chip_w = content_w + pad_x * 2
+        chip_rect = QRectF(
+            self.width() - chip_w - 8,
+            self.height() - 28,
+            chip_w, 20,
+        )
+        self._paint_chip(
+            painter, chip_rect,
+            QColor(8, 10, 16, 188), QColor(255, 255, 255, 46),
+        )
+
+        white = QColor("#ffffff")
+        check_pm = tinted_svg_pixmap(GLYPH_CHECK, glyph_size, white)
+        cross_pm = tinted_svg_pixmap(GLYPH_CROSS, glyph_size, white)
+        text_y = chip_rect.y() + (chip_rect.height() + fm.ascent()) / 2 - 2
+        glyph_y = chip_rect.y() + (chip_rect.height() - glyph_size) / 2
+        cursor_x = chip_rect.x() + pad_x
+
+        painter.setPen(white)
+        painter.drawText(int(cursor_x), int(text_y), picked_text)
+        cursor_x += picked_w + spacing
+        painter.drawPixmap(int(cursor_x), int(glyph_y), check_pm)
+        cursor_x += glyph_size + sep_gap
+        painter.drawText(int(cursor_x), int(text_y), sep)
+        cursor_x += sep_w + sep_gap
+        painter.drawText(int(cursor_x), int(text_y), skipped_text)
+        cursor_x += skipped_w + spacing
+        painter.drawPixmap(int(cursor_x), int(glyph_y), cross_pm)

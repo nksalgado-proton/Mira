@@ -105,12 +105,16 @@ class VideoStage(QWidget):
             " padding: 4px 10px; font-size: 12px; font-weight: 600;"
         )
         self._duration_chip.hide()
-        self._eye = QLabel("◉", self)
+        # spec/69 — visited eye picks up the shared line-icon family
+        # glyph, tinted white over the fixed-dark pill.
+        from mira.ui.design import GLYPH_EYE, tinted_svg_pixmap
+        self._eye = QLabel(self)
         self._eye.setStyleSheet(
-            "background: rgba(8,10,16,0.74); color: #ffffff;"
+            "background: rgba(8,10,16,0.74);"
             " border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;"
             " padding: 4px 8px;"
         )
+        self._eye.setPixmap(tinted_svg_pixmap(GLYPH_EYE, 14, "#ffffff"))
         self._eye.hide()
         self._exported_chip = QLabel("↑ Exported", self)
         self._exported_chip.setStyleSheet(

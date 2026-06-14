@@ -11,11 +11,8 @@ so placeholders render correctly across both modes without per-widget QSS.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -29,46 +26,16 @@ from PyQt6.QtWidgets import (
 from mira.ui.palette import PALETTE
 
 
-_SEARCH_GLYPH_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "assets" / "icons" / "glyphs" / "search.svg"
-)
-
-
 def _render_search_glyph(size: int = 16) -> QPixmap:
     """Render the search.svg glyph at ``size`` px, tinted ink_soft for the
-    active theme. Cached lazily on first call (the result is cheap enough
-    that per-instance render is fine, but a module-level cache keeps the
-    filter row from re-decoding the SVG for every search field)."""
+    active theme. The shared helper (spec/69) owns the cache + the
+    SourceIn tint pass — this just resolves the right palette colour
+    per theme."""
+    from mira.ui.design.icons import GLYPH_SEARCH, tinted_svg_pixmap
     app = QApplication.instance()
     mode = (app.property("theme") if app else None) or "dark"
-    cache_key = (mode, size)
-    cached = _GLYPH_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    if not _SEARCH_GLYPH_PATH.is_file():
-        _GLYPH_CACHE[cache_key] = pm
-        return pm
-    renderer = QSvgRenderer(str(_SEARCH_GLYPH_PATH))
-    if not renderer.isValid():
-        _GLYPH_CACHE[cache_key] = pm
-        return pm
-    buf = QImage(size, size, QImage.Format.Format_ARGB32)
-    buf.fill(0)
-    ip = QPainter(buf)
-    ip.setRenderHint(QPainter.RenderHint.Antialiasing)
-    renderer.render(ip)
-    ip.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    ip.fillRect(buf.rect(), QColor(PALETTE[mode]["ink_soft"]))
-    ip.end()
-    pm = QPixmap.fromImage(buf)
-    _GLYPH_CACHE[cache_key] = pm
-    return pm
-
-
-_GLYPH_CACHE: dict[tuple[str, int], QPixmap] = {}
+    return tinted_svg_pixmap(
+        GLYPH_SEARCH, size, QColor(PALETTE[mode]["ink_soft"]))
 
 
 def line_input(

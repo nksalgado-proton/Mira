@@ -136,13 +136,16 @@ class DayGridCell(QFrame):
         else:
             self._play = None
 
-        # spec/32 §2.10 visited tick — a small ✓ in the top-right corner of
-        # the inner area when the user has previously drilled into this cell
-        # at the current phase.  Always created (hidden when not visited)
-        # so ``set_data()`` updates are a simple show/hide rather than a
-        # widget rebuild.  Theme-neutral translucent pill background + soft
-        # drop shadow so it reads against both dark and light thumbnails.
-        self._tick = QLabel("✓", self._inner)
+        # spec/32 §2.10 + spec/69 visited tick — the line-icon family
+        # check glyph painted as a small pill in the top-right corner
+        # of the inner area when the user has previously drilled into
+        # this cell at the current phase.  Always created (hidden when
+        # not visited) so ``set_data()`` updates are a simple show/hide
+        # rather than a widget rebuild.  Theme-neutral translucent pill
+        # background + soft drop shadow so it reads against both dark
+        # and light thumbnails (the chip BG is fixed-dark across themes
+        # by design).
+        self._tick = QLabel(self._inner)
         self._tick.setObjectName("DayGridVisitedTick")
         self._tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._tick.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -229,27 +232,33 @@ class DayGridCell(QFrame):
         self.style().polish(self)
 
     def _apply_tick_style(self) -> None:
-        """Style the ✓ visited badge (spec/32 §2.10, §7.4).
+        """Style the visited badge (spec/32 §2.10 + spec/69 §7.4).
 
         Theme-neutral light pill with a soft translucent background — so it
         reads against dark and light thumbnails alike without ever competing
-        with the status border. Font size scales with the cell so the badge
-        stays legible at every zoom level the §9 slider produces.
+        with the status border. The check glyph (line-icon family,
+        tinted white) re-renders at a size proportional to the cell so
+        the badge stays legible at every zoom level the §9 slider
+        produces.
         """
-        font_pt = max(9, self._size // 12)
         # Half the pill side, rounded — enough for a clean circle/pill at
         # every size from the 40 px floor up.
         radius = max(9, self._size // 12)
         self._tick.setStyleSheet(
             "QLabel#DayGridVisitedTick {"
-            f"  color: rgba(255,255,255,240);"
             f"  background: rgba(40,40,40,170);"
             f"  border-radius: {radius}px;"
-            f"  font-size: {font_pt}pt;"
-            f"  font-weight: bold;"
             f"  padding: 0px;"
             "}"
         )
+        # spec/69 — bake the line-icon check at a size proportional to
+        # the pill (~55%) so it stays centred + legible at every cell
+        # size.
+        from mira.ui.design import GLYPH_CHECK, tinted_svg_pixmap
+        side = max(18, self._size // 6)
+        glyph_size = max(10, int(side * 0.55))
+        self._tick.setPixmap(
+            tinted_svg_pixmap(GLYPH_CHECK, glyph_size, "#ffffff"))
 
     def _apply_pixmap(self) -> None:
         """Set the inner label's pixmap from the cell's content."""

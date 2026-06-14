@@ -324,8 +324,11 @@ def test_cell_visited_tick_shown_on_cluster_cell(qapp):
 
 
 def test_cell_visited_tick_scales_with_set_size(qapp):
-    """spec/32 §7.4 — tick badge scales proportionally with the cell-size
-    slider; its font-size in the stylesheet must change after set_size."""
+    """spec/32 §7.4 + spec/69 — tick badge scales proportionally with
+    the cell-size slider. Post-spec/69 the glyph is a line-icon SVG
+    pixmap (not a font character), so the pixmap dimensions are what
+    must grow as the cell grows. The pill stylesheet's border-radius
+    still tracks the cell side."""
     visited_cell = CullCell(
         end_time="2026-04-01T08:00:00",
         color=CellColor.KEPT, item_id="p1", item_kind="photo",
@@ -334,11 +337,13 @@ def test_cell_visited_tick_scales_with_set_size(qapp):
     cell = DayGridCell(CellRenderData(visited_cell), size=80)
     try:
         small_qss = cell._tick.styleSheet()
+        small_glyph = cell._tick.pixmap().width()
         cell.set_size(280)
         large_qss = cell._tick.styleSheet()
-        assert small_qss != large_qss
-        # The bigger size encodes a bigger font.
-        assert "font-size: 23pt" in large_qss or "font-size: 24pt" in large_qss
+        large_glyph = cell._tick.pixmap().width()
+        assert small_qss != large_qss            # border-radius changes
+        assert large_glyph > small_glyph         # glyph grows with cell
+        assert large_glyph >= 24                 # legible at the top end
     finally:
         cell.deleteLater()
 

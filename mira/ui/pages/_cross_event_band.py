@@ -16,8 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter
-from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -54,25 +53,16 @@ class _CrossEventGlyph(QLabel):
 
     def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
         super().paintEvent(evt)
-        if not _GLYPH_PATH.is_file():
-            return
-        renderer = QSvgRenderer(str(_GLYPH_PATH))
-        if not renderer.isValid():
-            return
+        from mira.ui.design.icons import tinted_svg_pixmap
         icon = 26
-        buf = QImage(icon, icon, QImage.Format.Format_ARGB32)
-        buf.fill(0)
-        ip = QPainter(buf)
-        ip.setRenderHint(QPainter.RenderHint.Antialiasing)
-        renderer.render(ip)
-        ip.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        ip.fillRect(buf.rect(), self._tint)
-        ip.end()
+        pm = tinted_svg_pixmap(_GLYPH_PATH, icon, self._tint)
+        if pm.isNull():
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         x = (self.width() - icon) // 2
         y = (self.height() - icon) // 2
-        p.drawImage(x, y, buf)
+        p.drawPixmap(x, y, pm)
         p.end()
 
 

@@ -123,13 +123,19 @@ class PickerStage(QWidget):
             " padding: 4px 10px; font-size: 12px; font-weight: 600;"
         )
         self._exif_chip.hide()
-        self._eye_chip = QLabel("◉", self)
+        # spec/69 — visited eye is the line-icon family eye glyph,
+        # tinted white (the chip BG is fixed-dark in both themes so the
+        # icon reads against any photo without theme-following tint).
+        from mira.ui.design import GLYPH_EYE, tinted_svg_pixmap
+        self._eye_chip = QLabel(self)
         self._eye_chip.setObjectName("StageEyeChip")
         self._eye_chip.setStyleSheet(
-            "background: rgba(8,10,16,0.74); color: #ffffff;"
+            "background: rgba(8,10,16,0.74);"
             " border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;"
-            " padding: 4px 8px; font-size: 12px;"
+            " padding: 4px 8px;"
         )
+        self._eye_chip.setPixmap(
+            tinted_svg_pixmap(GLYPH_EYE, 14, "#ffffff"))
         self._eye_chip.hide()
         self._exported_chip = QLabel("↑ Exported", self)
         self._exported_chip.setObjectName("StageExportedChip")

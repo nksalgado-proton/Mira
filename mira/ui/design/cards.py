@@ -101,26 +101,29 @@ class StatTile(QFrame):
         lab = QLabel(label.upper())
         lab.setObjectName("Micro")
         v.addWidget(lab)
-        from PyQt6.QtWidgets import QHBoxLayout
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        big = QLabel(value)
+        # Single rich-text QLabel for value + suffix — matches the mockup's
+        # `<div class="v">43 <small>· 57%</small></div>` inline pattern.
+        # Two side-by-side QLabels in a QHBoxLayout (the prior shape)
+        # produced uneven vertical baselines + visible background rect
+        # artifacts at the tile widths these stats render at; HTML
+        # baseline-aligns the small element automatically.
+        app = QApplication.instance()
+        mode = (app.property("theme") if app else None) or "dark"
+        ink_soft = PALETTE[mode].get("ink_soft", "#8b94a7")
+        big = QLabel()
         big.setObjectName("StatValue")
-        if value_color:
-            big.setStyleSheet(
-                f"font-size: 24px; font-weight: 800; color: {value_color};"
+        big.setTextFormat(Qt.TextFormat.RichText)
+        big.setStyleSheet(
+            "background: transparent; font-size: 24px; font-weight: 800;"
+            f" color: {value_color};" if value_color else
+            "background: transparent; font-size: 24px; font-weight: 800;"
+        )
+        if suffix:
+            big.setText(
+                f"{value} <span style='font-size:13px;font-weight:600;"
+                f"color:{ink_soft};'>{suffix}</span>"
             )
         else:
-            big.setStyleSheet("font-size: 24px; font-weight: 800;")
-        row.addWidget(big)
-        if suffix:
-            suf = QLabel(suffix)
-            suf.setObjectName("Sub")
-            suf.setAlignment(
-                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft
-            )
-            row.addWidget(suf)
-        row.addStretch()
-        v.addLayout(row)
+            big.setText(value)
+        v.addWidget(big)
         self.setMinimumSize(QSize(110, 70))

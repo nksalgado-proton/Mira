@@ -268,12 +268,18 @@ def apply_theme(
     """
     from mira.ui.base.clickable_cursor import install_clickable_cursor_filter
     from mira.ui.base.focus_keeper import install_focus_keeper
+    from mira.ui.base.wheel_guard import install_wheel_guard
 
     install_clickable_cursor_filter(app)
     # App-wide focus guard — stops focus from following the mouse when
     # tooltips / popups deactivate-reactivate the active window. See
     # ``mira/ui/base/focus_keeper.py`` for the full rationale.
     install_focus_keeper(app)
+    # App-wide wheel guard — stops mouse wheel over an unfocused
+    # QComboBox / QAbstractSpinBox from silently changing its value
+    # (and from grabbing focus via the default WheelFocus policy).
+    # See ``mira/ui/base/wheel_guard.py`` for the full rationale.
+    install_wheel_guard(app)
 
     # Painted widgets (Thumb, StageProgress, Donut, Card shadows, MiraMark /
     # _Wordmark, the cross-event glyph, …) pick their palette colours from

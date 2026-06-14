@@ -332,7 +332,11 @@ class PickerPage(QWidget):
     prev_requested = pyqtSignal()
     next_requested = pyqtSignal()
     fullscreen_toggled = pyqtSignal()
-    full_resolution_requested = pyqtSignal()
+    # spec/63 §4 LOCKED keymap: F10 opens the viewport's inspection lens
+    # (modal, honest peaking + true 1:1 + AF). When this shell is reconciled
+    # in spec/70 Phase 3 it'll embed PhotoViewport and inherit F10 directly;
+    # the old `full_resolution_requested` signal + Surface 10 page were
+    # retired (spec/65 §3.10) — the lens supersedes them.
     index_changed = pyqtSignal(int)
 
     def __init__(
@@ -371,9 +375,6 @@ class PickerPage(QWidget):
         self._compare_btn.clicked.connect(self._on_compare)
         toolbar.addWidget(self._compare_btn)
         toolbar.addSpacing(12)
-        full_res = ghost_button("Full resolution F10")
-        full_res.clicked.connect(self.full_resolution_requested.emit)
-        toolbar.addWidget(full_res)
         full_screen = ghost_button("Full screen F11")
         full_screen.clicked.connect(self.fullscreen_toggled.emit)
         toolbar.addWidget(full_screen)
@@ -503,9 +504,9 @@ class PickerPage(QWidget):
         if key == Qt.Key.Key_F11:
             self.fullscreen_toggled.emit()
             return
-        if key == Qt.Key.Key_F10:
-            self.full_resolution_requested.emit()
-            return
+        # F10 is intentionally NOT handled here — when this shell is
+        # reconciled with PhotoViewport (spec/70 Phase 3) the viewport
+        # intercepts F10 itself for the spec/63 §4 inspection lens.
         if key == Qt.Key.Key_Escape:
             self.back_requested.emit()
             return

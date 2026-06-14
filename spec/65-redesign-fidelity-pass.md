@@ -519,22 +519,26 @@ swap landed at `f5766b7`).
   as crowded. Mockup uses a kebab menu (`⋮`) with the rare actions
   hidden.
 
-### §3.10 Surface 10 — Full Resolution
+### §3.10 Surface 10 — Full Resolution — **RETIRED (2026-06-14)**
 
-Built: `mira/ui/pages/full_resolution_page.py:FullResolutionPage` (no
-route swap).
+`mira/ui/pages/full_resolution_page.py:FullResolutionPage` was deleted;
+spec/63 §4's locked F10 contract (the modal `_InspectView` inspection
+lens — full-resolution, true 1:1, honest peaking, AF, F11 = pure look,
+Esc steps down one level) already covers and exceeds what the page
+offered. The only thing the page added was a multi-photo filmstrip
+in-place, which conflicts with the lens-as-parenthesis model the
+locked keymap settled on ("the app waits until the lens closes" —
+navigation between photos stays at the host layer where ←/→ already
+work).
 
-- **Drag-to-pan not implemented.** Only QScrollArea native scroll.
-- **Floating top bar is a single pill.** Mockup has it semi-transparent
-  with a blur backdrop that's hard to replicate in Qt — could fake with
-  `QGraphicsBlurEffect` on a screenshot of the canvas behind it, but
-  expensive.
-- **No mouse-position-aware zoom.** Wheel zoom always zooms to center.
-- **ThemeToggle missing** from the top bar.
-- **Auto-hide chrome** on idle (mentioned in spec/00-design-system.md
-  §Full Resolution).
-- **F10 hook from Picker / Editor not wired.** The pages emit
-  `full_resolution_requested` but MainWindow has no slot for it yet.
+- The `full_resolution_requested` signals + `Full resolution F10`
+  ghost buttons on `picker_page.py` / `editor_page.py` were dropped.
+  When those shells reconcile with `PhotoViewport` in spec/70 Phase 3,
+  the viewport intercepts F10 itself via `_open_inspect_view()` — no
+  page-level signal needed.
+- The Surface-10 line drops out of the spec/70 §2 state table and
+  the §4 Phase-2 list.
+- §5.1 "Cheap" no longer carries a Surface-10 entry.
 
 ### §3.11 Surface 11 — Video Picker
 
@@ -646,18 +650,19 @@ Sorted by cost.
 
 **Cheap** (each ~50 lines of MainWindow adapter):
 
-- **Surface 10 wire-up.** `PickerPage.full_resolution_requested` +
-  `EditorPage.full_resolution_requested` → MainWindow opens
-  FullResolutionPage in a modal-style overlay.
+- ~~**Surface 10 wire-up.**~~ **RETIRED** — see §3.10. The spec/63 §4 F10
+  inspection lens already covers and exceeds the page; FullResolutionPage
+  was deleted, the dangling `full_resolution_requested` signals removed.
 - **Surface 13 adapter.** Map legacy `_dialog_kwargs` (existing_cuts +
   exported_count + style_options + music_categories + music_hint +
   pool_probe + totals_probe) into a `NewCutContext` constructor and
   translate `cut_info()` → legacy draft shape. Both `_on_new_cut` +
   `_on_adjust_cut` call sites in `mira/ui/shared/cuts_shell.py`.
-- **Surface 05 wire-up.** Insert DaysListsPage between Phases and
-  PickPage in MainWindow's nav. Plus a gateway snapshot function
-  (per-day pick/skip counts from `gateway.phase_day_progress()` +
-  bucket count from a new query).
+- ~~**Surface 05 wire-up.**~~ **DONE 2026-06-14** — `_open_days_lists_for`
+  in `mira/ui/shell/main_window.py` builds DaySnapshot[] from
+  `phase_day_progress()` + `cached_buckets()` + a per-day capture-hour
+  rollup; PhasesPage Pick tile → DaysListsPage → PickPage opens at the
+  selected day via `_open_day(day_n)`.
 
 **Medium** (QMediaPlayer integration, ~200 lines each):
 

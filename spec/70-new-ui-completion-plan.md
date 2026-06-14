@@ -10,6 +10,26 @@ surface module is retired. The definition of done is §6.
 
 ---
 
+## 0. Design source (read this first — the folder names are misleading)
+
+The authoritative visual target is the **Mira redesign mockups**: the HTML+MD
+set in the Desktop folder currently named **`MiraCrafter Redesign/`**. The folder
+name is **stale** — its files were rebranded to *Mira* and the sandbox couldn't
+rename the folder. This is the indigo, dark-default, component-based design that
+the in-code `mira/ui/design/` catalog + `redesign.qss` already implement.
+
+**Do NOT use the in-repo `Mira Surfaces/` PNGs as the target.** Despite the
+"Mira" name, that set is **older**: the renders still say "MiraCrafter" in the
+title bar, use the lighter legacy look, and show a "Share" 4th phase — they
+predate this redesign and the spec/66 phase model, and would contradict the work
+already in the code.
+
+Where the mockups still read "MiraCrafter" or "Share": the brand is **Mira**
+(the `M✦ıra` wordmark) and the 4th phase is **Export** (spec/66). Suggest
+renaming the Desktop folder to `Mira Redesign/` to end the confusion.
+
+---
+
 ## 1. Strategy (LOCKED) — redesign shell + the one engine, then retire legacy
 
 The heavy surfaces exist twice today: a **functional legacy surface** that is
@@ -48,7 +68,7 @@ is stale — it lists Share/Cuts as route-swapped, but this tree wires the legac
 | 07 Picker | ✅ `picker_page.py` (shell) | ❌ | `picked/pick_page.py` → `pick_photo_surface.py` |
 | 08 Editor | ✅ `editor_page.py` (shell) | ❌ | `edited/edit_host_page.py`, `edit_page.py`, `edit_video_page.py` |
 | 09 Share / Cuts | ✅ `share_cuts_page.py` | ❌ (legacy live) | `shared/cuts_shell.py` `CutsShellPage` |
-| 10 Full Resolution | ✅ `full_resolution_page.py` | ❌ (F10 not wired) | — |
+| ~~10 Full Resolution~~ | **RETIRED 2026-06-14** — spec/63 §4 F10 lens supersedes | — | — |
 | 11 Video Picker | ✅ `video_picker_page.py` (shell) | ❌ | `picked/video_pick_page.py` |
 | 12 Video Editor | ✅ `video_editor_page.py` (shell) | ❌ | `edited/edit_video_page.py` |
 | 13 New Cut dialog | ✅ `new_cut_dialog.py` | ❌ | `shared/new_cut_dialog.py` (legacy) |
@@ -83,13 +103,18 @@ screenshot loop before the risky surfaces.
 
 ### Phase 2 — Cheap route-swaps / wire-ups (spec/65 §5.1 "Cheap", ~50 lines each)
 
-- **05 Days Lists** — insert `DaysListsPage` between Phases and Pick:
-  `PhasesPage.phase_tile_activated('pick') → DaysListsPage → DayRow.activated →
-  PickPage`. (Becomes the redesigned Days Grid target in Phase 3.)
-- **10 Full Resolution** — wire `full_resolution_requested` (Picker/Editor) →
-  MainWindow opens `FullResolutionPage`. (Note: F10 already opens the viewport's
-  inspection lens per spec/63 §4 — confirm whether this surface is still wanted
-  or is superseded by the lens before building.)
+- ✅ **05 Days Lists** (2026-06-14) — `DaysListsPage` lives between Phases and
+  Pick: `PhasesPage.phase_tile_activated('pick') → DaysListsPage → DayRow.
+  activated → PickPage._open_day(day_n)`. Gateway-fed from `phase_day_progress()`
+  + `cached_buckets()` + a per-day capture-hour rollup driving the analytic
+  spark. (Becomes the redesigned Days Grid target in Phase 3.)
+- ~~**10 Full Resolution**~~ — **RETIRED 2026-06-14.** The verify-then-decide
+  pass found that spec/63 §4's F10 inspection lens already covers and exceeds
+  the page (honest peaking + AF + F11 pure look + modal aspect-locked window).
+  The page's only addition was an in-place multi-photo filmstrip, which
+  conflicts with the lens-as-parenthesis model the locked keymap settled on.
+  FullResolutionPage was deleted; the dangling `full_resolution_requested`
+  wiring on the picker/editor redesign shells was removed. See spec/65 §3.10.
 - **13 New Cut dialog** — adapter mapping the legacy 7-key constructor →
   `NewCutContext`, both call sites in `shared/cuts_shell.py`.
 

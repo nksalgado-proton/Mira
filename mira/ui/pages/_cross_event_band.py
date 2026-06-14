@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -84,8 +84,12 @@ class CrossEventCutsBand(QFrame):
 
     def _build_layout(self) -> None:
         h = QHBoxLayout(self)
-        h.setContentsMargins(18, 14, 18, 14)
-        h.setSpacing(14)
+        # Hero padding — bumped from 14 to 18 vertical so the band reads as
+        # the "designated entry point" the spec (§3.1) calls for. Matches
+        # the mockup's 16px+ vertical breathing room while staying short
+        # enough that the band doesn't dominate the page.
+        h.setContentsMargins(20, 18, 20, 18)
+        h.setSpacing(16)
 
         # Accent icon tile (50px). Glyph = stacked frames + magnifier SVG
         # tinted accent (path data extracted from surface-01-initial-app.html
@@ -95,7 +99,10 @@ class CrossEventCutsBand(QFrame):
         tint = QColor(PALETTE[mode]["accent"])
         h.addWidget(_CrossEventGlyph(tint))
 
-        # Label block
+        # Label block. Title gets tightened letter-spacing (-0.3) and a
+        # touch of extra weight so it punches as a hero CTA — the mockup's
+        # `letter-spacing:-.2px` plus the band's accent border are what
+        # make it read as bigger than its 16px nominal size.
         label_box = QVBoxLayout()
         label_box.setContentsMargins(0, 0, 0, 0)
         label_box.setSpacing(4)
@@ -103,12 +110,16 @@ class CrossEventCutsBand(QFrame):
         title_row.setSpacing(8)
         title = QLabel("Cross-Event Cuts")
         title.setObjectName("CardTitle")
+        title_font = QFont(title.font())
+        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.3)
+        title.setFont(title_font)
         title_row.addWidget(title)
         title_row.addWidget(tag("Preview"))
         title_row.addStretch()
         label_box.addLayout(title_row)
         sub = QLabel("Search and build cuts across every event at once.")
         sub.setObjectName("Sub")
+        sub.setWordWrap(True)
         label_box.addWidget(sub)
         h.addLayout(label_box, 2)
 
@@ -126,16 +137,19 @@ class CrossEventCutsBand(QFrame):
         h.addWidget(btn)
 
     def _apply_shadow(self) -> None:
-        # Match the mockup .cec shadow: 0 10px 30px rgba(accent, .18) — a soft
-        # accent glow, NOT the heavy near-opaque drop the old shadow_alpha
-        # (110) produced.
+        # Accent-glow drop shadow. Bumped from alpha 46 (.18) to ~92 (.36 in
+        # dark / .22 in light) — the original was tuned to the mockup's CSS
+        # `rgba(.18)` but Qt's QGraphicsDropShadowEffect renders a softer
+        # blur than CSS's box-shadow, so the same alpha reads about half as
+        # present on screen. The bump restores the "hero entry" weight
+        # without crossing into the heavy near-opaque drop the legacy used.
         eff = QGraphicsDropShadowEffect(self)
-        eff.setBlurRadius(30)
-        eff.setOffset(0, 10)
+        eff.setBlurRadius(36)
+        eff.setOffset(0, 12)
         app = QApplication.instance()
         mode = (app.property("theme") if app else None) or "dark"
         accent = QColor(PALETTE[mode]["accent"])
-        accent.setAlpha(46)  # ≈ .18 opacity
+        accent.setAlpha(92 if mode == "dark" else 56)
         eff.setColor(accent)
         self.setGraphicsEffect(eff)
 

@@ -127,6 +127,7 @@ _ICONS_ROOT = Path(__file__).resolve().parents[3] / "assets" / "icons"
 GLYPHS_DIR = _ICONS_ROOT / "glyphs"
 CATEGORIES_DIR = _ICONS_ROOT / "categories"
 CLUSTERS_DIR = _ICONS_ROOT / "clusters" / "badge"
+PHASES_DIR = _ICONS_ROOT / "phases"
 
 # Named line-icon glyphs from ``assets/icons/glyphs/``. Importable
 # constants give a single typo-checkable surface for the wiring
@@ -136,6 +137,16 @@ GLYPH_CROSS_EVENT = GLYPHS_DIR / "cross_event.svg"
 GLYPH_EYE = GLYPHS_DIR / "eye.svg"
 GLYPH_CHECK = GLYPHS_DIR / "check.svg"
 GLYPH_CROSS = GLYPHS_DIR / "cross.svg"
+
+# Phase glyphs — drawn for Surface 01's open-card pipeline rows so the
+# mockup's `📥 / ⭐ / 🎨 / 📤` emojis become real line-icons (spec/65
+# §2.1). Same 24×24 viewBox / 1.8 stroke-width family as the others.
+PHASE_GLYPH = {
+    "collect": PHASES_DIR / "collect.svg",
+    "pick":    PHASES_DIR / "pick.svg",
+    "edit":    PHASES_DIR / "edit.svg",
+    "export":  PHASES_DIR / "export.svg",
+}
 
 
 __all__ = [
@@ -147,6 +158,8 @@ __all__ = [
     "GLYPH_CROSS_EVENT",
     "GLYPH_EYE",
     "GLYPH_SEARCH",
+    "PHASES_DIR",
+    "PHASE_GLYPH",
     "clear_cache",
     "paint_tinted_svg",
     "tinted_svg_pixmap",

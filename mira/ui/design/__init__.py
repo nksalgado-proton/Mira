@@ -57,6 +57,8 @@ from mira.ui.design.icons import (
     GLYPH_CROSS_EVENT,
     GLYPH_EYE,
     GLYPH_SEARCH,
+    PHASE_GLYPH,
+    PHASES_DIR,
     paint_tinted_svg,
     tinted_svg_pixmap,
 )
@@ -84,6 +86,8 @@ __all__ = [
     "GLYPH_EYE",
     "GLYPH_SEARCH",
     "MessageDialog",
+    "PHASES_DIR",
+    "PHASE_GLYPH",
     "MiraLogo",
     "MiraMark",
     "PageHeader",

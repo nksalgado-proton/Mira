@@ -44,6 +44,7 @@ from mira.gateway import Gateway
 from mira.ui.base.event_card import EventCardData
 from mira.ui.design import (
     PageHeader,
+    StatTile,
     primary_button,
     search_field,
     select,
@@ -89,13 +90,32 @@ class EventsPage(QWidget):
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(32, 24, 32, 24)
-        outer.setSpacing(18)
+        outer.setSpacing(16)
 
         # Header — title + count + primary New Event
         new_btn = primary_button("+ New Event")
         new_btn.clicked.connect(self.new_event_requested.emit)
         self._header = PageHeader("Events", "Loading…", action=new_btn)
         outer.addWidget(self._header)
+
+        # Aggregate at-a-glance stat band — 3 quiet StatTile chips that
+        # frame the events list as a dashboard view (spec/65 §2.4 / §3.1
+        # "the dashboard wants this synthesis"). Sits between the header
+        # and the CEC: the CEC's accent border + glow still dominate, and
+        # the tiles are deliberately card2 (no accent shadow) so they
+        # recede into the page chrome. setEventsForPreview / refresh
+        # repopulate the values in _apply_filter.
+        self._stat_row = QHBoxLayout()
+        self._stat_row.setSpacing(10)
+        self._stat_open = StatTile("Open", "0", value_color="#34d399")
+        self._stat_closed = StatTile("Closed", "0", value_color="#ff5da2")
+        self._stat_days = StatTile("Days", "0", value_color="#7c6cff")
+        for w in (self._stat_open, self._stat_closed, self._stat_days):
+            w.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self._stat_row.addWidget(w, 1)
+        outer.addLayout(self._stat_row)
 
         # Cross-Event Cuts entry
         self._cross_band = CrossEventCutsBand()
@@ -249,13 +269,31 @@ class EventsPage(QWidget):
         total = len(self._card_data_by_id)
         open_n = sum(1 for c in self._card_data_by_id.values() if not c.is_closed)
         closed_n = total - open_n
+        days_n = sum(
+            c.total_days or 0 for c in self._card_data_by_id.values()
+        )
         sub = self._header.findChild(QLabel, "Sub")
         if sub is not None:
             sub.setText(
                 f"{total} event{'s' if total != 1 else ''} · "
                 f"{open_n} open · {closed_n} closed"
             )
+        # Push the at-a-glance trio. Static labels under a StatTile pick up
+        # the bigger value glyph live; the value labels are the second child
+        # in each tile (the Micro label is first).
+        self._update_stat_tile(self._stat_open, str(open_n))
+        self._update_stat_tile(self._stat_closed, str(closed_n))
+        self._update_stat_tile(self._stat_days, str(days_n))
         self._render(filtered)
+
+    @staticmethod
+    def _update_stat_tile(tile: "StatTile", value: str) -> None:
+        """StatTile's value label is the 2nd QLabel descendant (Micro label
+        is first). Live updates avoid rebuilding the widget every refresh."""
+        labels = tile.findChildren(QLabel)
+        # labels: [Micro 'label', StatValue, optional Sub suffix]
+        if len(labels) >= 2:
+            labels[1].setText(value)
 
     def _render(self, cards: List[EventCardData]) -> None:
         while self._cards.count():

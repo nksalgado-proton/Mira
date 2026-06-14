@@ -35,6 +35,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -48,12 +49,14 @@ from mira.ui.base.event_card import EventCardData
 from mira.ui.design import (
     Card,
     Carousel,
+    PHASE_GLYPH,
     StageProgress,
     StatTile,
     chip_closed,
     chip_idle,
     chip_open,
     tag,
+    tinted_svg_pixmap,
 )
 from mira.ui.palette import PALETTE
 
@@ -199,6 +202,30 @@ class _CategoryTile(QFrame):
         p.end()
 
 
+class _PhaseIcon(QLabel):
+    """Tiny phase-name leading glyph for the open-card pipeline rows.
+
+    16px line-icon (collect/pick/edit/export) tinted the phase's identity
+    colour — the row reads as a real iconographic dashboard line instead of
+    the mockup's Unicode emoji or the migration's bare text. Used 4× per
+    open card; the tint helper caches per (path, size, colour) so theme
+    toggles re-tint without re-rasterising the SVG.
+    """
+
+    _SIZE = 16
+
+    def __init__(self, phase: str, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._SIZE + 2, self._SIZE + 2)
+        path = PHASE_GLYPH.get(phase)
+        if path is None:
+            return
+        pm = tinted_svg_pixmap(path, self._SIZE, QColor(color))
+        if not pm.isNull():
+            self.setPixmap(pm)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+
 class EventCardRedesign(Card):
     """The Surface 01 event tile (replaces the legacy EventCard visually)."""
 
@@ -308,7 +335,12 @@ class EventCardRedesign(Card):
         body = QHBoxLayout()
         body.setSpacing(18)
 
-        # Left: date column
+        # Left: date column. FROM / date / ↓ / TO / date / (UTC OFFSET / value).
+        # The vertical arrow + the column's right-border (added below as a
+        # QFrame VLine) come straight from the mockup's `.dates` block —
+        # they're what turns the column from "labels stacked" into "a
+        # well-cleft date pair." Without them the column reads as one
+        # undifferentiated stack.
         date_box = QVBoxLayout()
         date_box.setSpacing(2)
         from_label = QLabel("FROM")
@@ -317,6 +349,15 @@ class EventCardRedesign(Card):
         date_box.addWidget(QLabel(
             self._data.start_date.isoformat() if self._data.start_date else "—"
         ))
+        arrow = QLabel("↓")
+        arrow.setObjectName("DateArrow")
+        accent = self._palette_color("accent")
+        arrow.setStyleSheet(
+            f"color: {accent}; font-size: 14px; font-weight: 700;"
+        )
+        date_box.addSpacing(4)
+        date_box.addWidget(arrow)
+        date_box.addSpacing(2)
         to_label = QLabel("TO")
         to_label.setObjectName("Micro")
         date_box.addWidget(to_label)
@@ -326,25 +367,45 @@ class EventCardRedesign(Card):
         if self._data.tz_display:
             tz_label = QLabel("UTC OFFSET")
             tz_label.setObjectName("Micro")
+            date_box.addSpacing(6)
             date_box.addWidget(tz_label)
             tz_lbl = QLabel(self._data.tz_display.split("\n")[0])
+            tz_lbl.setObjectName("Faint")
             date_box.addWidget(tz_lbl)
         date_box.addStretch()
         date_wrap = QWidget()
         date_wrap.setLayout(date_box)
         date_wrap.setMinimumWidth(120)
+        date_wrap.setMaximumWidth(150)
         body.addWidget(date_wrap, 0)
 
-        # Right: 4-stage pipeline progress
+        # Vertical line separator between dates and pipeline. Mockup uses
+        # `border-right` on the dates column for the same visual cleft.
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setObjectName("DatesSep")
+        line_color = self._palette_color("line")
+        sep.setStyleSheet(
+            f"color: {line_color}; background: {line_color};"
+            " border: none; max-width: 1px; min-width: 1px;"
+        )
+        body.addWidget(sep)
+
+        # Right: 4-stage pipeline progress. No "PIPELINE" header — the mockup
+        # doesn't carry one; the bars themselves are the section. Each row
+        # gets a 16px line-icon glyph (spec/65 §2.1) tinted the phase colour
+        # so the row reads "📥 Collect ━━━━━ 100%" with real iconography
+        # instead of plain text.
         pipeline = QVBoxLayout()
         pipeline.setSpacing(8)
-        pipeline_label = QLabel("PIPELINE")
-        pipeline_label.setObjectName("Micro")
-        pipeline.addWidget(pipeline_label)
+        pipeline.setContentsMargins(0, 2, 0, 0)
         for phase in _PHASES:
             row = QHBoxLayout()
+            row.setSpacing(8)
+            phase_color = self._palette_color(_PHASE_COLOR_TOKEN[phase])
+            row.addWidget(_PhaseIcon(phase, phase_color))
             label = QLabel(_PHASE_LABEL[phase])
-            label.setFixedWidth(52)
+            label.setFixedWidth(48)
             row.addWidget(label)
             bar = StageProgress()
             percent, _state = _stage_value(
@@ -376,6 +437,12 @@ class EventCardRedesign(Card):
         )
         body.addWidget(pipeline_wrap, 1)
         self.layout().addLayout(body)
+
+    @staticmethod
+    def _palette_color(token: str) -> str:
+        app = QApplication.instance()
+        mode = (app.property("theme") if app else None) or "dark"
+        return PALETTE[mode].get(token, "#7c6cff")
 
     # ── closed body ─────────────────────────────────────────────────────
 

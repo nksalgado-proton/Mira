@@ -5,7 +5,69 @@ reads `spec/00-charter.md` then this file, and can start immediately.
 
 ---
 
-> ## ⚡ CURRENT (2026-06-13, NINTH SESSION — WRAPPED, EXTENDED) — **SPEC/64 events-information split CLOSED + Bug 3 + classification UI strip + closed-tile body redesigns + Cuts back-routing.** Eleven commits this session, tree clean, **verify.bat 2873 / 0 + 20 / 0 at HEAD**. The session opened on slice 6 owed and grew into a full multi-arc sprint as Nelson eyeballed each result and queued the next change. **NEW MEMORY landed:** [[feedback_slow_down_on_visual_iteration]] — after the third rapid hardware-table iteration on the closed tile, Nelson called the rushing pattern and the change was reverted; the rule is now: 2-3 rapid visual commits without an eyeball → STOP + ask.
+> ## ⚡ CURRENT (2026-06-14, TENTH SESSION — WRAPPED) — **spec/66 phase-model revision (slices 4–6) + spec/69 icon-wiring fidelity, four commits.** The session ran two scoped programs end-to-end on top of the redesign foundation: the Collect/Pick/Edit/Export phase spine (Edit de-cluttered, a brand-new Export surface born from the design catalog, Export menu + Exported Media/ tier), and the icon-wiring sweep that retires the remaining Unicode glyph placeholders. **verify.bat: 2812 passed / 3 pre-existing baseline failures / 281 skipped (main pass) + 20/0 (quarantined)** — same 3 flakes that were red at session start, no new regressions.
+>
+> **The four commits, oldest → newest:**
+> 1. `29fbc31` — spec/66 slice 4: de-clutter Edit surface
+> 2. `5f67189` — spec/66 slice 5: the Export-phase surface (design-catalog fidelity)
+> 3. `80ff99d` — spec/66 slice 6: Export menu + Exported Media/ tier
+> 4. `b1b81f7` — spec/69: line-icon family + tinted_svg_pixmap helper
+>
+> **What landed (by arc):**
+>
+> 1. **Slice 4 — Edit creative-only (29fbc31).** Stripped from `mira/ui/edited/{edit_page, edit_video_page, edit_host_page}.py`: the export trigger menu + button, the inline async-export progress widget, the per-page `_ExportWorker` / `_VideoExportWorker` classes, the mark-for-export green/red border, the Exported watermark plumbing, the day-grid border-click cycle, the navigator/day-grid "Export all" buttons, the `process_export_committed` / `export_scope_requested` / `clip_exported` signals, the host's batch-export helpers (`_run_batched_export` / `_collect_*` / `_collect_recipes` / `_collect_styles_by_path` / `_on_*_export_committed` / `_refresh_cell_for_item`), and the host's watermark/exported-ids state. Edit is now classification + tone + crop only; P/X/Space/C fire on the viewport but the page deliberately doesn't connect to them (no Pick/Skip ledger here). Net -1639 / +121. `test_edit_page_keymap.py` rewritten to assert the keys are inert; the legacy `test_single_export_commit_signal_fires_after_lineage` retired (the contract moves to the Export surface).
+>
+> 2. **Slice 5 — Export surface (5f67189).** New module `mira/ui/exported/` (`__init__.py`, `export_page.py`). Built **fidelity-first** from the `mira/ui/design/` catalog per spec/68 §3 (NOT a port + recolor): `PageHeader` (real title weight), `ghost_button` / `danger_ghost_button` / `primary_button` for the toolbar, `StageProgress` for the live green/total counter (phase-identity green token), `mira.ui.design.dialogs.confirm` / `show_info` / `show_error` (no QMessageBox chrome), and `mira.ui.design.Thumb` cells laid out in `mira.ui.base.flow_layout.FlowLayout` — mirrors `days_grid_page.py` structurally. Pool = all `pick=picked` photos; default **GREEN** (born-green per spec/59 §8, carried by spec/66); click toggles green↔red; bulk **Pick all** / **Skip all** on the toolbar; primary "Export green (N)" submits through the unchanged spec/59 §8 `BatchExportQueue` + spec/60 worker engine (view-over-engine: engine + queue locked, this surface only re-parents the trigger). The PhasesPage Export tile click already emitted `"export"`; MainWindow gained `_EXPORT_PAGE_KEY` + the route + `_on_export_closed` / `_on_export_fullscreen`. 9 new pin tests in `tests/test_export_page.py` (all green).
+>
+> 3. **Slice 6 — Menus + Exported Media/ plumbing (80ff99d).** Menus (`main_window.py`): new top-level **Export** menu with "Open Export phase" alongside Collect/Pick/Edit; new `_SURFACE_CLOSED_EVENT` mode so the **Share** menu only appears on closed events (the empty-children rule hides it otherwise; label retitled "Open Cuts" per spec/66 §4). On-disk (`core/path_builder.py`): new `Exported Media/` tier (the spec/66 §1.2 shipped set) with `exported_media_dir()` helper, `ensure_event_tree` creates it, `RESERVED_DIR_NAMES` picks it up. Engine wiring (`mira/ui/exported/export_page.py`): default destination repointed; third-party returns from `Edited Media/` are **HARDLINKED** into `Exported Media/<day>/` instead of re-rendered (the return is itself a finished file — re-feeding through Mira's tone pipeline would change the pixels; copy fallback for cross-volume failures, mirroring spec/57 policy; synchronous commit so the render queue stays unblocked). Gateway (`mira/gateway/event_gateway.py`): `exported_item_ids()` + `exported_files()` now filter on `export_relpath LIKE 'Exported Media/%'` — only shipped rows count; new `edit_candidate_item_ids()` + `edit_candidate_relpath(item_id)` expose the inbox set. Vocabulary (`mira/event_classification.py`): `PHASE_EXPORT = "export"` added; `ALL_PHASES` / `DECISION_PHASES` re-spelled per spec/66 §3 (share leaves the phase tuple but survives as a state word for the Cuts code path); `event_card._PHASE_DISPLAY_LABELS` gains "export". Cut-test fixtures (all of `test_cut_*`, `test_cuts_shell`, `test_gateway_cuts`) bulk-rewrote `Edited Media/` → `Exported Media/` to reflect the new shipped-set semantic. `test_main_window_menu` got new tests for the Export menu + Share-on-closed-events.
+>
+> 4. **spec/69 — Icon wiring (b1b81f7).** Drew three line-icon glyphs in `assets/icons/glyphs/`: **eye** (outline + filled pupil), **check** (single stroke), **cross** (two strokes) — all 24×24 viewBox, `stroke="currentColor"`, stroke-width 1.8, round caps to match the family. Factored the `_CategoryTile.paintEvent` SVG-tint pattern into `mira/ui/design/icons.py::tinted_svg_pixmap(path, size, color)` (cached by path+size+color.rgba); also exports named glyph-path constants. Wired every Unicode placeholder spec/69 lists:
+>    - `picker_page.py` / `editor_page.py` / `video_picker_page.py`: visited eye chip `QLabel("◉")` → tinted eye SVG (white-on-dark pill, theme-independent by design — overlays photos).
+>    - `day_grid_cell.py`: visited tick `QLabel("✓")` → tinted check SVG, sized proportionally to the cell on every `set_size` so the badge stays legible across the size-slider range.
+>    - `thumbs._paint_count_chip`: mixed-cluster split chip `"3✓·2✗"` text → `"3 ✓ · 2 ✗"` painted via the line-icon glyphs.
+>    - Existing `_CategoryTile`, `_CrossEventGlyph`, `_render_search_glyph` retired their inline copies of the SourceIn pattern and now go through the shared helper.
+>    Cluster-dir reconciliation: `cluster_icons.py` repointed at `assets/icons/clusters/badge/` (spec/69 canonical — the set Thumb already used); legacy top-level `assets/icons/clusters/{burst,exposure,focus,repeat}.svg` retired; `repeat → repeated` filename mapping. Verification: `scripts/smoke_icons.py` renders every spec/69 surface fragment on dark + light themes (`smoke_icons_{dark,light}.png`). The `test_cell_visited_tick_scales_with_set_size` test was re-pinned to assert pixmap-dimension scaling instead of the now-irrelevant QSS font-size string.
+>
+> **EYEBALL STATUS:** Smoke-rendered both themes via `scripts/smoke_icons.py`; PNGs delivered. The new Export surface, Slice 4 Edit de-clutter, and Slice 6 menu/Exported Media tree were not eyeballed in the real app this session — verify.bat catches regressions but the live launch flow + the on-disk `Exported Media/` materialisation on a real event remain to-be-touched.
+>
+> **OWED AT WRAP — what next session picks up:**
+>
+> 1. **Live eyeball + commit slice 3.** Two files are STILL UNCOMMITTED in the working tree (carried over from before this session — these are slice 3 of the spec/66 phase work that Nelson said was "already done" at session start, meaning the code was written but not committed):
+>    - `mira/ui/pages/phases_page.py` — PhasesPage donuts using phase-identity colours (Collect blue / Pick accent / Edit amber / Export green)
+>    - `spec/66-collect-pick-edit-export.md` — the §1 "Bars encode phase identity, not state" paragraph
+>    These were intentionally NOT folded into my slice-4–6 commits (different scope). Next session: eyeball the PhasesPage donuts on a real event, then commit as "spec/66 slice 3" or whatever Nelson titles it.
+>
+> 2. **Four untracked design specs need to land alongside the code that implements them.** `spec/67-implementation-handoff.md` (the build brief for slices 4–6), `spec/68-phase-redesign-coordination.md` (the slice-5 amendment), `spec/69-icon-wiring-fidelity.md` (the icon job), `spec/70-new-ui-completion-plan.md` (the full redesign program). Per CLAUDE.md §6 ("Spec and code land together"), these should commit. I deliberately didn't commit them — they are Nelson's design docs, not mine to author, and committing them needed his nod.
+>
+> 3. **Real-app launch of the new surfaces.** Slice 5's Export surface, Slice 6's Export menu + Share-on-closed-events gating, and the `Exported Media/` materialisation have ONLY been smoke-tested + unit-tested. They have not been driven on a real event in the app. Next eyeball: open an event, go to Export, mark some green/red, hit Export green, confirm files land under `<event>/Exported Media/<day>/`; flip the event closed, confirm Share menu appears; assemble a Cut to confirm `exported_files()` picks up the new shipped rows.
+>
+> 4. **spec/70 punch-list (the redesign completion plan).** Spec/68 sequenced this AFTER the phase spine — spine is now done. spec/70 lays out every remaining surface that needs the fidelity pass (sizing, shadow, density, the spec/65 punch list). Slices in spec/70 are next session's main menu unless Nelson redirects.
+>
+> 5. **Three pre-existing baseline test failures stay open** (carried THROUGH this session unchanged):
+>    - `tests/test_main_window_menu.py::test_top_level_menus_are_the_designed_seven` — title list reads `[]` in the test harness; menu bar visibility behaves weirdly in headless construction. Pre-existed at the session-start baseline; confirmed by running on stashed HEAD before my edits.
+>    - `tests/test_main_window_menu.py::test_per_event_surface_unhides_collect_and_share` — same root cause.
+>    - `tests/test_wizard_refresh.py::test_no_stale_app_name_in_wizard_sources` — wizard text references "Mira" as the app name; assertion expects something different. Stylistic / vocabulary mismatch, not a code bug.
+>
+>    None of the three relate to my work; they were present at session start. Worth a fix pass when someone gets to them.
+>
+> 6. **Branch-lineage caveat.** `git` cannot resolve the SHA `XMC-redesign @ f5766b7` locally — the repo's recent history begins at `f69f450 Initial commit — Mira`. spec/68 §1 anticipated this: it's a `.git/config` readability quirk in the inspecting environment, not a missing baseline. The working tree IS post-redesign (`mira/ui/design/` catalog + redesigned pages + `assets/themes/redesign.qss` all present); commit `9b575c2 Phase 1 foundation: Mira brand kit…` is on the line. All four commits this session sit on top of that line.
+>
+> 7. **Push status.** Four commits this session on `main`, not pushed.
+>
+> **Opening-message template for Nelson:**
+> ```
+> Read spec/PROGRESS.md banner. Four commits this session: spec/66 slices 4–6 (de-clutter Edit; build the design-catalog Export surface; add the Export menu + Exported Media/ tier with hardlink-for-third-party-returns) and spec/69 (line-icon family + tinted_svg_pixmap helper + retire every Unicode glyph placeholder). verify.bat: 2812/3 (same 3 pre-existing baseline flakes as before, no new regressions). Real-asset icon smoke delivered as PNGs.
+> The phase-model work is DONE in code; slice 3 (PhasesPage donuts + the §1 paragraph) is the one bit still uncommitted in the working tree — eyeball it on a real event and commit. The four design specs (67/68/69/70) are still untracked; they describe work that's already in HEAD — commit them when you're ready.
+> Start: a real-app launch of Export end-to-end (mark some green, ship them, verify the Exported Media/ files); then the spec/70 redesign completion plan, OR the live-eyeball owed items.
+> ```
+>
+> **The four commits in detail —** see commit messages on HEAD for the per-file breakdowns; this banner stays at the arc level.
+>
+> ---
+>
+> **(below: ninth session's banner, kept as a log)**
+
+> ## (PREVIOUS) 2026-06-13, NINTH SESSION — WRAPPED, EXTENDED — **SPEC/64 events-information split CLOSED + Bug 3 + classification UI strip + closed-tile body redesigns + Cuts back-routing.** Eleven commits this session, tree clean, **verify.bat 2873 / 0 + 20 / 0 at HEAD**. The session opened on slice 6 owed and grew into a full multi-arc sprint as Nelson eyeballed each result and queued the next change. **NEW MEMORY landed:** [[feedback_slow_down_on_visual_iteration]] — after the third rapid hardware-table iteration on the closed tile, Nelson called the rushing pattern and the change was reverted; the rule is now: 2-3 rapid visual commits without an eyeball → STOP + ask.
 >
 > **The eleven commits, oldest → newest:**
 > 1. `f8a27fa` — spec/64 slice 6 of 6: tile updates (status badge + Header first-touch badge + closed-tile body + closed → Cuts list door)

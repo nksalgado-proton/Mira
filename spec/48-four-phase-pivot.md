@@ -2,6 +2,13 @@
 
 **Authored 2026-06-06 (Nelson). Supersedes spec/46's activity-centric framing.**
 
+> **⚠️ Phase 4 superseded (2026-06-14, spec/66).** This spec's 4th phase
+> **Share** was always parked here ("to be revised separately" — §1 row 4, §2
+> #6, §7). [spec/66](66-collect-pick-edit-export.md) is that revision: the
+> working phases are now **Collect / Pick / Edit / Export**, and **Share is a
+> state of closed events** (where Cuts are assembled), not a phase. The phase
+> *count* and the Collect/Pick vocabulary below still govern.
+
 Reverses the activity-centric paradigm of spec/46 in favour of a simplified 4-phase model. Locks the next-step implementation plan. Read this before any new surface or routing work after 2026-06-06.
 
 ---

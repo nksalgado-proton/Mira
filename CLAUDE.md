@@ -27,8 +27,16 @@ permanent divergence.
 |---|---|
 | **Collect** | SD-card / past-photos ingest, day plan, Quick Sweep |
 | **Pick** | One unified decision pass across all captured content (default-Skip) |
-| **Edit** | Non-destructive tone + crop + export to processed JPEGs |
-| **Share** | Build **Cuts** (time-budgeted ordered sets) for handoff to PTE |
+| **Edit** | Non-destructive tone + crop (develop) |
+| **Export** | Materialise developed/keeper frames to processed JPEGs |
+
+The four working phases are **Collect → Pick → Edit → Export** (spec/66,
+revising spec/48's 4th phase). **Share is NOT a phase** — it is a permanent
+**state of closed events**: assembling **Cuts** from the exported files that
+survived the pipeline (see The Cut model below). It has no progress bar.
+Per-day progress metrics: Collect = day has captures; Pick = decided ÷
+captured (review completeness); Edit = developed ÷ picked; Export = exported
+÷ picked.
 
 Decision verbs: **Pick / Skip**. Internal state value `'picked'`. The
 app-wide keyboard map is LOCKED (Nelson 2026-06-12, spec/63 §4):
@@ -44,7 +52,10 @@ video workshop's Tab transport). D stays retired. No legacy "Cull /
 Curate / Keep / Discard" vocabulary anywhere in code, UI, schema,
 settings, or specs.
 
-## The Cut model (Share)
+## The Cut model (Share — the closed-event state)
+
+Share is the permanent state of a **closed** event whose files survived
+Collect→Pick→Edit→Export; it is where Cuts are assembled (spec/66).
 
 A **Cut** = a time-budgeted, chronologically-ordered set of **exported
 files** the user assembles to hand off to an external slideshow tool.
@@ -70,8 +81,9 @@ Load-bearing specs:
 - **`spec/05-ui-standards.md`** — UI grammar (every-control-has-a-hint, QSS roles)
 - **`spec/08-gateway.md`** — the data seam
 - **`spec/41-mira-x-completion.md`** — XMC completion sprint scope *(rename pending)*
-- **`spec/48-four-phase-pivot.md`** — locked vocabulary + 4-phase model
-- **`spec/61-share-event-cuts.md`** — Share phase: event Cuts (supersedes spec/51's model)
+- **`spec/48-four-phase-pivot.md`** — locked vocabulary + 4-phase model (its 4th phase, Share, is revised by spec/66)
+- **`spec/66-collect-pick-edit-export.md`** — phases are Collect/Pick/Edit/Export; Share is a closed-event state (revises spec/48 §Share)
+- **`spec/61-share-event-cuts.md`** — the Cut model, now the Share *state* of closed events (supersedes spec/51's model)
 - **`spec/56-video-workshop.md`** — marker-partition video model (Pick uniformity + Edit-time clips)
 - **`spec/57-folders-and-roundtrip.md`** — folder model + external round trip + event creation
 - **`spec/58-classification-and-wizard.md`** — background classification pass + Edit-only classification surface

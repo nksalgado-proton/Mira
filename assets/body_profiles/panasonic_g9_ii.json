@@ -1,0 +1,43 @@
+{
+  "body_id": "panasonic_g9_ii",
+  "display_name": "Panasonic Lumix G9 II",
+  "brand_id": "panasonic",
+  "kind": "camera",
+  "exiftool_model_match": ["DC-G9M2"],
+  "year_released": 2023,
+  "mount": "MFT",
+
+  "sensor": {
+    "size": "four_thirds",
+    "crop_factor": 2.0,
+    "megapixels": 25
+  },
+
+  "capabilities": {
+    "ibis": true,
+    "high_res_mode": true,
+    "pixel_shift": false,
+    "focus_bracket": true,
+    "exposure_bracket": true,
+    "pre_burst": true,
+    "phase_detect_af": true
+  },
+
+  "subject_detection": {
+    "supported": true,
+    "types": ["human", "animal", "bird", "vehicle"],
+    "notes": "First MFT Panasonic body with phase-detect AF and AI subject detection"
+  },
+
+  "iso_baseline": {
+    "native_min": 100,
+    "native_max": 25600,
+    "high_iso_threshold": 6400
+  },
+
+  "drive_max_fps": {
+    "mechanical": 10,
+    "electronic": 60,
+    "burst_high_threshold_fps": 8
+  }
+}

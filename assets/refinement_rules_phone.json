@@ -1,0 +1,94 @@
+{
+  "version": 4,
+  "description": "Phone classifier rules. Pure EXIF — no lens-registry dependence. Brand-specific encoding (Apple FocusDistanceRange in MakerNotes, XMP RegionType for faces, front-camera signal in LensModel) is absorbed by the per-brand profile in assets/brand_profiles/; rules query brand-agnostic concepts. v3 (2026-05-13) adds phone_close_focus — fires when the lens's focus position is near minimum distance, catching iPhone macro shots that don't carry the keyword 'macro' anywhere. Bumping forces a re-seed of the user override on next launch. v4 (2026-05-28) adds phone_default_street — phones are implicit-auto by device class; casual shots (no face, no macro, no bracket) default to street rather than the GENERAL+needs_review path that was producing 81%+ flag-noise on the Nepal 2025 corpus.",
+  "rules": [
+    {
+      "id": "phone_selfie",
+      "description": "Front camera shot = selfie. iPhone writes 'iPhone XX front camera Y.YYmm f/Z.Z' in LensModel; the polymorphic `contains` operator picks up the substring case-insensitively. Validated 100% on 8 iPhone HEIC samples (2026-04-29).",
+      "when": {
+        "lens_model_raw": { "contains": "front" }
+      },
+      "then": {
+        "scenario": "selfie",
+        "confidence": 0.95,
+        "reason": "Front camera lens detected in EXIF LensModel"
+      }
+    },
+
+    {
+      "id": "phone_close_focus",
+      "description": "Phone lens focused at very close range. Apple writes FocusDistanceRange in MakerNotes (e.g. '0.12 - 0.16 m' for a true macro); the apple profile parses the upper bound (closest discriminator on Apple — hyperfocal landscapes have a close lower bound but a far upper bound) and normalizes it over max_meters=1.5. Threshold 0.2 corresponds to upper bound < 0.3m, which separates genuine macro from close portraits / pets / hyperfocal landscapes. Verified on IMG_3475 macro 2026-05-13.",
+      "when": {
+        "focus_position_normalized": { "lt": 0.2 }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.85,
+        "reason": "Phone focused near minimum distance (focus_position < 0.2)"
+      }
+    },
+
+    {
+      "id": "phone_focus_bracket",
+      "description": "Focus bracket mode on phone = macro stacking work. Same intent signal as camera T1.1.",
+      "when": {
+        "focus_bracket_active": { "eq": true }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.95,
+        "reason": "Focus bracket mode active (phone)"
+      }
+    },
+
+    {
+      "id": "phone_exposure_bracket",
+      "description": "Exposure bracket mode on phone = HDR landscape. Same intent signal as camera T1.2.",
+      "when": {
+        "exposure_bracket_active": { "eq": true }
+      },
+      "then": {
+        "scenario": "landscape",
+        "confidence": 0.95,
+        "reason": "Exposure bracket mode active (phone)"
+      }
+    },
+
+    {
+      "id": "phone_long_exposure",
+      "description": "Shutter ≥ 1s. iPhone Night mode commonly produces shutters of 1-3s when triggered.",
+      "when": {
+        "shutter_speed": { "gte": 1.0 }
+      },
+      "then": {
+        "scenario": "night_long_exposure",
+        "confidence": 0.85,
+        "reason": "Shutter speed >= 1s (phone)"
+      }
+    },
+
+    {
+      "id": "phone_face_detected",
+      "description": "Face detected via XMP RegionType. The Apple brand profile maps RegionType containing 'Face' to subject_detection=human. Fires when at least one face was registered in the photo.",
+      "when": {
+        "subject_detection": { "eq": "human" }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.90,
+        "reason": "Face detected on phone"
+      }
+    },
+
+    {
+      "id": "phone_default_street",
+      "description": "Casual phone shot — none of the above rules fired (no front camera, no close focus, no bracket, no long exposure, no face). Phones are implicit-auto by device class — the user delegated every decision to the device, so they were not deliberating about a specialized genre. Default to street (casual urban / travel snap) with low confidence + needs_review so the user can override the cases where it's actually a landscape, food shot, etc. Replaces the prior fallback path that dumped ~80% of casual iPhone shots into GENERAL with needs_review (Nepal 2025-10-27 to 2025-11-04 corpus: 81%+ of non-selfie phone shots hit this empty-default path). The when:{} block matches everything, so this MUST be the last rule in the file.",
+      "when": {},
+      "then": {
+        "scenario": "street",
+        "confidence": 0.55,
+        "reason": "Casual phone shot (no specialized signal)"
+      }
+    }
+  ]
+}

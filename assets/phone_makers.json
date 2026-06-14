@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "_comment": "Phone Make/Model match list — spec/52 §9. The maintained list of phone makers and model patterns. Make matching is case-insensitive. If model_patterns is ['*'] then ANY model under that make qualifies; otherwise the model must contain (case-insensitive) at least one of the listed substrings. Add new entries as new phones appear; never edit silently — bump schema_version on incompatible changes.",
+  "phone_makers": [
+    {
+      "make": "Apple",
+      "model_patterns": ["iphone", "ipad"],
+      "_note": "Apple also makes iPad; both count as phones for the autofill rule (carry GPS + corrected EXIF TZ)."
+    },
+    {
+      "make": "Samsung",
+      "model_patterns": ["galaxy", "sm-"],
+      "_note": "SM- is the Galaxy model-number prefix Samsung writes when the marketing name isn't in EXIF."
+    },
+    {
+      "make": "Google",
+      "model_patterns": ["pixel"],
+      "_note": "Google phones only — Pixel line."
+    },
+    {
+      "make": "Huawei",
+      "model_patterns": ["*"],
+      "_note": "Huawei makes laptops and watches, but only phones write EXIF photos at any volume."
+    },
+    {
+      "make": "Xiaomi",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "Redmi",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "OnePlus",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "Motorola",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "Nokia",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "Sony",
+      "model_patterns": ["xperia"],
+      "_note": "Sony makes both cameras (Alpha line, RX line) and phones (Xperia). Strict model match required — bare Sony Make alone is NOT enough."
+    },
+    {
+      "make": "OPPO",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "vivo",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "Realme",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "HTC",
+      "model_patterns": ["*"]
+    },
+    {
+      "make": "LG",
+      "model_patterns": ["lg-", "lm-"],
+      "_note": "LG made phones (LG-* / LM-* model-number prefix) but also fridges, TVs, etc. Strict model match required."
+    },
+    {
+      "make": "ASUS",
+      "model_patterns": ["zenfone", "rog phone"]
+    }
+  ]
+}

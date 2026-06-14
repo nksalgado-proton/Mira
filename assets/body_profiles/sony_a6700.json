@@ -1,0 +1,43 @@
+{
+  "body_id": "sony_a6700",
+  "display_name": "Sony A6700",
+  "brand_id": "sony",
+  "kind": "camera",
+  "exiftool_model_match": ["ILCE-6700"],
+  "year_released": 2023,
+  "mount": "Sony E",
+
+  "sensor": {
+    "size": "aps_c",
+    "crop_factor": 1.5,
+    "megapixels": 26
+  },
+
+  "capabilities": {
+    "ibis": true,
+    "high_res_mode": false,
+    "pixel_shift": false,
+    "focus_bracket": true,
+    "exposure_bracket": true,
+    "pre_burst": false,
+    "phase_detect_af": true
+  },
+
+  "subject_detection": {
+    "supported": true,
+    "types": ["human", "animal", "bird", "vehicle"],
+    "notes": "A6700 also supports Insect detection — currently mapped under 'animal' in brand profile"
+  },
+
+  "iso_baseline": {
+    "native_min": 100,
+    "native_max": 32000,
+    "high_iso_threshold": 6400
+  },
+
+  "drive_max_fps": {
+    "mechanical": 11,
+    "electronic": 11,
+    "burst_high_threshold_fps": 8
+  }
+}

@@ -1,0 +1,862 @@
+"""SQLite schema for a Mira ``event.db`` — the **relational-core** rebuild.
+
+Single physical definition of the event store: the DDL, the owned ``SCHEMA_VERSION``,
+the migration list, and connection setup (WAL + foreign keys + ``NORMAL`` sync).
+
+This is the schema of `spec/30-relational-schema-redesign.md` (APPROVED 2026-05-31) — a
+properly relational model, **not** the legacy "SQLite-as-a-JSON-store" shape. The *why* is
+`spec/31-relational-vision.md`. Greenfield: there are **no real events to migrate**, so this
+is schema **v1** with an empty migration list — design the best schema, not the smallest diff.
+While pre-release, new fields are folded into the DDL and dev events recreated (not migrated):
+the 2026-06-10 reset (Nelson: all events deleted, "we can start fresh") folded the v2–v4
+chain — spec/54 Look-choice tone columns + lineage export snapshots, the v3 'repeat'
+bucket kind, and the spec/56 marker-partition video tables — into this base DDL.
+
+**Vocabulary lock (spec/48 + spec/52):** phase enum values are ``('pick','edit')`` —
+the four-phase pivot (Collect/Pick/Edit/Share) collapsed legacy Cull + Select into one
+``'pick'`` phase, then spec/52 dropped ``'share'`` from phase_state / bucket / cache
+enums entirely (Cut walks are item-by-item filtered per spec/51, not bucketed; Skip
+is local to one Cut, so there is no global Share state). ``'share'`` survives only on
+``lineage.phase`` (Cut exports still produce a tracked hardlink lineage). State enum
+value is ``'picked'``. Greenfield-while-pre-release means we wipe events instead of
+migrating across these renames — see SCHEMA_VERSION + MIGRATIONS.
+
+**spec/52 retirements baked into the DDL:**
+* Event-level fields ``tags_json``, ``notes``, ``google_album_name``,
+  ``google_album_link``, ``whatsapp_message`` — all dropped.
+* ``camera.is_reference`` + its unique index — dropped (phone EXIF is the
+  reference for TZ calibration when present).
+* Tables ``participant``, ``participant_device``, ``checklist_item``,
+  ``distribution_action``, ``share_tag``, ``subset``, ``subset_member``,
+  ``share_map`` — all dropped.
+* New table ``photo_person`` (per-photo link to user-level people catalog,
+  set up now for the upcoming people-tagging feature). Its spec/52 sibling
+  ``photo_tag`` (ITEM-based Cut membership, the spec/51 plan) shipped and
+  retired unused: spec/61 locked Cut membership as FILE-based, so schema v3
+  replaced it with ``cut`` + ``cut_member`` (membership rows reference
+  ``lineage`` — the exported finals — not items).
+* ``item.tz_source`` enum realigned to ``('phone_auto','user_declared','pair_picker','none')``
+  to match ``camera_day_tz.source``.
+
+Load-bearing model decisions baked into the DDL:
+
+* **One node per clip.** A clip/snapshot is ONE ``item`` across its whole life (a child of its
+  source video via ``parent_item_id``). There is no ``video_moment`` / ``video_override`` /
+  ``produced_item_id`` — its K/D is its own ``phase_state`` row, so nothing can desync.
+* **The marker-partition model (spec/56).** Markers are first-class rows
+  (``video_marker``) — the user's cut points on a source video. Consecutive markers
+  define segments that tile the timeline (no gaps, no overlaps; the start/end
+  markers are implicit and never stored). A segment is a clip item with a 1:1
+  ``video_segment`` satellite holding only its ``seg_index`` — its identity is its
+  POSITION in the marker order, never milliseconds, so moving a marker re-times a
+  segment without touching its state or adjustments. Geometry is derived at read
+  time (``core.video_segments``). Snapshots carry a 1:1 ``video_snapshot`` point
+  satellite and auto-Pick at creation. The earlier ``clip_span`` (freeform in/out +
+  label + full-span flag) retired with spec/56; labels live on ``item.subject``.
+* **"Virtual" = nullable file identity.** A virtual clip is an ``item`` with
+  ``origin_relpath IS NULL`` (zero bytes), guarded by an all-or-nothing CHECK. Export
+  *materialises* it by filling the file columns in one UPDATE — nothing commits bytes
+  before Export (spec/56 §1).
+* **Whole-video export is not a special case**: it is the original single segment
+  (zero markers → one segment), picked. ``is_full_span`` retired with it.
+* Capture time is *virtual* (``capture_time_raw`` never mutated; corrected = derived). All
+  stored paths are *relative to event root*; ``event_root`` itself is never stored (it is the
+  DB's own folder). Real FKs + CHECK/UNIQUE constraints do the integrity work.
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional, Union
+
+log = logging.getLogger(__name__)
+
+#: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
+SCHEMA_VERSION = 6
+
+# --------------------------------------------------------------------------- #
+# Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
+# across columns, so the domains are documented here and the identical CHECK
+# is repeated per column.
+#   PHASE ∈ ('pick','edit')                — Collect has no phase_state rows;
+#                                            Share dropped from phase enums per
+#                                            spec/52 (Cut walks per spec/51 are
+#                                            item-by-item filtered, not bucketed;
+#                                            Skip is local to one Cut, so there
+#                                            is no global Share phase_state).
+#                                            'share' survives only on lineage.phase
+#                                            (Cut exports still materialize via
+#                                            hardlinks; that lineage is tracked).
+#   STATE ∈ ('skipped','candidate','picked')
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# DDL — spec/30 §3, statement-for-statement. Two strata, separated by table
+# identity so the backup rule is trivial ("C" tables are never serialised):
+#   D = durable (system-of-record, in the JSON backup)
+#   C = derived/cache (regenerable, excluded from backup, droppable+rebuildable)
+# --------------------------------------------------------------------------- #
+
+DDL = r"""
+-- ===== schema_info (C) — typed singleton; replaces the KV meta(k,v) ========
+CREATE TABLE schema_info (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  schema_version INTEGER NOT NULL,
+  app_version    TEXT NOT NULL,
+  event_id       TEXT NOT NULL,
+  created_at     TEXT NOT NULL
+);
+
+-- ===== event (D) — enforced singleton; trip_budget folded in ===============
+CREATE TABLE event (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),     -- one row, enforced
+  uuid              TEXT NOT NULL UNIQUE,                   -- stable external id
+  name              TEXT NOT NULL,
+  -- classification (spec/44): closed enum drives dashboard filter + EventCard badge + per-type
+  -- extras editor rows. CHECK pinned in DDL for fresh databases.
+  event_type        TEXT NOT NULL DEFAULT 'unclassified'
+                          CHECK (event_type IN ('trip','session','occasion','project','unclassified')),
+  event_subtype     TEXT,                                   -- free-text; UI offers curated presets per type
+  description       TEXT NOT NULL DEFAULT '',                -- one-paragraph; shown on EventCard tooltip + indexed by search
+  start_date        TEXT,
+  end_date          TEXT,
+  is_closed         INTEGER NOT NULL DEFAULT 0 CHECK (is_closed IN (0,1)),
+  event_root_abs    TEXT,                                  -- cross-volume fallback ONLY; normally NULL
+  budget_short_target_s INTEGER,
+  budget_short_max_s    INTEGER,
+  budget_long_target_s  INTEGER,
+  budget_long_max_s     INTEGER,
+  budget_video_share    REAL CHECK (budget_video_share IS NULL OR
+                                    (budget_video_share >= 0 AND budget_video_share <= 1)),
+  -- Structured event qualifiers (spec/64 — supersedes the spec/52
+  -- Scope/Mood/Transport vocabulary). Duration + participants survive;
+  -- the three retired axes are replaced by Context (baseline environment)
+  -- / Experience Type (vibe/intent) / Creative Focus (photographic subjects,
+  -- multi-select). The dashboard filter rail queries on each in plain SQL
+  -- (Context + Experience Type via column equality; Creative Focus via
+  -- json_each over the array). The per-unit duration cap retired with
+  -- spec/64 — duration_value is now just a free integer > 0.
+  duration_value    INTEGER CHECK (duration_value IS NULL OR duration_value > 0),
+  duration_unit     TEXT CHECK (duration_unit IS NULL OR
+                                duration_unit IN ('hours','days','weeks','months','years')),
+  -- participants is a JSON array of category strings; multi-select chips
+  -- per Nelson 2026-06-08. Free-form add (typed custom chip) is a future
+  -- UI enhancement; the curated set is locked for now.
+  participants      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(participants)),
+  -- Context: the baseline environment of the event (single-select). Closed
+  -- enum app-side; the DDL keeps the column open so future values land
+  -- without a migration. NULL = unset.
+  context           TEXT,
+  -- Experience Type: the primary vibe / intent / creative energy
+  -- (single-select). Same shape as context.
+  experience_type   TEXT,
+  -- Creative Focus: photographic subjects (multi-select); JSON array of
+  -- option keys. Empty array = blank; ["none"] = explicit "not a photo
+  -- event"; the mutual-exclusion rule (none vs subjects) lives UI-side.
+  creative_focus    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(creative_focus)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  -- classification extras (per event_type) — spec/44 §1.6 + spec/52. No location keys
+  -- at event level (location is per-day; aggregate at render time). No people keys
+  -- (people-tagging moved to photo_person table; reference catalog is user-level).
+  --   trip      → {}                            (no surviving keys; duration/scope/etc. are columns now)
+  --   session   → {"target_subject":…}
+  --   occasion  → {"host":…}
+  --   project   → {"goal":…, "subject":…, "target_artifact":…}
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+CREATE INDEX ix_event_type            ON event(event_type);
+CREATE INDEX ix_event_subtype         ON event(event_subtype);
+CREATE INDEX ix_event_context         ON event(context)         WHERE context IS NOT NULL;
+CREATE INDEX ix_event_experience_type ON event(experience_type) WHERE experience_type IS NOT NULL;
+
+-- ===== trip_day (D) ========================================================
+CREATE TABLE trip_day (
+  day_number  INTEGER PRIMARY KEY,        -- the FK target everywhere; NULL day_number ⇒ "undated"
+  date        TEXT,                        -- ISO date, nullable; NOT unique (smallest-day-number tie-break)
+  description TEXT NOT NULL DEFAULT '',
+  location    TEXT,                        -- free-text legacy field; kept for backward compat
+  tz_minutes  INTEGER,
+  hidden      INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),  -- soft-hide: items derive visibility
+  -- per-day country + country_code drive dashboard chrome (flag emoji), filter-by-country,
+  -- and the events_index country aggregation. The user-facing location string lives in
+  -- the dedicated `location` column above; this bag is structured machine-readable data only.
+  extras_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+  -- expected keys: {"country":…, "country_code":…}  (country_code = ISO 3166-1 alpha-2)
+);
+CREATE INDEX ix_trip_day_date ON trip_day(date);
+
+-- ===== camera (D) ==========================================================
+-- spec/52 retired the reference-camera concept (phone EXIF is the reference
+-- when present; pair-pick TZ calibration uses phone+camera photo pairs).
+CREATE TABLE camera (
+  camera_id              TEXT PRIMARY KEY,           -- 'Make+Model' business key
+  is_phone               INTEGER NOT NULL DEFAULT 0 CHECK (is_phone IN (0,1)),
+  configured_tz_minutes  INTEGER,
+  applied_offset_minutes INTEGER,
+  applied_at             TEXT
+);
+
+-- ===== item (D) — the spine; ONE node per clip; file identity nullable ======
+CREATE TABLE item (
+  id                     TEXT PRIMARY KEY,
+  kind                   TEXT NOT NULL CHECK (kind IN ('photo','video')),
+  provenance             TEXT NOT NULL DEFAULT 'captured'
+                              CHECK (provenance IN ('captured','snapshot','clip','stack_output','authored')),
+  -- FILE IDENTITY — nullable iff the node is still virtual --------------------
+  origin_relpath         TEXT UNIQUE,           -- NULL while virtual
+  sha256                 TEXT,
+  byte_size              INTEGER CHECK (byte_size IS NULL OR byte_size >= 0),
+  materialized_at        TEXT,                  -- when bytes were written (NULL = virtual)
+  -- 'pick' retired from this enum with spec/56 (bytes never commit during
+  -- deciding; clips/snapshots materialise at Export, under the Edit phase).
+  materialized_phase     TEXT CHECK (materialized_phase IN
+                              ('ingest','edit') OR materialized_phase IS NULL),
+  -- identity / placement ------------------------------------------------------
+  camera_id              TEXT REFERENCES camera(camera_id) ON DELETE RESTRICT,
+  day_number             INTEGER REFERENCES trip_day(day_number) ON DELETE SET NULL,
+  parent_item_id         TEXT REFERENCES item(id) ON DELETE CASCADE,   -- child → source video
+  capture_time_raw       TEXT,                  -- virtual EXIF, NEVER mutated
+  capture_time_corrected TEXT,                  -- derived = raw + offset; the sort key
+  tz_offset_minutes      INTEGER NOT NULL DEFAULT 0,
+  tz_source              TEXT NOT NULL DEFAULT 'none' CHECK (tz_source IN ('phone_auto','user_declared','pair_picker','none')),
+  classification         TEXT,
+  classification_source  TEXT CHECK (classification_source IN ('auto','user') OR classification_source IS NULL),
+  classification_rules_version TEXT,
+  classification_needs_review  INTEGER NOT NULL DEFAULT 0 CHECK (classification_needs_review IN (0,1)),  -- 1 = auto-classified but flagged uncertain; Select nudge reads this
+  classification_confidence    REAL,             -- classifier score 0..1 (spec/58) — the Edit Style button's red→green ramp reads it; NULL = never auto-scored
+  sharpness_score        REAL,                  -- lazy cache (recoverable by recompute)
+  sharpness_metric       TEXT,
+  duration_ms            INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),  -- video length (NULL = still / un-probed)
+  -- per-item Subject (Nelson 2026-06-08) — free-text user annotation: bird
+  -- species, plant name, person, location landmark, anything the user wants
+  -- to research later (e-bird / iNaturalist / Wikipedia). Applies to both
+  -- photos and clips (item.kind covers both). UI surface TBD; for now this
+  -- is just the storage column.
+  subject                TEXT,
+  extras_json            TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),  -- sanctioned escape hatch for future per-item fields; DEFAULT '{}' so json_set always works
+  -- EXIF technical facets — captured at ingest from the SAME exiftool pass; NULL = unknown/video ----
+  iso                    INTEGER CHECK (iso IS NULL OR iso > 0),          -- sensor sensitivity (exploration: high-ISO filter)
+  aperture_f             REAL    CHECK (aperture_f IS NULL OR aperture_f > 0),   -- f-number (exploration: wide-open filter)
+  shutter_speed_s        REAL    CHECK (shutter_speed_s IS NULL OR shutter_speed_s > 0), -- seconds (exploration: long-exposure filter)
+  focal_length_mm        REAL    CHECK (focal_length_mm IS NULL OR focal_length_mm > 0), -- actual focal length, not 35mm-equivalent
+  flash_fired            INTEGER CHECK (flash_fired IN (0,1)),            -- 1 = flash fired (exploration: flash filter)
+  lens_model             TEXT,                                            -- lens string (exploration: per-lens collection)
+  -- bracket detection — populated by ingest bracket detector; NULL = not a bracket ----------------
+  bracket_group_id       TEXT,                    -- shared across all frames of one bracket set
+  bracket_role           TEXT CHECK (bracket_role IN ('leader','member') OR bracket_role IS NULL),
+  quarantine_status      TEXT NOT NULL DEFAULT 'ok'
+                              CHECK (quarantine_status IN ('ok','no_timestamp','recovered')),
+  recovered_from_filename INTEGER NOT NULL DEFAULT 0 CHECK (recovered_from_filename IN (0,1)),
+  created_at             TEXT NOT NULL,
+  -- VIRTUAL/MATERIALISED invariant: bytes present iff materialized -----------
+  CHECK ( (origin_relpath IS NULL  AND sha256 IS NULL  AND byte_size IS NULL  AND materialized_at IS NULL)
+       OR (origin_relpath IS NOT NULL AND sha256 IS NOT NULL AND byte_size IS NOT NULL AND materialized_at IS NOT NULL) ),
+  -- only derived kinds may be virtual; captured/stack_output/authored always have bytes
+  -- (authored items are rendered to PNG/JPG at authoring time — spec/52 §4)
+  CHECK ( origin_relpath IS NOT NULL OR provenance IN ('snapshot','clip') ),
+  -- captured items carry a camera + raw time (authored items don't — they have no camera):
+  CHECK ( provenance <> 'captured' OR (camera_id IS NOT NULL AND capture_time_raw IS NOT NULL) ),
+  -- the parent triangle: captured/stack_output/authored are roots; snapshot/clip have a parent
+  CHECK ( (provenance IN ('snapshot','clip')) = (parent_item_id IS NOT NULL) ),
+  -- kind/provenance coherence: a clip IS a video, a snapshot IS a photo
+  CHECK ( provenance <> 'clip'     OR kind = 'video' ),
+  CHECK ( provenance <> 'snapshot' OR kind = 'photo' )
+);
+CREATE INDEX ix_item_parent         ON item(parent_item_id);                                  -- video children
+CREATE INDEX ix_item_nav            ON item(provenance, day_number, capture_time_corrected);  -- navigator hot path
+CREATE INDEX ix_item_camera         ON item(camera_id);                                       -- TZ recompute
+CREATE INDEX ix_item_classification ON item(classification);                                  -- subset resolution
+CREATE INDEX ix_item_time           ON item(capture_time_corrected);                          -- chronological merges
+CREATE INDEX ix_item_stars          ON item(json_extract(extras_json, '$.stars'))
+    WHERE json_extract(extras_json, '$.stars') IS NOT NULL;                                   -- share: star rating (1-5)
+CREATE INDEX ix_item_color_label    ON item(json_extract(extras_json, '$.color_label'))
+    WHERE json_extract(extras_json, '$.color_label') IS NOT NULL;                             -- share: color label (LRC-compatible)
+CREATE INDEX ix_item_iso            ON item(iso)             WHERE iso IS NOT NULL;            -- exploration: high-ISO filter
+CREATE INDEX ix_item_aperture       ON item(aperture_f)      WHERE aperture_f IS NOT NULL;     -- exploration: wide-open filter
+CREATE INDEX ix_item_shutter        ON item(shutter_speed_s) WHERE shutter_speed_s IS NOT NULL;-- exploration: long-exposure filter
+CREATE INDEX ix_item_focal          ON item(focal_length_mm) WHERE focal_length_mm IS NOT NULL;-- exploration: focal-length filter
+CREATE INDEX ix_item_flash          ON item(flash_fired)     WHERE flash_fired = 1;            -- exploration: flash filter
+CREATE INDEX ix_item_lens           ON item(lens_model)      WHERE lens_model IS NOT NULL;     -- exploration: per-lens collection
+CREATE INDEX ix_item_bracket        ON item(bracket_group_id) WHERE bracket_group_id IS NOT NULL; -- bracket/stack queries
+
+-- ===== visible_item (view) — soft-hide projection ==========================
+-- An item is *visible* unless its trip day is hidden. Items with NULL day_number
+-- (undated) have no day to hide them, so they are always visible. Phase-facing reads +
+-- completion metrics select through this view so a hidden day is disregarded everywhere;
+-- backup/restore (store.all → save/load_document) reads the base `item` table so hidden
+-- content still round-trips. Centralises the rule (spec/14 §5C.1).
+CREATE VIEW visible_item AS
+  SELECT item.* FROM item
+  LEFT JOIN trip_day ON item.day_number = trip_day.day_number
+  WHERE trip_day.day_number IS NULL OR trip_day.hidden = 0;
+
+-- ===== camera_calibration_pair (D) — replaces calibration_json =============
+CREATE TABLE camera_calibration_pair (
+  id              TEXT PRIMARY KEY,
+  camera_id       TEXT NOT NULL REFERENCES camera(camera_id) ON DELETE CASCADE,
+  ref_item_id     TEXT REFERENCES item(id) ON DELETE SET NULL,    -- the reference photo used
+  subject_item_id TEXT REFERENCES item(id) ON DELETE SET NULL,    -- this camera's photo
+  ref_time        TEXT NOT NULL,
+  camera_time     TEXT NOT NULL,
+  offset_minutes  INTEGER NOT NULL,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX ix_calib_camera ON camera_calibration_pair(camera_id);
+
+-- ===== phase_state (D) — the ONE K/D table for EVERYTHING ==================
+-- Per the Slice 0 vocabulary rename: phase enum collapses cull+select into 'pick';
+-- state enum's 'picked' becomes 'picked'. Collect has no phase_state rows.
+CREATE TABLE phase_state (
+  item_id       TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  phase         TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  state         TEXT NOT NULL DEFAULT 'skipped' CHECK (state IN ('skipped','candidate','picked')),
+  derived_dirty INTEGER NOT NULL DEFAULT 0 CHECK (derived_dirty IN (0,1)),
+  decided_at    TEXT,
+  committed_at  TEXT,
+  PRIMARY KEY (item_id, phase)
+);
+CREATE INDEX ix_phase_state_hist      ON phase_state(phase, state);
+CREATE INDEX ix_phase_state_item      ON phase_state(item_id, phase);
+CREATE INDEX ix_phase_dirty           ON phase_state(phase, derived_dirty);
+CREATE INDEX ix_phase_state_committed ON phase_state(phase, committed_at);
+
+-- ===== video_marker (D) — user cut points on a source video (spec/56) =======
+-- The marker-partition model: every video is born with two IMPLICIT markers
+-- (start + end) that are never stored; rows here are the USER's cut points
+-- only (zero rows = the video is one segment). Consecutive markers define
+-- segments that tile the timeline — overlapping clips are impossible by
+-- construction. Trimming IS moving a marker (the spec/56 §4 trim deltas
+-- retired with this table's arrival). 0 < at_ms (a marker at 0 would shadow
+-- the implicit start); the at_ms < duration bound is gateway-enforced (a
+-- CHECK cannot reach item.duration_ms). UNIQUE forbids zero-length segments.
+CREATE TABLE video_marker (
+  id            TEXT PRIMARY KEY,
+  video_item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,  -- the SOURCE video
+  at_ms         INTEGER NOT NULL CHECK (at_ms > 0),
+  created_at    TEXT NOT NULL,
+  UNIQUE (video_item_id, at_ms)
+);
+
+-- ===== video_segment (D) — 1:1 satellite for segment items (spec/56) ========
+-- A segment is an item (kind='video', provenance='clip', child of its source
+-- video) whose identity is its POSITION in the marker order: seg_index k spans
+-- boundary k → boundary k+1 over (implicit start, markers…, implicit end).
+-- Geometry is deliberately NOT stored — it derives from video_marker at read
+-- time (core.video_segments.segment_bounds), so moving a marker re-times a
+-- segment without touching its row, its phase_state or its video_adjustment
+-- (the spec/56 locked identity rule). The gateway maintains the invariant
+-- count(segments) = count(markers) + 1, seg_index dense from 0; rows
+-- materialise lazily on first workshop touch. video_item_id mirrors
+-- item.parent_item_id (the same acknowledged denormalization clip_span
+-- carried) so SQLite can host UNIQUE(video_item_id, seg_index).
+CREATE TABLE video_segment (
+  item_id       TEXT PRIMARY KEY REFERENCES item(id) ON DELETE CASCADE,
+  video_item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  seg_index     INTEGER NOT NULL CHECK (seg_index >= 0),
+  created_at    TEXT NOT NULL,
+  UNIQUE (video_item_id, seg_index)
+);
+
+-- ===== video_snapshot (D) — 1:1 satellite for snapshot items (spec/56) ======
+-- A snapshot is an item (kind='photo', provenance='snapshot') anchored at a
+-- point on the source timeline. Creating one auto-Picks it (phase_state
+-- edit/picked — placing a snapshot IS the intent). No uniqueness on
+-- (video, at_ms): two snapshots of one frame with different crops are
+-- legitimate. At_ms ≤ duration is gateway-enforced when duration is known.
+CREATE TABLE video_snapshot (
+  item_id       TEXT PRIMARY KEY REFERENCES item(id) ON DELETE CASCADE,
+  video_item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  at_ms         INTEGER NOT NULL CHECK (at_ms >= 0),
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX ix_video_snapshot_video ON video_snapshot(video_item_id, at_ms);
+
+-- ===== adjustment (D) — photo Edit edits; crop promoted, tone = D4 blob ==
+CREATE TABLE adjustment (
+  item_id      TEXT PRIMARY KEY REFERENCES item(id) ON DELETE CASCADE,
+  -- Tone payload = the Look CHOICE (spec/54 §6, zero-sliders lock),
+  -- recomputed to Params deterministically at render/export. ``look`` is
+  -- app-enforced against core.photo_auto.available_looks() — no CHECK,
+  -- so future Looks don't need a table rebuild. ``style`` NULL = use the
+  -- item's classification.
+  style        TEXT,
+  look         TEXT NOT NULL DEFAULT 'natural',
+  creative_filter TEXT,        -- spec/54 §8: Mira filter key; NULL = none
+  crop_x       REAL CHECK (crop_x IS NULL OR (crop_x >= 0 AND crop_x <= 1)),
+  crop_y       REAL CHECK (crop_y IS NULL OR (crop_y >= 0 AND crop_y <= 1)),
+  crop_w       REAL CHECK (crop_w IS NULL OR (crop_w >  0 AND crop_w <= 1)),
+  crop_h       REAL CHECK (crop_h IS NULL OR (crop_h >  0 AND crop_h <= 1)),
+  crop_angle   REAL NOT NULL DEFAULT 0,
+  rotation     INTEGER NOT NULL DEFAULT 0 CHECK (rotation IN (0,90,180,270)),
+  aspect_label TEXT,
+  -- spec/54 §3.2 + Nelson 2026-06-13 strength slider: 0..2 multiplier on
+  -- the whole-Look Params (the .scaled(s) call at the engine seam).
+  -- 1.0 = the Look exactly as it ships; 0.0 = identity (effectively
+  -- Original); 2.0 = exaggerated. Stored per photo so a strength edit
+  -- survives session ends.
+  look_strength REAL NOT NULL DEFAULT 1.0
+                CHECK (look_strength >= 0 AND look_strength <= 2),
+  edit_exported INTEGER NOT NULL DEFAULT 0 CHECK (edit_exported IN (0,1)),
+  CHECK ( (crop_x IS NULL) = (crop_y IS NULL)
+      AND (crop_x IS NULL) = (crop_w IS NULL)
+      AND (crop_x IS NULL) = (crop_h IS NULL) )            -- crop rect all-or-nothing
+);
+
+-- ===== video_adjustment (D) — segment Edit refinements (spec/56) ==========
+-- Keyed to the SEGMENT item (a segment is its own item, provenance='clip').
+-- Per-segment video extras (audio, speed, stabilise, fade) stay per segment
+-- per spec/56 §1; the trim deltas retired (markers ARE the trim). Snapshots
+-- take the photo ``adjustment`` table instead — full photo treatment.
+CREATE TABLE video_adjustment (
+  item_id      TEXT PRIMARY KEY REFERENCES item(id) ON DELETE CASCADE,   -- the segment item
+  -- Same Look-choice tone payload as ``adjustment`` (spec/54 §6 + §7 #1:
+  -- Looks on video, uncalibrated — photo-fitted constants on the rep frame).
+  look         TEXT NOT NULL DEFAULT 'natural',
+  creative_filter TEXT,        -- spec/54 §8: Mira filter key; NULL = none
+  crop_x REAL CHECK (crop_x IS NULL OR (crop_x >= 0 AND crop_x <= 1)),
+  crop_y REAL CHECK (crop_y IS NULL OR (crop_y >= 0 AND crop_y <= 1)),
+  crop_w REAL CHECK (crop_w IS NULL OR (crop_w >  0 AND crop_w <= 1)),
+  crop_h REAL CHECK (crop_h IS NULL OR (crop_h >  0 AND crop_h <= 1)),
+  box_angle    REAL NOT NULL DEFAULT 0,
+  aspect_ratio_label TEXT,
+  style        TEXT,
+  rep_frame_ms INTEGER CHECK (rep_frame_ms IS NULL OR rep_frame_ms >= 0),
+  include_audio       INTEGER NOT NULL DEFAULT 1 CHECK (include_audio IN (0,1)),
+  rotation_degrees    INTEGER NOT NULL DEFAULT 0 CHECK (rotation_degrees IN (0,90,180,270)),
+  audio_volume        REAL NOT NULL DEFAULT 1.0 CHECK (audio_volume >= 0),
+  audio_fade_ms       INTEGER NOT NULL DEFAULT 0 CHECK (audio_fade_ms >= 0),
+  speed               REAL NOT NULL DEFAULT 1.0 CHECK (speed > 0),
+  stabilise           REAL NOT NULL DEFAULT 0 CHECK (stabilise >= 0 AND stabilise <= 1),
+  CHECK ( (crop_x IS NULL) = (crop_y IS NULL)
+      AND (crop_x IS NULL) = (crop_w IS NULL)
+      AND (crop_x IS NULL) = (crop_h IS NULL) )
+);
+
+-- ===== stack_bracket (D) + stack_member (D) ================================
+CREATE TABLE stack_bracket (
+  bracket_id     TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('focus','exposure')),
+  action         TEXT CHECK (action IN ('stacked','picked','skipped') OR action IS NULL),
+  picked_index   INTEGER NOT NULL DEFAULT -1,
+  output_item_id TEXT REFERENCES item(id) ON DELETE SET NULL,   -- the merged result, an item
+  day_number     INTEGER REFERENCES trip_day(day_number) ON DELETE SET NULL
+);
+CREATE INDEX ix_stack_day ON stack_bracket(day_number);
+
+CREATE TABLE stack_member (
+  bracket_id TEXT NOT NULL REFERENCES stack_bracket(bracket_id) ON DELETE CASCADE,
+  item_id    TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  ordinal    INTEGER NOT NULL CHECK (ordinal >= 0),
+  PRIMARY KEY (bracket_id, item_id),
+  UNIQUE (bracket_id, ordinal)                                      -- ordered frames, no collisions
+);
+CREATE INDEX ix_stack_member_item ON stack_member(item_id);
+
+-- ===== cut (D) — event Cut definitions (spec/61) ============================
+-- The Share-phase artifact. ``tag`` is the canonical lowercase slug WITHOUT
+-- the '#' (display prepends it; the export folder is Cuts/<tag>/). UNIQUE in
+-- this per-event DB = per-event uniqueness; core.cut_names always emits
+-- lowercase so the COLLATE NOCASE is belt-and-braces. The built-in #exported
+-- is NOT a row — it is a live query over lineage (phase='edit'); reserved
+-- built-in names are refused by core.cut_names. target_s/max_s NULL = no
+-- time limit. pool_expr_json: [["+"|"-", "<tag>"], ...] evaluated left to
+-- right ("exported" = the built-in). style_filter_json: [] = All styles.
+CREATE TABLE cut (
+  id                TEXT PRIMARY KEY,
+  tag               TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  target_s          INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s             INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s           REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  pool_expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(pool_expr_json)),
+  style_filter_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(style_filter_json)),
+  type_filter       TEXT NOT NULL DEFAULT 'both' CHECK (type_filter IN ('both','photo','video')),
+  default_state     TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category    TEXT,
+  last_exported_at  TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  -- the sanctioned escape hatch (house pattern); holds e.g. card_style
+  -- ('black'|'single'|'multi' — the separator/opener colour choice,
+  -- Nelson 2026-06-12). Rendered, never queried.
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+
+-- ===== cut_member (D) — membership = exported FILES (spec/61 §1.2) ==========
+-- One row per (cut, exported file). References lineage by PK, so deleting an
+-- export record drops the file from every Cut, and deleting a Cut cascades
+-- its membership away. Two exports of one photo are two distinct candidate
+-- members. Cuts are zero-byte until export materializes links (spec/61 §1.3).
+CREATE TABLE cut_member (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  export_relpath TEXT NOT NULL REFERENCES lineage(export_relpath) ON DELETE CASCADE,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, export_relpath)
+);
+CREATE INDEX ix_cut_member_file ON cut_member(export_relpath);
+
+-- ===== photo_person (D) — per-photo links to user-level people catalog =====
+-- The people catalog (one reference photo per person) lives outside event.db
+-- at the user level (designed but not yet implemented). This table links
+-- items in this event to person ids in that catalog; set up now so the
+-- people-tagging feature lands without a migration.
+--   source='user' — explicit user tag; confidence is unused (NULL).
+--   source='auto' — face-match suggestion; confidence is the matcher score.
+CREATE TABLE photo_person (
+  item_id    TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  person_id  TEXT NOT NULL,
+  source     TEXT NOT NULL CHECK (source IN ('user','auto')),
+  confidence REAL,
+  tagged_at  TEXT NOT NULL,
+  PRIMARY KEY (item_id, person_id)
+);
+CREATE INDEX ix_photo_person_person ON photo_person(person_id);
+
+-- ===== lineage (D) — real FKs both directions; discriminated ===============
+CREATE TABLE lineage (
+  export_relpath    TEXT PRIMARY KEY,
+  phase             TEXT NOT NULL CHECK (phase IN ('edit','share')),
+  source_kind       TEXT NOT NULL CHECK (source_kind IN ('item','bracket')),
+  source_item_id    TEXT REFERENCES item(id) ON DELETE CASCADE,            -- 1→1 source
+  source_bracket_id TEXT REFERENCES stack_bracket(bracket_id) ON DELETE CASCADE, -- N→1 stack source
+  -- spec/54 §8 versions-as-exports: archival snapshot of the recipe
+  -- (style/look/intensity/vibrance/creative_filter/crop) AND the resolved
+  -- Params this export rendered with. Append-only — never re-read for
+  -- rendering; the live adjustment row stays choice-only. exported_at
+  -- orders a photo's versions in the Cut picker.
+  recipe_json       TEXT,
+  exported_at       TEXT,
+  CHECK ( (source_kind='item'    AND source_item_id IS NOT NULL AND source_bracket_id IS NULL)
+       OR (source_kind='bracket' AND source_bracket_id IS NOT NULL AND source_item_id IS NULL) )
+);
+CREATE INDEX ix_lineage_item    ON lineage(source_item_id);
+CREATE INDEX ix_lineage_bracket ON lineage(source_bracket_id);
+CREATE INDEX ix_lineage_phase   ON lineage(phase);
+
+-- ===== bucket (D) — durable soft-state ONLY ================================
+-- bucket_key is FK-less BY DESIGN: it is a content-stable recomputed id, and
+-- soft-state must survive a membership-preserving cache recompute (spec/30 §5).
+CREATE TABLE bucket (
+  bucket_key      TEXT NOT NULL,                  -- content-stable {day|kind|content_key}
+  phase           TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  default_state   TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('skipped','picked')),
+  reviewed        INTEGER NOT NULL DEFAULT 0 CHECK (reviewed IN (0,1)),
+  browsed         INTEGER NOT NULL DEFAULT 0 CHECK (browsed IN (0,1)),
+  nudge_dismissed INTEGER NOT NULL DEFAULT 0 CHECK (nudge_dismissed IN (0,1)),
+  current_index   INTEGER NOT NULL DEFAULT 0 CHECK (current_index >= 0),
+  PRIMARY KEY (bucket_key, phase)
+);
+CREATE INDEX ix_bucket_phase_reviewed ON bucket(phase, reviewed);
+
+-- ===== Derived cache layer (C) — excluded from backup; drop+rebuild safe ====
+CREATE TABLE bucket_cache (
+  bucket_key       TEXT NOT NULL,
+  phase            TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  day_number       INTEGER REFERENCES trip_day(day_number) ON DELETE CASCADE,  -- NULL = undated (real FK)
+  kind             TEXT NOT NULL CHECK (kind IN
+                       ('focus_bracket','exposure_bracket','burst','repeat',
+                        'moment','individual','video','video_moment')),
+  title            TEXT NOT NULL DEFAULT '',
+  detection_source TEXT NOT NULL DEFAULT '',
+  camera           TEXT NOT NULL DEFAULT '',
+  ordinal          INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_key, phase)
+);
+CREATE INDEX ix_bucket_cache_day ON bucket_cache(phase, day_number);
+
+CREATE TABLE bucket_member (
+  bucket_key TEXT NOT NULL,
+  phase      TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  item_id    TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  ordinal    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_key, phase, item_id),
+  FOREIGN KEY (bucket_key, phase) REFERENCES bucket_cache(bucket_key, phase) ON DELETE CASCADE
+);
+CREATE INDEX ix_bucket_member ON bucket_member(phase, bucket_key);
+
+CREATE TABLE clustering (
+  phase       TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  day_number  INTEGER REFERENCES trip_day(day_number) ON DELETE CASCADE,   -- NULL = undated
+  fingerprint TEXT NOT NULL,
+  computed_at TEXT NOT NULL,
+  PRIMARY KEY (phase, day_number)
+);
+
+-- ===== day_resume (D) — Day Grid cell cursor (spec/32 §8.5) ================
+-- Per-(phase, day) "last viewed cell" for the new flat Day Grid. Replaces the
+-- per-bucket ``bucket.current_index`` resume for the layer above clusters:
+-- with no bucket layer in the user-facing nav, the cursor sits on the day's
+-- cell sequence directly. Cluster-internal cursors keep using ``bucket``.
+CREATE TABLE day_resume (
+  phase       TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  day_number  INTEGER REFERENCES trip_day(day_number) ON DELETE CASCADE,   -- NULL = undated
+  cell_index  INTEGER NOT NULL DEFAULT 0 CHECK (cell_index >= 0),
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (phase, day_number)
+);
+
+-- ===== camera_day_tz (D) — per-(camera, day) declared TZ; spec/45 ===========
+-- The TZ the camera was set to on a given day, used by the bake step to
+-- compute the discrete EXIF offset (target_tz − declared_tz). ``source``
+-- tracks provenance so we can audit phone-auto-filled rows vs user-declared
+-- vs legacy pair-picker fallback. Foreign keys cascade-delete: dropping a
+-- camera or a day drops its TZ rows automatically.
+CREATE TABLE camera_day_tz (
+  camera_id           TEXT NOT NULL REFERENCES camera(camera_id) ON DELETE CASCADE,
+  day_number          INTEGER NOT NULL REFERENCES trip_day(day_number) ON DELETE CASCADE,
+  declared_tz_minutes INTEGER NOT NULL,
+  source              TEXT NOT NULL CHECK (source IN ('phone_auto','user_declared','pair_picker')),
+  declared_at         TEXT NOT NULL,
+  PRIMARY KEY (camera_id, day_number)
+);
+CREATE INDEX ix_camera_day_tz_day ON camera_day_tz(day_number);
+
+-- ===== item_visit (D) — Day Grid visited tick (spec/32 §2.10, §8.6) =========
+-- Per-(item, phase) "I drilled in here" bit, sibling of bucket.browsed for the
+-- non-cluster cells. Absence of a row = not visited (correct default).  FK to
+-- item cascades deletes; writes go through gateway.set_item_visited which uses
+-- ON CONFLICT DO UPDATE so an upsert does NOT cascade-delete child rows.
+CREATE TABLE item_visit (
+  item_id     TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  phase       TEXT NOT NULL CHECK (phase IN ('pick','edit')),
+  visited     INTEGER NOT NULL DEFAULT 0 CHECK (visited IN (0,1)),
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (item_id, phase)
+);
+CREATE INDEX ix_item_visit_phase_visited ON item_visit(phase, visited);
+"""
+
+# Names of the derived/cache tables — the backup layer (json_dump / repo) excludes
+# these from the JSON document; they are droppable + rebuildable from a re-scan.
+CACHE_TABLES: tuple[str, ...] = ("bucket_cache", "bucket_member", "clustering")
+
+# --------------------------------------------------------------------------- #
+# Connection setup
+# --------------------------------------------------------------------------- #
+
+
+def connect(path: Union[str, Path]) -> sqlite3.Connection:
+    """Open a connection with the spec/30 §3 pragmas applied.
+
+    WAL journal, foreign-key enforcement, ``NORMAL`` sync. Rows come back as
+    :class:`sqlite3.Row` (key access). ``path`` may be ``":memory:"``.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    # Autocommit: we drive BEGIN/COMMIT explicitly (repo.transaction). Without
+    # this the module opens an implicit transaction before DML, which then
+    # collides with our explicit BEGIN.
+    conn.isolation_level = None
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _schema_info_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_info'"
+    ).fetchone()
+    return row is not None
+
+
+def get_version(conn: sqlite3.Connection) -> Optional[int]:
+    """Return the schema version recorded in ``schema_info``, or ``None`` if uninitialised."""
+    if not _schema_info_exists(conn):
+        return None
+    row = conn.execute("SELECT schema_version FROM schema_info WHERE id = 1").fetchone()
+    return int(row["schema_version"]) if row else None
+
+
+def get_schema_info(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    """Return the whole ``schema_info`` row (version + app/event id + created_at), or ``None``."""
+    if not _schema_info_exists(conn):
+        return None
+    return conn.execute("SELECT * FROM schema_info WHERE id = 1").fetchone()
+
+
+# --------------------------------------------------------------------------- #
+# Migrations — restarted at v1 after the spec/56 RESET (2026-06-10, the second
+# greenfield reset; the first was Slice 0, 2026-06-06). Nelson deleted every
+# event for the marker-partition schema change, so the v1→v4 chain (spec/54
+# Look columns + lineage snapshots, the 'repeat' bucket kind, the spec/56
+# video tables/retirements) was folded into the initial DDL above and the
+# history discarded. Pre-release rule stands: new fields fold into the DDL and
+# dev events are recreated, not migrated.
+# Once real events exist: existing event.db files are migrated in place on
+# open — NEVER require recreation. SQLite ALTER TABLE ADD COLUMN does not
+# support CHECK constraints; those are in the DDL for new databases only, and
+# application code enforces valid values on migrated ones.
+#
+# SHIP-TIME RESET (Nelson 2026-06-12): when Mira ships, the whole
+# development migration chain folds into the base DDL ONE last time and the
+# counter restarts at v1 — the mark between building and maintaining. No
+# resets before then, none after (released users only ever migrate forward).
+# --------------------------------------------------------------------------- #
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """spec/58 slice 1 — persist the classifier's confidence score (the
+    Edit Style button's red→green ramp reads it). Additive only; existing
+    rows read NULL = never auto-scored."""
+    conn.execute(
+        "ALTER TABLE item ADD COLUMN classification_confidence REAL")
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """spec/61 (Share event Cuts) — Cut membership is FILE-based, not
+    item-based. ``photo_tag`` (the spec/51 item-membership plan) drops —
+    it was never written by any user flow, so no data moves. ``cut`` +
+    ``cut_member`` arrive; membership rows reference ``lineage`` (the
+    exported finals)."""
+    conn.execute("DROP TABLE IF EXISTS photo_tag")
+    conn.execute("""
+CREATE TABLE cut (
+  id                TEXT PRIMARY KEY,
+  tag               TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  target_s          INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s             INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s           REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  pool_expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(pool_expr_json)),
+  style_filter_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(style_filter_json)),
+  type_filter       TEXT NOT NULL DEFAULT 'both' CHECK (type_filter IN ('both','photo','video')),
+  default_state     TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category    TEXT,
+  last_exported_at  TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+)""")
+    conn.execute("""
+CREATE TABLE cut_member (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  export_relpath TEXT NOT NULL REFERENCES lineage(export_relpath) ON DELETE CASCADE,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, export_relpath)
+)""")
+    conn.execute("CREATE INDEX ix_cut_member_file ON cut_member(export_relpath)")
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """spec/61 round 3 — the ``cut`` table gets the house ``extras_json``
+    escape hatch (omitted at v3), first tenant: ``card_style`` (the
+    separator/opener colour choice). Additive only."""
+    conn.execute(
+        "ALTER TABLE cut ADD COLUMN extras_json TEXT NOT NULL DEFAULT '{}'")
+
+
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Nelson 2026-06-13 Look Strength slider — the new ``look_strength``
+    column on ``adjustment``. 0..2 multiplier on the resolved Look
+    Params; defaults to 1.0 so existing rows render IDENTICALLY to
+    the pre-migration result. Additive only.
+
+    SQLite can't add a CHECK constraint via ALTER TABLE — the new
+    column ships without one; the validation lives at the gateway
+    seam (clamped to [0, 2] on save). Fresh installs get the full
+    CHECK in the DDL."""
+    conn.execute(
+        "ALTER TABLE adjustment ADD COLUMN look_strength REAL NOT NULL "
+        "DEFAULT 1.0")
+
+
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """spec/64 (Nelson 2026-06-13) — events-information split. The
+    Scope / Mood / Transport vocabulary retires; Context / Experience
+    Type / Creative Focus replaces it.
+
+    Existing events survive (spec/64 §6.2) — the new columns land NULL
+    (and '[]' for the multi-select array) so Brazil 2023 opens with
+    blanks for the new dimensions and Nelson fills them at his leisure
+    via the EventHeaderDialog. Old Scope / Mood / Transport values do
+    NOT map over — Nelson's explicit "drop clean, no leftovers" call.
+
+    SQLite refuses ``ALTER TABLE DROP COLUMN`` while an index references
+    the column, so the partial indexes on ``scope`` / ``mood`` come down
+    first. Adds are real ``ADD COLUMN`` with the same SQLite limitation
+    as v4→v5 — no CHECK can be added via ALTER, so the validation lives
+    at the gateway seam on migrated rows. Fresh installs get the full
+    CHECK on ``creative_focus`` in the DDL."""
+    conn.execute("DROP INDEX IF EXISTS ix_event_scope")
+    conn.execute("DROP INDEX IF EXISTS ix_event_mood")
+    conn.execute("ALTER TABLE event DROP COLUMN scope")
+    conn.execute("ALTER TABLE event DROP COLUMN mood")
+    conn.execute("ALTER TABLE event DROP COLUMN transport")
+    conn.execute("ALTER TABLE event ADD COLUMN context TEXT")
+    conn.execute("ALTER TABLE event ADD COLUMN experience_type TEXT")
+    conn.execute(
+        "ALTER TABLE event ADD COLUMN creative_focus TEXT NOT NULL "
+        "DEFAULT '[]'")
+    conn.execute(
+        "CREATE INDEX ix_event_context ON event(context) "
+        "WHERE context IS NOT NULL")
+    conn.execute(
+        "CREATE INDEX ix_event_experience_type ON event(experience_type) "
+        "WHERE experience_type IS NOT NULL")
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migrate_v1_to_v2,
+    _migrate_v2_to_v3,
+    _migrate_v3_to_v4,
+    _migrate_v4_to_v5,
+    _migrate_v5_to_v6,
+]
+
+
+def initialize(
+    conn: sqlite3.Connection,
+    *,
+    event_id: str,
+    app_version: str = "",
+    created_at: Optional[str] = None,
+) -> None:
+    """Create a fresh schema at :data:`SCHEMA_VERSION` and stamp ``schema_info``.
+
+    Must be called on an empty database. Idempotency is *not* assumed — callers
+    use :func:`get_version` to decide between initialize and :func:`migrate`.
+    """
+    if _schema_info_exists(conn):
+        raise RuntimeError("initialize() called on an already-initialised database")
+    created_at = created_at or _utc_now_iso()
+    conn.executescript(DDL)  # autocommit: each DDL statement commits on its own
+    conn.execute(
+        "INSERT INTO schema_info (id, schema_version, app_version, event_id, created_at) "
+        "VALUES (1, ?, ?, ?, ?)",
+        (SCHEMA_VERSION, app_version, event_id, created_at),
+    )
+    log.info("initialised event.db schema v%s for event %s", SCHEMA_VERSION, event_id)
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Apply any pending migrations to reach :data:`SCHEMA_VERSION`.
+
+    Raises if the DB is uninitialised or newer than this code understands.
+    """
+    current = get_version(conn)
+    if current is None:
+        raise RuntimeError("migrate() called on an uninitialised database")
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"event.db is schema v{current} but this build only understands "
+            f"v{SCHEMA_VERSION}; upgrade Mira to open it"
+        )
+    while current < SCHEMA_VERSION:
+        step = MIGRATIONS[current - 1]  # version N -> N+1
+        conn.execute("BEGIN")
+        try:
+            step(conn)
+            conn.execute(
+                "UPDATE schema_info SET schema_version = ? WHERE id = 1", (current + 1,)
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        log.info("migrated event.db schema v%s -> v%s", current, current + 1)
+        current += 1

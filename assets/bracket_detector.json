@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "description": "Default thresholds for the bracket sequence detector (v2_design.md §12)",
+
+  "window_seconds": 2.0,
+  "min_sequence_size": 3,
+  "max_sequence_size": 100,
+
+  "focus_bracket": {
+    "require_monotonic_focus_distance": true,
+    "tolerate_aperture_jitter_stops": 0.0,
+    "tolerate_shutter_jitter_stops": 0.0
+  },
+
+  "exposure_bracket": {
+    "require_constant_aperture": true,
+    "require_constant_iso": true,
+    "min_exposure_range_stops": 1.0
+  }
+}

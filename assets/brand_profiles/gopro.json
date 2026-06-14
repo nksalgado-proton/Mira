@@ -1,0 +1,65 @@
+{
+  "brand_id": "gopro",
+  "display_name": "GoPro",
+  "version": 1,
+  "exiftool_make_match": ["GoPro"],
+  "tested_bodies": ["HERO12 Black"],
+
+  "tz_setting_instructions": {
+    "HERO12 Black": [
+      "Pair the GoPro with the Quik app — most settings (including date/time/timezone) sync from the phone automatically.",
+      "On-camera: swipe down → Preferences → Regional → 'Time Zone'.",
+      "On-camera: Preferences → Regional → 'Date & Time' (verify after every long flight).",
+      "GoPros default to writing UTC into the QuickTime container — make sure the Time Zone on the body matches where you are."
+    ],
+    "_default": [
+      "Pair the GoPro with the Quik app — date/time/timezone usually sync from the phone.",
+      "On-camera: open Preferences → Regional → verify Time Zone and Date/Time.",
+      "GoPros tend to write UTC into video metadata — the Time Zone setting on the body is what makes timestamps land right in Mira."
+    ]
+  },
+
+  "_notes": "GoPro action cameras write minimal EXIF beyond the basics. They have no PhotoStyle, no AI subject detection, no focus modes (fixed focus), no exposure or focus brackets in the conventional sense, and one fixed lens per body. The classifier falls back to focal/aperture/shutter-only reasoning, which is fine for action camera content (typically wide-angle general / landscape / action).",
+
+  "focus_mode": {
+    "exif_tag": "FocusMode",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "af_area_mode": {
+    "exif_tag": "AFAreaMode",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "subject_detection": {
+    "exif_tag": "",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "none"
+  },
+
+  "drive_mode": {
+    "exif_tag": "",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "single"
+  },
+
+  "photo_style": {
+    "exif_tag": "",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "lens_normalization": {
+    "lens_model_tag": "LensModel",
+    "lens_model_tag_alternatives": [],
+    "lens_id_tag": null,
+    "aliases": []
+  }
+}

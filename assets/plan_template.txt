@@ -1,0 +1,52 @@
+# Mira trip plan template
+#
+# Lines starting with '#' are comments and ignored by the parser.
+#
+# Each day line follows the shape:
+#
+#     Dia <N> - <description> (<DD/MM[/YYYY]>) [LOC:<location>] [TZ:<offset>]
+#
+# Day-number prefix: "Dia 1", "Day 1", "1.", or "1 -" all work.
+# Description: free text — what you'll be doing that day.
+#
+# Optional tags (can appear in any order after the description):
+#
+#   (DD/MM)         — explicit date for that day. Omit if the days are
+#                     sequential starting from the trip's start date.
+#                     With (DD/MM) you can have non-consecutive days
+#                     (gaps for travel) and multiple days on one date.
+#   (DD/MM/YYYY)    — same with explicit year. Use this when the year
+#                     would otherwise be ambiguous (multi-year trips).
+#   [LOC:<text>]    — location/region label. Drives the Curate phase's
+#                     geographic grouping (so days 3-5 in "La Fortuna"
+#                     can share a slideshow track). Free text, any
+#                     punctuation except ']'.
+#
+#                     Two optional light-syntax markers (task #110):
+#                       •  "A > B"   marks a travel day (origin →
+#                                    destination); Curate uses this
+#                                    to flag the day on the map.
+#                       •  " # mode" appends the transport (space
+#                                    required before the #). Works on
+#                                    travel days AND stay days.
+#                     Examples:
+#                       [LOC:Kathmandu]                         (stay)
+#                       [LOC:Kathmandu > Pokhara]               (travel)
+#                       [LOC:Kathmandu > Pokhara # bus]         (travel + mode)
+#                       [LOC:Kathmandu # walking]               (stay with mode)
+#
+#   [TZ:<offset>]   — UTC offset in hours for that day onward. Inherits
+#                     from the previous day when omitted. Examples:
+#                     -6 (Costa Rica), -3 (São Paulo), +1 (Lisbon),
+#                     +5.75 (Nepal), -3.5 (Newfoundland).
+#
+# Example trip plan (delete this section and replace with your own):
+
+Dia 1 - Chegada em San José (15/06/2026) [LOC:San José] [TZ:-6]
+Dia 2 - Drive to La Fortuna (16/06) [LOC:San José > La Fortuna # car]
+Dia 3 - Mistico Park + Arenal night walk [LOC:La Fortuna]
+Dia 4 - Drive to Monteverde (18/06) [LOC:La Fortuna > Monteverde # car]
+Dia 5 - Selvatura canopy + reserve hike [LOC:Monteverde]
+Dia 6 - Travel day, no shooting (20/06)
+Dia 7 - Manuel Antonio beach + national park (21/06) [LOC:Manuel Antonio]
+Dia 8 - Return to San José + flight home (22/06) [LOC:Manuel Antonio > San José # car]

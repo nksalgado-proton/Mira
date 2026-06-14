@@ -1,0 +1,71 @@
+{
+  "brand_id": "apple",
+  "display_name": "Apple",
+  "version": 1,
+  "exiftool_make_match": ["Apple"],
+  "tested_bodies": ["iPhone 11", "iPhone 12"],
+
+  "tz_setting_instructions": {
+    "_default": [
+      "iPhones normally set Date/Time and Timezone automatically from the network — no action needed in most cases.",
+      "If timestamps still look wrong: Settings → General → Date & Time → enable 'Set Automatically'.",
+      "Force a sync by toggling 'Set Automatically' off then back on after you've connected to a local network or moved into the destination timezone."
+    ]
+  },
+
+  "focus_mode": {
+    "exif_tag": "FocusMode",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "af_area_mode": {
+    "exif_tag": "AFAreaMode",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "subject_detection": {
+    "exif_tag": "RegionType",
+    "exif_tag_alternatives": [],
+    "mapping": {
+      "human": ["face"]
+    },
+    "default": "none"
+  },
+
+  "drive_mode": {
+    "exif_tag": "BurstMode",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "single"
+  },
+
+  "photo_style": {
+    "exif_tag": "",
+    "exif_tag_alternatives": [],
+    "mapping": {},
+    "default": "unknown"
+  },
+
+  "focus_position": {
+    "kind": "meters_range",
+    "meters_tag": "FocusDistanceRange",
+    "bound": "upper",
+    "max_meters": 1.5
+  },
+
+  "af_point": {
+    "kind": "mwg_face_regions",
+    "default_box": 0.10
+  },
+
+  "lens_normalization": {
+    "lens_model_tag": "LensModel",
+    "lens_model_tag_alternatives": [],
+    "lens_id_tag": null,
+    "aliases": []
+  }
+}

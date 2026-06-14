@@ -1,0 +1,210 @@
+{
+  "version": 6,
+  "description": "Settings-first classifier rules. PURE EXIF — no rule reads from the per-user lens registry. Brand differences are absorbed by the brand-profile semantic methods (translate_focus_mode, is_continuous_shooting, focus_position_normalized, etc.); rules query normalized fields and stay brand-agnostic. v5 (2026-05-13) adds t2_close_focus_normalized — fires when the lens is focused near its minimum focus distance, regardless of which brand-specific EXIF fields encode that fact (Panasonic step ratio, Sony meters, EXIF SubjectDistanceRange enum, ...). v6 (2026-05-28) adds t1_intelligent_auto_{portrait,street} — preempts mode-vs-result false positives when the camera is in Intelligent Auto (Kathmandu 2025-10-27: leftover AF=Animal Body on iA shot misclassified as wildlife). Brand-agnostic via the new ShootingMode enum + per-brand translate_shooting_mode.",
+  "rules": [
+    {
+      "id": "t1_focus_bracket",
+      "description": "Focus bracketing mode = macro stacking work. Strong intent signal.",
+      "when": {
+        "focus_bracket_active": { "eq": true }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.95,
+        "reason": "Focus bracket mode active"
+      }
+    },
+
+    {
+      "id": "t1_exposure_bracket",
+      "description": "Exposure bracketing mode = HDR landscape work. Strong intent signal.",
+      "when": {
+        "exposure_bracket_active": { "eq": true }
+      },
+      "then": {
+        "scenario": "landscape",
+        "confidence": 0.95,
+        "reason": "Exposure bracket mode active"
+      }
+    },
+
+    {
+      "id": "t1_long_exposure",
+      "description": "Shutter ≥ 1s = long exposure (tripod / night work).",
+      "when": {
+        "shutter_speed": { "gte": 1.0 }
+      },
+      "then": {
+        "scenario": "night_long_exposure",
+        "confidence": 0.95,
+        "reason": "Shutter speed >= 1s"
+      }
+    },
+
+    {
+      "id": "t1_subject_human",
+      "description": "Camera actually detected a human face/eye in the frame. The subject_detection tag alone is NOT enough on Panasonic — that field reflects the user's *configured* detection mode (e.g. 'Human Eye/Face/Body'), not a successful detection. We corroborate with FacesDetected > 0, which is the camera's count of faces actually registered. Confirmed empirically 2026-04-29: P1304837.RW2 had subject_detection=human but FacesDetected=0 (paisagem em f/11) — without this guard the photo was misclassified as portrait.",
+      "requires_capability": ["subject_detection"],
+      "when": {
+        "subject_detection": { "eq": "human" },
+        "faces_detected": { "gt": 0 }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.95,
+        "reason": "Subject detection: human (FacesDetected > 0)"
+      }
+    },
+
+    {
+      "id": "t1_intelligent_auto_portrait",
+      "description": "Camera was in Intelligent Auto AND a face was detected. Hands-off context + corroborated face = portrait. Catches the edge case where the user left the AF subject-detection mode on Animal/Bird from a prior shoot but a face is actually in the iA shot — without this rule, t1_subject_wildlife would still fire (animal mode + iA + face) and mislabel the photo. Brand-agnostic: ShootingMode is normalized via the brand profile's translate_shooting_mode; faces_detected is the camera's actual detection count, not its configured mode setting.",
+      "when": {
+        "shooting_mode": { "eq": "intelligent_auto" },
+        "faces_detected": { "gt": 0 }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.85,
+        "reason": "Intelligent Auto + face(s) detected"
+      }
+    },
+
+    {
+      "id": "t1_intelligent_auto_street",
+      "description": "Camera was in Intelligent Auto AND no face detected. The user delegated all decisions to the device — they were not setting up for a specialized genre. Defaults to street (casual urban / travel snap) rather than letting downstream rules fire false positives off stale AF-subject-detection settings (Kathmandu 2025-10-27: shooting_mode=iA, subject_detection=animal leftover from a previous shoot, focal=12mm super-wide, faces=0 → was misclassified as wildlife under t1_subject_wildlife). Brand-agnostic: shooting_mode is the normalized ShootingMode enum populated by each brand profile's translate_shooting_mode method. Conf 0.55 lands the photo with needs_review so the user can override if the casual default isn't right.",
+      "when": {
+        "shooting_mode": { "eq": "intelligent_auto" },
+        "faces_detected": { "eq": 0 }
+      },
+      "then": {
+        "scenario": "street",
+        "confidence": 0.55,
+        "reason": "Intelligent Auto + no face (hands-off casual shot)"
+      }
+    },
+
+    {
+      "id": "t1_subject_wildlife",
+      "description": "Camera detected animal or bird. Settings beat lens — wildlife regardless of focal length.",
+      "requires_capability": ["subject_detection"],
+      "when": {
+        "subject_detection": { "in": ["animal", "bird"] }
+      },
+      "then": {
+        "scenario": "wildlife",
+        "confidence": 0.95,
+        "reason": "Subject detection: animal/bird"
+      }
+    },
+
+    {
+      "id": "t1_photo_style_portrait",
+      "description": "PhotoStyle = Portrait. In Nelson's setup the Portrait PhotoStyle is exclusive to Custom mode C2 (Portrait/People) on both G9 MkI and G9 MkII — it's a deterministic mode marker, not just a rendering preference. Catches portraits where AFSubjectDetection didn't fire (paisagem-with-people scenario from 2026-04-29 P1304526.RW2 in Drake Bay).",
+      "when": {
+        "photo_style": { "eq": "portrait" }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.92,
+        "reason": "PhotoStyle = Portrait (camera mode C2)"
+      }
+    },
+
+    {
+      "id": "t1_photo_style_scenery",
+      "description": "PhotoStyle = Scenery. In Nelson's setup the Scenery PhotoStyle is exclusive to Custom mode C3-1 (Landscape) on both bodies — deterministic mode marker. Confirmed 2026-04-29: G9 MkII writes the literal string 'Scenery'.",
+      "when": {
+        "photo_style": { "eq": "scenery" }
+      },
+      "then": {
+        "scenario": "landscape",
+        "confidence": 0.92,
+        "reason": "PhotoStyle = Scenery (camera mode C3-1)"
+      }
+    },
+
+    {
+      "id": "t1_af_face_eye",
+      "description": "Camera actually locked face/eye AF on a real face. Same Panasonic mode-vs-result trap as t1_subject_human: AFAreaMode reflects the configured mode (e.g. user left 'Face Detect' on from a previous shoot), not that anything was detected. Costa Rica field test 2026-04-30: PANA3803.RW2 was a manual-focus macro shot with Olympus 60mm but AFAreaMode='Face Detect' was lingering, classifying it as portrait. Now we require FacesDetected > 0 corroboration — without an actual face in the frame, the mode setting alone doesn't produce a classification.",
+      "when": {
+        "af_area_mode": { "eq": "face_eye" },
+        "faces_detected": { "gt": 0 }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.90,
+        "reason": "AF area mode = face/eye (FacesDetected > 0)"
+      }
+    },
+
+    {
+      "id": "t2_lens_name_macro",
+      "description": "Lens model name (from EXIF LensModel / LensType / LensID) contains 'macro' AND focus mode is manual. The manual-focus guard avoids false positives when the user puts a macro lens on for non-macro work (portraits, landscapes) and uses AF — real macro is almost always manual focus, often with magnification assist or focus stacking. When the lens name doesn't carry 'macro' (e.g. OM Systems 'OM 90mm F3.5' writes no Macro keyword) the rule can't fire — the photo falls through to general and the user reclassifies via the Type override.",
+      "when": {
+        "lens_model_raw": { "contains": "macro" },
+        "focus_mode": { "eq": "manual" }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.85,
+        "reason": "Manual focus on lens whose name contains 'macro'"
+      }
+    },
+
+    {
+      "id": "t2_close_focus_macro",
+      "description": "Focus distance < 0.5m. Pure EXIF signal — close focus is the universal hardware-independent marker of macro intent regardless of lens. Doesn't fire when EXIF doesn't carry FocusDistance (e.g. JPGs exported by LRC without maker notes).",
+      "when": {
+        "focus_distance": { "lt": 0.5 }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.90,
+        "reason": "Close focus distance (< 0.5m)"
+      }
+    },
+
+    {
+      "id": "t2_close_focus_normalized",
+      "description": "Brand-agnostic close-focus rule. Fires when the lens is focused in the closest 20% of its range, regardless of which brand-specific EXIF fields encode that fact (Panasonic step ratio, Sony / Canon meters, EXIF SubjectDistanceRange enum). The brand profile's focus_position_normalized() method does the math; this rule reads the single normalized [0, 1] scalar. Catches macro shots where the lens name doesn't carry 'Macro' (OM Systems writes 'OM 90mm F3.5' without the keyword) and where t2_close_focus_macro can't fire because the brand doesn't write FocusDistance in metres.",
+      "when": {
+        "focus_position_normalized": { "lt": 0.2 }
+      },
+      "then": {
+        "scenario": "macro",
+        "confidence": 0.85,
+        "reason": "Lens focused near minimum focus distance (focus_position < 0.2)"
+      }
+    },
+
+    {
+      "id": "t2_wide_aperture_portrait_focal",
+      "description": "Wide aperture (≤ f/2.8) + portrait focal range (50-200mm equiv) + focus distance > 1m. Pure EXIF — no lens-registry dependency. Catches portrait shots where face detection didn't fire (low light, face out of frame). The focus-distance lower bound excludes close macros that happen to be wide open.",
+      "when": {
+        "aperture": { "lte": 2.8 },
+        "focal_35mm": { "gte": 50, "lte": 200 },
+        "focus_distance": { "gt": 1.0 }
+      },
+      "then": {
+        "scenario": "portrait",
+        "confidence": 0.70,
+        "reason": "Wide aperture + portrait focal length, focus > 1m"
+      }
+    },
+
+    {
+      "id": "t3_wide_closed_landscape",
+      "description": "Closed aperture (≥ f/8) + wide focal (≤ 50mm equiv). Universal landscape signal — pure EXIF.",
+      "when": {
+        "aperture": { "gte": 8.0 },
+        "focal_35mm": { "lte": 50 }
+      },
+      "then": {
+        "scenario": "landscape",
+        "confidence": 0.60,
+        "reason": "Closed aperture + wide focal length"
+      }
+    }
+  ]
+}

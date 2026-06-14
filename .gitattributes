@@ -1,0 +1,28 @@
+# Normalize line endings. Text is stored as LF in the repo AND checked out
+# as LF on every platform (eol=lf), so the working tree never drifts from the
+# index again — this is the fix for the whole-repo CRLF/LF churn the
+# MiraCrafter repo suffered (every file showing as modified).
+* text=auto eol=lf
+
+# Windows shell scripts must keep CRLF to run correctly.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalize or diff as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.pdf  binary
+*.exe  binary
+*.dll  binary
+*.whl  binary
+*.zip  binary
+*.db   binary
+*.sqlite binary
+*.ttf  binary
+*.otf  binary
+*.mp4  binary
+*.mov  binary

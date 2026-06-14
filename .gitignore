@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+
+# Nuitka build
+dist/
+*.build/
+*.onefile-build/
+*.dist/
+
+# ExifTool binary (large, downloaded separately)
+bin/exiftool.exe
+bin/exiftool_files/
+
+# Commercial PyQt6 wheels (Riverbank license — Nelson's purchased copy;
+# install via `pip install --force-reinstall "pyqt6 commercial\*.whl"`).
+pyqt6 commercial/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# App data (local settings, not code)
+*.tmp
+
+# Claude harness meta (worktree-local scheduled tasks, etc.)
+.claude/
+
+# Local smoke-test artifacts. The app writes 00 - Captured/ inside
+# whatever the user's chosen event-root happens to be — when that
+# happens to be the project root during dev, the tree shouldn't be
+# tracked. Same applies to 04 - Curated/ (Curate-phase output) and
+# to the per-event derived-thumbnail cache (docs/24 Step 1).
+/00 - Captured/
+/04 - Curated/
+**/.cache/
+
+# Underscore-prefixed dev tools and their generated screenshots
+# (tools/_shot_*.py write tools/_shot_*.png).
+tools/_*.png
+
+# Root-level throwaway diagnostics — _smoke_*.{py,log,txt}, _probe_*.py,
+# and any PNG/TXT/LOG written by ad-hoc smoke scripts at the project root.
+# Underscore prefix is the project convention for non-load-bearing scratch.
+/_smoke_*
+/_probe_*
+/_*.png
+/_*.txt
+/_*.log
+/verify_*.txt

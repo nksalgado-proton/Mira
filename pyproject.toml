@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mira"
+version = "0.1.0"
+description = "Mira — a photography workflow tool. One product, two branches: XMC (full) → MC (streamlined)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Nelson Salgado" }]
+keywords = ["photography", "workflow", "culling", "lightroom", "wildlife", "macro"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+]
+
+# Runtime dependencies. Strict offline-first per the charter; nothing calls
+# home. Bundled binaries (ExifTool, FFmpeg, fonts) live under bin/ + assets/.
+dependencies = [
+    "PyQt6>=6.6",
+    "rawpy>=0.19",
+    "Pillow>=10.0",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "mutagen>=1.47",
+    "pillow-heif>=0.16",
+    "reverse_geocoder>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+build = [
+    "nuitka>=2.0",
+]
+
+# ── Tooling ───────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"
+
+[tool.setuptools]
+# Shipped as a Nuitka-built executable; setuptools config is kept minimal so
+# `pip install -e .[dev]` works for development.
+packages = [
+    "mira",
+    "mira.gateway",
+    "mira.ingest",
+    "mira.picked",
+    "mira.settings",
+    "mira.shared",
+    "mira.store",
+    "mira.ui",
+    "mira.ui.base",
+    "mira.ui.edited",
+    "mira.ui.media",
+    "mira.ui.pages",
+    "mira.ui.picked",
+    "mira.ui.shared",
+    "mira.ui.shell",
+    "mira.ui.wizard",
+    "core",
+]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]

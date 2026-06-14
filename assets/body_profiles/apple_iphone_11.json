@@ -1,0 +1,43 @@
+{
+  "body_id": "apple_iphone_11",
+  "display_name": "Apple iPhone 11",
+  "brand_id": "apple",
+  "kind": "phone",
+  "exiftool_model_match": ["iPhone 11"],
+  "year_released": 2019,
+  "mount": "fixed",
+
+  "sensor": {
+    "size": "type_1_2_55",
+    "crop_factor": 6.55,
+    "megapixels": 12
+  },
+
+  "capabilities": {
+    "ibis": false,
+    "high_res_mode": false,
+    "pixel_shift": false,
+    "focus_bracket": false,
+    "exposure_bracket": false,
+    "pre_burst": false,
+    "phase_detect_af": true
+  },
+
+  "subject_detection": {
+    "supported": true,
+    "types": ["human"],
+    "notes": "iOS surfaces face detection via XMP RegionType (mapped to subject_detection=human in the apple brand profile). No on-device AI subject classification beyond faces."
+  },
+
+  "iso_baseline": {
+    "native_min": 32,
+    "native_max": 3072,
+    "high_iso_threshold": 1600
+  },
+
+  "drive_max_fps": {
+    "mechanical": 0,
+    "electronic": 10,
+    "burst_high_threshold_fps": 6
+  }
+}

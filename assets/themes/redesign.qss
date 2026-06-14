@@ -1,0 +1,124 @@
+/* Mira design-system role catalog — Qt Style Sheet template.
+ *
+ * Substituted via `mira.ui.palette.build_redesign_qss(theme)` with single-brace
+ * `{token}` substitution (NOT a Python format string — no `{{` / `}}` escaping).
+ * Tokens come from `mira.ui.palette.PALETTE[theme]` + `RADIUS`.
+ *
+ * Qt QSS limits to remember: no box-shadow, no transitions, no flexbox. Use
+ * QGraphicsDropShadowEffect for card shadows and Q*Layout for structure.
+ * Dynamic state via setProperty + repolish().
+ *
+ * This template is concatenated AFTER the legacy `dark.qss` / `light.qss`
+ * by `apply_theme()` so its role rules can override legacy fall-through. */
+
+QWidget#RedesignRoot { background: {bg}; color: {ink}; font-family: "Segoe UI", "Inter", sans-serif; font-size: 14px; }
+
+/* ---- Cards / panels ---- */
+QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
+QFrame#Card2,
+QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
+
+/* ---- Headings ---- */
+QLabel#PageTitle   { font-size: 30px; font-weight: 800; }
+QLabel#CardTitle   { font-size: 18px; font-weight: 700; }
+QLabel#Sub,
+QLabel#Label       { color: {ink_soft}; font-size: 13px; }
+QLabel#Micro       { color: {ink_soft}; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+QLabel#Faint       { color: {ink_faint}; }
+
+/* ---- Buttons ---- */
+QPushButton#Ghost           { background: transparent; color: {ink}; border: 1px solid {line};
+                              border-radius: {radius_md}px; padding: 8px 14px; font-weight: 600; }
+QPushButton#Ghost:hover     { background: {card2}; border-color: {accent}; }
+QPushButton#Ghost:pressed   { background: {card2}; }
+QPushButton#Primary         { background: {accent}; color: #ffffff; border: none;
+                              border-radius: {radius_md}px; padding: 9px 18px; font-weight: 600; }
+QPushButton#Primary:hover   { background: {accent}; }
+QPushButton#DangerGhost           { background: transparent; color: {ink}; border: 1px solid {line};
+                                    border-radius: {radius_md}px; padding: 8px 14px; font-weight: 600; }
+QPushButton#DangerGhost:hover     { border-color: {red}; color: {red}; }
+
+/* ---- Inputs ---- */
+QLineEdit#DesignInput,
+QComboBox#DesignSelect,
+QSpinBox#DesignSpin,
+QPlainTextEdit#DesignText,
+QTextEdit#DesignText {
+    background: {card2}; color: {ink}; border: 1px solid {line};
+    border-radius: {radius_md}px; padding: 8px 12px; min-height: 20px; }
+QLineEdit#DesignInput:focus,
+QComboBox#DesignSelect:focus,
+QSpinBox#DesignSpin:focus,
+QPlainTextEdit#DesignText:focus,
+QTextEdit#DesignText:focus {
+    border: 1px solid {accent}; }
+QComboBox#DesignSelect::drop-down { border: none; width: 22px; }
+
+/* ---- Chips / tags / pill toggles ---- */
+QLabel#Tag         { background: {accent_soft}; color: {accent}; border-radius: {radius_sm}px;
+                     padding: 3px 8px; font-size: 11px; font-weight: 700; }
+QLabel#ChipOpen    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+QLabel#ChipClosed  { background: rgba(255,93,162,0.16); color: {pink};   border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+QLabel#ChipDone    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+QLabel#ChipProg    { background: rgba(251,191,36,0.18); color: {amber};  border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+QLabel#ChipIdle    { background: {card2};                color: {ink_faint}; border-radius: 11px; padding: 4px 11px; font-weight: 700; }
+
+QPushButton#PillToggle            { background: {card2}; border: 1px solid {line}; color: {ink};
+                                    border-radius: 16px; padding: 6px 14px; font-weight: 600; }
+QPushButton#PillToggle:checked    { background: {accent_soft}; border-color: {accent}; color: {accent}; }
+
+/* ---- Theme toggle (right of TitleBar) ---- */
+QPushButton#ThemeToggle           { background: {card2}; border: 1px solid {line}; color: {ink};
+                                    border-radius: 14px; padding: 4px 12px; font-weight: 600; min-width: 56px; }
+QPushButton#ThemeToggle:hover     { border-color: {accent}; }
+
+/* ---- Progress bar (stage / picked / skipped) ---- */
+QProgressBar#StageBar              { background: {track}; border: none; border-radius: 6px;
+                                     height: 11px; text-align: right; color: {ink_soft}; }
+QProgressBar#StageBar::chunk       { border-radius: 6px; background: {accent}; }
+QProgressBar#StageBar[state="done"]::chunk  { background: {green}; }
+QProgressBar#StageBar[state="prog"]::chunk  { background: {amber}; }
+QProgressBar#StageBar[state="skip"]::chunk  { background: {red}; }
+
+/* ---- Cross-Event Cuts band (accent-bordered hero card on Surface 01) ---- */
+QFrame#CrossEventBand    { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                              stop:0 {accent_soft}, stop:1 {card});
+                           border: 1px solid {accent}; border-radius: {radius_xl}px; }
+
+/* ---- MediaNav floating arrow buttons (over the photo stage) ---- */
+QPushButton#MediaNavArrow         { background: rgba(8,10,16,0.55); color: #ffffff;
+                                    border: 1px solid rgba(255,255,255,0.18);
+                                    border-radius: 22px; min-width: 44px; min-height: 44px;
+                                    font-size: 22px; font-weight: 700; }
+QPushButton#MediaNavArrow:hover   { background: rgba(8,10,16,0.78); border-color: {accent}; }
+
+/* ---- Carousel arrows + dots (closed-event tile, future single-image strips) ---- */
+QPushButton#CarouselArrow            { background: rgba(8,10,16,0.55); color: #ffffff;
+                                       border: 1px solid rgba(255,255,255,0.22);
+                                       border-radius: 14px; min-width: 28px; min-height: 28px;
+                                       padding: 0; font-size: 14px; font-weight: 700; }
+QPushButton#CarouselArrow:hover      { background: rgba(8,10,16,0.82); border-color: {accent}; }
+QPushButton#CarouselDot              { background: rgba(255,255,255,0.45);
+                                       border: none; border-radius: 4px; padding: 0; }
+QPushButton#CarouselDot:hover        { background: rgba(255,255,255,0.75); }
+QPushButton#CarouselDot[active="true"] { background: {accent}; }
+
+/* ---- Photo-state border tag (used on legends + thumbnails when not painted manually) ---- */
+QFrame#StatePicked    { border: 3px solid {picked}; border-radius: {radius_md}px; }
+QFrame#StateSkipped   { border: 3px solid {skipped}; border-radius: {radius_md}px; }
+QFrame#StateCompare   { border: 3px solid {compare}; border-radius: {radius_md}px; }
+QFrame#StateMixed     { border: 3px solid {mixed}; border-radius: {radius_md}px; }
+QFrame#StateNeutral   { border: 3px solid {line}; border-radius: {radius_md}px; }
+
+/* ---- Translucent overlay chips (visited eye, exported badge, etc.) ---- */
+QLabel#OverlayChip          { background: rgba(8,10,16,0.74); color: #ffffff;
+                              border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;
+                              padding: 3px 8px; font-size: 11px; font-weight: 600; }
+QLabel#ExportedBadge        { background: {accent}; color: #ffffff; border: none;
+                              border-radius: 10px; padding: 3px 9px; font-size: 11px; font-weight: 700; }
+
+/* ---- Search field (Cross-Event Cuts + per-event filter) ---- */
+QLineEdit#SearchField               { background: {card2}; color: {ink}; border: 1px solid {line};
+                                      border-radius: {radius_md}px; padding: 8px 12px 8px 34px;
+                                      min-height: 22px; }
+QLineEdit#SearchField:focus         { border: 1px solid {accent}; }

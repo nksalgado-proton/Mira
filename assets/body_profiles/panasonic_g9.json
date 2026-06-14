@@ -1,0 +1,43 @@
+{
+  "body_id": "panasonic_g9",
+  "display_name": "Panasonic Lumix G9",
+  "brand_id": "panasonic",
+  "kind": "camera",
+  "exiftool_model_match": ["DC-G9"],
+  "year_released": 2017,
+  "mount": "MFT",
+
+  "sensor": {
+    "size": "four_thirds",
+    "crop_factor": 2.0,
+    "megapixels": 20
+  },
+
+  "capabilities": {
+    "ibis": true,
+    "high_res_mode": true,
+    "pixel_shift": false,
+    "focus_bracket": true,
+    "exposure_bracket": true,
+    "pre_burst": true,
+    "phase_detect_af": false
+  },
+
+  "subject_detection": {
+    "supported": true,
+    "types": ["human"],
+    "notes": "G9 (original) has face/eye detection only. Animal/bird detection was added in G9 II."
+  },
+
+  "iso_baseline": {
+    "native_min": 200,
+    "native_max": 25600,
+    "high_iso_threshold": 3200
+  },
+
+  "drive_max_fps": {
+    "mechanical": 9,
+    "electronic": 60,
+    "burst_high_threshold_fps": 8
+  }
+}

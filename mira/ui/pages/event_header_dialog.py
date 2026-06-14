@@ -1,0 +1,592 @@
+"""Surface 02 — Event Header dialog.
+
+The event identity surface (spec/64 §3): name, type, subtype, description,
+duration, context, experience type, creative focus, participants. Opens
+at every event birth and from the Event Header door on the event tile /
+menu.
+
+Composition (design-system surface-02 spec):
+    Header bar:  accent icon tile · "Event Header" + event-name subtitle
+                 · close ✕ · 1px divider
+    Body:        scrollable stacked fields, each with a Micro uppercase
+                 label above the control (required asterisks in accent).
+                 Three sections — IDENTITY / LOGISTICS / TAGS — separated
+                 by small accent section headers. Creative Focus pills
+                 carry their category SVG icons (Macro=beetle, Birds,
+                 Wildlife=paw, Landscape=sun+hills, Urban=skyline; None
+                 has no icon, design spec).
+    Footer:      1px top divider · ghost Cancel · primary Save event
+
+The mutual-exclusion rule on Creative Focus (None ⇔ subjects, spec/64
+§3.4) is preserved. Subtype suggestions refill on type change (uses
+``event_classification.subtype_presets_for``).
+
+Save event is gated on Name + Type + Subtype being set (§3.6). Returns
+the form as a dict via :meth:`header_info`.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Optional
+
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QIcon,
+    QImage,
+    QPainter,
+    QPixmap,
+)
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from mira import event_classification
+from mira.ui.base.flow_layout import FlowLayout
+from mira.ui.design import (
+    ghost_button,
+    line_input,
+    pill_toggle,
+    primary_button,
+    select,
+)
+from mira.ui.i18n import tr
+
+log = logging.getLogger(__name__)
+
+
+_CATEGORY_DIR = (
+    Path(__file__).resolve().parents[3]
+    / "assets" / "icons" / "categories"
+)
+
+#: Creative-Focus option → SVG icon stem under assets/icons/categories/.
+#: 'none' has no icon (the design spec is explicit: it's the exclusive
+#: 'not a photo event' answer and reads as a plain pill).
+_FOCUS_ICON_NAME = {
+    "macro":        "macro",
+    "birds":        "birds",
+    "wildlife":     "wildlife",
+    "landscape":    "landscape",
+    "urban_street": "urban",
+}
+
+
+def _micro(text: str, *, required: bool = False) -> QLabel:
+    """Uppercase micro label above a form control, with optional accent
+    asterisk when the field is required."""
+    if required:
+        lbl = QLabel(f"{text.upper()} <span style='color:#7c6cff'>*</span>")
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+    else:
+        lbl = QLabel(text.upper())
+    lbl.setObjectName("Micro")
+    return lbl
+
+
+def _section_header(text: str) -> QLabel:
+    """Section divider header: small uppercase accent label sitting above
+    a group of related form fields. Three sections in this dialog:
+    IDENTITY · LOGISTICS · TAGS."""
+    lbl = QLabel(text.upper())
+    lbl.setObjectName("SectionHeader")
+    lbl.setStyleSheet(
+        "color: #7c6cff; font-size: 10px; font-weight: 800;"
+        " letter-spacing: 1.5px; padding-top: 6px;"
+    )
+    return lbl
+
+
+def _tinted_svg_icon(icon_stem: str, color_hex: str, size: int = 18) -> QIcon:
+    """Render the named category SVG into a fixed-size QIcon tinted to
+    ``color_hex``. Returns an empty QIcon if the file is missing — the
+    QPushButton just renders without a leading icon."""
+    path = _CATEGORY_DIR / f"{icon_stem}.svg"
+    if not path.exists():
+        return QIcon()
+    renderer = QSvgRenderer(str(path))
+    if not renderer.isValid():
+        return QIcon()
+    buf = QImage(size, size, QImage.Format.Format_ARGB32)
+    buf.fill(0)
+    p = QPainter(buf)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    renderer.render(p)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p.fillRect(buf.rect(), QColor(color_hex))
+    p.end()
+    return QIcon(QPixmap.fromImage(buf))
+
+
+class EventHeaderDialog(QDialog):
+    """The redesigned Event Header dialog.
+
+    Public surface mirrors the legacy :class:`EventHeaderDialog` so call
+    sites can swap without other changes:
+
+        dlg = EventHeaderDialog(parent=parent)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            info = dlg.header_info()  # same dict shape as the legacy
+    """
+
+    _TYPE_CHOICES = (
+        (event_classification.EVENT_TYPE_TRIP, "Trip"),
+        (event_classification.EVENT_TYPE_SESSION, "Session"),
+        (event_classification.EVENT_TYPE_OCCASION, "Occasion"),
+        (event_classification.EVENT_TYPE_PROJECT, "Project"),
+    )
+
+    def __init__(
+        self,
+        *,
+        existing_info: Optional[dict] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("Event Header"))
+        self.setModal(True)
+        self.resize(720, 820)
+        self._was_applied = False
+        self._existing_name = (
+            (existing_info or {}).get("name") or ""
+        ).strip()
+        self._creative_chips: dict[str, QPushButton] = {}
+        self._participant_chips: dict[str, QPushButton] = {}
+
+        self._build_ui()
+        if existing_info:
+            self._apply_existing(existing_info)
+        self._refresh_save_enabled()
+
+    # ── Build ─────────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        outer.addWidget(self._build_header_bar())
+        outer.addWidget(self._divider())
+        outer.addWidget(self._build_body(), 1)
+        outer.addWidget(self._divider())
+        outer.addWidget(self._build_footer())
+
+    @staticmethod
+    def _divider() -> QFrame:
+        d = QFrame()
+        d.setFrameShape(QFrame.Shape.HLine)
+        d.setObjectName("DialogDivider")
+        d.setStyleSheet("background: #262b38; max-height: 1px; min-height: 1px;")
+        return d
+
+    def _build_header_bar(self) -> QWidget:
+        host = QWidget()
+        h = QHBoxLayout(host)
+        h.setContentsMargins(18, 12, 12, 12)
+        h.setSpacing(12)
+        # Accent icon tile
+        tile = QLabel("✎")
+        tile.setFixedSize(36, 36)
+        tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tile.setStyleSheet(
+            "background: #211f3a; color: #7c6cff;"
+            " border: 1px solid #7c6cff; border-radius: 10px;"
+            " font-size: 16px; font-weight: 700;"
+        )
+        h.addWidget(tile)
+
+        # Title + optional event-name subtitle when editing an existing one
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(0)
+        title = QLabel(tr("Event Header"))
+        title.setObjectName("CardTitle")
+        text_col.addWidget(title)
+        if self._existing_name:
+            sub = QLabel(self._existing_name)
+            sub.setObjectName("Sub")
+            text_col.addWidget(sub)
+        h.addLayout(text_col)
+        h.addStretch()
+
+        close = QPushButton("✕")
+        close.setObjectName("DialogClose")
+        close.setFixedSize(30, 30)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setToolTip(tr("Cancel and close"))
+        # Inline because this is the only place this exact circular close
+        # affordance occurs; promoting it to a design-system role would
+        # widen the catalog unnecessarily.
+        close.setStyleSheet(
+            "QPushButton#DialogClose {"
+            " background: transparent; color: #8b94a7;"
+            " border: 1px solid #262b38; border-radius: 15px;"
+            " font-size: 14px; font-weight: 700;"
+            "}"
+            "QPushButton#DialogClose:hover { color: #eef1f7; border-color: #7c6cff; }"
+        )
+        close.clicked.connect(self.reject)
+        h.addWidget(close)
+        return host
+
+    def _build_body(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(14)
+
+        # ── Section 1: IDENTITY ─────────────────────────────────────────
+        v.addWidget(_section_header("Identity"))
+
+        # 1. Name
+        v.addWidget(_micro("Name", required=True))
+        self._name_edit = line_input(tr("e.g. 2026 - Nepal trek"))
+        self._name_edit.setToolTip(tr("The event's identity name."))
+        self._name_edit.textChanged.connect(
+            lambda _t: self._refresh_save_enabled()
+        )
+        v.addWidget(self._name_edit)
+
+        # 2. Type / Subtype side by side
+        row2 = QHBoxLayout()
+        row2.setSpacing(14)
+        col_type = QVBoxLayout()
+        col_type.setSpacing(6)
+        col_type.addWidget(_micro("Type", required=True))
+        self._type_combo = select([])
+        self._type_combo.setObjectName("DesignSelect")
+        self._type_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        for key, label in self._TYPE_CHOICES:
+            self._type_combo.addItem(tr(label), key)
+        self._type_combo.setToolTip(tr(
+            "What kind of event was this — files it under the right umbrella."
+        ))
+        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
+        col_type.addWidget(self._type_combo)
+        row2.addLayout(col_type, 1)
+
+        col_sub = QVBoxLayout()
+        col_sub.setSpacing(6)
+        col_sub.addWidget(_micro("Subtype", required=True))
+        self._subtype_combo = QComboBox()
+        self._subtype_combo.setObjectName("DesignSelect")
+        self._subtype_combo.setEditable(True)
+        self._subtype_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._subtype_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._subtype_combo.setToolTip(tr(
+            "Pick from the suggestions or type your own."
+        ))
+        self._update_subtype_combo()
+        self._subtype_combo.editTextChanged.connect(
+            lambda _t: self._refresh_save_enabled()
+        )
+        col_sub.addWidget(self._subtype_combo)
+        row2.addLayout(col_sub, 1)
+        v.addLayout(row2)
+
+        # 3. Description
+        v.addWidget(_micro("Description"))
+        self._desc_edit = QPlainTextEdit()
+        self._desc_edit.setObjectName("DesignText")
+        self._desc_edit.setPlaceholderText(tr(
+            "One short paragraph — shown on the event tile."
+        ))
+        self._desc_edit.setFixedHeight(72)
+        self._desc_edit.setToolTip(tr("Brief description of the event."))
+        v.addWidget(self._desc_edit)
+
+        # ── Section 2: LOGISTICS ────────────────────────────────────────
+        v.addWidget(_section_header("Logistics"))
+
+        # 4. Duration / Unit
+        row_dur = QHBoxLayout()
+        row_dur.setSpacing(14)
+        col_dur = QVBoxLayout()
+        col_dur.setSpacing(6)
+        col_dur.addWidget(_micro("Duration"))
+        self._duration_value_spin = QSpinBox()
+        self._duration_value_spin.setObjectName("DesignSpin")
+        self._duration_value_spin.setMinimum(0)
+        self._duration_value_spin.setMaximum(9999)
+        self._duration_value_spin.setSpecialValueText(tr("—"))
+        self._duration_value_spin.setToolTip(tr(
+            "How long the event lasted. Leave at — to skip."
+        ))
+        col_dur.addWidget(self._duration_value_spin)
+        row_dur.addLayout(col_dur, 1)
+
+        col_unit = QVBoxLayout()
+        col_unit.setSpacing(6)
+        col_unit.addWidget(_micro("Unit"))
+        self._duration_unit_combo = QComboBox()
+        self._duration_unit_combo.setObjectName("DesignSelect")
+        self._duration_unit_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._duration_unit_combo.addItem(tr("(unit)"), "")
+        for unit in event_classification.DURATION_UNITS:
+            self._duration_unit_combo.addItem(tr(unit), unit)
+        self._duration_unit_combo.currentIndexChanged.connect(
+            self._on_duration_unit_changed
+        )
+        col_unit.addWidget(self._duration_unit_combo)
+        row_dur.addLayout(col_unit, 2)
+        v.addLayout(row_dur)
+
+        # 5. Context
+        v.addWidget(_micro("Context"))
+        self._context_combo = self._make_single_select(
+            event_classification.CONTEXT_OPTIONS,
+            event_classification.CONTEXT_LABELS,
+            event_classification.CONTEXT_DESCRIPTIONS,
+            tooltip=tr(
+                "The baseline environment of the event."
+                " Hover an option for its definition."
+            ),
+        )
+        v.addWidget(self._context_combo)
+
+        # 6. Experience Type
+        v.addWidget(_micro("Experience Type"))
+        self._experience_combo = self._make_single_select(
+            event_classification.EXPERIENCE_TYPE_OPTIONS,
+            event_classification.EXPERIENCE_TYPE_LABELS,
+            event_classification.EXPERIENCE_TYPE_DESCRIPTIONS,
+            tooltip=tr(
+                "The primary vibe, intent, or creative energy."
+            ),
+        )
+        v.addWidget(self._experience_combo)
+
+        # ── Section 3: TAGS ─────────────────────────────────────────────
+        v.addWidget(_section_header("Tags"))
+
+        # 7. Creative Focus — multi-select pill toggles with None exclusion.
+        # FlowLayout wraps when the row outgrows the dialog width.
+        # Each subject pill carries its category-icon SVG; 'None' has no
+        # icon (it's the exclusive 'not a photo event' answer).
+        v.addWidget(_micro("Creative Focus"))
+        cf_host = QWidget()
+        cf_flow = FlowLayout(cf_host, spacing=6)
+        cf_flow.setContentsMargins(0, 0, 0, 0)
+        for option in event_classification.CREATIVE_FOCUS_OPTIONS:
+            label = event_classification.CREATIVE_FOCUS_LABELS.get(option, option)
+            chip = pill_toggle(tr(label))
+            icon_stem = _FOCUS_ICON_NAME.get(option)
+            if icon_stem:
+                chip.setIcon(_tinted_svg_icon(icon_stem, "#8b94a7"))
+                chip.setIconSize(QSize(16, 16))
+            chip.clicked.connect(
+                lambda _checked=False, opt=option: self._on_creative_chip(opt)
+            )
+            self._creative_chips[option] = chip
+            cf_flow.addWidget(chip)
+        v.addWidget(cf_host)
+
+        # 8. Participants — multi-select pill toggles, FlowLayout wraps.
+        v.addWidget(_micro("Participants"))
+        p_host = QWidget()
+        p_flow = FlowLayout(p_host, spacing=6)
+        p_flow.setContentsMargins(0, 0, 0, 0)
+        for option in event_classification.PARTICIPANT_OPTIONS:
+            chip = pill_toggle(tr(option))
+            self._participant_chips[option] = chip
+            p_flow.addWidget(chip)
+        v.addWidget(p_host)
+
+        v.addStretch()
+        scroll.setWidget(inner)
+        return scroll
+
+    def _build_footer(self) -> QWidget:
+        host = QWidget()
+        h = QHBoxLayout(host)
+        h.setContentsMargins(22, 14, 22, 14)
+        h.setSpacing(10)
+        h.addStretch()
+        cancel = ghost_button(tr("Cancel"))
+        cancel.clicked.connect(self.reject)
+        h.addWidget(cancel)
+        self._save_btn = primary_button(tr("Save event"))
+        self._save_btn.clicked.connect(self._on_save)
+        h.addWidget(self._save_btn)
+        return host
+
+    @staticmethod
+    def _make_single_select(
+        options: tuple,
+        labels: dict,
+        descriptions: dict,
+        *,
+        tooltip: str,
+    ) -> QComboBox:
+        combo = QComboBox()
+        combo.setObjectName("DesignSelect")
+        combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        combo.setToolTip(tooltip)
+        combo.addItem(tr("— select —"), "")
+        for option in options:
+            label = labels.get(option, option)
+            combo.addItem(tr(label), option)
+            descr = descriptions.get(option, "")
+            if descr:
+                combo.setItemData(
+                    combo.count() - 1, tr(descr), Qt.ItemDataRole.ToolTipRole
+                )
+        return combo
+
+    # ── Subtype refill on type change ─────────────────────────────────
+
+    def _update_subtype_combo(self) -> None:
+        prev = (
+            self._subtype_combo.currentText()
+            if self._subtype_combo.count() else ""
+        )
+        self._subtype_combo.blockSignals(True)
+        self._subtype_combo.clear()
+        self._subtype_combo.addItem(tr("— select or type —"), "")
+        current_type = (
+            self._type_combo.currentData()
+            or event_classification.EVENT_TYPE_TRIP
+        )
+        for subtype in event_classification.subtype_presets_for(current_type):
+            self._subtype_combo.addItem(tr(subtype), subtype)
+        if prev and prev != tr("— select or type —"):
+            self._subtype_combo.setCurrentText(prev)
+        self._subtype_combo.blockSignals(False)
+
+    def _on_type_changed(self, _index: int) -> None:
+        self._update_subtype_combo()
+        self._refresh_save_enabled()
+
+    def _on_duration_unit_changed(self, _index: int) -> None:
+        unit = self._duration_unit_combo.currentData() or ""
+        if not unit:
+            self._duration_value_spin.setValue(0)
+            return
+        if self._duration_value_spin.value() == 0:
+            self._duration_value_spin.setValue(1)
+
+    def _on_creative_chip(self, option: str) -> None:
+        """spec/64 §3.4: None ⇔ subjects mutual exclusion."""
+        none_chip = self._creative_chips.get(
+            event_classification.CREATIVE_FOCUS_NONE
+        )
+        if option == event_classification.CREATIVE_FOCUS_NONE:
+            if none_chip is not None and none_chip.isChecked():
+                for opt, chip in self._creative_chips.items():
+                    if opt != event_classification.CREATIVE_FOCUS_NONE:
+                        chip.setChecked(False)
+        else:
+            chip = self._creative_chips.get(option)
+            if chip is not None and chip.isChecked():
+                if none_chip is not None:
+                    none_chip.setChecked(False)
+
+    # ── Save gating ───────────────────────────────────────────────────
+
+    def _refresh_save_enabled(self) -> None:
+        name_ok = bool(self._name_edit.text().strip())
+        type_ok = bool(self._type_combo.currentData())
+        subtype_text = (self._subtype_combo.currentText() or "").strip()
+        subtype_ok = (
+            bool(subtype_text) and subtype_text != tr("— select or type —")
+        )
+        self._save_btn.setEnabled(name_ok and type_ok and subtype_ok)
+
+    # ── Existing-info pre-population ─────────────────────────────────
+
+    def _apply_existing(self, info: dict) -> None:
+        if info.get("name"):
+            self._name_edit.setText(info["name"])
+        if info.get("event_type"):
+            idx = self._type_combo.findData(info["event_type"])
+            if idx >= 0:
+                self._type_combo.setCurrentIndex(idx)
+        if info.get("event_subtype"):
+            self._subtype_combo.setCurrentText(info["event_subtype"])
+        if info.get("description"):
+            self._desc_edit.setPlainText(info["description"])
+        unit = info.get("duration_unit")
+        if unit:
+            idx = self._duration_unit_combo.findData(unit)
+            if idx >= 0:
+                self._duration_unit_combo.setCurrentIndex(idx)
+        if info.get("duration_value"):
+            self._duration_value_spin.setValue(int(info["duration_value"]))
+        context = info.get("context")
+        if context:
+            idx = self._context_combo.findData(context)
+            if idx >= 0:
+                self._context_combo.setCurrentIndex(idx)
+        experience = info.get("experience_type")
+        if experience:
+            idx = self._experience_combo.findData(experience)
+            if idx >= 0:
+                self._experience_combo.setCurrentIndex(idx)
+        for option, chip in self._creative_chips.items():
+            chip.blockSignals(True)
+            chip.setChecked(option in (info.get("creative_focus") or []))
+            chip.blockSignals(False)
+        for option, chip in self._participant_chips.items():
+            chip.setChecked(option in (info.get("participants") or []))
+
+    # ── Output ────────────────────────────────────────────────────────
+
+    def header_info(self) -> dict:
+        """Same dict shape as the legacy EventHeaderDialog.header_info()."""
+        subtype_text = (self._subtype_combo.currentText() or "").strip()
+        if subtype_text == tr("— select or type —"):
+            subtype_text = ""
+        duration_unit = self._duration_unit_combo.currentData() or ""
+        duration_value = (
+            self._duration_value_spin.value() if duration_unit else 0
+        )
+        selected_focus = [
+            opt for opt, chip in self._creative_chips.items()
+            if chip.isChecked()
+        ]
+        selected_participants = [
+            opt for opt, chip in self._participant_chips.items()
+            if chip.isChecked()
+        ]
+        return {
+            "name": self._name_edit.text().strip(),
+            "event_type": (
+                self._type_combo.currentData()
+                or event_classification.EVENT_TYPE_TRIP
+            ),
+            "event_subtype": subtype_text,
+            "description": self._desc_edit.toPlainText().strip(),
+            "duration_value": duration_value or None,
+            "duration_unit": duration_unit or None,
+            "context": self._context_combo.currentData() or None,
+            "experience_type": self._experience_combo.currentData() or None,
+            "creative_focus": selected_focus,
+            "participants": selected_participants,
+        }
+
+    def _on_save(self) -> None:
+        self._was_applied = True
+        self.accept()
+
+    def was_applied(self) -> bool:
+        return self._was_applied

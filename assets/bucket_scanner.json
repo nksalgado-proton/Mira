@@ -1,0 +1,9 @@
+{
+  "live_photo_max_video_duration": 4.0,
+  "live_photo_timestamp_proximity": 1.5,
+  "cluster_window_seconds": 300,
+  "cluster_min_size": 3,
+  "camera_burst_max_gap_seconds": 2.0,
+  "camera_burst_min_sequence_length": 3,
+  "video_extensions": [".mov", ".mp4", ".m4v"]
+}

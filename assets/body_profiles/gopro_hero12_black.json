@@ -1,0 +1,43 @@
+{
+  "body_id": "gopro_hero12_black",
+  "display_name": "GoPro HERO12 Black",
+  "brand_id": "gopro",
+  "kind": "action_camera",
+  "exiftool_model_match": ["HERO12 Black", "HERO12"],
+  "year_released": 2023,
+  "mount": "fixed",
+
+  "sensor": {
+    "size": "type_1_1_9",
+    "crop_factor": 5.56,
+    "megapixels": 27
+  },
+
+  "capabilities": {
+    "ibis": false,
+    "high_res_mode": false,
+    "pixel_shift": false,
+    "focus_bracket": false,
+    "exposure_bracket": false,
+    "pre_burst": false,
+    "phase_detect_af": false
+  },
+
+  "subject_detection": {
+    "supported": false,
+    "types": [],
+    "notes": "GoPro HERO12 has no on-sensor AI subject detection — wide fixed-focus DOF makes it unnecessary."
+  },
+
+  "iso_baseline": {
+    "native_min": 100,
+    "native_max": 6400,
+    "high_iso_threshold": 1600
+  },
+
+  "drive_max_fps": {
+    "mechanical": 0,
+    "electronic": 30,
+    "burst_high_threshold_fps": 10
+  }
+}

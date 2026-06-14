@@ -1,0 +1,163 @@
+{
+  "brand_id": "panasonic",
+  "display_name": "Panasonic / Lumix",
+  "version": 1,
+  "exiftool_make_match": ["Panasonic"],
+  "tested_bodies": ["DC-G9M2"],
+
+  "tz_setting_instructions": {
+    "DC-G9M2": [
+      "Press MENU and open the Setup tab (wrench icon).",
+      "Page 1 — 'Clock Set': verify wall-clock date and time.",
+      "Page 1 — 'Time Zone': set the destination timezone (the city you are shooting in).",
+      "Page 1 — 'Travel Date': optional — set Departure / Return dates so the camera tags photos with the trip day."
+    ],
+    "DC-G9": [
+      "Press MENU and open the Setup tab (wrench icon).",
+      "Verify 'Clock Set' (wall-clock date and time).",
+      "Verify 'World Time': pick your destination timezone (target icon)."
+    ],
+    "_default": [
+      "Open the Setup menu (wrench icon on Panasonic bodies).",
+      "Verify 'Clock Set' for the wall-clock date and time.",
+      "Verify the timezone setting ('Time Zone' or 'World Time' depending on model) — it must match where you are actually shooting."
+    ]
+  },
+
+  "focus_mode": {
+    "exif_tag": "FocusMode",
+    "exif_tag_alternatives": [],
+    "mapping": {
+      "manual": ["MF", "Manual"],
+      "continuous": ["AFC", "AF-C", "Auto Focus Continuous", "AFF", "Flexible"],
+      "single": ["AFS", "AF-S", "Auto Focus Single", "One-shot AF", "Auto"]
+    },
+    "default": "unknown"
+  },
+
+  "af_area_mode": {
+    "exif_tag": "AFAreaMode",
+    "exif_tag_alternatives": ["FocusArea"],
+    "mapping": {
+      "single_point": ["1-Area", "1 Area", "Spot", "Pinpoint"],
+      "zone": ["Custom Multi", "9-Area", "49-Area", "Zone"],
+      "wide": ["Full Area", "225-Area", "Auto"],
+      "face_eye": ["Face/Eye Detection", "Face Detect", "Face"],
+      "subject_tracking": ["Tracking", "Lock-on"]
+    },
+    "default": "unknown"
+  },
+
+  "subject_detection": {
+    "exif_tag": "AFSubjectDetection",
+    "exif_tag_alternatives": ["SubjectDetection"],
+    "mapping": {
+      "none": ["Off", "None"],
+      "human": ["Human", "Face/Eye", "Person", "Portrait"],
+      "animal": ["Animal", "Animal+Human"],
+      "bird": ["Bird"],
+      "vehicle": ["Car", "Motorcycle", "Train", "Airplane", "Vehicle"]
+    },
+    "default": "none"
+  },
+
+  "drive_mode": {
+    "exif_tag": "BurstMode",
+    "exif_tag_alternatives": ["DriveMode", "ShootingMode"],
+    "mapping": {
+      "single": ["Off"],
+      "burst_low": ["Low", "L"],
+      "burst_high": ["High", "H", "SH", "Super High", "On"],
+      "self_timer": ["Self-timer", "Self Timer"]
+    },
+    "default": "single"
+  },
+
+  "photo_style": {
+    "exif_tag": "PhotoStyle",
+    "mapping": {
+      "portrait": ["Portrait"],
+      "scenery": ["Scenery"],
+      "natural": ["Natural"],
+      "vivid": ["Vivid"],
+      "monochrome": ["Monochrome", "L.Monochrome", "L.Classic Neo"],
+      "standard": ["Standard"],
+      "custom": ["Custom"]
+    },
+    "default": "unknown"
+  },
+
+  "shooting_mode": {
+    "exif_tag": "ShootingMode",
+    "exif_tag_alternatives": ["ExposureProgram"],
+    "_comment": "Substring-match + first-match-wins per TagMapping.translate. ORDER MATTERS: 'Intelligent Auto' must beat 'Aperture-priority AE' (which contains 'A'). Single-letter mode names ('A' / 'S' / 'M' / 'P') are absent — Panasonic ShootingMode writes the long form. C1/C2/C3 are the three custom-slot identifiers Lumix exposes brand-wide; this mapping only records THAT a shot was in a custom slot, NOT what's saved in any specific slot (which is per-user config and must NEVER be inferred by the rules engine — see CLAUDE.md hardware-independence invariant). Single scene-mode names ('Portrait' / 'Sports' etc.) are deliberately omitted from 'scene' to avoid colliding with user-named custom slots; bone-fide scene-selection mode writes 'Scene Guide' or 'SCN'.",
+    "mapping": {
+      "intelligent_auto": ["Intelligent Auto", "iA+", "iA"],
+      "aperture_priority": ["Aperture-priority AE", "Aperture-Priority", "Aperture Priority"],
+      "shutter_priority": ["Shutter speed-priority AE", "Shutter-priority", "Shutter Priority"],
+      "program": ["Program AE"],
+      "manual": ["Manual"],
+      "custom": ["C1", "C2", "C3"],
+      "scene": ["Scene Guide", "SCN"]
+    },
+    "default": "unknown"
+  },
+
+  "bracket_detection": {
+    "focus_bracket": {
+      "exif_tag": "BurstMode",
+      "active_values": ["Focus Bracketing"]
+    },
+    "exposure_bracket": {
+      "exif_tag": "BurstMode",
+      "active_values": ["AE Bracketing", "Auto Exposure Bracketing", "AEB"]
+    }
+  },
+
+  "burst_detection": {
+    "sequence_tag": "SequenceNumber"
+  },
+
+  "focus_position": {
+    "kind": "step_ratio",
+    "near_tag": "FocusStepNear",
+    "count_tag": "FocusStepCount"
+  },
+
+  "af_point": {
+    "kind": "normalized_xy",
+    "xy_tag": "AFPointPosition",
+    "default_box": 0.08
+  },
+
+  "lens_normalization": {
+    "lens_model_tag": "LensModel",
+    "lens_model_tag_alternatives": ["LensType", "LensID"],
+    "aliases": [
+      {
+        "canonical": "Leica DG 100-400",
+        "matches": ["LUMIX G VARIO 100-400", "DG VARIO-ELMAR 100-400", "100-400"]
+      },
+      {
+        "canonical": "Leica DG 12-60 f/2.8-4",
+        "matches": ["LUMIX G VARIO 12-60/F2.8-4", "DG VARIO-ELMARIT 12-60"]
+      },
+      {
+        "canonical": "Lumix G 12-60 f/3.5-5.6",
+        "matches": ["LUMIX G VARIO 12-60/F3.5-5.6"]
+      },
+      {
+        "canonical": "Olympus 60mm f/2.8 Macro",
+        "matches": ["M.ZUIKO DIGITAL ED 60mm", "Olympus 60mm"]
+      },
+      {
+        "canonical": "Leica DG 8-18",
+        "matches": ["LUMIX G VARIO 8-18", "DG VARIO-ELMARIT 8-18"]
+      },
+      {
+        "canonical": "Leica DG 200 f/2.8",
+        "matches": ["LUMIX G VARIO 200/F2.8", "DG ELMARIT 200"]
+      }
+    ]
+  }
+}

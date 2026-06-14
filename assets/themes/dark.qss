@@ -1,0 +1,2162 @@
+/* Mira - Dark theme
+ *
+ * This file is a str.format_map() TEMPLATE - see ui/theme.py.
+ * Every {{name}} placeholder is replaced by the palette resolver at
+ * apply time. Literal CSS braces are doubled to escape them.
+ *
+ * Palette: Gulf-livery (per docs/16-ui-style-guide.md "Color palette").
+ * Dark mode uses the mid/light variant of each brand color so the
+ * contrast against dark surfaces stays readable.
+ *
+ * Structure mirrors light.qss section-by-section - only resolved
+ * values differ.
+ */
+
+QWidget {{
+    background-color: {window};
+    color: {text};
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 13px;
+}}
+
+QMainWindow {{
+    background-color: {window};
+}}
+
+QStatusBar {{
+    background-color: {subtle};
+    color: {text_secondary};
+    border-top: 1px solid {border_subtle};
+}}
+
+QMenuBar {{
+    background-color: {base};
+    border-bottom: 1px solid {border_subtle};
+    padding: 2px;
+}}
+
+/* Generic list-widget styling — see light.qss header. */
+
+QListWidget {{
+    background-color: {base};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    padding: 2px;
+    outline: none;
+    show-decoration-selected: 1;
+}}
+
+QListWidget::item {{
+    padding: 8px 12px;
+    color: {text_on_base};
+    border-bottom: 1px solid {border_subtle};
+}}
+
+QListWidget::item:hover {{
+    background-color: {hover_bg};
+}}
+
+QListWidget::item:selected {{
+    background-color: {primary_subtle};
+    color: {primary};
+    border-bottom-color: {primary};
+}}
+
+/* Counter colour roles — see light.qss for the rationale. Primary
+ * (Gulf blue) = "found" / total; accent (Gulf orange) = "marked" /
+ * progress. Consistent across every list that uses these object
+ * names. */
+
+QLabel#CounterFound {{
+    color: {primary};
+    font-weight: 500;
+}}
+
+QLabel#CounterMarked {{
+    color: {accent};
+    font-weight: 500;
+}}
+
+QLabel#CounterMutedSummary {{
+    color: {text_muted};
+    font-size: 11px;
+}}
+
+/* Curate slideshow time-budget counter (docs/27 §6) — see light.qss.
+ * Three-zone model (R3): green / amber / red. */
+QLabel#CurateBudgetCounter {{
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-weight: 600;
+}}
+QLabel#CurateBudgetCounter[state="green"] {{
+    background-color: {primary_subtle};
+    color: {primary};
+}}
+QLabel#CurateBudgetCounter[state="amber"] {{
+    background-color: {warning_bg};
+    color: #ffb74d;
+}}
+QLabel#CurateBudgetCounter[state="red"] {{
+    background-color: {warning_bg};
+    color: {warning_fg};
+}}
+
+/* Curate navigator section headings (docs/27 §2) — see light.qss. */
+QLabel#CurateNavSectionHeading {{
+    color: {text_muted};
+    font-size: 11px;
+    font-weight: 700;
+    padding: 8px 2px 2px 2px;
+}}
+
+QListWidget#Sidebar {{
+    background-color: {sidebar_bg};
+    border: none;
+    border-right: 1px solid {border_subtle};
+    padding-top: 8px;
+    outline: none;
+}}
+
+QListWidget#Sidebar::item {{
+    padding: 8px 16px;
+    color: {text};
+    border-left: 3px solid transparent;
+}}
+
+QListWidget#Sidebar::item:hover {{
+    background-color: {sidebar_item_hover_bg};
+}}
+
+QListWidget#Sidebar::item:selected {{
+    background-color: {primary_subtle};
+    color: {primary};
+    border-left: 3px solid {primary};
+    font-weight: 500;
+}}
+
+/* ── Sidebar v2 — composed navigation rail (mira/ui/shell/sidebar.py) ──
+ * Supersedes the bare native QListWidget#Sidebar above (kept for the legacy
+ * app). The new rail is a composed QWidget: real header widgets (no more
+ * NoItemFlags hack) + rounded pill entry rows that rise to the card-quality
+ * of the content lists (Nelson 2026-05-30 — only the sidebar read as the ugly
+ * list; the content lists stay deliberately distinct). */
+QWidget#SidebarRail {{
+    background-color: {sidebar_bg};
+    border: none;
+    border-right: 1px solid {border_subtle};
+}}
+
+QScrollArea#SidebarScroll,
+QScrollArea#SidebarScroll > QWidget > QWidget {{
+    background: transparent;
+    border: none;
+}}
+
+QLabel#SidebarSectionHeader {{
+    color: {primary};
+    font-weight: bold;
+    font-size: 11px;
+    padding: 16px 16px 5px 16px;
+}}
+
+QPushButton#SidebarEntry {{
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 14px;
+    margin: 1px 8px;
+    color: {text};
+    font-weight: 500;
+}}
+
+QPushButton#SidebarEntry:hover {{
+    background-color: {sidebar_item_hover_bg};
+    border: none;
+}}
+
+QPushButton#SidebarEntry:pressed {{
+    background-color: {primary_subtle};
+    border: none;
+}}
+
+QPushButton#SidebarEntry:checked {{
+    background-color: {primary_subtle};
+    color: {primary};
+    border: none;
+    font-weight: 600;
+}}
+
+QPushButton#SidebarEntry:checked:hover {{
+    background-color: {primary_subtle};
+}}
+
+QMenuBar::item {{
+    padding: 4px 10px;
+    background: transparent;
+}}
+
+QMenuBar::item:selected {{
+    background-color: {primary_subtle};
+    color: {primary};
+    border-radius: 4px;
+}}
+
+QMenu {{
+    background-color: {base};
+    border: 1px solid {menu_border};
+    padding: 4px 0;
+}}
+
+QMenu::item {{
+    padding: 6px 24px 6px 16px;
+}}
+
+QMenu::item:selected {{
+    background-color: {primary_subtle};
+    color: {primary};
+}}
+
+QMenu::item:disabled {{
+    color: {text_muted};
+}}
+
+/* Label roles — see light.qss for the convention. */
+
+QLabel#WelcomeTitle {{
+    font-size: 28px;
+    font-weight: 700;
+    color: {text};
+    border-bottom: 3px solid {accent};
+    padding-bottom: 6px;
+}}
+
+QLabel#WelcomeSubtitle {{
+    font-size: 13px;
+    color: {text_secondary};
+}}
+
+QLabel#PageHeading {{
+    font-size: 22px;
+    font-weight: 700;
+    color: {text};
+    border-bottom: 2px solid {accent};
+    padding-bottom: 4px;
+}}
+
+QLabel#PageHint {{
+    font-size: 13px;
+    color: {text_secondary};
+}}
+
+QLabel#WizardQuestion {{
+    font-size: 18px;
+    font-weight: 700;
+    color: {text};
+}}
+
+QLabel#WizardHint {{
+    font-size: 13px;
+    color: {text_secondary};
+}}
+
+/* spec/58 §4 — wizard roles that were referenced but undefined (the
+ * widgets rendered with Qt defaults until 2026-06-10). */
+QLabel#BodyText {{
+    font-size: 14px;
+    color: {text};
+}}
+
+QRadioButton#WizardRadio {{
+    font-size: 15px;
+    font-weight: 600;
+    color: {text};
+}}
+
+QLabel#WizardRadioHint {{
+    font-size: 12px;
+    color: {text_secondary};
+    margin-left: 24px;
+}}
+
+QLabel#WizardWarning {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {error};
+}}
+
+/* Clickable affordances — see light.qss header. */
+
+QPushButton {{
+    background-color: {button};
+    color: {text_on_button};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    padding: 6px 16px;
+    min-height: 22px;
+}}
+
+/* Compact in-table-cell button — the plan editor's per-row "Browse…" / "Empty".
+ * The base QPushButton's 6px padding + 22px min-height renders ~34px, ~10px taller
+ * than a QLineEdit cell (~22-24px), so it overflows the row. Slim it to match.
+ * Height MUST live here, not in widget code: QStyleSheetStyle re-polishes a styled
+ * QPushButton and clobbers setMaximumHeight back to the base min-height. */
+QPushButton#PlanBrowseCell {{
+    padding: 2px 10px;
+    min-height: 18px;
+}}
+
+/* Reusable resume-map list row (ui/culler/list_button.py — the day
+ * list, bucket list, context chooser). Tall enough for the fixed
+ * TWO-BAND layout (title+badge / readout) plus the bounded tally
+ * strip. Height MUST live here, not in widget code: a styled
+ * QPushButton is re-polished by QStyleSheetStyle, which clobbers a
+ * Python setMinimumHeight/setFixedHeight back to the base
+ * `min-height` (Nelson eyeball 2026-05-17 — 36px despite
+ * setFixedHeight(96)). The widget opts in via
+ * setObjectName("ListButton"). */
+QPushButton#ListButton {{
+    min-height: 116px;
+}}
+
+/* Compact ListButton — the no-status level (the 4-context Cull
+ * picker): title + one blurb line, no badge chip, no Status bar
+ * (it is a picker, not a cull unit). Shorter than the 4-line card.
+ * Nelson 2026-05-18 — one reusable ListButton, level-aware slots. */
+QPushButton#ListButtonCompact {{
+    min-height: 64px;
+}}
+
+/* Per-row Export action — see light.qss "Per-row Export action". */
+QPushButton#ListButtonExport {{
+    background-color: {window};
+    color: {accent};
+    border: 1px solid {accent};
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-weight: 500;
+}}
+QPushButton#ListButtonExport:hover {{
+    background-color: {accent};
+    color: {accent_text};
+    border-color: {accent};
+}}
+QPushButton#ListButtonExport:pressed {{
+    background-color: {accent_hover};
+    border-color: {accent_hover};
+    color: {accent_text};
+}}
+
+QPushButton:hover {{
+    background-color: {hover_bg};
+    border-color: {hover_border};
+}}
+
+QPushButton:pressed {{
+    background-color: {pressed_bg};
+    border-color: {pressed_border};
+}}
+
+/* Focus must NOT look like a state — see light.qss for rationale
+ * (Nelson 2026-05-16). Normal border on :focus; ON-ness is the
+ * filled :checked colour, click feedback is :pressed. */
+QPushButton:focus {{
+    border: 1px solid {border_strong};
+    outline: none;
+}}
+
+QPushButton:disabled {{
+    background-color: {disabled_bg};
+    color: {disabled_text};
+    border-color: {border_subtle};
+}}
+
+QPushButton#Primary {{
+    background-color: {accent};
+    color: {accent_text};
+    border: 1px solid {accent};
+    font-weight: 500;
+}}
+
+QPushButton#Primary:hover {{
+    background-color: {accent_hover};
+    border-color: {accent_hover};
+}}
+
+QPushButton#Primary:pressed {{
+    background-color: {accent_pressed};
+    border-color: {accent_pressed};
+}}
+
+QPushButton#Primary:disabled {{
+    background-color: {accent_disabled};
+    border-color: {accent_disabled};
+    color: {disabled_text};
+}}
+
+/* Danger button — see light.qss "Danger button" header. */
+QPushButton#DangerButton {{
+    background-color: transparent;
+    color: {error};
+    border: 1px solid {error};
+    font-weight: 500;
+}}
+
+QPushButton#DangerButton:hover {{
+    background-color: {error};
+    color: {accent_text};
+    border-color: {error};
+}}
+
+QPushButton#DangerButton:pressed {{
+    background-color: {error};
+    color: {accent_text};
+    border-color: {error};
+}}
+
+QPushButton#DangerButton:disabled {{
+    background-color: transparent;
+    color: {disabled_text};
+    border-color: {border_subtle};
+}}
+
+/* Lighter danger affordance — red TEXT on the normal button frame (no red outline), for a
+ * destructive action in a dense button row (Manage-days "Delete day…"). The full red-OUTLINE
+ * #DangerButton renders as stray vertical lines at fractional DPI when buttons sit side by
+ * side (Nelson eyeball 2026-06-01). See light.qss for the rationale. */
+QPushButton#DangerButtonText {{
+    color: {error};
+    font-weight: 500;
+}}
+QPushButton#DangerButtonText:hover {{
+    background-color: {error};
+    color: {accent_text};
+    border-color: {error};
+}}
+QPushButton#DangerButtonText:pressed {{
+    background-color: {error};
+    color: {accent_text};
+    border-color: {error};
+}}
+QPushButton#DangerButtonText:disabled {{
+    color: {disabled_text};
+}}
+
+/* Batch-op buttons — same role as light theme, dark palette. */
+QPushButton#BatchOpButton {{
+    background-color: transparent;
+    color: {text_secondary};
+    border: 1px solid {border_subtle};
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 11px;
+}}
+QPushButton#BatchOpButton:hover {{
+    background-color: {accent};
+    color: {accent_text};
+    border-color: {accent};
+}}
+QPushButton#BatchOpButton:pressed {{
+    background-color: {accent_pressed};
+    color: {accent_text};
+    border-color: {accent_pressed};
+}}
+QPushButton#BatchOpButton:disabled {{
+    color: {disabled_text};
+    border-color: {border_subtle};
+}}
+
+/* Calendar popup — see light.qss "Calendar popup" header. */
+QCalendarWidget QWidget#qt_calendar_navigationbar {{
+    background-color: {primary};
+    min-height: 32px;
+}}
+QCalendarWidget QToolButton {{
+    color: {primary_text};
+    background-color: transparent;
+    border: none;
+    padding: 4px 12px;
+    margin: 2px;
+    font-weight: 600;
+    min-height: 26px;
+    icon-size: 20px;
+}}
+QCalendarWidget QToolButton:hover {{
+    background-color: {accent};
+    color: {accent_text};
+    border-radius: 3px;
+}}
+/* Month-button dropdown arrow: keep it VISIBLE — Nelson 2026-05-20
+ * reported the year/month dropdown arrows were invisible. Earlier
+ * rule "image: none" stripped the menu-indicator entirely; replace
+ * with explicit subcontrol positioning so Qt's default arrow draws
+ * in the button's foreground colour (= {primary_text}, contrasts
+ * with the Gulf-blue nav bar). */
+QCalendarWidget QToolButton::menu-indicator {{
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    width: 10px;
+    height: 10px;
+    right: 4px;
+}}
+QCalendarWidget QSpinBox {{
+    color: {text};
+    background-color: {base};
+    selection-background-color: {primary};
+    selection-color: {primary_text};
+    border: 1px solid {border_strong};
+    min-width: 66px;
+}}
+/* Year-spinbox up/down arrows: explicit so the white-on-blue nav
+ * bar doesn't swallow them. */
+QCalendarWidget QSpinBox::up-button,
+QCalendarWidget QSpinBox::down-button {{
+    background-color: {base};
+    border: 1px solid {border_strong};
+    width: 16px;
+}}
+QCalendarWidget QSpinBox::up-button:hover,
+QCalendarWidget QSpinBox::down-button:hover {{
+    background-color: {primary_subtle};
+}}
+QCalendarWidget QSpinBox::up-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {text};
+    width: 0px;
+    height: 0px;
+}}
+QCalendarWidget QSpinBox::down-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {text};
+    width: 0px;
+    height: 0px;
+}}
+QCalendarWidget QAbstractItemView {{
+    selection-background-color: {primary};
+    selection-color: {primary_text};
+    background-color: {base};
+    color: {text};
+    outline: none;
+}}
+QCalendarWidget QAbstractItemView:disabled {{
+    color: {disabled_text};
+}}
+
+/* Chip buttons — see light.qss "Chip buttons" header. */
+
+QPushButton#SubfolderChip,
+QPushButton#SubfolderChipCustom {{
+    padding: 4px 12px;
+    min-height: 18px;
+}}
+
+QPushButton#SubfolderChip:checked,
+QPushButton#SubfolderChipCustom:checked {{
+    background-color: {primary};
+    color: {primary_text};
+    border-color: {primary};
+    font-weight: 500;
+}}
+
+QPushButton#SubfolderChip:checked:hover,
+QPushButton#SubfolderChipCustom:checked:hover {{
+    background-color: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+/* FeatureToggle — see light.qss for rationale. OFF = standard;
+ * ON = filled Gulf-blue {primary} (Zoom / Peaking / AF). */
+QPushButton#FeatureToggle:checked {{
+    background-color: {primary};
+    color: {primary_text};
+    border-color: {primary};
+    font-weight: 500;
+}}
+
+QPushButton#FeatureToggle:checked:hover {{
+    background-color: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+/* FilterChip — visibility toggles for the cull canvas. See
+ * light.qss for the design rationale (Nelson 2026-05-22). Pill
+ * shape distinguishes them from action buttons; muted teal fill
+ * when included so they don't compete with #Primary CTAs. */
+QPushButton#FilterChip {{
+    border-radius: 12px;
+    padding: 4px 12px;
+    background-color: transparent;
+    color: {text_secondary};
+    border: 1px solid {border_subtle};
+    font-weight: 400;
+}}
+
+QPushButton#FilterChip:hover {{
+    border-color: {primary};
+    color: {text};
+}}
+
+QPushButton#FilterChip:checked {{
+    background-color: {primary_subtle};
+    color: {text};
+    border: 1px solid {primary};
+    font-weight: 500;
+}}
+
+QPushButton#FilterChip:checked:hover {{
+    background-color: {primary_subtle};
+    border-color: {primary_hover};
+}}
+
+/* Pointing-hand cursor handled by app-level event filter — see light.qss header. */
+
+/* PhaseButton — see light.qss header. */
+
+QFrame#PhaseButton {{
+    background-color: {card_bg};
+    border: 1px solid {border_strong};
+    border-radius: 8px;
+}}
+
+QFrame#PhaseButton:hover {{
+    background-color: {card_bg_hover};
+    border-color: {hover_border};
+}}
+
+QFrame#PhaseButton:disabled {{
+    background-color: {card_bg_disabled};
+    border-color: {border_subtle};
+}}
+
+QLabel#PhaseButtonTitle {{
+    font-size: 30px;
+    font-weight: 700;
+    color: {text};
+}}
+
+QFrame#PhaseButton:disabled QLabel#PhaseButtonTitle {{
+    color: {text_muted};
+}}
+
+QLabel#PhaseButtonStatus {{
+    font-size: 12px;
+    font-weight: 600;
+    color: {text_secondary};
+    padding: 3px 10px;
+    border-radius: 10px;
+    background-color: {border_subtle};
+    max-width: 140px;
+}}
+
+QLabel#PhaseButtonStatus[status="not_started"] {{
+    background-color: {border_subtle};
+    color: {text_secondary};
+}}
+
+QLabel#PhaseButtonStatus[status="ready"] {{
+    background-color: {primary_subtle};
+    color: {primary};
+}}
+
+QLabel#PhaseButtonStatus[status="in_progress"] {{
+    background-color: {warning_bg};
+    color: {warning_fg};
+}}
+
+QLabel#PhaseButtonStatus[status="done"] {{
+    background-color: {primary};
+    color: {primary_text};
+}}
+
+QLabel#PhaseButtonStatus[status="unavailable"] {{
+    background-color: {status_unavailable_bg};
+    color: {text_muted};
+}}
+
+QLabel#PhaseButtonStats {{
+    font-size: 13px;
+    color: {text_secondary};
+}}
+
+QFrame#PhaseButton:disabled QLabel#PhaseButtonStats {{
+    color: {text_muted};
+}}
+
+/* ── EventCard (dashboard) ─────────────────────────────────────
+ * See light.qss for the design rationale. Same role names; the
+ * resolved palette handles the dark-mode contrast automatically.
+ */
+QFrame#EventCard {{
+    background-color: {card_bg};
+    border: 1px solid {border_strong};
+    border-radius: 8px;
+}}
+
+QFrame#EventCard:hover {{
+    border-color: {hover_border};
+}}
+
+QFrame#EventCardTopZone,
+QFrame#EventCardLeftZone,
+QFrame#EventCardRightZone {{
+    background-color: transparent;
+    border: none;
+}}
+QFrame#EventCardTopZone:hover,
+QFrame#EventCardLeftZone:hover,
+QFrame#EventCardRightZone:hover {{
+    background-color: {card_bg_hover};
+}}
+
+QLabel#EventCardTitle {{
+    font-size: 18px;
+    font-weight: 700;
+    color: {text};
+}}
+
+QLabel#EventCardDaysBadge {{
+    font-size: 12px;
+    font-weight: 600;
+    color: {text_secondary};
+    padding: 3px 10px;
+    border-radius: 10px;
+    background-color: {border_subtle};
+}}
+
+QLabel#EventCardFromTo {{
+    font-size: 11px;
+    font-weight: 700;
+    color: {text_muted};
+    letter-spacing: 1px;
+}}
+
+QLabel#EventCardDate {{
+    font-size: 14px;
+    font-weight: 600;
+    color: {text};
+}}
+
+QLabel#EventCardTz {{
+    font-size: 12px;
+    color: {text_secondary};
+}}
+
+QLabel#EventCardPhaseLabel {{
+    font-size: 12px;
+    font-weight: 600;
+    color: {text_secondary};
+    padding-right: 8px;
+}}
+
+QLabel#EventCardDayLabel {{
+    font-size: 10px;
+    color: {text_muted};
+}}
+
+QLabel#EventCardEmpty {{
+    font-size: 13px;
+    color: {text_muted};
+    font-style: italic;
+}}
+
+/* ── spec/44 classification additions (dark) ──────────────────────
+ * Same shapes as the light theme; slightly desaturated bg colours
+ * so the badges sit on the darker card without shouting. */
+QLabel#EventCardTypeBadge {{
+    border-radius: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #FFFFFF;
+    background: #4B5563;
+}}
+QLabel#EventCardTypeBadge[type="trip"]         {{ background: #3B82F6; }}
+QLabel#EventCardTypeBadge[type="session"]      {{ background: #22C55E; }}
+QLabel#EventCardTypeBadge[type="occasion"]     {{ background: #EC4899; }}
+QLabel#EventCardTypeBadge[type="project"]      {{ background: #A78BFA; }}
+QLabel#EventCardTypeBadge[type="unclassified"] {{ background: #6B7280; color: #FFFFFF; }}
+QLabel#EventCardSubtype {{
+    font-size: 12px;
+    font-weight: 600;
+    color: {text_secondary};
+}}
+QLabel#EventCardTagChip {{
+    background: {subtle};
+    border: 1px solid {border_subtle};
+    border-radius: 8px;
+    padding: 1px 7px;
+    font-size: 11px;
+    color: {text_secondary};
+}}
+QLabel#EventCardTagChipOverflow {{
+    background: transparent;
+    border: 1px dashed {border_subtle};
+    border-radius: 8px;
+    padding: 1px 7px;
+    font-size: 11px;
+    color: {text_muted};
+}}
+
+/* spec/44 — selected country chip on the CountryPicker (Trip extras row) */
+QPushButton#CountryPickerChip {{
+    background: {subtle};
+    border: 1px solid {border_subtle};
+    border-radius: 8px;
+    padding: 1px 7px;
+    font-size: 11px;
+    color: {text};
+}}
+QPushButton#CountryPickerChip:hover {{
+    border-color: {hover_border};
+}}
+
+/* spec/44 — clickable tag-suggestion chips on the ClassificationPanel.
+ * Nelson eyeball 2026-06-06: the +golden-hour chips read as too big next
+ * to the adjacent input fields. min-height: 0 lets the QSS padding rule
+ * the actual height instead of Qt's implicit button minimum. */
+QPushButton#ClassificationTagSuggestion {{
+    background: transparent;
+    border: 1px dashed {border_subtle};
+    border-radius: 6px;
+    padding: 0px 6px;
+    min-height: 0;
+    color: {text_muted};
+    font-size: 10px;
+}}
+QPushButton#ClassificationTagSuggestion:hover {{
+    border-style: solid;
+    border-color: {hover_border};
+    color: {text};
+}}
+
+/* spec/44 — filter rail above the events grid + Unclassified section header.
+ * spec/46 Slice 1 (eyeball): each filter sits in its own QGroupBox titled with
+ * the filter name; the label-beside-combo pattern broke when the rail re-laid
+ * out in the narrow vertical sidebar band. The group-box title now carries
+ * the role the old QLabel#FilterRailLabel did, with the same muted treatment. */
+QGroupBox#FilterRailGroup {{
+    background: transparent;
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+    margin-top: 10px;
+    padding: 4px 2px 2px 2px;
+    font-size: 11px;
+    font-weight: 500;
+    color: {text};
+}}
+
+QGroupBox#FilterRailGroup::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+    color: {text_muted};
+}}
+
+/* spec/47 (Nelson 2026-06-06 eyeball #4) — form inputs sit inside titled
+ * QGroupBoxes (named-box pattern) rather than next to free-floating QLabels.
+ * Larger, more legible than the compact FilterRail variant since these
+ * surface in primary forms (PastPhotosDialog, future NewEventPage). */
+QGroupBox#FormFieldGroup {{
+    background: transparent;
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 6px 8px 8px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    color: {text};
+}}
+
+QGroupBox#FormFieldGroup::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 6px;
+    color: {text_muted};
+}}
+QWidget#EventsDashboardSectionHeader {{
+    border-top: 1px solid {border_subtle};
+    padding-top: 4px;
+}}
+QLabel#EventsDashboardSectionTitle {{
+    font-size: 14px;
+    font-weight: 700;
+    color: {text_secondary};
+}}
+QPushButton#EventsDashboardSectionAction {{
+    background: transparent;
+    border: 1px solid {border_subtle};
+    border-radius: 4px;
+    padding: 2px 10px;
+    color: {text_secondary};
+    font-size: 11px;
+}}
+QPushButton#EventsDashboardSectionAction:hover {{
+    border-color: {hover_border};
+    color: {text};
+}}
+
+QScrollArea#EventCardScroll {{
+    background-color: transparent;
+}}
+
+QScrollArea#EventCardScroll > QWidget > QWidget {{
+    background-color: transparent;
+}}
+
+/* Dialogs + combo boxes — present here because Qt's native dark
+ * styling needs explicit help; the light theme uses Qt defaults
+ * for these and intentionally omits the block.
+ */
+
+QDialog {{
+    background-color: {base};
+}}
+
+/* spec/59 §8 — the app-level batch progress line (below the menubar). */
+QWidget#BatchProgressLine {{
+    background-color: {subtle};
+    border-bottom: 1px solid {border_subtle};
+}}
+QLabel#BatchProgressLabel {{
+    color: {text};
+    font-size: 12px;
+}}
+QLabel#BatchProgressQueued {{
+    color: {text_muted};
+    font-size: 12px;
+}}
+
+QComboBox {{
+    background-color: {button};
+    color: {text_on_button};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    /* Nelson 2026-05-20 v8: was padding 4px / min-height 22px →
+     * total ~32-34px, ~10px taller than QLineEdit's Fusion default
+     * (~22-24px). Form rows with a TzPicker beside a QLineEdit
+     * looked unbalanced. Slim it down to match. */
+    padding: 2px 8px;
+    min-height: 18px;
+}}
+
+/* QComboBox#VideoExtraCombo — opt back IN to the full QPushButton
+ * metrics so the ProcessVideoPage [button | combo] rows look like one
+ * balanced pair (Nelson 2026-06-09). The base rule above stays slim
+ * for form rows next to QLineEdits. */
+QComboBox#VideoExtraCombo {{
+    padding: 6px 16px;
+    min-height: 22px;
+}}
+
+/* The Edit-surface process combos match the QPushButton metrics
+ * (Nelson 2026-06-11: dropdown height = button height, everywhere on
+ * the surface — the slim base rule made them read shorter). */
+QComboBox#ProcessStyleCombo, QComboBox#ProcessFilterCombo,
+QComboBox#ProcessAspectCombo {{
+    padding: 6px 16px;
+    min-height: 22px;
+}}
+
+/* spec/58 §2 — the Style combo's classification badge: confidence bands
+ * red → amber → green, plus the human-decided blue OUTSIDE the ramp.
+ * The band property is set by AdjustmentSurface.set_classification_badge;
+ * v0 thresholds/colors pending Nelson's live calibration (spec/58 §5.1). */
+QComboBox#ProcessStyleCombo[confidenceBand="low"] {{
+    border: 2px solid {error};
+}}
+QComboBox#ProcessStyleCombo[confidenceBand="mid"] {{
+    border: 2px solid {warning};
+}}
+QComboBox#ProcessStyleCombo[confidenceBand="high"] {{
+    border: 2px solid {success};
+}}
+QComboBox#ProcessStyleCombo[confidenceBand="human"] {{
+    border: 2px solid {primary};
+}}
+
+QComboBox:focus {{
+    border: 2px solid {focus_border};
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {base};
+    color: {text_on_base};
+    selection-background-color: {primary_subtle};
+    selection-color: {primary};
+    border: 1px solid {border_strong};
+}}
+
+/* (Calendar popup styling lives in the earlier "Calendar popup"
+ * block — line ~304. A second, conflicting block used to live here
+ * and overrode the first with `color: {primary}` on
+ * `background: {primary_subtle}`, which paints blue-on-blue against
+ * the Gulf-blue nav bar — month/year labels became invisible.
+ * Removed 2026-05-21 (Nelson). Do NOT add a second QCalendarWidget
+ * block: cascade order makes the later one win silently.) */
+
+/* ── InfoCardRow + StatusBreakdown (F-032, Nelson 2026-05-27) ──
+ * Dark-theme companion to the light.qss block — see light.qss
+ * for the design rationale. Same role names + slightly punchier
+ * border-strong / card_bg_hover values that work on the dark
+ * background.
+ */
+QFrame#InfoCardRow {{
+    background-color: {card_bg};
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+}}
+
+QFrame#InfoCardRow:hover {{
+    background-color: {card_bg_hover};
+    border-color: {hover_border};
+}}
+
+/* Variant border + title colours — F-032 (Nelson 2026-05-27).
+ * Dark-theme tints lean slightly brighter than light to stay
+ * readable on the dark background while keeping the same
+ * camera / day / bucket identity. Title takes the same hue so
+ * border + title reinforce the level association in one
+ * glance. */
+QFrame#InfoCardRow[variant="camera"] {{
+    border-color: #6088C0;            /* steel blue */
+}}
+QFrame#InfoCardRow[variant="camera"]:hover {{
+    border-color: #7BA3D8;
+}}
+QFrame#InfoCardRow[variant="camera"] QLabel#InfoCardRowTitle {{
+    color: #6088C0;
+}}
+QFrame#InfoCardRow[variant="day"] {{
+    border-color: #4AA3B0;            /* teal */
+}}
+QFrame#InfoCardRow[variant="day"]:hover {{
+    border-color: #62BDC9;
+}}
+QFrame#InfoCardRow[variant="day"] QLabel#InfoCardRowTitle {{
+    color: #4AA3B0;
+}}
+QFrame#InfoCardRow[variant="bucket"] {{
+    border-color: #D49560;            /* warm amber */
+}}
+QFrame#InfoCardRow[variant="bucket"]:hover {{
+    border-color: #E5AC78;
+}}
+QFrame#InfoCardRow[variant="bucket"] QLabel#InfoCardRowTitle {{
+    color: #D49560;
+}}
+
+QLabel#InfoCardRowTitle {{
+    font-size: 14px;
+    font-weight: 700;
+    color: {text};
+    letter-spacing: 0.3px;
+}}
+
+QLabel#InfoCardRowMetadataLine {{
+    font-size: 11px;
+    font-weight: 500;
+    color: {text_secondary};
+}}
+
+QWidget#StatusBreakdown {{
+    background-color: {subtle};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+}}
+
+/* Tables — see light.qss "Tables" header for the rationale on why
+ * we skip zebra striping for setCellWidget-heavy tables and lean on
+ * header tinting + accent_subtle selection instead. */
+
+QTableWidget {{
+    background-color: {base};
+    alternate-background-color: {subtle};
+    color: {text_on_base};
+    gridline-color: {border_subtle};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    selection-background-color: {accent_subtle};
+    selection-color: {text_on_base};
+}}
+
+QTableWidget::item {{
+    padding: 4px 6px;
+}}
+
+QTableWidget::item:hover {{
+    background-color: {hover_bg};
+}}
+
+QTableWidget::item:selected {{
+    background-color: {accent_subtle};
+    color: {text_on_base};
+}}
+
+QHeaderView::section {{
+    background-color: {primary_subtle};
+    color: {primary};
+    font-weight: 600;
+    padding: 6px 8px;
+    border: none;
+    border-right: 1px solid {border_subtle};
+    border-bottom: 1px solid {border_strong};
+}}
+
+QHeaderView::section:last {{
+    border-right: none;
+}}
+
+QTableCornerButton::section {{
+    background-color: {primary_subtle};
+    border: none;
+    border-bottom: 1px solid {border_strong};
+}}
+
+/* MediaCanvas — see light.qss header. */
+
+/* Bucket-cycle border retired 2026-06-04 (Nelson, spec/42 followup) —
+ * see light.qss. Transparent so canvas geometry stays stable; the
+ * visible blue frame is now on the BaseSurface. */
+QFrame#MediaCanvas[bucket_color="primary"],
+QFrame#MediaCanvas[bucket_color="accent"] {{
+    border: 3px solid transparent;
+    border-radius: 4px;
+}}
+
+/* Immersive (F11) — see light.qss. 2× border (docs/18 §"Eyeball
+ * follow-up" #5). */
+QFrame#MediaCanvas[bucket_color="primary"][immersive="true"],
+QFrame#MediaCanvas[bucket_color="accent"][immersive="true"] {{
+    border: 6px solid transparent;
+}}
+
+QLabel#ExifInfoLabel {{
+    color: {text_secondary};
+    font-size: 12px;
+}}
+
+/* #GenreReadout + #ReclassifyButton RETIRED 2026-06-13 — see light.qss. */
+
+/* TOP-1 focus-rating bar — see light.qss for rationale. */
+QLabel#SharpnessCaption {{
+    color: {text_secondary};
+    font-size: 12px;
+}}
+
+QProgressBar#SharpnessBar {{
+    border: 1px solid {border_strong};
+    border-radius: 3px;
+    background-color: {base};
+    color: {text_secondary};
+    font-size: 11px;
+    text-align: center;
+    min-height: 14px;
+    max-height: 16px;
+}}
+
+QProgressBar#SharpnessBar::chunk {{
+    background-color: {primary};
+    border-radius: 2px;
+}}
+
+QLabel#MediaCanvasArea {{
+    background-color: {photo_canvas_bg};
+    color: {text_secondary};
+}}
+
+/* Photo-state border RETIRED at this layer — see light.qss. The
+ * canonical state border now lives on ``QWidget#MediaHost`` and
+ * actually paints (the first attempt at unification didn't because
+ * Qt's QSS-border-to-contents-rect propagation is unreliable on a
+ * plain QWidget; the layout now reserves the border zone explicitly). */
+
+/* Grid view (E9) — see light.qss for rationale. Border width MUST
+ * equal grid_view._BORDER_W. */
+QScrollArea#GridView, QScrollArea#GridView > QWidget {{
+    background-color: {photo_canvas_bg};
+    border: none;
+}}
+
+QFrame#GridTile {{
+    border: 6px solid {error};
+    background-color: {photo_canvas_bg};
+}}
+
+QFrame#GridTile[state="candidate"] {{
+    border-color: {accent};
+}}
+
+QFrame#GridTile[state="picked"] {{
+    border-color: {success};
+}}
+
+QLabel#GridTilePhoto {{
+    background-color: {base};
+}}
+
+/* Compare-grid EXIF caption (M2.5) — a translucent pill OVERLAID on the photo in
+ * the exactly-two-photos compare (Nelson 2026-06-01: on top of the photo, no separate
+ * info area). Theme-independent (sits over arbitrary images): light text on a dark
+ * scrim; the differing exposure params are emphasised inline (Gulf orange) by the
+ * host's rich-text spans. */
+QLabel#GridTileExif {{
+    color: #F0F0F0;
+    background-color: rgba(0, 0, 0, 150);
+    border-radius: 6px;
+    font-size: 11px;
+    padding: 2px 8px;
+}}
+
+/* X/Y position readout — non-clickable chip (Nelson 2026-05-16).
+ * See light.qss for rationale. */
+QLabel#PositionLabel {{
+    color: {text};
+    background-color: {button};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+
+/* Shared bucket-cull top line + its info readout — see light.qss
+ * for rationale (both themes, same commit per QSS discipline). */
+QWidget#SelectTopBar {{
+    border-bottom: 1px solid {border_subtle};
+}}
+
+QLabel#SelectBucketInfo {{
+    color: {text_secondary};
+    background: transparent;
+    border: none;
+    font-style: italic;
+    padding: 4px 8px;
+}}
+
+/* Keyboard-shortcuts cheat-sheet — see light.qss for rationale. */
+QDialog#ShortcutsDialog {{
+    background-color: {window};
+}}
+QLabel#ShortcutKey {{
+    color: {text};
+    font-weight: 700;
+}}
+QLabel#ShortcutAction {{
+    color: {text_secondary};
+}}
+QLabel#ShortcutsHeading {{
+    color: {text};
+    font-size: 14px;
+    font-weight: 700;
+    padding-bottom: 4px;
+}}
+QLabel#ShortcutSection {{
+    color: {text_secondary};
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding-top: 6px;
+    padding-bottom: 2px;
+}}
+
+/* CullStateBar (docs/18) — see light.qss for the rationale (full-
+ * width bar replacing the prototype's pill/radio-glyph badge). */
+QLabel#SelectStateBar {{
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 6px 0;
+    border: 2px solid transparent;
+    border-radius: 0;
+    background-color: {error};   /* default / discarded = red */
+    color: #FFFFFF;
+}}
+
+QLabel#SelectStateBar[state="candidate"] {{
+    background-color: {accent};  /* Gulf orange */
+}}
+
+QLabel#SelectStateBar[state="picked"] {{
+    background-color: {success}; /* green */
+}}
+
+QLabel#SelectStateBar:hover {{
+    border-color: {primary_text};
+}}
+
+QLabel#SelectStateBar:pressed {{
+    border-color: {primary_subtle};
+}}
+
+/* FullscreenStateBadge (docs/18 §"Pre-Nepal-test polish" #2) — see
+ * light.qss for the rationale. Compact top-right state pill shown
+ * only in F11 immersive mode; same red/orange/green state palette
+ * as CullStateBar, dark values from the resolver. */
+QLabel#FullscreenStateBadge {{
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    background-color: {error};   /* default / discarded = red */
+    color: #FFFFFF;
+}}
+
+QLabel#FullscreenStateBadge[state="candidate"] {{
+    background-color: {accent};  /* Gulf orange */
+}}
+
+QLabel#FullscreenStateBadge[state="picked"] {{
+    background-color: {success}; /* green */
+}}
+
+/* LabeledSlider (docs/15 §1.13) — see light.qss header for the
+ * QSlider all-or-nothing QSS rationale. Same structure, dark values
+ * from the resolver. */
+
+QSlider#LabeledSliderBar::groove:horizontal {{
+    height: 4px;
+    background: {border_strong};
+    border-radius: 2px;
+}}
+
+QSlider#LabeledSliderBar::sub-page:horizontal {{
+    background: {primary};
+    border-radius: 2px;
+}}
+
+QSlider#LabeledSliderBar::add-page:horizontal {{
+    background: {border_strong};
+    border-radius: 2px;
+}}
+
+QSlider#LabeledSliderBar::handle:horizontal {{
+    background: {primary};
+    border: 1px solid {primary};
+    width: 14px;
+    margin: -6px 0;
+    border-radius: 7px;
+}}
+
+QSlider#LabeledSliderBar::handle:horizontal:hover {{
+    background: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+QSlider#LabeledSliderBar::handle:horizontal:pressed {{
+    background: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+QSlider#LabeledSliderBar:disabled::sub-page:horizontal {{
+    background: {disabled_text};
+}}
+
+QSlider#LabeledSliderBar:disabled::handle:horizontal {{
+    background: {disabled_text};
+    border-color: {disabled_text};
+}}
+
+QPushButton#SliderResetButton {{
+    min-width: 22px;
+    max-width: 28px;
+    padding: 2px 4px;
+}}
+
+QLabel#SliderLabel {{
+    color: {text_secondary};
+    font-size: 13px;
+}}
+
+QLineEdit#SliderValueField {{
+    background-color: {base};
+    color: {text_on_base};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    padding: 2px 4px;
+}}
+
+QLineEdit#SliderValueField:focus {{
+    border: 2px solid {focus_border};
+}}
+
+QLineEdit#SliderValueField:disabled {{
+    background-color: {disabled_bg};
+    color: {disabled_text};
+    border-color: {border_subtle};
+}}
+
+/* AdjustmentGrid (docs/25 §10) — the aligned Process slider panel.
+ * Same Gulf slider styling as LabeledSliderBar, but a distinct role
+ * so the Process relayout never disturbs the cull LabeledSlider. */
+
+QSlider#AdjustmentSlider::groove:horizontal {{
+    height: 4px;
+    background: {border_strong};
+    border-radius: 2px;
+}}
+
+QSlider#AdjustmentSlider::sub-page:horizontal {{
+    background: {primary};
+    border-radius: 2px;
+}}
+
+QSlider#AdjustmentSlider::add-page:horizontal {{
+    background: {border_strong};
+    border-radius: 2px;
+}}
+
+QSlider#AdjustmentSlider::handle:horizontal {{
+    background: {primary};
+    border: 1px solid {primary};
+    width: 8px;
+    margin: -2px 0;
+    border-radius: 4px;
+}}
+
+QSlider#AdjustmentSlider::handle:horizontal:hover {{
+    background: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+QSlider#AdjustmentSlider::handle:horizontal:pressed {{
+    background: {primary_hover};
+    border-color: {primary_hover};
+}}
+
+QSlider#AdjustmentSlider:disabled::sub-page:horizontal {{
+    background: {disabled_text};
+}}
+
+QSlider#AdjustmentSlider:disabled::handle:horizontal {{
+    background: {disabled_text};
+    border-color: {disabled_text};
+}}
+
+QLabel#AdjustmentLabel {{
+    color: {text_secondary};
+    font-size: 13px;
+}}
+
+QLineEdit#AdjustmentValue {{
+    background-color: {base};
+    color: {text_on_base};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    padding: 2px 4px;
+}}
+
+QLineEdit#AdjustmentValue:focus {{
+    border: 2px solid {focus_border};
+}}
+
+QLineEdit#AdjustmentValue:disabled {{
+    background-color: {disabled_bg};
+    color: {disabled_text};
+    border-color: {border_subtle};
+}}
+
+QPushButton#AdjustmentReset {{
+    padding: 2px 4px;
+}}
+
+/* ProcessGroupBox (docs/25 §10) — a light frame to demarcate the
+ * sets of controls on the Process page (right edit panel, bottom
+ * action group). Subtle border only; no fill. */
+
+QFrame#ProcessGroupBox {{
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+}}
+
+QLabel#ProcessGroupTitle {{
+    color: {text_secondary};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 2px;
+}}
+
+/* Look grid moment (spec/54 §4.2) — the 2×2 chooser tiles in
+ * LookGridDialog. Checked = the current Look; a thick primary border
+ * reads as "selected" at thumbnail distance without competing with
+ * the photo content. */
+QPushButton#LookGridTile {{
+    border: 2px solid {border_subtle};
+    border-radius: 6px;
+    padding: 2px;
+    background-color: transparent;
+}}
+
+QPushButton#LookGridTile:hover {{
+    border-color: {primary_hover};
+}}
+
+QPushButton#LookGridTile:pressed {{
+    border-color: {primary_hover};
+}}
+
+QPushButton#LookGridTile:checked {{
+    border-color: {primary};
+}}
+
+QLabel#LookGridCaption {{
+    color: {text_secondary};
+    font-size: 12px;
+}}
+
+QLabel#LookGridHint {{
+    color: {text_secondary};
+}}
+
+/* Scrollbars. No rule existed, so the handle fell back to the
+ * palette and was nearly invisible against the dark bg (Nelson
+ * eyeball 2026-05-17). Visible mid-tone handle, Gulf-blue on hover,
+ * no step arrows. App-wide. */
+QScrollBar:vertical {{
+    background: transparent;
+    width: 12px;
+    margin: 0;
+}}
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {border_strong};
+    min-height: 32px;
+    border-radius: 6px;
+    margin: 2px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {border_strong};
+    min-width: 32px;
+    border-radius: 6px;
+    margin: 2px;
+}}
+QScrollBar::handle:hover {{
+    background: {primary};
+}}
+QScrollBar::add-line, QScrollBar::sub-line {{
+    width: 0; height: 0; background: none; border: none;
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{
+    background: none;
+}}
+
+/* ── Checkbox / radio indicators ──────────────────────────────
+ *
+ * Fusion's default indicator draws its border with palette.Mid
+ * (Window.darker(120)) which collapses to near-window-color on
+ * the dark theme — the unchecked indicator becomes invisible.
+ * Explicit rules below force a visible border + readable
+ * checked-state fill, in both themes (Nelson 2026-05-20 v8).
+ */
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {border_strong};
+    background: {base};
+    border-radius: 3px;
+}}
+QRadioButton::indicator {{
+    border-radius: 7px;
+}}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+    border-color: {primary};
+}}
+QCheckBox::indicator:checked {{
+    background: {primary};
+    border-color: {primary};
+    /* White-stroke tick SVG (assets/icons/check.svg) — makes the checked
+     * state read as an action result, not a flat painted box (Nelson
+     * 2026-06-08 eyeball). Path is injected from theme.py so Qt's
+     * cwd-relative stylesheet URL resolution doesn't break it. */
+    image: url("{check_icon_url}");
+}}
+QRadioButton::indicator:checked {{
+    background: {primary};
+    border-color: {primary};
+}}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    border-color: {border_subtle};
+    background: {window};
+}}
+
+/* ── F-024 / F-026 EventPlanPage additions ────────────────────
+ * Open/Closed toggle, 2×2 graphical overview, closed-only
+ * slideshows row.
+ *
+ * F-026 (2026-05-26): the old hero panel (route / participants /
+ * notes) was removed entirely — replaced by the 2×2 graphical
+ * overview. The QSS rules for EventInfoPanel / EventInfoHeading /
+ * EventInfoValue went with it.
+ */
+
+QWidget#EventOverviewQuadrant {{
+    background: {base};
+    border: 1px solid {border_strong};
+    border-radius: 6px;
+}}
+
+QLabel#EventOverviewQuadrantHeading {{
+    font-size: 11px;
+    font-weight: 700;
+    color: {text_secondary};
+    letter-spacing: 0.06em;
+}}
+
+/* Section caption beside each EventPlanPage management-action row
+ * (Nelson 2026-05-29 — actions regrouped into labelled rows). */
+QLabel#ActionGroupLabel {{
+    font-size: 11px;
+    font-weight: 700;
+    color: {text_muted};
+    letter-spacing: 0.06em;
+    padding-right: 4px;
+}}
+
+QLabel#SlideshowsHeading {{
+    font-size: 14px;
+    font-weight: 600;
+    color: {text};
+}}
+
+QPushButton#CuratedBucketChip {{
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-weight: 500;
+    background: {primary_subtle};
+    color: {text};
+    border: 1px solid {border_subtle};
+}}
+QPushButton#CuratedBucketChip:hover {{
+    border-color: {primary};
+    background: {primary_subtle};
+}}
+QPushButton#CuratedBucketChip:pressed {{
+    background: {primary};
+    color: {accent_text};
+    border-color: {primary};
+}}
+
+/* ── F-024 closed EventCard treatment ─────────────────────── */
+QFrame#EventCardClosed {{
+    border: 1px solid {accent};
+    border-radius: 6px;
+}}
+
+/* spec/64 §2.3 — the clickable Open / Closed status badge on every tile.
+ * Replaces the legacy read-only ``EventCardClosedBadge``. The dynamic
+ * ``state`` property carries "open" / "closed"; QSS picks the colour. */
+QLabel#EventCardStatusBadge {{
+    border-radius: 10px;
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}}
+QLabel#EventCardStatusBadge[state="open"] {{
+    background: rgba(63, 157, 95, 0.22);
+    color: #6DC587;
+    border: 1px solid #6DC587;
+}}
+QLabel#EventCardStatusBadge[state="closed"] {{
+    background: {accent};
+    color: {accent_text};
+    border: 1px solid {accent};
+}}
+QLabel#EventCardStatusBadge:hover {{
+    border-width: 2px;
+    padding: 1px 9px;
+}}
+
+/* spec/64 §2.4 — closed-tile body: bar chart · donut · legend. */
+QWidget#EventCardClosedBody {{
+    background: transparent;
+}}
+QWidget#EventCardClosedBodyChart,
+QWidget#EventCardClosedBodyDonut,
+QWidget#EventCardClosedBodyLegend {{
+    background: transparent;
+    color: {text_secondary};
+}}
+/* F-025 v3 (2026-05-26): card recap is graphics-only now. */
+QLabel#EventCardRecapCover {{
+    background: {window};
+    border: 1px solid {border_subtle};
+    border-radius: 4px;
+    color: {text_secondary};
+    font-size: 11px;
+    font-style: italic;
+}}
+
+/* ── F-024 EventPlanPage state badge (00.031) ─────────────── */
+QLabel#EventStateBadge {{
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}}
+QLabel#EventStateBadge[state="open"] {{
+    background: rgba(95, 178, 137, 0.20);
+    color: #5FB289;
+    border: 1px solid #5FB289;
+}}
+QLabel#EventStateBadge[state="closed"] {{
+    background: {accent};
+    color: {accent_text};
+    border: 1px solid {accent};
+}}
+
+/* Day Grid cells (spec/32 §2.4) — see light.qss for the rationale. */
+QFrame#DayGridView, QScrollArea#DayGridScroll,
+QScrollArea#DayGridScroll > QWidget,
+QWidget#DayGridHost {{
+    background-color: {photo_canvas_bg};
+    border: none;
+}}
+
+QWidget#DayGridTopBar {{
+    background-color: {window};
+    border-bottom: 1px solid {border_subtle};
+}}
+
+QLabel#DayGridHeader {{
+    color: {text};
+    font-size: 14px;
+    font-weight: 600;
+}}
+
+QLabel#DayGridSizeLabel {{
+    color: {text_secondary};
+    font-size: 11px;
+}}
+
+QFrame#DayGridCell {{
+    border: 6px solid {border_subtle};
+    background-color: {photo_canvas_bg};
+    border-radius: 6px;
+}}
+QFrame#DayGridCell[status="picked"] {{
+    border-color: {success};
+}}
+QFrame#DayGridCell[status="skipped"] {{
+    border-color: {error};
+}}
+QFrame#DayGridCell[status="compare"] {{
+    border-color: {accent};
+}}
+QFrame#DayGridCell[status="mixed"] {{
+    border-color: {warning};
+}}
+QFrame#DayGridCell[status="untouched"] {{
+    border-color: {border_subtle};
+}}
+
+QLabel#DayGridCellInner {{
+    background-color: {base};
+    color: {text_secondary};
+}}
+
+/* ── BaseSurface canonical roles (spec/42, Nelson 2026-06-04) ─────
+ *
+ * One QSS role per affordance — mirrors the light theme's canonical
+ * roles section. See light.qss for the rationale.
+ */
+
+QPushButton#PDPill {{
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 6px 0;
+    border: 2px solid transparent;
+    border-radius: 0;
+    background-color: {error};         /* default / discarded = red */
+    color: #FFFFFF;
+}}
+
+QPushButton#PDPill[state="candidate"] {{
+    background-color: {accent};        /* Gulf orange */
+}}
+
+QPushButton#PDPill[state="picked"] {{
+    background-color: {success};       /* green */
+}}
+
+QPushButton#PDPill:hover {{
+    border-color: {primary_text};
+}}
+
+QPushButton#PDPill:pressed {{
+    border-color: {primary_subtle};
+}}
+
+QPushButton#PrimaryAction {{
+    background-color: {accent};
+    color: {accent_text};
+    border: 1px solid {accent};
+    font-weight: 500;
+}}
+
+QPushButton#PrimaryAction:hover {{
+    background-color: {accent_hover};
+    border-color: {accent_hover};
+}}
+
+QPushButton#PrimaryAction:pressed {{
+    background-color: {accent_pressed};
+    border-color: {accent_pressed};
+}}
+
+QPushButton#PrimaryAction:disabled {{
+    background-color: {accent_disabled};
+    border-color: {accent_disabled};
+    color: {accent_text};
+}}
+
+QLabel#InfoLabel {{
+    color: {text_secondary};
+    background: transparent;
+    border: none;
+    font-style: italic;
+    padding: 4px 8px;
+}}
+
+QPushButton#HelpButton {{
+    padding: 6px 10px;
+    font-size: 12px;
+}}
+
+QLabel#StateChip {{
+    color: {success};
+    background: transparent;
+    border: none;
+    font-weight: 500;
+    padding: 4px 8px;
+}}
+
+/* BackButton, NavStepButton, NavEdgeButton — inherit default
+ * QPushButton styling from the top of this file. No additional
+ * styling needed; role names exist for future per-surface overrides. */
+
+/* TransportButton — see light.qss for the rationale (Nelson
+ * 2026-06-12 UI round: plain look, no accent, fixed-width factory). */
+QPushButton#TransportButton {{
+    text-align: center;
+    font-size: 13px;
+    padding: 4px 0;
+}}
+
+/* BaseSurface region containers — mirror of light theme. See light.qss
+ * for rationale (spec/42 Nelson 2026-06-04). */
+/* BaseSurface background — see light.qss for rationale. Blue
+ * group frames retired; only the photo-state border remains. */
+QWidget#BaseSurface {{
+    background-color: {window};
+}}
+
+/* MEDIA host state border — mirror of light theme. The canonical
+ * photo-border-as-state at BaseSurface level (spec/42, Nelson
+ * 2026-06-04); every surface gets it. */
+QWidget#MediaHost {{
+    /* Default border = subtle grey (the "neutral" state on Process
+     * surfaces — spec/42: "neutral grey otherwise"). Coloured-state
+     * selectors below override it for cull surfaces and for the
+     * exported state on Process. */
+    border: 8px solid {border_subtle};
+    background-color: {photo_canvas_bg};
+}}
+
+QWidget#MediaHost[state="skipped"] {{
+    border-color: {error};   /* red */
+}}
+
+QWidget#MediaHost[state="candidate"] {{
+    border-color: {accent};  /* Gulf orange */
+}}
+
+QWidget#MediaHost[state="picked"] {{
+    border-color: {success}; /* green */
+}}
+
+QWidget#MediaHost[state="skipped"] {{
+    border-color: {error};   /* red */
+}}
+
+QWidget#MediaHost[state="candidate"] {{
+    border-color: {accent};  /* Gulf orange */
+}}
+
+QWidget#MediaHost[state="picked"] {{
+    border-color: {success}; /* green */
+}}
+
+QWidget#SurfaceTopBar,
+QWidget#SurfaceStateBar,
+QWidget#SurfaceToolsPanel,
+QWidget#SurfaceTools,
+QWidget#SurfaceNav {{
+    background-color: {base};
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+}}
+
+/* SurfaceCompactRow — see light.qss for rationale. No chrome by
+ * default; the timeline (on video) paints itself, the row stays
+ * at 48 px reserved on photo for geometry stability. */
+QWidget#SurfaceCompactRow {{
+    background-color: transparent;
+    border: none;
+}}
+
+QPushButton#EventInfoTagChip {{
+    border: 1px solid {border_strong};
+    border-radius: 12px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: {text};
+    background-color: {card_bg};
+}}
+QPushButton#EventInfoTagChip:hover {{
+    border-color: {hover_border};
+}}
+QPushButton#EventInfoTagChip:checked {{
+    background-color: {accent_subtle};
+    border: 1px solid {accent};
+    color: {text};
+}}
+QPushButton#EventInfoTagChip:checked:hover {{
+    background-color: {accent_subtle};
+    border-color: {accent};
+}}
+
+QFrame#EventInfoPersonChip {{
+    border: 1px solid {border_strong};
+    border-radius: 12px;
+    background-color: {card_bg_hover};
+}}
+QLabel#EventInfoPersonChipText {{
+    font-size: 12px;
+    color: {text};
+}}
+QPushButton#EventInfoPersonChipKill {{
+    border: none;
+    background: transparent;
+    color: {text_muted};
+    font-size: 11px;
+    padding: 0;
+}}
+QPushButton#EventInfoPersonChipKill:hover {{
+    color: #FF6B6B;
+    font-weight: 700;
+}}
+
+
+/* ── New Cut dialog — pool builder chips (spec/61 slice 4) ────
+ * The expression row renders the pool recipe as removable term
+ * chips ("#exported − #short_version + #family"); the add row
+ * offers every existing Cut with tiny +/− append buttons. The
+ * built-in #exported term wears the primary-subtle fill (it is
+ * a live query, not a user Cut). Style chips reuse #FilterChip.
+ * Pointing-hand cursor comes from the app-level event filter. */
+QFrame#PoolTermChip {{
+    border: 1px solid {border_strong};
+    border-radius: 12px;
+    background-color: {card_bg_hover};
+}}
+QFrame#PoolTermChip[builtin="true"] {{
+    background-color: {primary_subtle};
+    border-color: {primary};
+}}
+QLabel#PoolTermChipText {{
+    font-size: 12px;
+    color: {text};
+}}
+QPushButton#PoolTermChipKill {{
+    border: none;
+    background: transparent;
+    color: {text_muted};
+    font-size: 11px;
+    padding: 0;
+}}
+QPushButton#PoolTermChipKill:hover {{
+    color: #C53030;
+    font-weight: 700;
+}}
+QLabel#PoolOpLabel {{
+    font-size: 15px;
+    font-weight: 600;
+    color: {text_secondary};
+    padding: 0 2px;
+}}
+QPushButton#PoolAddOp {{
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+    background-color: transparent;
+    color: {text_secondary};
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0;
+}}
+QPushButton#PoolAddOp:hover {{
+    border-color: {primary};
+    color: {text};
+}}
+QPushButton#PoolAddOp:pressed {{
+    background-color: {primary_subtle};
+}}
+QPushButton#PoolAddOp:disabled {{
+    color: {text_muted};
+    border-color: {border_subtle};
+}}
+QLabel#PoolCountLabel {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {text};
+}}
+
+
+/* ── Cut session page (spec/61 slice 5) ───────────────────────
+ * The budget line is the export-progress-line slot's sibling:
+ * picked count + show length vs target/max, the text wearing the
+ * zone colour (green at/under target, amber to max, red past).
+ * Day rows are lean session-scoped list rows (no bucket layer). */
+QWidget#CutBudgetLine {{
+    background-color: transparent;
+}}
+QLabel#CutBudgetLabel {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {text_secondary};
+}}
+QWidget#CutBudgetLine[zone="green"] QLabel#CutBudgetLabel {{
+    color: {success};
+}}
+QWidget#CutBudgetLine[zone="amber"] QLabel#CutBudgetLabel {{
+    color: {accent};
+}}
+QWidget#CutBudgetLine[zone="red"] QLabel#CutBudgetLabel {{
+    color: {error};
+}}
+QPushButton#CutSessionDayRow {{
+    text-align: left;
+    padding: 10px 14px;
+    border: 1px solid {border_subtle};
+    border-radius: 8px;
+    background-color: transparent;
+    font-size: 13px;
+}}
+QPushButton#CutSessionDayRow:hover {{
+    border-color: {primary};
+    background-color: {card_bg_hover};
+}}
+QPushButton#CutSessionDayRow:pressed {{
+    background-color: {primary_subtle};
+}}
+QLabel#CutSingleImage {{
+    background-color: transparent;
+}}
+
+
+/* ── Cuts list rows (spec/61 slice 6) ─────────────────────────
+ * The Share landing rows. The built-in #exported row wears the
+ * primary-subtle fill (a live query, not a user Cut). */
+QFrame#CutListRow {{
+    border: 1px solid {border_subtle};
+    border-radius: 8px;
+    background-color: transparent;
+}}
+QFrame#CutListRow[builtin="true"] {{
+    background-color: {primary_subtle};
+    border-color: {primary};
+}}
+
+
+/* ── Cut single view decision frame (spec/61, eyeball round 1) ─
+ * The same border language as the Day Grid cells, on the big
+ * photo: green in the Cut, red out, neutral when just looking. */
+QFrame#CutSingleFrame {{
+    border: 6px solid {border_subtle};
+    border-radius: 6px;
+    background-color: {photo_canvas_bg};
+}}
+QFrame#CutSingleFrame[status="picked"] {{
+    border-color: {success};
+}}
+QFrame#CutSingleFrame[status="skipped"] {{
+    border-color: {error};
+}}
+
+
+/* ── Cut budget strip v2 (eyeball round 3 — must be UNMISSABLE) ─
+ * A full-width row above the session picker: filling bar + the
+ * numbers, the fill + text wearing the zone colour. The children
+ * are repolished from code when the zone flips. */
+QWidget#CutBudgetLine {{
+    background-color: {card_bg_hover};
+    border-bottom: 1px solid {border_subtle};
+}}
+QProgressBar#CutBudgetBar {{
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+    background-color: {photo_canvas_bg};
+}}
+QProgressBar#CutBudgetBar::chunk {{
+    border-radius: 5px;
+    background-color: {success};
+}}
+QWidget#CutBudgetLine[zone="amber"] QProgressBar#CutBudgetBar::chunk {{
+    background-color: {accent};
+}}
+QWidget#CutBudgetLine[zone="red"] QProgressBar#CutBudgetBar::chunk {{
+    background-color: {error};
+}}
+
+/* The Full-Resolution corner affordance on the PhotoViewport media —
+ * a translucent magnifier overlay mirroring F10 (Nelson 2026-06-12).
+ * On-media, so theme-independent (same in both themes). */
+QPushButton#ViewportInspectButton {{
+    background-color: rgba(0, 0, 0, 0.45);
+    color: #f0f0f0;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 17px;
+    font-size: 15px;
+}}
+QPushButton#ViewportInspectButton:hover {{
+    background-color: rgba(0, 0, 0, 0.78);
+    border-color: rgba(255, 255, 255, 0.75);
+}}
+
+/* The F10 inspection-lens key hint — subtle, on the black canvas. */
+QLabel#InspectHint {{
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 12px;
+    background: transparent;
+}}
+
+/* The F10 inspection lens window (Nelson 2026-06-12 UI round): a
+ * normal THEMED window — the photo bed + a region-card control bar,
+ * exactly the grammar of the other canvas surfaces (the old
+ * inline-black exception is revoked). */
+QWidget#InspectView {{
+    background-color: {photo_canvas_bg};
+}}
+
+QWidget#InspectBar {{
+    background-color: {base};
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+}}

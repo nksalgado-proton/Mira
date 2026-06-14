@@ -11,13 +11,19 @@ via left-click, Tab, Backtab, or Shortcut. Wheel-over-unfocused
 input must change neither value nor focus.
 
 Fix — app-wide event filter:
-* On a ``QWheelEvent`` targeting an unfocused widget of a guarded
-  type, **consume** the event (so the widget's wheelEvent never
-  fires — no value change, no ``WheelFocus`` grab) and **forward**
-  the event to the nearest ``QAbstractScrollArea`` ancestor so the
-  surrounding form/list still scrolls.
-* On a focused widget, the wheel works normally (the user
-  explicitly focused it — changing the value is intentional).
+* On a ``QWheelEvent`` whose receiver is *inside the widget tree of*
+  a guarded type and the guarded widget has no focus (neither it nor
+  any of its descendants), **consume** the event (so the widget's
+  wheelEvent never fires — no value change, no ``WheelFocus`` grab)
+  and **forward** the event to the nearest ``QAbstractScrollArea``
+  ancestor so the surrounding form/list still scrolls.
+* The receiver may be the guarded widget itself OR the editable
+  combo's internal ``QLineEdit`` (Qt delivers the wheel to whichever
+  child is under the cursor; the inner-QLineEdit case is exactly the
+  Days Table Country picker symptom that motivated the ancestor walk).
+* On a focused widget (or any focused descendant of it), the wheel
+  works normally — the user explicitly focused the field, so
+  changing the value is intentional.
 
 Pairs with :mod:`mira.ui.base.focus_keeper`: the focus-keeper guards
 against tooltip-churn focus drift; this guard ensures wheel scrolling
@@ -35,7 +41,7 @@ intentionally NOT guarded.
 from __future__ import annotations
 
 import logging
-from typing import Tuple, Type
+from typing import Optional, Tuple, Type
 
 from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtWidgets import (
@@ -43,6 +49,7 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
+    QWidget,
 )
 
 log = logging.getLogger(__name__)
@@ -58,21 +65,48 @@ class _WheelGuardFilter(QObject):
     """The shared app-wide wheel guard (singleton, installed on
     ``QApplication``)."""
 
+    @staticmethod
+    def _find_guarded(obj: QObject) -> Optional[QWidget]:
+        """Return the nearest guarded widget at or above ``obj`` in the
+        widget tree, or None. Catches the editable-``QComboBox`` case
+        where the wheel event is delivered to the combo's internal
+        ``QLineEdit`` (and Qt would propagate up to the combo's
+        ``wheelEvent``, mutating the value)."""
+        if not isinstance(obj, QWidget):
+            return None
+        cur: Optional[QWidget] = obj
+        while cur is not None:
+            if isinstance(cur, GUARDED_TYPES):
+                return cur
+            try:
+                cur = cur.parentWidget()
+            except RuntimeError:                                # C++ gone
+                return None
+        return None
+
     def eventFilter(self, obj: QObject, ev: QEvent) -> bool:  # noqa: N802
         if ev.type() != QEvent.Type.Wheel:
             return False
-        if not isinstance(obj, GUARDED_TYPES):
+        guarded = self._find_guarded(obj)
+        if guarded is None:
             return False
+        # The user has engaged the field when focus is on the guarded
+        # widget itself OR on any of its descendants (the internal
+        # ``QLineEdit`` of an editable combo — Qt's focus proxy
+        # mechanism may report either side; ancestry check handles both).
         try:
-            if obj.hasFocus():
-                return False                                    # honour the user
+            focused = QApplication.focusWidget()
+            if focused is not None and (
+                focused is guarded or guarded.isAncestorOf(focused)
+            ):
+                return False                                    # honour user
         except RuntimeError:                                    # C++ gone
             return False
         # Forward to the nearest scrollable ancestor so the
         # surrounding form / scroll area still scrolls instead of
         # being silently blocked.
         try:
-            ancestor = obj.parentWidget()
+            ancestor = guarded.parentWidget()
         except RuntimeError:
             return True
         while ancestor is not None:

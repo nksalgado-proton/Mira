@@ -133,6 +133,39 @@ def test_wheel_on_unfocused_combobox_does_not_change_index(qapp, guard):
         _teardown(dlg)
 
 
+def test_wheel_on_editable_combo_internal_lineedit_is_guarded(qapp, guard):
+    """The Days Table Country picker is an editable QComboBox: Qt
+    delivers wheel-over-the-text-area to its internal QLineEdit, not
+    the QComboBox. The guard's ancestor walk finds the combo and
+    consumes the event — same outcome as a wheel on the combo body."""
+    dlg = QDialog()
+    lay = QVBoxLayout(dlg)
+    combo = QComboBox()
+    combo.setEditable(True)                                   # ← key
+    combo.addItems(["Alpha", "Beta", "Gamma", "Delta"])
+    combo.setCurrentIndex(1)
+    lay.addWidget(combo)
+    dlg.show()
+    QApplication.processEvents()
+    fw = QApplication.focusWidget()
+    if fw is not None:
+        fw.clearFocus()
+    QApplication.processEvents()
+    try:
+        internal = combo.lineEdit()
+        assert internal is not None, "editable combo must expose lineEdit"
+        # Deliver wheel to the internal QLineEdit — the realistic
+        # receiver under a hovering pointer over the text area.
+        QApplication.sendEvent(internal, _wheel_event(-120))
+        QApplication.processEvents()
+        assert combo.currentIndex() == 1, (
+            "wheel on the internal QLineEdit of an editable combo "
+            "must not cycle the parent combo's index"
+        )
+    finally:
+        _teardown(dlg)
+
+
 def test_wheel_forwarded_to_scrollable_ancestor(qapp, guard):
     """When an unfocused spin sits inside a QScrollArea, the wheel
     event is forwarded to the scroll area's viewport so the user can

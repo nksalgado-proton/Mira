@@ -458,8 +458,26 @@ class PickPage(QWidget):
         # Bridge mode SHORT-CIRCUITS the legacy days_panel + DayGridView
         # state — the redesigned grid owns those levels. Photo/video
         # Back emits ``closed`` so MainWindow returns to the new grid.
-        self._current_day_cells = []
-        self._current_day_cell_idx = None
+        # We DO populate ``_current_day_cells`` though: the photo
+        # surface's edge nav fires ``navigate_at_edge(±1)`` → :meth:`
+        # _navigate`, which walks the cell list. The list is the same
+        # one DaysGridPage rendered (the spec/32 ``day_grid_cells``
+        # engine + fingerprint cache, so the second call is cheap).
+        try:
+            from mira.picked import day_grid_cells
+            cells = day_grid_cells(
+                self._eg, day_number, phase="pick",
+                default_state=self._phase_default,
+            )
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "open_to_item: day_grid_cells(%s) failed", day_number)
+            cells = []
+        self._current_day_cells = list(cells)
+        self._current_day_cell_idx = next(
+            (i for i, c in enumerate(cells) if c.item_id == item_id),
+            None,
+        )
         self._bridge_active = True
         # Whole-event proxy seed mirrors open_event — the new grid
         # already seeded once if the user landed there first, but the
@@ -1314,6 +1332,16 @@ class PickPage(QWidget):
                 and self._surface_came_from == self._CLUSTER_GRID):
             return
         nxt = self._current_day_cell_idx + delta
+        # spec/70 Phase 3 bridge — cluster cells own a separate legacy
+        # sub-grid path whose Back goes to the legacy day grid, not the
+        # redesigned Days Grid. Skip over clusters so flat-item nav
+        # stays on the photo/video surface; cluster expansion is the
+        # job of DaysGridPage, which the user reaches with Back.
+        if self._bridge_active:
+            while 0 <= nxt < len(self._current_day_cells):
+                if not self._current_day_cells[nxt].is_cluster:
+                    break
+                nxt += delta
         if nxt < 0 or nxt >= len(self._current_day_cells):
             return                                  # day boundary — stop
         self._current_day_cell_idx = nxt

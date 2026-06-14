@@ -56,6 +56,7 @@ from mira.event_classification import (
     PHASE_PICK,
     PHASE_SHARE,
 )
+from mira.ui.pages.days_lists_page import DaySnapshot, DaysListsPage
 from mira.ui.pages.events_page import EventsPage
 from mira.ui.pages.phases_page import PhasesPage
 from mira.ui.pages.new_event_page import NewEventPage
@@ -84,6 +85,8 @@ class MainWindow(QMainWindow):
     # activity dashboard. EventPlanPage + EventDashboardPage retired; their
     # keys folded into _ACTIVITY_PAGE_KEY.
     _ACTIVITY_PAGE_KEY = "__activity_dashboard__"
+    # spec/65 §3.5 — Days Lists sits between Phases (03) and Pick (07).
+    _DAYS_LISTS_PAGE_KEY = "__days_lists__"
     _SELECT_PAGE_KEY = "__select__"
     _PROCESS_PAGE_KEY = "__process__"
     # spec/66 §1.1 — the Export phase is its own surface (slice 5).
@@ -153,6 +156,13 @@ class MainWindow(QMainWindow):
         self.phases_page = PhasesPage(self.gateway)
         self.page_stack.add_page(self._ACTIVITY_PAGE_KEY, self.phases_page)
 
+        # spec/65 §3.5 — Days Lists: the "pick where to start" surface that
+        # lands between Phases and Pick. Built off gateway.phase_day_progress()
+        # + cached_buckets(); a day-click opens the per-day Pick view.
+        self.days_lists_page = DaysListsPage(self.gateway)
+        self.page_stack.add_page(
+            self._DAYS_LISTS_PAGE_KEY, self.days_lists_page)
+
         # Slice A (2026-06-06): the per-camera Cull picker is retired. The
         # Select tile opens the unified Select surface directly.
         self.pick_page = PickPage(self.gateway)
@@ -213,6 +223,25 @@ class MainWindow(QMainWindow):
         self.phases_page.back_requested.connect(self._on_event_back)
         self.phases_page.phase_tile_activated.connect(
             self._on_phase_tile_activated)
+        # spec/65 §3.5 — DaysListsPage signal wiring. Back returns to
+        # PhasesPage; a day-card click opens the Pick surface anchored to
+        # that day. The header's New-pass / Pick-all / Skip-all buttons
+        # are still TBD (they belong to the Pick surface, out of scope
+        # for the route-swap session); they log + flash a hint for now.
+        self.days_lists_page.back_requested.connect(
+            self._on_days_lists_back)
+        self.days_lists_page.day_activated.connect(
+            self._on_days_lists_day_activated)
+        self.days_lists_page.new_pass_requested.connect(
+            self._on_days_lists_new_pass_stub)
+        self.days_lists_page.pick_all_days_requested.connect(
+            self._on_days_lists_pick_all_stub)
+        self.days_lists_page.skip_all_days_requested.connect(
+            self._on_days_lists_skip_all_stub)
+        self.days_lists_page.day_pick_all_requested.connect(
+            self._on_days_lists_day_pick_all_stub)
+        self.days_lists_page.day_skip_all_requested.connect(
+            self._on_days_lists_day_skip_all_stub)
         self.pick_page.closed.connect(self._on_select_closed)
         self.pick_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
@@ -1671,6 +1700,171 @@ class MainWindow(QMainWindow):
         phase strings the routing handler accepts (``"collect"`` /
         ``"pick"`` / ``"edit"`` / ``"share"``)."""
         self._on_phase_activated(phase)
+
+    # ── Surface 05: Days Lists ────────────────────────────────────────
+    # spec/65 §3.5 wire-up. The page sits between Phases and Pick; gating
+    # is cheap (two GROUP BYs + one bucket_cache read per day) so the page
+    # is rebuilt at every entry instead of stale-cached.
+
+    def _open_days_lists_for(self, event_id: str) -> None:
+        """Build the per-day snapshots from the live gateway and route to
+        the Days Lists dashboard. Falls back to opening Pick directly if
+        the snapshot build fails (the user shouldn't be stranded with
+        a partial dashboard)."""
+        snapshots = self._build_day_snapshots(event_id)
+        if snapshots is None:
+            log.warning(
+                "Days Lists snapshot build failed for %s; falling back to "
+                "PickPage direct", event_id)
+            if self.pick_page.open_event(event_id):
+                self.page_stack.show_page(self._SELECT_PAGE_KEY)
+            return
+        event_name = self._lookup_event_name(event_id) or tr("Event")
+        self.days_lists_page.setEventForPreview(event_name, snapshots)
+        self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
+
+    def _build_day_snapshots(self, event_id: str) -> Optional[list]:
+        """Compose ``DaySnapshot[]`` from the gateway for one event.
+
+        Two GROUP BYs (via :meth:`phase_day_progress`) carry the per-day
+        Pick totals; the bucket count for each day comes from the cached
+        clustering. Returns ``None`` on a gateway failure so the caller
+        can fall back."""
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Days Lists: cannot open event %s", event_id)
+            return None
+        try:
+            trip_days = eg.trip_days()
+            progress = eg.phase_day_progress()
+            pick_map = progress.get("pick", {})
+            snapshots: list[DaySnapshot] = []
+            for d in trip_days:
+                cell = pick_map.get(d.day_number, {}) or {}
+                total = int(cell.get("total", 0))
+                decided = int(cell.get("decided", 0))
+                picked = int(cell.get("picked", 0))
+                skipped = max(0, decided - picked)
+                try:
+                    buckets = len(eg.cached_buckets(
+                        "pick", d.day_number))
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "cached_buckets failed for day %s of %s",
+                        d.day_number, event_id)
+                    buckets = 0
+                # Per-day capture-hour distribution — drives the small
+                # spark on each DayRow. One SQL pass keyed by day_number
+                # so the dashboard's analytic feel doesn't add round-
+                # trips per day.
+                snapshots.append(DaySnapshot(
+                    day_number=d.day_number,
+                    title=(d.description or f"Day {d.day_number}"),
+                    # TripDay.date is already an ISO string in the store;
+                    # the model carries Optional[str] not date.
+                    date_iso=(str(d.date) if d.date else ""),
+                    picked=picked,
+                    skipped=skipped,
+                    buckets=buckets,
+                    items=total,
+                    location=(getattr(d, "location", "") or ""),
+                ))
+            self._fill_capture_hours(eg, snapshots)
+            return snapshots
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Days Lists snapshot build failed for %s", event_id)
+            return None
+        finally:
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _fill_capture_hours(eg, snapshots: list) -> None:
+        """Project items per (day, capture-hour) into each snapshot's
+        ``capture_hours`` 24-bucket array. Pure read-only — uses the same
+        ``visible_item`` view ``phase_day_progress`` reads, so a hidden
+        day contributes nothing."""
+        try:
+            rows = eg.store.conn.execute(
+                "SELECT day_number AS dn, "
+                "       CAST(substr(capture_time_corrected, 12, 2) AS INTEGER) AS hr, "
+                "       COUNT(*) AS n "
+                "FROM visible_item "
+                "WHERE provenance='captured' "
+                "  AND capture_time_corrected IS NOT NULL "
+                "GROUP BY day_number, hr"
+            ).fetchall()
+        except Exception:                                          # noqa: BLE001
+            log.exception("capture-hour rollup failed")
+            return
+        by_day: dict[int, list[int]] = {}
+        for r in rows:
+            dn = r["dn"]
+            hr = r["hr"]
+            if dn is None or hr is None or hr < 0 or hr >= 24:
+                continue
+            bucket = by_day.setdefault(int(dn), [0] * 24)
+            bucket[int(hr)] = int(r["n"] or 0)
+        for snap in snapshots:
+            snap.capture_hours = by_day.get(snap.day_number, [0] * 24)
+
+    def _lookup_event_name(self, event_id: str) -> Optional[str]:
+        """Pull the event name from the index without opening event.db a
+        second time (gateway already opens it for the snapshot build)."""
+        try:
+            for row in self.gateway.list_events():
+                if str(row.get("id")) == event_id:
+                    return str(row.get("name") or "")
+        except Exception:                                          # noqa: BLE001
+            log.exception("event-name lookup failed for %s", event_id)
+        return None
+
+    def _on_days_lists_back(self) -> None:
+        """Back from Days Lists returns to Phases (Surface 03)."""
+        self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
+
+    def _on_days_lists_day_activated(self, day_number: int) -> None:
+        """Day card clicked → open PickPage and jump straight to that
+        day's grid. ``_open_day`` is the Picker's own internal handler
+        for "navigator clicked a day"; we reuse it so the navigator
+        skip is identical to the user clicking the day inside Pick."""
+        if self._current_event_id is None:
+            return
+        if not self.pick_page.open_event(self._current_event_id):
+            return
+        self.page_stack.show_page(self._SELECT_PAGE_KEY)
+        try:
+            self.pick_page._open_day(day_number)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "PickPage._open_day(%s) failed; leaving user on navigator",
+                day_number)
+
+    def _on_days_lists_new_pass_stub(self) -> None:
+        """+ Start a new pass… — out of scope for the route-swap. Logs
+        + leaves a hint until the Pick surface gains the new-pass flow."""
+        log.info("Days Lists 'new pass' clicked (stub; not yet wired)")
+
+    def _on_days_lists_pick_all_stub(self) -> None:
+        log.info("Days Lists 'pick all days' clicked (stub; not yet wired)")
+
+    def _on_days_lists_skip_all_stub(self) -> None:
+        log.info("Days Lists 'skip all days' clicked (stub; not yet wired)")
+
+    def _on_days_lists_day_pick_all_stub(self, day_number: int) -> None:
+        log.info(
+            "Days Lists day %s 'pick all' clicked (stub; not yet wired)",
+            day_number)
+
+    def _on_days_lists_day_skip_all_stub(self, day_number: int) -> None:
+        log.info(
+            "Days Lists day %s 'skip all' clicked (stub; not yet wired)",
+            day_number)
 
     def _on_delete_event(self) -> None:
         """Event menu "Delete event" → offer a choice (spec/14 §5D): remove from
@@ -3787,8 +3981,10 @@ class MainWindow(QMainWindow):
             self._open_collect(self._current_event_id)
             return
         if phase == "pick" and self._current_event_id is not None:
-            if self.pick_page.open_event(self._current_event_id):
-                self.page_stack.show_page(self._SELECT_PAGE_KEY)
+            # spec/65 §3.5 — Pick lands on the Days Lists "pick where to
+            # start" dashboard first. Building the per-day snapshots is
+            # cheap (two GROUP BYs + one bucket_cache read per day).
+            self._open_days_lists_for(self._current_event_id)
             return
         if phase == "edit" and self._current_event_id is not None:
             # spec/57: entering Edit runs the external seams — scan for

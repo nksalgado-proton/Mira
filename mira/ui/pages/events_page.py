@@ -219,6 +219,17 @@ class EventsPage(QWidget):
 
     def _apply_filter(self) -> None:
         if not self._card_data_by_id:
+            # No events loaded (cold start with empty library, or
+            # gateway list_events failed). Replace the constructor's
+            # "Loading…" subtitle so the user doesn't get stranded on
+            # an indeterminate state — the empty grid below already
+            # shows the "no events yet" hint.
+            sub = self._header.findChild(QLabel, "Sub")
+            if sub is not None:
+                sub.setText("0 events")
+            self._update_stat_tile(self._stat_open, "0")
+            self._update_stat_tile(self._stat_closed, "0")
+            self._update_stat_tile(self._stat_days, "0")
             self._render([])
             return
         query = self._filter_search.input.text().strip().lower()

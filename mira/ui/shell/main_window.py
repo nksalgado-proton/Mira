@@ -1785,9 +1785,32 @@ class MainWindow(QMainWindow):
                 "Days Lists snapshot build failed for %s; staying on Phases",
                 event_id)
             return
+        # When entering DaysLists during a Quick Sweep session, fold
+        # undecided items into the QS-default side so the bars read the
+        # all-green-on-entry contract the QS surface promises (per-event
+        # QS borrows the pick-phase store; nothing's been written yet on
+        # a fresh session, so without this every bar reads as 0/0).
+        if self._quick_sweep is not None:
+            snapshots = self._qs_apply_default_to_snapshots(snapshots)
         event_name = self._lookup_event_name(event_id) or tr("Event")
         self.days_lists_page.setEventForPreview(event_name, snapshots)
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
+
+    def _qs_apply_default_to_snapshots(self, snapshots: list) -> list:
+        """Fold each snapshot's undecided count (items - picked - skipped)
+        into the QS default side. Picked / skipped stay non-negative;
+        the total ``items`` is unchanged."""
+        from mira.picked.status import STATE_PICKED
+        default = self._qs_default_phase_state()
+        for snap in snapshots:
+            undecided = max(0, snap.items - snap.picked - snap.skipped)
+            if undecided == 0:
+                continue
+            if default == STATE_PICKED:
+                snap.picked = snap.picked + undecided
+            else:
+                snap.skipped = snap.skipped + undecided
+        return snapshots
 
     def _build_day_snapshots(self, event_id: str) -> Optional[list]:
         """Compose ``DaySnapshot[]`` from the gateway for one event.
@@ -4476,6 +4499,31 @@ class MainWindow(QMainWindow):
     #   gateway-driven path is identical to the Picker's, with the QS
     #   flag set so item clicks open the QS viewer instead of Picker.
 
+    def _qs_default_legacy_state(self) -> str:
+        """The resolved ``quick_sweep_default_state`` translated to the
+        :mod:`core.cull_state` legacy values the Quick Sweep ledger uses
+        (``"kept"`` / ``"discarded"``). Mirrors how Edit pulls its
+        default via :func:`default_state_for(settings, "edit")` —
+        same single-reader contract, different phase key."""
+        from core.cull_state import (
+            STATE_DISCARDED as STATE_SKIPPED_LEGACY,
+            STATE_KEPT as STATE_PICKED_LEGACY,
+        )
+        from mira.picked.status import STATE_PICKED, default_state_for
+        phase_default = default_state_for(
+            self.gateway.settings, "quick_sweep")
+        return (
+            STATE_PICKED_LEGACY if phase_default == STATE_PICKED
+            else STATE_SKIPPED_LEGACY
+        )
+
+    def _qs_default_phase_state(self) -> str:
+        """The resolved Quick Sweep default in :mod:`mira.picked.status`
+        wire values (``"picked"`` / ``"skipped"``) — what the gateway-
+        backed grid/snapshot code expects."""
+        from mira.picked.status import default_state_for
+        return default_state_for(self.gateway.settings, "quick_sweep")
+
     def _open_quick_sweep_standalone(self) -> None:
         """Standalone Quick Sweep: pop the folder picker, scan the source,
         bucket into days, hand the day snapshots to DaysListsPage and let
@@ -4508,23 +4556,12 @@ class MainWindow(QMainWindow):
             return
 
         # Bucket the scanned items into PickDays so DaysListsPage can
-        # show one card per source day.
+        # show one card per source day. The ledger is pre-populated
+        # with the QS default so every undecided item reads as that
+        # default — the days-list bars and the grid cell borders both
+        # render the all-green entry the QS contract promises.
         from mira.picked.quick_sweep_buckets import build_fast_days
-        # Initial state ledger — every source path starts at the Quick
-        # Sweep default (Pick, the permissive contract).
-        from mira.settings.repo import SettingsRepo
-        try:
-            default = SettingsRepo().load().quick_sweep_default_state
-        except Exception:                                          # noqa: BLE001
-            default = "picked"
-        from core.cull_state import (
-            STATE_DISCARDED as STATE_SKIPPED_LEGACY,
-            STATE_KEPT as STATE_PICKED_LEGACY,
-        )
-        default_state = (
-            STATE_SKIPPED_LEGACY if default == "skipped"
-            else STATE_PICKED_LEGACY
-        )
+        default_state = self._qs_default_legacy_state()
         state_ledger: dict[Path, str] = {
             it.path: default_state for it in items
         }
@@ -4553,6 +4590,7 @@ class MainWindow(QMainWindow):
             "dest": dest,
             "event_id": None,
             "state": state_ledger,
+            "default": default_state,
             "items_by_day": items_by_day,
             "days": days,
             "current_day": None,
@@ -4586,6 +4624,7 @@ class MainWindow(QMainWindow):
             "dest": None,
             "event_id": event_id,
             "state": {},
+            "default": self._qs_default_legacy_state(),
             "items_by_day": {},
             "days": None,
             "current_day": None,
@@ -4598,13 +4637,41 @@ class MainWindow(QMainWindow):
 
     def _qs_build_day_snapshots(self, days) -> list:
         """Build a list of :class:`DaySnapshot` from a paths-mode
-        PickDay list (standalone QS only)."""
+        PickDay list (standalone QS only). Picked / skipped counts
+        come from the session ledger — items not yet explicitly
+        decided fall back to the resolved ``quick_sweep_default_state``
+        so the bars render the "all-green by default" entry promise."""
+        from core.cull_state import (
+            STATE_CANDIDATE as STATE_CANDIDATE_LEGACY,
+            STATE_DISCARDED as STATE_SKIPPED_LEGACY,
+            STATE_KEPT as STATE_PICKED_LEGACY,
+        )
         from mira.ui.pages.days_lists_page import DaySnapshot
+        ledger: dict[Path, str] = (
+            self._quick_sweep["state"]
+            if self._quick_sweep is not None else {}
+        )
+        default = (
+            self._quick_sweep.get("default", STATE_PICKED_LEGACY)
+            if self._quick_sweep is not None else STATE_PICKED_LEGACY
+        )
         out: list = []
         for d in days:
             items_count = sum(
                 len(b.items) for b in d.buckets)
             bucket_count = len(d.buckets)
+            # Count picked / skipped per day from the ledger — Compare
+            # counts as picked at Save time (QS contract); the bar
+            # follows suit so the visible green tracks the kept pool.
+            picked = 0
+            skipped = 0
+            for b in d.buckets:
+                for ci in b.items:
+                    s = ledger.get(Path(ci.item_id), default)
+                    if s in (STATE_PICKED_LEGACY, STATE_CANDIDATE_LEGACY):
+                        picked += 1
+                    elif s == STATE_SKIPPED_LEGACY:
+                        skipped += 1
             # Build a 24-hour capture-time histogram for the spark line.
             hours = [0] * 24
             for b in d.buckets:
@@ -4631,7 +4698,7 @@ class MainWindow(QMainWindow):
                 day_number=d.day_number,
                 title=title.strip(),
                 date_iso=date_iso.strip(),
-                picked=0, skipped=0,
+                picked=picked, skipped=skipped,
                 buckets=bucket_count,
                 items=items_count,
                 capture_hours=hours,
@@ -4664,12 +4731,17 @@ class MainWindow(QMainWindow):
             self.days_grid_page.setFocus()
             return
         # Per-event mode — gateway-driven open_for_day (same as Picker).
+        # The default-state override routes the day grid's cell borders
+        # to ``quick_sweep_default_state`` instead of the pick-phase
+        # default so the QS session reads as all-green on entry even
+        # when nothing has been picked yet.
         event_id = self._quick_sweep["event_id"]
         if event_id is None:
             return
         title, date_iso = self._lookup_day_meta(event_id, day_number)
         if not self.days_grid_page.open_for_day(
             event_id, day_number, title=title, date_iso=date_iso,
+            default_state=self._qs_default_phase_state(),
         ):
             log.warning(
                 "QS per-event: open_for_day(%s, %s) failed",
@@ -4717,7 +4789,10 @@ class MainWindow(QMainWindow):
         self.days_grid_page.setFocus()
 
     def _qs_build_grid_items(self, items) -> list:
-        """SourceItem list → list[GridItem] for paths-mode DaysGridPage."""
+        """SourceItem list → list[GridItem] for paths-mode DaysGridPage.
+        Items with no explicit decision in the session ledger fall back
+        to the resolved QS default so cells render the all-green entry
+        (or all-red if the user flipped ``quick_sweep_default_state``)."""
         from mira.ui.pages.days_grid_page import GridItem
         from core.cull_state import (
             STATE_CANDIDATE as STATE_CANDIDATE_LEGACY,
@@ -4735,13 +4810,17 @@ class MainWindow(QMainWindow):
             ".mpeg",
         }
         ledger = self._quick_sweep["state"] if self._quick_sweep else {}
+        default = (
+            self._quick_sweep.get("default", STATE_PICKED_LEGACY)
+            if self._quick_sweep is not None else STATE_PICKED_LEGACY
+        )
         out: list = []
         for it in items:
             kind = (
                 "video" if it.path.suffix.lower() in is_video_ext
                 else "photo"
             )
-            s = ledger.get(it.path, STATE_PICKED_LEGACY)
+            s = ledger.get(it.path, default)
             out.append(GridItem(
                 item_id=str(it.path),
                 item_kind=kind,
@@ -4861,6 +4940,7 @@ class MainWindow(QMainWindow):
                 self.days_grid_page.open_for_day(
                     event_id, day_number,
                     title=title, date_iso=date_iso,
+                    default_state=self._qs_default_phase_state(),
                 )
         self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
         self.days_grid_page.setFocus()

@@ -395,12 +395,18 @@ class DaysGridPage(QWidget):
         *,
         title: str = "",
         date_iso: str = "",
+        default_state: Optional[str] = None,
     ) -> bool:
         """Open ``event_id`` and render its ``day_number`` grid.
 
         Reuses the spec/32 ``day_grid_cells`` engine (clusters become
         cluster covers, real cluster kinds; videos and flattened items
         are flat cells). Status comes from the live ``phase_state``.
+
+        ``default_state`` overrides the phase-default for un-decided
+        items (e.g. host sets ``"picked"`` during a Quick Sweep session
+        so the QS default rules instead of ``pick_default_state``).
+        Defaults to the configured ``{phase}_default_state``.
 
         Returns ``True`` on success. On a gateway open failure the
         page is left in its previous state and ``False`` is returned;
@@ -417,7 +423,10 @@ class DaysGridPage(QWidget):
             return False
         self._eg = eg
         self._event_id = event_id
-        self._phase_default = default_state_for(self.gateway.settings, self._phase)
+        self._phase_default = (
+            default_state if default_state in (STATE_PICKED, STATE_SKIPPED)
+            else default_state_for(self.gateway.settings, self._phase)
+        )
         self._day_number = day_number
         self._day_title = title or ""
         self._day_date = date_iso or ""
@@ -1075,34 +1084,44 @@ class DaysGridPage(QWidget):
         ``thumb_cache.ensure_thumb`` extracts a frame at 1 s and caches
         it. Same pipeline the legacy PickPage uses — the engines are
         reused, not rewritten (spec/70 §7).
+
+        Paths mode (standalone Quick Sweep — no gateway, no sha256):
+        decode the source AT the tile size (JPEG DCT-domain downscale,
+        ~3× faster than full decode + scale). Videos in paths mode
+        return ``None`` — there is no event ``.cache/`` to materialise
+        a frame thumb into; the Thumb widget paints its placeholder.
         """
         from mira.ui.media.image_loader import load_pixmap
 
         path = item._path
-        if path is None or self._eg is None:
+        if path is None:
             return None
         try:
+            if self._eg is not None:
+                if item.item_kind == "video":
+                    from core.thumb_cache import ensure_thumb
+                    thumb_path = ensure_thumb(
+                        event_root=Path(self._eg.event_root),
+                        source_video=path,
+                        source_rel_path=path.relative_to(
+                            Path(self._eg.event_root)),
+                        item_id="daysgrid",
+                        position_ms=1000,
+                        fallback_position_ms=0,
+                    )
+                    return load_pixmap(thumb_path)
+                if item._sha256:
+                    from core.photo_thumb_cache import ensure_photo_thumb
+                    thumb_path = ensure_photo_thumb(
+                        event_root=Path(self._eg.event_root),
+                        source_path=path,
+                        sha256=item._sha256,
+                    )
+                    return load_pixmap(thumb_path)
+                return load_pixmap(path)
             if item.item_kind == "video":
-                from core.thumb_cache import ensure_thumb
-                thumb_path = ensure_thumb(
-                    event_root=Path(self._eg.event_root),
-                    source_video=path,
-                    source_rel_path=path.relative_to(
-                        Path(self._eg.event_root)),
-                    item_id="daysgrid",
-                    position_ms=1000,
-                    fallback_position_ms=0,
-                )
-                return load_pixmap(thumb_path)
-            if item._sha256:
-                from core.photo_thumb_cache import ensure_photo_thumb
-                thumb_path = ensure_photo_thumb(
-                    event_root=Path(self._eg.event_root),
-                    source_path=path,
-                    sha256=item._sha256,
-                )
-                return load_pixmap(thumb_path)
-            return load_pixmap(path)
+                return None
+            return load_pixmap(path, _TILE_SIZE)
         except Exception:                                          # noqa: BLE001
             log.warning(
                 "thumbnail decode failed for %s", path, exc_info=True)

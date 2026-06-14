@@ -2935,19 +2935,34 @@ class MainWindow(QMainWindow):
         )
 
     def _run_quick_sweep_first(self, *, scan, edited_rows):
-        """Host :class:`QuickSweepPage` modally over the about-to-be-
-        imported set (Nelson 2026-06-08 — Collect ingest-mode gate).
+        """Host the redesigned Quick Sweep route — DaysListsPage →
+        DaysGridPage → QuickSweepPage viewer — modally over the about-
+        to-be-imported set (Nelson 2026-06-08 — Collect ingest-mode
+        gate; Nelson 2026-06-14 — wizard QS now uses the same days-
+        list + days-grid route the standalone path does, instead of
+        the flat leaf-only modal).
 
         Builds :class:`SourceItem` instances from the scan's per-photo
         records, filtered to **checked days only** + the quarantine
         bucket (untimestamped files always travel through so the user
-        can still triage them). Returns the kept paths set, or ``None``
-        if the user backed out / pressed Esc.
+        can still triage them). Returns the kept paths set, or
+        ``None`` if the user backed out without confirming the import.
         """
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+        from PyQt6.QtWidgets import (
+            QDialog, QMessageBox, QStackedWidget, QVBoxLayout,
+        )
+        from core.cull_state import (
+            STATE_CANDIDATE as _C,
+            STATE_DISCARDED as _D,
+            STATE_KEPT as _K,
+        )
         from core.fresh_source import SourceItem
+        from mira.picked.quick_sweep_buckets import build_fast_days
+        from mira.ui.pages.days_grid_page import DaysGridPage
+        from mira.ui.pages.days_lists_page import DaysListsPage
         from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
+        # ── Items: checked days only + quarantine ─────────────────
         checked_dates = {r.date for r in edited_rows if r.checked}
         items = []
         for rec in scan.per_photo_records:
@@ -2955,7 +2970,6 @@ class MainWindow(QMainWindow):
                 scan.day_date_lookup.get(rec.day_number)
                 if rec.day_number is not None else None
             )
-            # Include checked-day photos + quarantine (day_number is None).
             if day_date is not None and day_date not in checked_dates:
                 continue
             items.append(SourceItem(
@@ -2966,26 +2980,161 @@ class MainWindow(QMainWindow):
         if not items:
             return set()
 
+        # ── Ledger pre-populated with the QS default ──────────────
+        default_state = self._qs_default_legacy_state()
+        state_ledger: dict[Path, str] = {
+            it.path: default_state for it in items
+        }
+        days = build_fast_days(
+            items, state_for=lambda p: state_ledger.get(p, default_state))
+        if not days:
+            return set()
+
+        items_by_day: dict[int, list] = {}
+        for day in days:
+            wanted = {
+                Path(ci.item_id)
+                for b in day.buckets for ci in b.items
+            }
+            items_by_day[day.day_number] = [
+                it for it in items if it.path in wanted
+            ]
+
+        # The QS session helpers (`_qs_build_day_snapshots`,
+        # `_qs_build_grid_items`) read from ``self._quick_sweep``. The
+        # modal borrows that contract for the duration of ``exec()``;
+        # cleared in the ``finally`` even on an exception so a partial
+        # wizard QS never leaves a phantom session behind.
+        prior_session = self._quick_sweep
+        self._quick_sweep = {
+            "mode": "wizard",
+            "dest": None,
+            "event_id": None,
+            "state": state_ledger,
+            "default": default_state,
+            "items_by_day": items_by_day,
+            "days": days,
+            "current_day": None,
+            "current_day_items": [],
+        }
+
+        # ── Modal host with internal 3-page stack ────────────────
         host = QDialog(self)
         host.setWindowTitle(tr("Quick Sweep — pick what to import"))
         host.setModal(True)
-        host.resize(1100, 740)
+        host.resize(1280, 800)
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
-        page = QuickSweepPage()
-        layout.addWidget(page)
+        stack = QStackedWidget()
+        layout.addWidget(stack)
+
+        # Paths-mode pages: no gateway, no main-window signal wiring —
+        # the closures below own the navigation locally.
+        lists_page = DaysListsPage()
+        grid_page = DaysGridPage()
+        viewer_page = QuickSweepPage()
+        stack.addWidget(lists_page)
+        stack.addWidget(grid_page)
+        stack.addWidget(viewer_page)
 
         result = {"kept": None}
-        page.saved.connect(
-            lambda kept: (result.__setitem__("kept", set(kept)), host.accept())
-        )
-        page.cancelled.connect(
-            lambda: (result.__setitem__("kept", None), host.reject())
-        )
-        if not page.load(items):
-            return set()
-        page.setFocus()
-        host.exec()
+
+        def render_lists() -> None:
+            snapshots = self._qs_build_day_snapshots(days)
+            lists_page.setEventForPreview(
+                tr("Quick Sweep — {n} day(s)").replace(
+                    "{n}", str(len(days))),
+                snapshots,
+            )
+            stack.setCurrentWidget(lists_page)
+            lists_page.setFocus()
+
+        def open_day(day_number: int) -> None:
+            day_items = items_by_day.get(day_number, [])
+            self._quick_sweep["current_day"] = day_number
+            self._quick_sweep["current_day_items"] = day_items
+            snapshots = self._qs_build_day_snapshots(days)
+            snap = next(
+                (s for s in snapshots if s.day_number == day_number),
+                None,
+            )
+            title = snap.title if snap is not None else f"Day {day_number}"
+            date_iso = snap.date_iso if snap is not None else ""
+            grid_items = self._qs_build_grid_items(day_items)
+            grid_page.setDay(day_number, title, date_iso, grid_items)
+            stack.setCurrentWidget(grid_page)
+            grid_page.setFocus()
+
+        def open_viewer(item_id: str) -> None:
+            day_items = self._quick_sweep["current_day_items"]
+            if not day_items:
+                return
+            target = Path(item_id)
+            start_idx = next(
+                (i for i, it in enumerate(day_items)
+                 if it.path == target),
+                0,
+            )
+            viewer_page.load(
+                day_items, start_index=start_idx, state=state_ledger)
+            stack.setCurrentWidget(viewer_page)
+            viewer_page.setFocus()
+
+        def back_to_grid() -> None:
+            day_number = self._quick_sweep.get("current_day")
+            if day_number is not None:
+                open_day(day_number)
+            else:
+                render_lists()
+
+        def finalize() -> None:
+            kept_set = {
+                p for p, s in state_ledger.items() if s in (_K, _C)
+            }
+            skipped = sum(
+                1 for s in state_ledger.values() if s == _D)
+            total = len(state_ledger)
+            box = QMessageBox(host)
+            box.setIcon(QMessageBox.Icon.NoIcon)
+            box.setWindowTitle(tr("Finish Quick Sweep"))
+            box.setText(tr("Quick Sweep — ready to import."))
+            bits = [
+                tr("{n} of {total} item(s) will be imported.")
+                .replace("{n}", str(len(kept_set)))
+                .replace("{total}", str(total)),
+            ]
+            if skipped:
+                bits.append(
+                    tr("{n} discarded item(s) will not be imported.")
+                    .replace("{n}", str(skipped)))
+            bits.append("")
+            bits.append(tr("Import and finish?"))
+            box.setInformativeText("\n".join(bits))
+            import_btn = box.addButton(
+                tr("Import and finish"),
+                QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(
+                tr("Stay in Quick Sweep"),
+                QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(import_btn)
+            box.exec()
+            if box.clickedButton() is import_btn:
+                result["kept"] = kept_set
+                host.accept()
+
+        lists_page.back_requested.connect(finalize)
+        lists_page.day_activated.connect(open_day)
+        grid_page.back_requested.connect(render_lists)
+        grid_page.item_activated.connect(open_viewer)
+        viewer_page.saved.connect(lambda _kept: back_to_grid())
+        viewer_page.cancelled.connect(back_to_grid)
+
+        try:
+            render_lists()
+            host.exec()
+        finally:
+            self._quick_sweep = prior_session
+
         return result["kept"]
 
     def _run_collect_copy_all(

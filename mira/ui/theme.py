@@ -270,6 +270,13 @@ def apply_theme(
 
     install_clickable_cursor_filter(app)
 
+    # Painted widgets (Thumb, StageProgress, Donut, Card shadows, MiraMark /
+    # _Wordmark, the cross-event glyph, …) pick their palette colours from
+    # QApplication.property("theme"). It must be set here or those widgets
+    # render dark regardless of mode — the bug behind "the logo text stays
+    # white in light theme". Set BEFORE the repaint nudge below.
+    app.setProperty("theme", mode)
+
     resolved = resolve_theme_colors(palette_name, mode)
     icon_path = (
         Path(__file__).resolve().parents[2] / "assets" / "icons" / "check.svg"
@@ -312,4 +319,12 @@ def apply_theme(
         + "\n\n/* ===== Mira design-system roles (redesign.qss) ===== */\n\n"
         + redesign_qss
     )
+
+    # QSS-styled widgets restyle automatically on setStyleSheet, but custom
+    # paintEvent widgets do not — nudge every widget to repaint so painted
+    # colours follow the new theme immediately (otherwise a light/dark toggle
+    # leaves the logo, thumbs, progress bars, etc. showing the old colours).
+    for widget in app.allWidgets():
+        widget.update()
+
     log.info("Applied theme: mode=%s (Mira design system)", mode)

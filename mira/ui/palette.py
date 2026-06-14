@@ -34,6 +34,8 @@ PALETTE: dict[str, dict[str, str]] = {
         "line": "#262b38", "accent": "#7c6cff", "accent_soft": "#211f3a",
         "green": "#34d399", "amber": "#fbbf24", "red": "#ef4444",
         "pink": "#ff5da2", "blue": "#5b8def", "track": "#222734",
+        # top-corner glow for the app background radial (mockup --bg-grad)
+        "bg_glow": "#1a1f2e",
         # photo-state borders — FIXED, never re-map (design-system §5a)
         "picked": "#34d399", "skipped": "#ef4444", "compare": "#fb923c",
         "mixed": "#fbd335",  # cluster cover: some picked + some skipped
@@ -45,6 +47,7 @@ PALETTE: dict[str, dict[str, str]] = {
         "line": "#e6e9f0", "accent": "#6a5cff", "accent_soft": "#eceaff",
         "green": "#16a34a", "amber": "#d97706", "red": "#dc2626",
         "pink": "#e0468a", "blue": "#3b82f6", "track": "#eceef4",
+        "bg_glow": "#ffffff",
         "picked": "#16a34a", "skipped": "#dc2626", "compare": "#ea7317",
         "mixed": "#d4a017",
         "shadow_alpha": "28",

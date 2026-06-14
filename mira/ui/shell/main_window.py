@@ -94,6 +94,12 @@ class MainWindow(QMainWindow):
         self.resize(1180, 760)
 
         central = QWidget()
+        # Styled root — carries the redesign's radial background glow
+        # (#RedesignRoot in redesign.qss). WA_StyledBackground makes a plain
+        # QWidget actually paint its QSS background.
+        from PyQt6.QtCore import Qt as _Qt
+        central.setObjectName("RedesignRoot")
+        central.setAttribute(_Qt.WidgetAttribute.WA_StyledBackground, True)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -172,6 +178,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
         self._build_menu_bar()
+        self._install_title_bar()
 
         self.events_page.event_activated.connect(self._open_event)
         self.events_page.event_info_requested.connect(self._open_event_info_dialog)
@@ -504,6 +511,37 @@ class MainWindow(QMainWindow):
 
         # Apply the initial surface (no event open → events_list).
         self._refresh_menu_state()
+
+    def _install_title_bar(self) -> None:
+        """Wrap the native menu bar in the redesign TitleBar (Mira logo at
+        left, the existing menu in the middle, ThemeToggle at right) — one
+        strip, matching surface-01's titlebar — without disturbing the
+        working QMenuBar (it keeps every action, shortcut, and surface-aware
+        visibility rule). Installed via ``QMainWindow.setMenuWidget``."""
+        from mira.ui.design.title_bar import TitleBar
+
+        menu_bar = self.menuBar()
+        self._title_bar = TitleBar(menu_bar)
+        self.setMenuWidget(self._title_bar)
+        self._title_bar.theme_toggle.themeChanged.connect(self._on_theme_toggled)
+
+    def _on_theme_toggled(self, mode: str) -> None:
+        """TitleBar ThemeToggle → apply the theme live + best-effort persist
+        to settings so it sticks across restarts."""
+        from PyQt6.QtWidgets import QApplication
+        from mira.ui.theme import apply_theme
+
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, mode)
+        try:
+            repo = self.gateway.settings
+            settings = repo.load()
+            if hasattr(settings, "theme"):
+                settings.theme = mode
+                repo.save(settings)
+        except Exception:                                       # noqa: BLE001
+            log.exception("Could not persist theme toggle")
 
     def _add_menu_action(
         self, menu, label: str, handler, *,

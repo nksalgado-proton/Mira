@@ -136,18 +136,16 @@ class CrossEventCutsBand(QFrame):
         h.addWidget(btn)
 
     def _apply_shadow(self) -> None:
+        # Match the mockup .cec shadow: 0 10px 30px rgba(accent, .18) — a soft
+        # accent glow, NOT the heavy near-opaque drop the old shadow_alpha
+        # (110) produced.
         eff = QGraphicsDropShadowEffect(self)
-        eff.setBlurRadius(34)
-        eff.setOffset(0, 12)
+        eff.setBlurRadius(30)
+        eff.setOffset(0, 10)
         app = QApplication.instance()
         mode = (app.property("theme") if app else None) or "dark"
-        try:
-            alpha = int(PALETTE[mode]["shadow_alpha"])
-        except (KeyError, ValueError):
-            alpha = 90
-        # Accent-tinted shadow per the spec
         accent = QColor(PALETTE[mode]["accent"])
-        accent.setAlpha(alpha)
+        accent.setAlpha(46)  # ≈ .18 opacity
         eff.setColor(accent)
         self.setGraphicsEffect(eff)
 

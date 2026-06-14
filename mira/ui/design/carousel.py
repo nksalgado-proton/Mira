@@ -11,8 +11,15 @@ KeepAspectRatio-scaled to the carousel's current size.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,6 +29,95 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class _Slide(QWidget):
+    """One carousel frame: a blurred-fill backdrop so any aspect ratio fills
+    the slot without black bars, with the full photo contained on top
+    (KeepAspectRatio, never cropped). Same treatment the Days Grid Thumb uses,
+    plus the mockup's 14px rounded corners. Repaints itself on resize, so no
+    manual rescale is needed."""
+
+    _RADIUS = 14.0
+
+    def __init__(self, pixmap: QPixmap, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pixmap = pixmap
+        self._tiny: QPixmap | None = None
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+    def _backdrop_src(self) -> QPixmap | None:
+        """A tiny darkened copy (cheap blur approximation), size-independent so
+        it's computed once and upscaled per paint."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return None
+        if self._tiny is not None:
+            return self._tiny
+        small = self._pixmap.scaled(
+            48, 48,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        img = small.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        p = QPainter(img)
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_SourceAtop
+        )
+        p.fillRect(img.rect(), QColor(0, 0, 0, 120))
+        p.end()
+        self._tiny = QPixmap.fromImage(img)
+        return self._tiny
+
+    def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        rect = QRectF(0, 0, self.width(), self.height())
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, self._RADIUS, self._RADIUS)
+        painter.setClipPath(clip)
+
+        # Blurred-fill backdrop covering the whole slot.
+        tiny = self._backdrop_src()
+        if tiny is not None:
+            cover = tiny.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            bx = (self.width() - cover.width()) // 2
+            by = (self.height() - cover.height()) // 2
+            painter.drawPixmap(bx, by, cover)
+
+        # Contained photo — full, uncropped, inset by a margin so it floats on
+        # the backdrop and its hairline frame never touches the slot edges.
+        pad = 10
+        avail = QSize(
+            max(1, self.width() - pad * 2),
+            max(1, self.height() - pad * 2),
+        )
+        scaled = self._pixmap.scaled(
+            avail,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+
+        # Hairline frame around the photo.
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, 50), 1))
+        frame = QRectF(
+            x + 0.5, y + 0.5, scaled.width() - 1.0, scaled.height() - 1.0
+        )
+        painter.drawRoundedRect(frame, 3.0, 3.0)
+        painter.end()
 
 
 class Carousel(QWidget):
@@ -131,11 +227,7 @@ class Carousel(QWidget):
             self._stack.addWidget(ph)
             return
         for pm in self._pixmaps:
-            label = QLabel()
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setPixmap(pm)
-            label.setScaledContents(False)
-            self._stack.addWidget(label)
+            self._stack.addWidget(_Slide(pm))
 
     def setIndex(self, i: int) -> None:
         if not self._pixmaps:

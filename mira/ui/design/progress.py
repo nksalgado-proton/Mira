@@ -20,7 +20,7 @@ follow theme toggles without any QSS resync.
 from __future__ import annotations
 
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 from mira.ui.palette import PALETTE
@@ -97,7 +97,15 @@ class StageProgress(QWidget):
                         _RADIUS + spread, _RADIUS + spread,
                     )
 
-            painter.setBrush(chunk)
+            # Horizontal gradient fill (base → slightly darker) to match the
+            # mockup's `done`/`prog` gradient bars. Theme-safe: the darker stop
+            # is derived from the chunk colour so it works in light + dark.
+            grad = QLinearGradient(
+                chunk_rect.left(), 0.0, chunk_rect.right(), 0.0
+            )
+            grad.setColorAt(0.0, chunk)
+            grad.setColorAt(1.0, chunk.darker(118))
+            painter.setBrush(grad)
             painter.drawRoundedRect(chunk_rect, _RADIUS, _RADIUS)
 
         painter.end()

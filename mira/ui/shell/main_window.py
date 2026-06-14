@@ -1954,61 +1954,29 @@ class MainWindow(QMainWindow):
         self._on_days_lists_day_activated(days[idx])
 
     def _on_days_grid_item_activated(self, item_id: str) -> None:
-        """Single-photo / video click on the Days Grid bridges to the
-        legacy Picker (the legacy DayGridView is opened just so the
-        photo surface can pick up the cell context — Surface 07 next
-        replaces this hop with the redesigned Picker shell).
-        """
+        """Single-photo / video click on the Days Grid bridges into the
+        legacy photo / video surface via :meth:`PickPage.open_to_item`.
+
+        ``open_to_item`` skips the "Ready to pick" resume summary and
+        the legacy days/clusters compute (the new grid owns those
+        levels) and routes straight to the photo / video surface.
+        Back from that surface emits :sig:`closed` which routes us
+        right back to the Days Grid via the bridge flag in
+        :meth:`_on_select_closed`. Surface 07 next replaces this hop
+        with the redesigned Picker shell."""
         event_id = self.days_grid_page.current_event_id()
         day_number = self.days_grid_page.current_day_number()
         if event_id is None:
             return
-        if not self.pick_page.open_event(event_id):
+        if not self.pick_page.open_to_item(event_id, day_number, item_id):
+            log.warning(
+                "open_to_item(%s, %s, %s) failed",
+                event_id, day_number, item_id)
             return
         # Mark the bridge as active so PickPage.closed returns to the
-        # Days Grid (refreshed) rather than to Phases. Cleared when the
-        # user actually lands on the Days Grid via _on_select_closed.
+        # Days Grid (refreshed). Cleared by _on_select_closed.
         self._days_grid_bridge_active = True
-        # Run the legacy ``_open_day`` synchronously so we can find the
-        # cell index that matches ``item_id`` and call the legacy
-        # activation handler in the same turn. The "Preparing the
-        # page…" overlay is irrelevant here — the user is mid-click,
-        # not staring at a blank page.
-        was_deferred = self.pick_page._defer_open_work
-        self.pick_page._defer_open_work = False
-        try:
-            self.pick_page._open_day(day_number)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "PickPage._open_day(%s) bridge failed", day_number)
-            self.pick_page._defer_open_work = was_deferred
-            return
-        finally:
-            self.pick_page._defer_open_work = was_deferred
-        # Find the cell whose item_id matches. The legacy engine
-        # returns the same ordered list as day_grid_cells, so the
-        # index is identical to what DaysGridPage rendered (minus
-        # cluster covers, which collapse to their members on the
-        # legacy side — but item clicks are flat items, not clusters).
-        cells = self.pick_page._current_day_cells
-        idx = next(
-            (i for i, c in enumerate(cells) if c.item_id == item_id),
-            None,
-        )
         self.page_stack.show_page(self._SELECT_PAGE_KEY)
-        if idx is None:
-            # The clicked item didn't map onto any cell — leave the
-            # user on the legacy day grid rather than a blank surface.
-            log.warning(
-                "Days Grid bridge: no legacy cell for %s on day %s",
-                item_id, day_number)
-            return
-        try:
-            self.pick_page._on_day_cell_activated(idx)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "Days Grid bridge: legacy cell activation failed for %s",
-                item_id)
 
     def _on_days_lists_new_pass_stub(self) -> None:
         """+ Start a new pass… — out of scope for the route-swap. Logs

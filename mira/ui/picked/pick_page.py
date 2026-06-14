@@ -205,6 +205,13 @@ class PickPage(QWidget):
         # 2026-06-04 → 2026-06-05). Tests set this False to keep the
         # ``_on_day_activated`` → set_cells chain synchronous.
         self._defer_open_work: bool = True
+        # spec/70 Phase 3 — DaysGridPage (Surface 06) bridges single-
+        # item clicks into the photo / video surfaces via
+        # :meth:`open_to_item`. Bridge mode short-circuits Back from
+        # those surfaces straight to :sig:`closed` so the user lands
+        # back on the redesigned Days Grid rather than the legacy
+        # day grid + days panel chain.
+        self._bridge_active: bool = False
 
         # Thumbnail loader (lazy; one widget index → resolved pixmap) +
         # session-level QPixmap cache so day-switch round trips don't re-decode
@@ -417,6 +424,64 @@ class PickPage(QWidget):
         self._stack.setCurrentIndex(self._NAV)
         self.navigator.setFocus()
         self._seed_photo_proxies()
+        return True
+
+    def open_to_item(
+        self, event_id: str, day_number: int, item_id: str,
+    ) -> bool:
+        """Bridge entry from the redesigned :class:`DaysGridPage`
+        (Surface 06). Skips both the "Ready to pick" resume summary
+        and the legacy days/clusters compute (that work lives in the
+        new grid now), opens the gateway, and routes straight to the
+        photo / video surface for ``item_id``.
+
+        Sets :attr:`_bridge_active` so :meth:`_on_photo_back` /
+        :meth:`_on_video_back` emit :sig:`closed` instead of routing
+        to the legacy day grid — Back from a bridged Picker returns
+        to the redesigned Days Grid, not the legacy navigator.
+
+        Returns ``True`` on success. ``False`` leaves the page in a
+        clean state so the host can leave the user on Days Grid."""
+        self._close_gateway()
+        try:
+            self._eg = self.gateway.open_event(event_id)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "open_to_item: cannot open event %s", event_id)
+            return False
+        self._event_id = event_id
+        self._camera_id = None
+        self._phase_default = default_state_for(self.gateway.settings, "pick")
+        self._dirty_days = set()
+        self._current_day_number = day_number
+        self._current_day_label = ""
+        # Bridge mode SHORT-CIRCUITS the legacy days_panel + DayGridView
+        # state — the redesigned grid owns those levels. Photo/video
+        # Back emits ``closed`` so MainWindow returns to the new grid.
+        self._current_day_cells = []
+        self._current_day_cell_idx = None
+        self._bridge_active = True
+        # Whole-event proxy seed mirrors open_event — the new grid
+        # already seeded once if the user landed there first, but the
+        # call is idempotent.
+        self._seed_photo_proxies()
+        # Resolve the item and dispatch by kind.
+        try:
+            item = self._eg.item(item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "open_to_item: gateway.item(%s) failed", item_id)
+            self._close_gateway()
+            self._bridge_active = False
+            return False
+        if item is None or not item.origin_relpath:
+            self._close_gateway()
+            self._bridge_active = False
+            return False
+        if item.kind == "video":
+            self._open_video_item(item_id, came_from=self._DAY_GRID)
+        else:
+            self._open_photo_item(item_id, came_from=self._DAY_GRID)
         return True
 
     def _seed_photo_proxies(self) -> None:
@@ -1288,6 +1353,18 @@ class PickPage(QWidget):
 
     def _on_photo_back(self) -> None:
         """Photo surface → whichever grid we came from."""
+        # spec/70 Phase 3 bridge: when the user entered through
+        # DaysGridPage's single-item handoff (Surface 06 →
+        # ``open_to_item``), Back from the photo surface emits
+        # :sig:`closed` so MainWindow returns to the redesigned Days
+        # Grid — bypassing the legacy day-grid + days-panel chain
+        # that the bridge never populated. The bridge flag is consumed
+        # here so a fresh entry resets to legacy semantics.
+        if self._bridge_active:
+            self._bridge_active = False
+            self._items_touched_in_surface = set()
+            self.closed.emit()
+            return
         # State may have changed in the photo surface — mark dirty so the
         # days panel re-projects on Back from the Day Grid.
         self._mark_current_day_dirty()
@@ -1313,6 +1390,16 @@ class PickPage(QWidget):
         """Video surface → grid we came from (mirrors _on_photo_back).
         The decision was already persisted per cycle (spec/56 — no more
         derive-the-master-from-kept-children on exit)."""
+        # spec/70 Phase 3 bridge — same short-circuit rule as
+        # _on_photo_back. Without this the user lands on the empty
+        # legacy day grid (bridge mode never populated it) after
+        # backing out of a bridged video.
+        if self._bridge_active:
+            self._bridge_active = False
+            self._current_video_item_id = None
+            self._items_touched_in_surface = set()
+            self.closed.emit()
+            return
         self._current_video_item_id = None
         self._mark_current_day_dirty()
         if self._surface_came_from == self._CLUSTER_GRID \

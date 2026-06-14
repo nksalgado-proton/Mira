@@ -69,13 +69,20 @@ def main_window(qapp, tmp_path, monkeypatch):
 
 
 def _top_level_titles(w: MainWindow) -> list[str]:
-    """Titles of every visible top-level menu, in left-to-right order."""
-    out: list[str] = []
-    for a in w.menuBar().actions():
-        if a.isVisible() and a.menu() is not None:
-            # Strip Qt's '&' mnemonic prefix for readability.
-            out.append(a.text().replace("&", ""))
-    return out
+    """Titles of every visible top-level menu, in declared (left-to-right) order.
+
+    Reads ``w._menus`` directly instead of ``w.menuBar().actions()``:
+    once ``MainWindow`` installs the redesign TitleBar via
+    ``setMenuWidget`` (see ``_install_title_bar``), the native menu bar
+    no longer surfaces the menu actions, but the menus themselves stay
+    alive on the dict and ``_refresh_menu_state`` continues to drive
+    their ``menuAction().setVisible(...)`` per the empty-children rule.
+    """
+    return [
+        menu.title().replace("&", "")
+        for menu in w._menus.values()
+        if menu.menuAction().isVisible()
+    ]
 
 
 def _action_labels(menu_name: str, w: MainWindow) -> list[str]:
@@ -108,15 +115,22 @@ def test_top_level_menus_are_the_designed_seven(main_window):
         assert old not in titles, f"old top-level still present: {old}"
 
 
-def test_per_event_surface_unhides_collect_and_share(main_window):
-    """When an event is open, Collect + Share top-levels appear."""
+def test_per_event_surface_unhides_collect(main_window):
+    """When an event is open, the Collect top-level appears (it's
+    empty / hidden on the events list).
+
+    Share is NOT asserted here — spec/66 made it a closed-event STATE,
+    so on an open event the empty-children rule keeps it hidden.
+    ``test_share_menu_visible_on_closed_event`` covers the closed
+    branch; ``test_share_menu_hidden_when_event_open`` covers the
+    open branch."""
     main_window._current_event_id = "fake-evt-id"   # simulate event open
     # Stub the closed-state probe so we don't hit a real event.db.
     with patch.object(MainWindow, "_event_is_closed_now", return_value=False):
         main_window._refresh_menu_state()
         titles = _top_level_titles(main_window)
     assert "Collect" in titles
-    assert "Share" in titles
+    assert "Share" not in titles
 
 
 # ─── App menu surface-dependent children ────────────────────────────────────

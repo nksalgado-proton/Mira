@@ -1,19 +1,19 @@
 """spec/58 §4 — the wizard refresh, pinned.
 
-Two regressions guarded: (1) no stale "Mira" app name anywhere in
-the wizard sources (the product is Mira; the lowercase package
-name and the literal ``%LOCALAPPDATA%/Mira`` data-dir path are not
-app-name prose and live outside this tree's strings); (2) every QSS role
-the wizard references exists in BOTH themes (four rendered unstyled for
-weeks before 2026-06-10).
+Guards every QSS role the wizard references exists in BOTH themes
+(four rendered unstyled for weeks before 2026-06-10).
+
+(The companion "no stale 'Mira' app name" test was retired on
+2026-06-14 — the 2026-06-08 Miracraft→Mira fork made Mira the actual
+product name, so every wizard string that names the product is now
+correct. If a future rename creates a NEW stale name to guard against,
+add a fresh test that targets that specific old name.)
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-WIZARD_DIR = REPO / "mira" / "ui" / "wizard"
 THEMES = (
     REPO / "assets" / "themes" / "light.qss",
     REPO / "assets" / "themes" / "dark.qss",
@@ -25,16 +25,6 @@ WIZARD_ROLES = (
     "WizardQuestion", "WizardHint",
     "BodyText", "WizardRadio", "WizardRadioHint", "WizardWarning",
 )
-
-
-def test_no_stale_app_name_in_wizard_sources():
-    stale = []
-    for path in sorted(WIZARD_DIR.glob("*.py")):
-        for n, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1):
-            if re.search(r"\bMira\b", line):
-                stale.append(f"{path.name}:{n}: {line.strip()}")
-    assert not stale, "stale 'Mira' app name:\n" + "\n".join(stale)
 
 
 def test_wizard_qss_roles_exist_in_both_themes():

@@ -33,8 +33,8 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Tuple
 
-from PyQt6.QtCore import QEvent, QObject, Qt
-from PyQt6.QtGui import QCursor
+from PyQt6.QtCore import QEvent, QObject, QRect, QSize, Qt
+from PyQt6.QtGui import QColor, QCursor, QIcon, QPainter
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -50,6 +50,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -64,7 +65,9 @@ from mira.ui.base.country_picker import (
 )
 from mira.ui.base.tables import make_columns_resizable
 from mira.ui.base.tz_picker import TzPicker
+from mira.ui.design import GLYPH_CROSS, GLYPH_EVENT, tinted_svg_pixmap
 from mira.ui.i18n import tr
+from mira.ui.palette import PALETTE
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +97,39 @@ TOUCH_COUNTRY = "country"
 TOUCH_TZ = "tz"
 TOUCH_LOC = "location"
 TOUCH_DESC = "description"
+
+
+def _palette_mode() -> str:
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
+
+
+class _SelectedRowEdgeDelegate(QStyledItemDelegate):
+    """Paint a 3px accent left-edge on the first column of every selected
+    row. The mockup carries it via `tbody tr.sel td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent); }`; Qt QSS can't target "first
+    column of selected row" cleanly, so this delegate handles it instead.
+    The row-wide accent_soft wash already comes from
+    `QTableWidget::item:selected` in the QSS — this just lays the edge on
+    top so the selection has the redesigned visual cleft.
+    """
+
+    _EDGE_WIDTH = 3
+
+    def paint(self, painter, option, index):  # noqa: D401, N802 — Qt override
+        super().paint(painter, option, index)
+        if index.column() != 0:
+            return
+        selected = bool(option.state & option.state.State_Selected)
+        if not selected:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        accent = QColor(PALETTE[_palette_mode()]["accent"])
+        rect = QRect(option.rect)
+        rect.setWidth(self._EDGE_WIDTH)
+        painter.fillRect(rect, accent)
+        painter.restore()
 
 
 class _WheelToTableFilter(QObject):
@@ -255,6 +291,11 @@ class EventDaysTableDialog(QDialog):
         body_layout.setContentsMargins(22, 16, 22, 16)
         body_layout.setSpacing(10)
         self._table = QTableWidget(0, COL_COUNT)
+        self._table.setObjectName("EventDaysTable")
+        # 3px accent left-edge on the selected row (mockup .sel td:first-child).
+        # Kept on the instance so Qt doesn't garbage-collect it.
+        self._selection_delegate = _SelectedRowEdgeDelegate(self._table)
+        self._table.setItemDelegate(self._selection_delegate)
         self._configure_table()
         body_layout.addWidget(self._table, stretch=1)
         outer.addWidget(body, stretch=1)
@@ -327,24 +368,32 @@ class EventDaysTableDialog(QDialog):
     def _divider() -> QFrame:
         d = QFrame()
         d.setFrameShape(QFrame.Shape.HLine)
+        line = PALETTE[_palette_mode()]["line"]
         d.setStyleSheet(
-            "background: #262b38; max-height: 1px; min-height: 1px;"
+            f"background: {line}; max-height: 1px; min-height: 1px;"
         )
         return d
 
     def _build_header_bar(self) -> QWidget:
         host = QWidget()
         h = QHBoxLayout(host)
-        h.setContentsMargins(18, 12, 12, 12)
+        h.setContentsMargins(18, 14, 14, 14)
         h.setSpacing(12)
-        # Accent calendar icon tile
-        tile = QLabel("📅")
-        tile.setFixedSize(36, 36)
+        p = PALETTE[_palette_mode()]
+        # Accent calendar icon tile — line-icon family event glyph (the
+        # spec/65 §3.2 / §2.1 fix that landed for Surface 02 also applies
+        # here: Unicode 📅 reads as a colour emoji + the inline #211f3a
+        # broke in light mode). Theme-aware tile colours so the tile reads
+        # right against both surfaces.
+        tile = QLabel()
+        tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tile.setStyleSheet(
-            "background: #211f3a; color: #7c6cff;"
-            " border: 1px solid #7c6cff; border-radius: 10px;"
-            " font-size: 18px;"
+            f"background: {p['accent_soft']}; color: {p['accent']};"
+            " border: none; border-radius: 9px;"
+        )
+        tile.setPixmap(
+            tinted_svg_pixmap(GLYPH_EVENT, 18, QColor(p["accent"]))
         )
         h.addWidget(tile)
 
@@ -364,18 +413,26 @@ class EventDaysTableDialog(QDialog):
         text_col.addWidget(hint)
         h.addLayout(text_col, 1)
 
-        close = QPushButton("✕")
+        # Close X — line-icon cross.svg in a 9px squircle (mockup .modal-head
+        # .x). Same fix as Surface 02: Unicode ✕ was invisible in both
+        # themes; rendering via QIcon tints correctly per theme.
+        close = QPushButton()
         close.setObjectName("DialogClose")
         close.setFixedSize(30, 30)
+        close.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_CROSS, 14, QColor(p["ink_soft"]))
+        ))
+        close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setToolTip(tr("Cancel and close"))
         close.setStyleSheet(
             "QPushButton#DialogClose {"
-            " background: transparent; color: #8b94a7;"
-            " border: 1px solid #262b38; border-radius: 15px;"
-            " font-size: 14px; font-weight: 700;"
+            f" background: transparent;"
+            f" border: 1px solid {p['line']}; border-radius: 9px;"
             "}"
-            "QPushButton#DialogClose:hover { color: #eef1f7; border-color: #7c6cff; }"
+            "QPushButton#DialogClose:hover {"
+            f" border-color: {p['accent']};"
+            "}"
         )
         close.clicked.connect(self.reject)
         h.addWidget(close)
@@ -508,12 +565,15 @@ class EventDaysTableDialog(QDialog):
     def _make_include_cell(self, row: ScanDayRow) -> QWidget:
         """Checkbox + ISO date label. The checkbox text IS the date, so
         the row identity is immediately readable next to the include
-        affordance — same UX as the legacy PlanDialog."""
+        affordance — same UX as the legacy PlanDialog. ObjectName picks
+        up the redesigned 18px accent-fill check tile (QSS rules in
+        redesign.qss) instead of the legacy 14px checkbox."""
         cell = QWidget()
         lay = QHBoxLayout(cell)
         lay.setContentsMargins(8, 2, 8, 2)
-        lay.setSpacing(6)
+        lay.setSpacing(8)
         box = QCheckBox(row.date.isoformat())
+        box.setObjectName("DaysTableCheck")
         box.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         box.setChecked(bool(row.checked))
         # Surface 04 footer count — update on every include toggle.
@@ -543,6 +603,10 @@ class EventDaysTableDialog(QDialog):
         self, initial_code: str, row_idx: int,
     ) -> QComboBox:
         combo = make_single_country_combo(initial_code or None)
+        # Surface 04 redesigned cell chrome (#DaysCellSelect) — gives the
+        # combo the card2 / accent-focus styling + the Card-styled popup
+        # the mockup carries instead of Qt-native.
+        combo.setObjectName("DaysCellSelect")
         combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         combo.installEventFilter(self._wheel_filter)
         combo.currentIndexChanged.connect(
@@ -556,6 +620,10 @@ class EventDaysTableDialog(QDialog):
             tz_minutes / 60.0 if tz_minutes is not None else None
         )
         picker = TzPicker(initial)
+        # TzPicker subclasses QComboBox + already carries its own
+        # objectName; ride on the days-cell select rule so the per-row TZ
+        # field matches the country combo's redesigned chrome.
+        picker.setObjectName("DaysCellSelect")
         picker.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         picker.installEventFilter(self._wheel_filter)
         picker.valueChanged.connect(
@@ -566,6 +634,7 @@ class EventDaysTableDialog(QDialog):
         self, initial: str, kind: str, row_idx: int,
     ) -> QLineEdit:
         editor = QLineEdit(initial or "")
+        editor.setObjectName("DaysCellInput")
         if kind == TOUCH_LOC:
             editor.setPlaceholderText(tr("e.g. Lisbon, Portugal"))
         else:

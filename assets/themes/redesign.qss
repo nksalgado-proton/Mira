@@ -161,3 +161,64 @@ QLineEdit#SearchField               { background: {card2}; color: {ink}; border:
                                       border-radius: {radius_md}px; padding: 8px 12px 8px 34px;
                                       min-height: 22px; }
 QLineEdit#SearchField:focus         { border: 1px solid {accent}; }
+
+/* ---- Event Days Table (Surface 04) — themed chrome that overrides the
+ *      legacy QTableWidget rules in dark.qss/light.qss. The legacy theme
+ *      tinted the header in accent text on accent_subtle; the redesign
+ *      wants card2 + ink_soft Micro-style caps + a subtle accent-soft
+ *      selection wash. The 3px accent left-edge on the selected row is
+ *      painted by EventDaysTableSelectionDelegate (Qt QSS can't target
+ *      "first column of selected row" cleanly). */
+QTableWidget#EventDaysTable {
+    background: {card}; color: {ink}; gridline-color: transparent;
+    border: 1px solid {line}; border-radius: {radius_md}px;
+    selection-background-color: {accent_soft};
+    selection-color: {ink}; alternate-background-color: transparent; }
+QTableWidget#EventDaysTable::item {
+    padding: 6px 10px; border-bottom: 1px solid {line}; }
+QTableWidget#EventDaysTable::item:hover {
+    background: {accent_soft}; }
+QTableWidget#EventDaysTable::item:selected {
+    background: {accent_soft}; color: {ink}; }
+QTableWidget#EventDaysTable QHeaderView::section {
+    background: {card2}; color: {ink_soft};
+    font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+    text-transform: uppercase;
+    padding: 10px 12px; border: none;
+    border-bottom: 1px solid {line};
+    border-right: 1px solid {line}; }
+QTableWidget#EventDaysTable QHeaderView::section:last { border-right: none; }
+QTableWidget#EventDaysTable QTableCornerButton::section {
+    background: {card2}; border: none; border-bottom: 1px solid {line}; }
+
+/* Custom days-table checkbox — bumped to the mockup's 20px tile + 6px
+ * radius + accent fill on :checked. The check tick comes from the
+ * legacy ``QCheckBox::indicator:checked`` rule's ``image:`` (it knows
+ * the SVG URL); this rule only redraws the tile itself. */
+QCheckBox#DaysTableCheck::indicator {
+    width: 18px; height: 18px;
+    border: 1px solid {line}; background: {card2}; border-radius: 6px; }
+QCheckBox#DaysTableCheck::indicator:hover { border-color: {accent}; }
+QCheckBox#DaysTableCheck::indicator:checked {
+    background: {accent}; border-color: {accent}; }
+
+/* In-cell text editor / select used by Surface 04 day rows — bumps from
+ * the legacy line-edit chrome to the redesign card2 / accent-focus look,
+ * but smaller padding so it fits inside the row height. */
+QLineEdit#DaysCellInput,
+QComboBox#DaysCellSelect {
+    background: {card2}; color: {ink}; border: 1px solid {line};
+    border-radius: 8px; padding: 6px 9px; min-height: 18px; }
+QLineEdit#DaysCellInput:focus,
+QComboBox#DaysCellSelect:focus { border-color: {accent}; }
+QComboBox#DaysCellSelect::drop-down { border: none; width: 20px; }
+QComboBox#DaysCellSelect QAbstractItemView {
+    background: {card}; color: {ink};
+    border: 1px solid {line}; border-radius: {radius_md}px;
+    padding: 4px; outline: none; }
+QComboBox#DaysCellSelect QAbstractItemView::item {
+    background: transparent; color: {ink};
+    padding: 7px 11px; border-radius: {radius_sm}px; }
+QComboBox#DaysCellSelect QAbstractItemView::item:hover,
+QComboBox#DaysCellSelect QAbstractItemView::item:selected {
+    background: {accent_soft}; color: {accent}; }

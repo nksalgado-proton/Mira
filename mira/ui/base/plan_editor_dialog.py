@@ -46,16 +46,12 @@ from pathlib import Path
 from PyQt6.QtCore import (
     QByteArray,
     QDate,
-    QEvent,
-    QObject,
     QPoint,
     Qt,
-    QTimer,
 )
 from PyQt6.QtGui import QAction, QCloseEvent, QCursor, QGuiApplication
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -97,87 +93,6 @@ def save_settings(data: dict) -> None:
 
 
 log = logging.getLogger(__name__)
-
-
-class _PlanFocusKeeper(QObject):
-    """Root-cause fix for the tracked plan-editor focus-drift bug
-    (docs/14 §"table focus-drift"; memory backlog).
-
-    **Evidence (real run log, 2026-05-19, lines 36–95):** rapid
-    ``QLineEdit → QLineEdit`` (and ``TzPicker → TzPicker``) focus
-    changes with **no click and no other widget involved** — Qt
-    window/popup-activation focus *churn* (a tooltip's `QTipLabel`
-    show/hide deactivates+reactivates the dialog; Qt then restores
-    focus to whatever cell the pointer is over). Nothing in our code
-    calls ``setFocus`` reactively; mouseTracking is off, the table is
-    ClickFocus, editors StrongFocus — all prior mitigations were
-    correct but treated symptoms.
-
-    The fix is **reason-targeted, not blind**: a ``FocusIn`` carries
-    a :class:`Qt.FocusReason`. The only *legitimate* ways to move
-    focus between cells are mouse-click / Tab / Backtab / shortcut —
-    those are recorded as the user's real target. Any **other**-reason
-    ``FocusIn`` to a *different* cell editor (ActiveWindow / Popup /
-    Other / NoReason — exactly the churn) is reverted, on the next
-    event-loop tick, back to the recorded editor. Legitimate
-    navigation is never touched; a logged line per catch lets the
-    next run *confirm* the cause (diagnostic + fix in one)."""
-
-    _LEGIT = frozenset({
-        Qt.FocusReason.MouseFocusReason,
-        Qt.FocusReason.TabFocusReason,
-        Qt.FocusReason.BacktabFocusReason,
-        Qt.FocusReason.ShortcutFocusReason,
-    })
-
-    def __init__(self, table: QWidget) -> None:
-        super().__init__(table)
-        self._table = table
-        self._user_focus: Optional[QWidget] = None
-        self._logged = False
-
-    def _is_cell_editor(self, w: object) -> bool:
-        if not isinstance(w, QWidget):
-            return False
-        try:
-            return self._table.isAncestorOf(w)
-        except RuntimeError:          # C++ side gone mid-teardown
-            return False
-
-    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:  # noqa: N802
-        if ev.type() != QEvent.Type.FocusIn or not self._is_cell_editor(obj):
-            return False
-        reason = ev.reason()
-        if reason in self._LEGIT:
-            self._user_focus = obj            # the user's real target
-            return False
-        tgt = self._user_focus
-        if tgt is None or obj is tgt:
-            return False
-        try:
-            alive = tgt.isVisible()
-        except RuntimeError:
-            self._user_focus = None
-            return False
-        if not alive:
-            self._user_focus = None
-            return False
-        if not self._logged:                  # once is enough to confirm
-            log.info("PlanEditor focus-drift caught: reason=%s "
-                     "non-user steal → restored the clicked cell", reason)
-            self._logged = True
-
-        def _restore() -> None:
-            # Re-check: a legitimate move since scheduling must win.
-            if self._user_focus is tgt:
-                try:
-                    if tgt.isVisible():
-                        tgt.setFocus(Qt.FocusReason.OtherFocusReason)
-                except RuntimeError:
-                    pass
-
-        QTimer.singleShot(0, _restore)
-        return False
 
 
 # Column indices — used everywhere a cell is read or written.
@@ -379,19 +294,12 @@ class PlanEditorDialog(QDialog):
         # Always last in __init__ so it overrides the defaults set above.
         self._restore_user_prefs()
 
-        # Focus-drift ROOT FIX (tracked priority bug — Nelson 2026-05-30, finally fixed).
-        # The cause was **per-cell tooltips**: each cell editor's QTipLabel show/hide as the
-        # cursor moved across the table deactivated+reactivated the dialog, and Qt restored
-        # focus to the cell under the pointer — focus "followed the mouse" with no click.
-        # The fix is at the source: the cell editors carry **no** tooltips (the column
-        # *headers* carry the same hints — :meth:`_configure_table`), so there is no popup
-        # churn and focus only ever moves on a real click/Tab. ``_PlanFocusKeeper`` stays as
-        # defence-in-depth (reverts any non-click/Tab focus steal to the clicked cell). The
-        # old per-change INFO log that flooded the console is removed.
-        self._focus_dbg_app = QApplication.instance()
-        if self._focus_dbg_app is not None:
-            self._focus_keeper = _PlanFocusKeeper(self._table)
-            self._focus_dbg_app.installEventFilter(self._focus_keeper)
+        # Focus-drift defence-in-depth lives in the app-wide focus guard
+        # now (``mira.ui.base.focus_keeper`` — installed once by
+        # ``apply_theme``). The cell editors still carry **no** per-field
+        # tooltips (the column *headers* carry the hints, see
+        # :meth:`_configure_table`) so no popup churn ever reaches the
+        # global guard in the common case.
 
     # ── Construction helpers ───────────────────────────────────────
 

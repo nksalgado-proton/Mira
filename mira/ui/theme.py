@@ -267,8 +267,13 @@ def apply_theme(
     ignored; see :func:`resolve_theme_colors`.
     """
     from mira.ui.base.clickable_cursor import install_clickable_cursor_filter
+    from mira.ui.base.focus_keeper import install_focus_keeper
 
     install_clickable_cursor_filter(app)
+    # App-wide focus guard — stops focus from following the mouse when
+    # tooltips / popups deactivate-reactivate the active window. See
+    # ``mira/ui/base/focus_keeper.py`` for the full rationale.
+    install_focus_keeper(app)
 
     # Painted widgets (Thumb, StageProgress, Donut, Card shadows, MiraMark /
     # _Wordmark, the cross-event glyph, …) pick their palette colours from

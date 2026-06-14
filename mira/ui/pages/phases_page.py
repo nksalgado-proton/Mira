@@ -1,4 +1,4 @@
-"""Surface 03 — Phases (Collect / Pick / Edit / Share donut cards).
+"""Surface 03 — Phases (Collect / Pick / Edit / Export donut cards).
 
 Per-event overview that lands when the user opens an event from the events
 list. Replaces the legacy :class:`~mira.ui.pages.activity_dashboard_page.ActivityDashboardPage`
@@ -25,8 +25,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -38,13 +39,12 @@ from PyQt6.QtWidgets import (
 from mira.gateway import Gateway
 from mira.ui.design import (
     Card,
+    Card2,
     Donut,
     DonutSlice,
     chip_closed,
-    chip_done,
     chip_idle,
     chip_open,
-    chip_prog,
     ghost_button,
 )
 from mira.ui.pages._event_card_redesign import _CategoryTile
@@ -65,6 +65,11 @@ class PhaseSnapshot:
     center_text: str = ""
     center_sub: str = ""
     state_word: str = ""  # for idle/skipped: overrides slices with empty ring
+    # Numerator / denominator preserved across the empty-state path so the
+    # hero summary banner can read "0 / 185 edited" even when slices=[].
+    # The donut itself still uses slices/state_word to decide rendering.
+    numerator: int = 0
+    denominator: int = 0
 
 
 @dataclass
@@ -85,21 +90,67 @@ class EventMeta:
 
 _PHASE_CAPTIONS = {
     "collect": "Per-camera contribution to the captured running time.",
-    "pick":    "Share of captures the user picked.",
-    "edit":    "Share of selections that have a finished export.",
-    "share":   "Share of captures landing in a shared collection.",
+    "pick":    "Share of captures reviewed (picked or skipped).",
+    "edit":    "Share of picks that have been edited (developed).",
+    "export":  "Share of picks materialised to an exported file.",
 }
 
-_PHASE_ORDER = ("collect", "pick", "edit", "share")
+_PHASE_ORDER = ("collect", "pick", "edit", "export")
+
+# Per-phase identity colours (spec/66) — same as the events-card pipeline +
+# closed-card stat tiles: Collect blue · Pick accent · Edit amber · Export green.
+_PHASE_FILL_TOKEN = {
+    "collect": "blue", "pick": "accent", "edit": "amber", "export": "green",
+}
 
 
-def _status_chip(status: str) -> QLabel:
-    return {
-        "done":    lambda: chip_done("Done"),
-        "prog":    lambda: chip_prog("In progress"),
-        "idle":    lambda: chip_idle("Not started"),
-        "skipped": lambda: chip_closed("Skipped"),
-    }.get(status, lambda: chip_idle("Not started"))()
+def _palette_mode() -> str:
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
+
+
+def _phase_status_chip(status: str, phase_key: str) -> QLabel:
+    """One-glance .ph-row status. Mockup `.st.done` is BLUE — the spec/66
+    rule reads the "done" colour as the phase's identity colour, so each
+    card's chip carries that phase's hue (Collect blue · Pick accent · Edit
+    amber · Export green). Not-started uses the quiet card2 chip; in-progress
+    inherits the prog amber + tinted background so the user sees motion at
+    the top of the card without scanning the donut.
+    """
+    p = PALETTE[_palette_mode()]
+    if status == "done":
+        token = _PHASE_FILL_TOKEN.get(phase_key, "accent")
+        color = p.get(token, p["accent"])
+        chip = QLabel("Done")
+        chip.setObjectName("ChipPhaseDone")
+        chip.setStyleSheet(
+            f"background: {_with_alpha(color, 36)}; color: {color};"
+            " border-radius: 13px; padding: 4px 11px; font-size: 11px;"
+            " font-weight: 700;"
+        )
+        return chip
+    if status == "prog":
+        amber = p.get("amber", "#fbbf24")
+        chip = QLabel("In progress")
+        chip.setObjectName("ChipPhaseProg")
+        chip.setStyleSheet(
+            f"background: {_with_alpha(amber, 36)}; color: {amber};"
+            " border-radius: 13px; padding: 4px 11px; font-size: 11px;"
+            " font-weight: 700;"
+        )
+        return chip
+    if status == "skipped":
+        return chip_closed("Skipped")
+    return chip_idle("Not started")
+
+
+def _with_alpha(hex_color: str, alpha255: int) -> str:
+    """Turn ``#rrggbb`` + 0..255 alpha into the ``rgba(r,g,b,a)`` form QSS
+    accepts. Tiny helper so the chip stylesheet stays readable."""
+    c = QColor(hex_color)
+    return (
+        f"rgba({c.red()},{c.green()},{c.blue()},{alpha255 / 255:.3f})"
+    )
 
 
 class _StepBadge(QLabel):
@@ -108,14 +159,17 @@ class _StepBadge(QLabel):
     Borderless per the surface-03 mockup (.step rule): the accent_soft
     backdrop carries enough visual weight without an outline. Square-ish
     rounded rect at 8px radius matches the mockup's `border-radius: 8px`.
+    The colours are pulled from the active palette so light-theme renders
+    pick up the right accent-soft (#eceaff) instead of dark's #211f3a.
     """
 
     def __init__(self, n: int) -> None:
         super().__init__(str(n))
         self.setFixedSize(24, 24)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        p = PALETTE[_palette_mode()]
         self.setStyleSheet(
-            "background: #211f3a; color: #7c6cff;"
+            f"background: {p['accent_soft']}; color: {p['accent']};"
             " border: none; border-radius: 8px;"
             " font-size: 12px; font-weight: 800;"
         )
@@ -164,8 +218,12 @@ class _DonutLegend(QWidget):
         row.addWidget(name)
         row.addStretch()
         pct = QLabel(f"{int(round(s.value / total * 100))}%")
+        # The legend percentage reads from the live palette so light-theme
+        # renders use the dark ink colour (#1a1f2b) instead of dark's
+        # #eef1f7 — the legend was previously invisible in light mode.
+        p = PALETTE[_palette_mode()]
         pct.setStyleSheet(
-            "color: #eef1f7; font-weight: 600;"
+            f"color: {p['ink']}; font-weight: 600;"
             " font-variant-numeric: tabular-nums;"
         )
         row.addWidget(pct)
@@ -188,7 +246,12 @@ class PhaseCard(Card):
         self.setMinimumHeight(280)
         self.layout().setSpacing(10)
 
-        # Top row: step badge + phase label + status chip
+        # Top row: step badge + phase label + status chip. The chip is the
+        # at-a-glance signal the mockup carries (.st.done / .st.idle in
+        # surface-03-phases.html) — the donut speaks the "how much," the
+        # chip speaks the "where in the workflow." Phase-identity colour
+        # on the Done chip (spec/66) ties this to the per-event cards on
+        # Surface 01 + the closed-card stat tiles.
         head = QHBoxLayout()
         head.setSpacing(10)
         head.addWidget(_StepBadge(step))
@@ -196,7 +259,10 @@ class PhaseCard(Card):
         title.setObjectName("CardTitle")
         head.addWidget(title)
         head.addStretch()
-        head.addWidget(_status_chip(snapshot.status))
+        head.addWidget(
+            _phase_status_chip(snapshot.status, snapshot.key),
+            0, Qt.AlignmentFlag.AlignVCenter,
+        )
         self.layout().addLayout(head)
 
         # Body: donut (+ legend for multi-slice phases like Collect)
@@ -230,21 +296,62 @@ class PhaseCard(Card):
                 body.addStretch()
         self.layout().addLayout(body, 1)
 
+        # Per-phase "to go" / completion delta. Renders for the ratio
+        # phases (Pick/Edit/Export) so the user reads the *gap* the donut
+        # represents in one line — the §3.3 "center delta" ask, kept out
+        # of the donut centre so the % stays legible. Collect skips this:
+        # the legend already explains the slice composition.
+        delta = self._format_delta(snapshot)
+        if delta:
+            delta_lbl = QLabel(delta)
+            delta_lbl.setObjectName("Sub")
+            delta_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.layout().addWidget(delta_lbl)
+
         # Footer caption — 1px top separator visually splits donut area
-        # from the explanation line (mockup .cap rule).
+        # from the explanation line (mockup .cap rule). Caption is left-
+        # aligned per the mockup default (`.cap` has no text-align).
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #262b38; background: #262b38;")
+        line_color = PALETTE[_palette_mode()]["line"]
+        sep.setStyleSheet(
+            f"color: {line_color}; background: {line_color};"
+        )
         sep.setFixedHeight(1)
         self.layout().addSpacing(2)
         self.layout().addWidget(sep)
         caption = QLabel(_PHASE_CAPTIONS.get(snapshot.key, ""))
         caption.setObjectName("Faint")
         caption.setWordWrap(True)
-        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        caption.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.layout().addWidget(caption)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    @staticmethod
+    def _format_delta(snapshot: "PhaseSnapshot") -> str:
+        """Tiny "remaining work" line beneath the donut. Collect skips
+        (its legend already explains the slice composition). Phases with
+        no captured denominator skip (the donut speaks 'Not started')."""
+        if snapshot.key == "collect":
+            return ""
+        if snapshot.denominator <= 0:
+            return ""
+        remaining = snapshot.denominator - snapshot.numerator
+        if remaining <= 0:
+            return {
+                "pick":   "All reviewed",
+                "edit":   "All edited",
+                "export": "All exported",
+            }.get(snapshot.key, "Done")
+        verb = {
+            "pick":   "to review",
+            "edit":   "to edit",
+            "export": "to export",
+        }.get(snapshot.key, "remaining")
+        return f"{remaining:,} {verb}"
 
     @staticmethod
     def _wants_legend(snapshot: "PhaseSnapshot") -> bool:
@@ -292,8 +399,19 @@ class PhasesPage(QWidget):
         head_row.addWidget(self._back)
         self._tile_slot = QHBoxLayout()
         head_row.addLayout(self._tile_slot)
+        # Mockup `.head h1{font-size:24px;letter-spacing:-.5px}` — the
+        # event title is the hero identity, not a card title. CardTitle
+        # (18/700) reads as a quiet section header; bumping to 24/800
+        # with the same letter-spacing the page-header h1 uses on Surface
+        # 01 gives it the per-event presence the design carries.
         self._title = QLabel("—")
-        self._title.setObjectName("CardTitle")
+        self._title.setObjectName("EventTitle")
+        title_font = QFont(self._title.font())
+        title_font.setPointSizeF(max(title_font.pointSizeF(), 18.0))
+        title_font.setPixelSize(24)
+        title_font.setWeight(QFont.Weight.Black)
+        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.5)
+        self._title.setFont(title_font)
         head_row.addWidget(self._title)
         head_row.addStretch()
         self._status_slot = QHBoxLayout()
@@ -315,10 +433,29 @@ class PhasesPage(QWidget):
         meta_row.addWidget(self._meta_line, 1)
         outer.addLayout(meta_row)
 
+        # ── Hero summary metric banner (above the 2x2). Synthesises the
+        # four phase totals into one analytic line — the dashboard ask
+        # spec/65 §3.3 calls out ("Picked 412/1084 · Edited 180/412 ·
+        # Exported 0 · 7 of 10 days reviewed"). Card2 (no accent shadow)
+        # so it reads as page furniture, not a hero CTA. Hidden until
+        # the snapshots populate; redraw lives in _render.
+        self._hero = Card2(padded=False)
+        self._hero.setObjectName("PhasesHero")
+        hero_l = QHBoxLayout(self._hero)
+        hero_l.setContentsMargins(18, 12, 18, 12)
+        hero_l.setSpacing(14)
+        self._hero_line = QLabel("")
+        self._hero_line.setObjectName("Sub")
+        self._hero_line.setTextFormat(Qt.TextFormat.RichText)
+        self._hero_line.setWordWrap(True)
+        hero_l.addWidget(self._hero_line, 1)
+        self._hero.setVisible(False)
+        outer.addWidget(self._hero)
+
         # ── 2x2 phase grid ──
         self._grid_host = QWidget()
         self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(0, 8, 0, 0)
+        self._grid.setContentsMargins(0, 4, 0, 0)
         self._grid.setHorizontalSpacing(18)
         self._grid.setVerticalSpacing(18)
         outer.addWidget(self._grid_host, 1)
@@ -354,16 +491,22 @@ class PhasesPage(QWidget):
             event = eg.event()
             trip_days = eg.trip_days()
             day_tree = eg.day_tree()
-            # 4-row funnel: (captured, picked, edited, shared). Defends
-            # against pre-Slice-A funnels with extra rows (cull/select
-            # collapse).
             from mira import overview_stats
-            funnel = overview_stats.phase_funnel_breakdown(eg)
             photo_secs = self.gateway.settings.load() \
                 .slideshow_seconds_per_slide_short
             per_camera = dict(overview_stats.captured_per_camera_time_share(
                 eg, photo_seconds=photo_secs,
             ))
+            # spec/66 phase totals, computed directly (the funnel's "edit"
+            # bucket is really edit_exported, and "share" is the dead
+            # share_tag — neither matches the Collect/Pick/Edit/Export model):
+            #   Pick   = picked keepers; Edit = developed (has an adjustment);
+            #   Export = exported files. Edit/Export are shown against picked.
+            captured_total = len(eg.items(provenance="captured"))
+            decided_total = eg.phase_decided_count("pick")   # reviewed
+            picked_total = eg.phase_picked_count("pick")      # keepers
+            developed_total = len(eg.adjustments())
+            exported_total = len(eg.exported_item_ids())
         except Exception:                                          # noqa: BLE001
             log.exception("PhasesPage: gateway query failed for %s", event_id)
             eg.close()
@@ -400,12 +543,9 @@ class PhasesPage(QWidget):
             location=location,
         )
 
-        # ── PhaseSnapshot[] from the funnel + per-camera ──
-        captured_total = funnel[0][1] if funnel else 0
-        picked_total = funnel[1][1] if len(funnel) >= 2 else 0
-        edited_total = funnel[2][1] if len(funnel) >= 3 else 0
-        share_total = funnel[3][1] if len(funnel) >= 4 else 0
-
+        # ── PhaseSnapshot[] from the spec/66 totals + per-camera ──
+        # (captured_total / picked_total / developed_total / exported_total
+        #  computed above, before the gateway closed.)
         p = PALETTE["dark"]  # color hexes are theme-stable enough for the
         # slices; the donut paints from the live palette at paintEvent
         # anyway, so theme toggles just rebuild the colors.
@@ -438,14 +578,17 @@ class PhasesPage(QWidget):
             state_word="" if captured_total else "Not started",
         ))
 
+        # Pick = decided / captured (review completeness, spec/66); Edit =
+        # developed / picked; Export = exported / picked (Edit & Export among
+        # the picked keepers).
         snapshots.append(self._ratio_snapshot(
-            "pick", "Pick", picked_total, captured_total, p,
+            "pick", "Pick", decided_total, captured_total, p,
         ))
         snapshots.append(self._ratio_snapshot(
-            "edit", "Edit", edited_total, captured_total, p,
+            "edit", "Edit", developed_total, picked_total, p,
         ))
         snapshots.append(self._ratio_snapshot(
-            "share", "Share", share_total, captured_total, p,
+            "export", "Export", exported_total, picked_total, p,
         ))
 
         self.setEventForPreview(meta, snapshots)
@@ -470,21 +613,24 @@ class PhasesPage(QWidget):
     ) -> "PhaseSnapshot":
         """Compose a 2-slice donut snapshot (filled vs. remaining track)
         from a numerator/denominator pair. Status follows the same rule
-        as the legacy ActivityDashboardPage."""
+        as the legacy ActivityDashboardPage. Numerator/denominator are
+        stored on the snapshot so the hero banner reads them back even
+        for empty-state phases (slices=[])."""
         if denominator <= 0:
             return PhaseSnapshot(
                 key=key, label=label, status="idle", slices=[],
                 state_word="Not started",
+                numerator=max(0, numerator), denominator=max(0, denominator),
             )
         if numerator <= 0:
             return PhaseSnapshot(
                 key=key, label=label, status="idle", slices=[],
                 state_word="Not started",
+                numerator=0, denominator=denominator,
             )
         pct = int(round(numerator / denominator * 100))
-        fill_color = palette["green"] if key == "pick" else palette["amber"]
-        if key == "share":
-            fill_color = palette["accent"]
+        # Phase-identity fill (spec/66): Pick accent · Edit amber · Export green.
+        fill_color = palette[_PHASE_FILL_TOKEN.get(key, "amber")]
         if numerator >= denominator:
             status = "done"
         else:
@@ -498,6 +644,7 @@ class PhasesPage(QWidget):
             ],
             center_text=f"{pct}%",
             center_sub=f"{numerator:,} / {denominator:,}",
+            numerator=numerator, denominator=denominator,
         )
 
     # ── render ─────────────────────────────────────────────────────────
@@ -507,6 +654,7 @@ class PhasesPage(QWidget):
             return
         self._title.setText(self._meta.name)
         self._meta_line.setText(self._format_breadcrumb(self._meta))
+        self._refresh_hero(self._phases)
 
         # Category tile (left of title block)
         while self._tile_slot.count():
@@ -549,6 +697,101 @@ class PhasesPage(QWidget):
             card = PhaseCard(idx + 1, snap)
             card.activated.connect(self.phase_tile_activated.emit)
             self._grid.addWidget(card, idx // 2, idx % 2)
+
+    def _refresh_hero(self, snapshots: list[PhaseSnapshot]) -> None:
+        """Build the analytic-banner line from the rendered snapshots and
+        show / hide the band accordingly. Only renders when there's
+        captured data — for a brand-new empty event the band sits dormant
+        and the page just shows the four "Not started" donuts.
+
+        Format mirrors the dashboard rhythm spec/65 §3.3 sketches:
+        ``Reviewed N / Total (PCT%) · Edited N / Picked · Exported N /
+        Picked · D of D days touched``. Phase-identity colours on the
+        key tokens so the line ties to the per-card hues.
+        """
+        by_key = {p.key: p for p in snapshots}
+        collect = by_key.get("collect")
+        if collect is None or (
+            not collect.center_text and not collect.slices
+        ):
+            self._hero.setVisible(False)
+            return
+
+        def _ratio(key: str) -> tuple[int, int]:
+            snap = by_key.get(key)
+            if snap is None:
+                return 0, 0
+            return snap.numerator, snap.denominator
+
+        captured_total = self._sum_collect(collect)
+        reviewed_n, reviewed_total = _ratio("pick")
+        edited_n, picked_total = _ratio("edit")
+        exported_n, _ = _ratio("export")
+        days_touched, days_total = self._collect_days(collect)
+
+        p = PALETTE[_palette_mode()]
+        accent = p.get("accent", "#7c6cff")
+        amber = p.get("amber", "#fbbf24")
+        green = p.get("green", "#34d399")
+        ink = p.get("ink", "#eef1f7")
+        ink_soft = p.get("ink_soft", "#8b94a7")
+
+        def _b(text: str, color: str) -> str:
+            return f"<span style='color:{color};font-weight:700;'>{text}</span>"
+
+        parts: list[str] = []
+        if reviewed_total > 0:
+            pct = int(round(reviewed_n / reviewed_total * 100))
+            parts.append(
+                f"Reviewed {_b(f'{reviewed_n:,} / {reviewed_total:,}', ink)} "
+                f"<span style='color:{accent};'>({pct}%)</span>"
+            )
+        else:
+            parts.append(
+                f"Captured {_b(f'{captured_total:,}', ink)} "
+                f"<span style='color:{ink_soft};'>· awaiting Pick</span>"
+            )
+        if picked_total > 0:
+            parts.append(
+                f"Edited "
+                f"{_b(f'{edited_n:,} / {picked_total:,}', amber if edited_n else ink)}"
+            )
+            parts.append(
+                f"Exported "
+                f"{_b(f'{exported_n:,} / {picked_total:,}', green if exported_n else ink)}"
+            )
+        if days_total > 0:
+            parts.append(
+                f"{_b(f'{days_touched} of {days_total}', ink)} "
+                f"<span style='color:{ink_soft};'>days touched</span>"
+            )
+        sep = (
+            f"<span style='color:{ink_soft};'>&nbsp;·&nbsp;</span>"
+        )
+        self._hero_line.setText(sep.join(parts))
+        self._hero.setVisible(True)
+
+    @staticmethod
+    def _sum_collect(snapshot: PhaseSnapshot) -> int:
+        """Total captures = sum of the per-camera slice values."""
+        if snapshot.state_word:
+            return 0
+        return int(sum(max(0.0, s.value) for s in snapshot.slices))
+
+    @staticmethod
+    def _collect_days(snapshot: PhaseSnapshot) -> tuple[int, int]:
+        """Parse 'N/M days' out of Collect.center_sub; returns (0, 0) on
+        an empty event so the hero banner can skip the trailing token."""
+        sub = snapshot.center_sub or ""
+        if "/" not in sub:
+            return 0, 0
+        # Expected shape: '3/3 days' from set_event.
+        head = sub.split(" ", 1)[0]
+        try:
+            a, b = head.split("/", 1)
+            return int(a), int(b)
+        except ValueError:
+            return 0, 0
 
     def _format_breadcrumb(self, meta: EventMeta) -> str:
         """Bold the key facts (type / subtype / days); rest in ink_soft."""

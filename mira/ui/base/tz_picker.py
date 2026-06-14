@@ -26,7 +26,7 @@ import logging
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor, QWheelEvent
+from PyQt6.QtGui import QCursor, QFocusEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtWidgets import QComboBox, QInputDialog, QWidget
 
 from core.tz_locations import (
@@ -71,6 +71,13 @@ class TzPicker(QComboBox):
         # Re-entrancy guard: suppress the index-change → valueChanged
         # bridge while we mutate the model from setValue / dialog.
         self._suppress = False
+        # User-engagement flag for the wheel guard: True only after a
+        # real left-click or Tab/Backtab/Shortcut focus. Hover-induced
+        # focus (Qt's WheelFocus + window-activation churn) does NOT
+        # set it. Cleared on focusOut. wheelEvent() uses it instead of
+        # ``hasFocus()`` because hasFocus() is True even when focus was
+        # grabbed by mouse-over before the wheel arrived.
+        self._user_engaged = False
 
         for place, off in TZ_LOCATIONS:
             self.addItem(f"{place} — {format_utc_offset(off)}", off)
@@ -159,14 +166,36 @@ class TzPicker(QComboBox):
             if not self.signalsBlocked():
                 self.valueChanged.emit(new)
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._user_engaged = True
+        super().mousePressEvent(event)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        if event.reason() in (
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+        ):
+            self._user_engaged = True
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        self._user_engaged = False
+        super().focusOutEvent(event)
+
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
-        """Ignore wheel events when the picker is not focused — the
+        """Refuse wheel unless the user has actually engaged this
+        picker (real left-click or Tab/Backtab/Shortcut focus). The
         2026-06-14 rule: focus (and value mutation) only on left-click
-        / Tab / Backtab / Shortcut, NEVER on hover-and-scroll. The
-        Qt-level filters bypass this dispatch on QTableWidget cell
-        widgets, so the override at the widget itself is the only
-        bulletproof spot."""
-        if not self.hasFocus():
+        / Tab / Backtab / Shortcut, NEVER on hover-and-scroll.
+
+        ``hasFocus()`` alone is not enough — Qt's WheelFocus policy
+        plus window-activation churn on QTableWidget cell widgets can
+        leave the picker focused after a mere hover, BEFORE wheelEvent
+        runs. ``_user_engaged`` tracks the actual user intent (set in
+        mousePressEvent / Tab focusInEvent, cleared on focusOut)."""
+        if not self._user_engaged:
             event.ignore()
             return
         super().wheelEvent(event)

@@ -26,8 +26,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCursor, QWheelEvent
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QCursor, QFocusEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -40,18 +40,69 @@ from PyQt6.QtWidgets import (
 
 
 class _GuardedComboBox(QComboBox):
-    """QComboBox that refuses to mutate its value on wheel unless it
-    actually holds focus (or its internal line-edit does, for editable
-    combos). Same 2026-06-14 rule the TzPicker subclass enforces — the
-    Qt-level event filters miss this dispatch path on QTableWidget cell
-    widgets, so the override at the widget itself is the only
-    bulletproof spot."""
+    """QComboBox that refuses to mutate value on wheel unless the user
+    has actually engaged it (real left-click on the body or internal
+    line-edit, OR Tab/Backtab/Shortcut focus). Same 2026-06-14 rule
+    the TzPicker subclass enforces — ``hasFocus()`` alone is not
+    enough because Qt's WheelFocus policy plus window-activation
+    churn on QTableWidget cell widgets can leave the combo focused
+    after a mere hover, before wheelEvent runs."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._user_engaged = False
+
+    def setEditable(self, editable: bool) -> None:  # noqa: N802
+        super().setEditable(editable)
+        if editable:
+            line_edit = self.lineEdit()
+            if line_edit is not None:
+                # Click / focus inside the internal QLineEdit also
+                # counts as user-engagement.
+                line_edit.installEventFilter(self)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if obj is self.lineEdit():
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._user_engaged = True
+            elif event.type() == QEvent.Type.FocusIn:
+                if event.reason() in (
+                    Qt.FocusReason.TabFocusReason,
+                    Qt.FocusReason.BacktabFocusReason,
+                    Qt.FocusReason.ShortcutFocusReason,
+                ):
+                    self._user_engaged = True
+            elif event.type() == QEvent.Type.FocusOut:
+                # The internal QLineEdit losing focus = the user has
+                # left the combo (unless focus jumped to the popup,
+                # which goes through the combo's own focusOutEvent
+                # path — keep ``_user_engaged`` set in that case).
+                if event.reason() != Qt.FocusReason.PopupFocusReason:
+                    self._user_engaged = False
+        return False
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._user_engaged = True
+        super().mousePressEvent(event)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        if event.reason() in (
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+        ):
+            self._user_engaged = True
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self._user_engaged = False
+        super().focusOutEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
-        line_edit = self.lineEdit()
-        if not self.hasFocus() and not (
-            line_edit is not None and line_edit.hasFocus()
-        ):
+        if not self._user_engaged:
             event.ignore()
             return
         super().wheelEvent(event)

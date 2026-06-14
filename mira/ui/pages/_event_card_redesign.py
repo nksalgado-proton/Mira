@@ -249,6 +249,14 @@ class EventCardRedesign(Card):
         self._build_header()
         if data.is_closed:
             self._build_closed_body()
+            # Closed events have one destination (Share/Cuts); make the
+            # WHOLE tile the click target so the user doesn't have to
+            # hunt for a specific zone. Child handlers (title → Header,
+            # status chip → toggle, days chip → Days Table) keep their
+            # own clicks via Qt's child-first event flow; clicks on
+            # everything else (carousel, stats, tags, whitespace) fall
+            # through to the card's mousePressEvent override below.
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self._build_open_body()
         self.setMinimumHeight(220 if not data.is_closed else 320)
@@ -474,7 +482,11 @@ class EventCardRedesign(Card):
         carousel = Carousel(self._sample_pixmaps, interval_ms=4000)
         carousel.setMinimumWidth(260)
         carousel.setMinimumHeight(200)
-        # Click activates the event (route to Cuts list for closed events)
+        carousel.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Click activates the event (route to Cuts list for closed events).
+        # The whole-card override below handles non-carousel clicks too;
+        # this stays explicit so the carousel's own mousePressEvent (Qt
+        # default = no-op) doesn't swallow it silently.
         carousel.mousePressEvent = (
             lambda _evt: self.activated.emit(self._data.event_id)
         )
@@ -530,3 +542,17 @@ class EventCardRedesign(Card):
         right_wrap.setLayout(right)
         body.addWidget(right_wrap, 3)
         self.layout().addLayout(body)
+
+    def mousePressEvent(self, evt) -> None:  # noqa: N802 — Qt override
+        """Closed events: the whole tile routes to Share/Cuts. Child
+        widgets with their own handlers (title, status chip, days chip,
+        sub-widget mousePressEvent lambdas) consume their clicks first
+        via Qt's child-first event flow; this override fires only for
+        clicks on areas without a child handler (whitespace, stats grid,
+        classification chips, the padded card edge). Open events fall
+        through to the default — open cards have multiple click zones
+        already (date column → Days Table, pipeline → dashboard, title →
+        Header dialog) so a tile-wide handler would override those."""
+        super().mousePressEvent(evt)
+        if self._data.is_closed:
+            self.activated.emit(self._data.event_id)

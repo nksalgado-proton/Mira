@@ -85,6 +85,8 @@ class MainWindow(QMainWindow):
     _ACTIVITY_PAGE_KEY = "__activity_dashboard__"
     _SELECT_PAGE_KEY = "__select__"
     _PROCESS_PAGE_KEY = "__process__"
+    # spec/66 §1.1 — the Export phase is its own surface (slice 5).
+    _EXPORT_PAGE_KEY = "__export__"
     _CURATE_PAGE_KEY = "__curate__"
 
     def __init__(self, gateway: Optional[Gateway] = None, parent: Optional[QWidget] = None) -> None:
@@ -159,6 +161,13 @@ class MainWindow(QMainWindow):
         self.edit_page = EditHostPage(self.gateway)
         self.page_stack.add_page(self._PROCESS_PAGE_KEY, self.edit_page)
 
+        # spec/66 §1.1 — the Export phase surface (slice 5). Green/red
+        # ship decision over all picked keepers; triggers the spec/60
+        # batch engine through the spec/59 §8 BatchExportQueue.
+        from mira.ui.exported import ExportPage
+        self.export_page = ExportPage(self.gateway)
+        self.page_stack.add_page(self._EXPORT_PAGE_KEY, self.export_page)
+
         # spec/61: the Cuts shell — the Share landing (#exported + user
         # Cuts list → New Cut dialog → picking session; the Cut detail
         # surface joins with the flat-grid slice).
@@ -207,6 +216,8 @@ class MainWindow(QMainWindow):
         self.pick_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
         self.edit_page.fullscreen_changed.connect(self._on_process_fullscreen)
+        self.export_page.closed.connect(self._on_export_closed)
+        self.export_page.fullscreen_changed.connect(self._on_export_fullscreen)
         self.curate_page.closed.connect(self._on_curate_closed)
 
         # Land on Dashboard, shown explicitly (single source of truth for the start page).
@@ -3764,6 +3775,12 @@ class MainWindow(QMainWindow):
             if self.edit_page.open_event(self._current_event_id):
                 self.page_stack.show_page(self._PROCESS_PAGE_KEY)
             return
+        if phase == "export" and self._current_event_id is not None:
+            # spec/66 §1.1 — the Export phase: green/red ship decision
+            # over picked keepers, triggers the spec/60 batch engine.
+            if self.export_page.open_event(self._current_event_id):
+                self.page_stack.show_page(self._EXPORT_PAGE_KEY)
+            return
         if phase == "share" and self._current_event_id is not None:
             if self.curate_page.open_event(self._current_event_id):
                 self._cuts_entry_door = self._ACTIVITY_PAGE_KEY
@@ -3947,6 +3964,16 @@ class MainWindow(QMainWindow):
 
     def _on_process_fullscreen(self, on: bool) -> None:
         """Immersive process: mirror the cull/select fullscreen behaviour."""
+        self.menuBar().setVisible(not on)
+
+    def _on_export_closed(self) -> None:
+        """Back from the Export surface → the per-event phase grid (refreshed)."""
+        if self._current_event_id is not None:
+            self.phases_page.set_event(self._current_event_id)
+        self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
+
+    def _on_export_fullscreen(self, on: bool) -> None:
+        """Immersive export: mirror the other phase surfaces."""
         self.menuBar().setVisible(not on)
 
     def _on_curate_closed(self) -> None:

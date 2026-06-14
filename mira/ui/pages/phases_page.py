@@ -221,10 +221,12 @@ class _DonutLegend(QWidget):
         # The legend percentage reads from the live palette so light-theme
         # renders use the dark ink colour (#1a1f2b) instead of dark's
         # #eef1f7 — the legend was previously invisible in light mode.
+        # (No `font-variant-numeric: tabular-nums` — Qt QSS doesn't know
+        # the CSS3 property and logs a warning per repaint. The values
+        # here are short %s so monospacing isn't structurally needed.)
         p = PALETTE[_palette_mode()]
         pct.setStyleSheet(
             f"color: {p['ink']}; font-weight: 600;"
-            " font-variant-numeric: tabular-nums;"
         )
         row.addWidget(pct)
         return row

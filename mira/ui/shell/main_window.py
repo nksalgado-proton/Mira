@@ -3593,7 +3593,11 @@ class MainWindow(QMainWindow):
             self._show_no_days_message()
             return
 
-        dlg = self._exec_event_days_table_dialog(self._build_days_table_dialog(rows))
+        dlg = self._exec_event_days_table_dialog(
+            self._build_days_table_dialog(
+                rows,
+                browse_handler=self._make_days_table_browse_handler(event_id),
+            ))
         if not dlg:
             return
         edited_rows = dlg.rows()
@@ -3678,6 +3682,58 @@ class MainWindow(QMainWindow):
             EventDaysTableDialog,
         )
         return EventDaysTableDialog(rows=rows, parent=self, **kwargs)
+
+    def _make_days_table_browse_handler(self, event_id: str):
+        """Return a ``(date) -> None`` callable for the EventDaysTableDialog
+        Browse… column on an existing event: opens DayBrowseDialog over the
+        day's already-ingested files (paths resolved under the event root).
+        Parity with the fresh-scan flows' inline ``_browse_day`` closure;
+        the existing-event side just queries the gateway instead of a
+        cached ``scan.candidates_by_date``."""
+        from PyQt6.QtWidgets import QMessageBox
+        from mira.ui.pages.day_browse_dialog import DayBrowseDialog
+
+        def _browse_day(day):
+            try:
+                eg = self.gateway.open_event(event_id)
+                try:
+                    target = day.isoformat()
+                    day_numbers = [
+                        d.day_number for d in eg.trip_days()
+                        if d.date == target and d.day_number is not None
+                    ]
+                    root = eg.event_root
+                    paths = [
+                        root / it.origin_relpath
+                        for n in day_numbers
+                        for it in eg.items(day=n)
+                    ]
+                finally:
+                    eg.close()
+            except Exception:                                   # noqa: BLE001
+                log.exception(
+                    "Days Table Browse: failed to gather files for "
+                    "%s / %s", event_id, day,
+                )
+                return
+            if not paths:
+                noinfo = QMessageBox(self)
+                noinfo.setWindowTitle(tr("Nothing to browse"))
+                noinfo.setText(tr(
+                    "No files filed under {date} yet."
+                ).replace("{date}", day.isoformat()))
+                noinfo.setIcon(QMessageBox.Icon.NoIcon)
+                noinfo.setStandardButtons(QMessageBox.StandardButton.Ok)
+                noinfo.exec()
+                return
+            DayBrowseDialog(
+                paths,
+                title=tr("Browse — {date}").replace(
+                    "{date}", day.isoformat()),
+                parent=self,
+            ).exec()
+
+        return _browse_day
 
     @staticmethod
     def _exec_event_days_table_dialog(dlg):
@@ -3834,6 +3890,7 @@ class MainWindow(QMainWindow):
                 # spec/57 §4.2 — pickers stay live; the explicit re-time
                 # confirmation in _handle_retime_and_save is the gate.
                 tz_editable_when_frozen=True,
+                browse_handler=self._make_days_table_browse_handler(event_id),
             ))
         if not dlg:
             return

@@ -799,6 +799,56 @@ class EventGateway:
     def cut(self, cut_id: str) -> Optional[m.Cut]:
         return self.store.get(m.Cut, cut_id)
 
+    def cuts_containing(
+        self, export_relpath: str,
+    ) -> List[m.Cut]:
+        """Every Cut whose ``cut_member`` set includes ``export_relpath``,
+        in the same order :meth:`cuts` returns (oldest first).
+
+        Powers the Pool's "Delete exported" cascade-aware confirm: the
+        on-disk file is regenerable, but deleting it drops the file
+        from every Cut that referenced it (spec/61 §1.4 — the
+        ``cut_member.export_relpath`` FK carries ``ON DELETE
+        CASCADE``). The confirm reads the cut count out loud so the
+        user knows the blast radius BEFORE clicking Delete.
+
+        Returns ``[]`` when the relpath isn't in any Cut.
+        """
+        rel = str(export_relpath).replace("\\", "/")
+        rows = self.store.conn.execute(
+            "SELECT DISTINCT cut_id FROM cut_member "
+            "WHERE export_relpath = ?", (rel,),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = {r["cut_id"] for r in rows}
+        return [c for c in self.cuts() if c.id in ids]
+
+    def cuts_containing_any(
+        self, export_relpaths: Iterable[str],
+    ) -> List[m.Cut]:
+        """The :meth:`cuts_containing` variant for a batch: every Cut
+        that references AT LEAST ONE of ``export_relpaths``. Used by
+        the Pool's batch-delete confirm to read the unique Cut count.
+
+        One ``IN (?, ?, ...)`` query — cheaper than N
+        :meth:`cuts_containing` calls when the user has bulk-selected
+        across many files. Empty input → empty list.
+        """
+        rels = [str(p).replace("\\", "/") for p in export_relpaths]
+        if not rels:
+            return []
+        placeholders = ",".join("?" for _ in rels)
+        rows = self.store.conn.execute(
+            "SELECT DISTINCT cut_id FROM cut_member "
+            f"WHERE export_relpath IN ({placeholders})",
+            tuple(rels),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = {r["cut_id"] for r in rows}
+        return [c for c in self.cuts() if c.id in ids]
+
     def cut_by_tag(self, tag: str) -> Optional[m.Cut]:
         rows = self.store.query_by(m.Cut, tag=tag)
         return rows[0] if rows else None
@@ -2042,6 +2092,88 @@ class EventGateway:
             "deleted_files": deleted,
             "missing_files": missing,
             "rows_deleted": rows_deleted,
+        }
+
+    def delete_exported_file_by_relpath(
+        self, export_relpath: str,
+    ) -> Dict:
+        """File-level twin of :meth:`delete_exported_file` — drops the
+        ONE lineage row matching ``export_relpath`` + its on-disk file
+        + clears ``edit_exported`` IFF this was the last row for the
+        source item.
+
+        The Pool's "Delete exported" action (spec/61 §1.4 cascade-
+        aware) needs file granularity: re-exports under spec/54 §8
+        produce multiple rows for one item, and the user picks
+        per-file in the #exported grid. ``delete_exported_file``
+        unships the whole item — too wide a blast for this surface.
+
+        The ``cut_member.export_relpath`` FK CASCADE clears Cut
+        membership automatically when the lineage row goes.
+        ``Original Media/`` stays untouchable — the relpath must
+        match the ``Exported Media/`` prefix or the call no-ops.
+
+        Returns ``{"deleted_files": [Path…], "missing_files":
+        [str…], "rows_deleted": 0|1, "item_id": str|None}``.
+        """
+        empty = {
+            "deleted_files": [], "missing_files": [],
+            "rows_deleted": 0, "item_id": None,
+        }
+        if self.event_root is None:
+            return empty
+        rel = str(export_relpath).replace("\\", "/")
+        if not rel.startswith("Exported Media/"):
+            # Charter pin — never touch other tiers.
+            return empty
+        row = self.store.conn.execute(
+            "SELECT export_relpath, source_item_id FROM lineage "
+            "WHERE phase = 'edit' AND export_relpath = ?", (rel,),
+        ).fetchone()
+        if row is None:
+            return empty
+        item_id = row["source_item_id"]
+        event_root = Path(self.event_root)
+        abs_path = event_root / rel
+        deleted: list = []
+        missing: list = []
+        if abs_path.is_file():
+            try:
+                abs_path.unlink()
+                deleted.append(abs_path)
+            except OSError:
+                log.exception(
+                    "delete_exported_file_by_relpath: unlink failed for %s",
+                    abs_path)
+                return {**empty, "item_id": item_id}
+        else:
+            missing.append(rel)
+        with self.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM lineage WHERE export_relpath = ?", (rel,))
+            self._touch()
+        # Clear edit_exported only when no other shipped row survives
+        # for the item — otherwise the watermark still belongs.
+        if item_id:
+            remaining = self.store.conn.execute(
+                "SELECT 1 FROM lineage "
+                "WHERE phase = 'edit' AND source_item_id = ? "
+                "AND export_relpath LIKE 'Exported Media/%' "
+                "LIMIT 1", (item_id,),
+            ).fetchone()
+            if remaining is None:
+                try:
+                    self.set_edit_exported(item_id, False)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "delete_exported_file_by_relpath: "
+                        "set_edit_exported(False) failed for %s",
+                        item_id)
+        return {
+            "deleted_files": deleted,
+            "missing_files": missing,
+            "rows_deleted": 1,
+            "item_id": item_id,
         }
 
     def rescan_exported_media(self) -> int:

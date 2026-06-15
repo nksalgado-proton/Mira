@@ -570,6 +570,7 @@ class ShareCutsPage(QWidget):
         self.list_page.back_requested.connect(self._on_back)
         self.list_page.new_cut_requested.connect(self._on_new_cut)
         self.list_page.open_requested.connect(self._on_open_cut)
+        self.list_page.pool_open_requested.connect(self._on_open_pool)
         self.list_page.adjust_requested.connect(self._on_adjust_cut)
         self.list_page.rename_requested.connect(self._on_rename_cut)
         self.list_page.delete_requested.connect(self._on_delete_cut)
@@ -580,6 +581,14 @@ class ShareCutsPage(QWidget):
         self.detail_page.export_requested.connect(self._on_export_cut)
         self.detail_page.play_requested.connect(self._on_play_cut)
         self._stack.addWidget(self.detail_page)
+        # The #exported pool detail — flat grid of every shipped file
+        # with multi-select + cascade-aware Delete (spec/61 §1.4 + the
+        # Nelson 2026-06-15 task: explicit deletion of exported media).
+        from mira.ui.shared.pool_detail_page import PoolDetailPage
+        self.pool_page = PoolDetailPage()
+        self.pool_page.back_requested.connect(self._on_pool_back)
+        self.pool_page.files_deleted.connect(self._on_pool_files_deleted)
+        self._stack.addWidget(self.pool_page)
         outer.addWidget(self._stack)
 
     # ── lifecycle (the PickPage / EditHostPage contract) ─────────────
@@ -870,6 +879,34 @@ class ShareCutsPage(QWidget):
     def _on_detail_back(self) -> None:
         self.refresh()
         self._stack.setCurrentWidget(self.list_page)
+
+    def _on_open_pool(self) -> None:
+        """Open the #exported pool detail (spec/61 §1.4 — the
+        cascade-aware Delete surface). Re-resolves the live ledger so
+        a re-entry after a delete reflects the current ship set."""
+        if self._eg is None:
+            return
+        self.pool_page.open_pool(self._eg)
+        self._stack.setCurrentWidget(self.pool_page)
+
+    def _on_pool_back(self) -> None:
+        self.pool_page.close_event()
+        self.refresh()
+        self._stack.setCurrentWidget(self.list_page)
+
+    def _on_pool_files_deleted(self, _relpaths) -> None:
+        """A pool delete completed. The List view's pool card sub-line
+        + every Cut's item count read from
+        ``exported_files()`` / ``cut_show_totals()`` — refresh them so
+        the user sees the cascade reflected on Back without an extra
+        click. If a Cut session is open, ``_session_page`` lives in
+        the stack and its ledger is keyed by export_relpath; reloading
+        on its next entry picks up the cascade."""
+        try:
+            self.refresh()
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "ShareCutsPage: refresh after pool delete failed")
 
     def _on_play_cut(self, cut_id: str) -> None:
         """Play all (spec/61 §5.4): the full-screen rehearsal — photos

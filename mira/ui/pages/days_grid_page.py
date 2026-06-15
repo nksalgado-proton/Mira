@@ -274,6 +274,14 @@ class DaysGridPage(QWidget):
         # Cluster mode tracks the cluster we drilled into.
         self._mode = "day"  # "day" | "cluster"
         self._cluster: Optional[CullCluster] = None
+        # Paths-mode (no gateway) callbacks. The standalone / wizard
+        # Quick Sweep host registers these so cluster drill-in colours
+        # sub-grid cells from the QS ledger and Back-from-cluster can
+        # ask the host for a fresh day-grid GridItem list (so cluster
+        # covers repaint with their updated aggregate state after the
+        # user marks members inside).
+        self._paths_state_lookup = None      # Callable[[Path], Optional[str]]
+        self._paths_day_rebuild = None       # Callable[[], list[GridItem]]
         # Counts displayed in the toolbar progress block.
         self._reviewed = 0
         self._total = 0
@@ -491,6 +499,27 @@ class DaysGridPage(QWidget):
 
     setItemsForPreview = setDay  # alias for smoke convenience
 
+    def set_paths_mode_callbacks(
+        self,
+        state_lookup=None,
+        day_rebuild=None,
+    ) -> None:
+        """Register the paths-mode (no-gateway) callbacks. The Quick
+        Sweep host calls this once before `setDay` to plug:
+
+        * ``state_lookup(path) -> "picked" | "skipped" | "compare" | None``
+          — used by `_open_cluster` to paint sub-grid member cells
+          from the QS ledger (cluster covers carry their own state on
+          the GridItem, but the members don't until we look them up).
+        * ``day_rebuild() -> list[GridItem]`` — called by
+          `_close_cluster` so the cluster cover repaints with its
+          fresh aggregate state after the user marked members inside.
+
+        Both default to ``None`` (gateway-mode pages skip both
+        paths). Pass ``None`` to clear when the QS session ends."""
+        self._paths_state_lookup = state_lookup
+        self._paths_day_rebuild = day_rebuild
+
     # ── Gateway → grid items ───────────────────────────────────────────
 
     def _refresh_from_gateway(self) -> None:
@@ -626,9 +655,33 @@ class DaysGridPage(QWidget):
     def _open_cluster(self, cluster: CullCluster) -> None:
         """Drill into ``cluster`` — replace the grid contents with its
         members. Mark the cluster as browsed (spec/32 §2.10).
+
+        Paths mode (standalone / wizard Quick Sweep — no gateway): the
+        host's ``state_lookup`` callback colours each member; the
+        bucket-browsed mark has no gateway target, so it is a no-op
+        here. When no lookup is registered, members render in the
+        Thumb's "no state" placeholder.
         """
         if self._eg is None:
-            log.debug("cluster open ignored: no event gateway")
+            members: list[GridItem] = []
+            lookup = self._paths_state_lookup
+            for ci in cluster.members:
+                thumb_state = (
+                    lookup(ci.path) if lookup is not None else None
+                )
+                members.append(GridItem(
+                    item_id=ci.item_id,
+                    item_kind=ci.kind,
+                    state=thumb_state,
+                    visited=False,
+                    exported=False,
+                    _path=ci.path,
+                ))
+            self._mode = "cluster"
+            self._cluster = cluster
+            self._items = members
+            self._update_counts()
+            self._refresh()
             return
         try:
             self._eg.set_bucket_browsed(cluster.bucket_key, self._phase)
@@ -675,6 +728,14 @@ class DaysGridPage(QWidget):
         # visited tick now that the cluster has been browsed.
         if self._eg is not None:
             self._refresh_from_gateway()
+        elif self._paths_day_rebuild is not None:
+            # Paths mode (Quick Sweep) — ask the host for fresh day
+            # GridItems so the cluster cover's aggregate state, count
+            # and split chip reflect the latest QS ledger.
+            self._day_items = list(self._paths_day_rebuild())
+            self._items = list(self._day_items)
+            self._update_counts()
+            self._refresh()
         else:
             self._items = list(self._day_items)
             self._update_counts()

@@ -1837,8 +1837,17 @@ class MainWindow(QMainWindow):
                 picked = int(cell.get("picked", 0))
                 skipped = max(0, decided - picked)
                 try:
-                    buckets = len(eg.cached_buckets(
-                        "pick", d.day_number))
+                    # The "Clusters · N" badge counts only real clusters
+                    # (burst / focus_bracket / exposure_bracket / repeat)
+                    # — matching the day grid where those kinds collapse
+                    # to a single cluster cover. Individual / moment /
+                    # video buckets flatten to per-item cells, so they
+                    # are not "clusters" in the user-visible sense.
+                    from mira.picked.model import REAL_CLUSTER_KINDS
+                    buckets = sum(
+                        1 for b in eg.cached_buckets("pick", d.day_number)
+                        if b.kind in REAL_CLUSTER_KINDS
+                    )
                 except Exception:                                  # noqa: BLE001
                     log.exception(
                         "cached_buckets failed for day %s of %s",
@@ -2990,15 +2999,24 @@ class MainWindow(QMainWindow):
         if not days:
             return set()
 
+        # Sort each day chronologically so the grid order matches the
+        # viewer's own timestamp sort (see _open_quick_sweep_standalone
+        # for the same rule).
         items_by_day: dict[int, list] = {}
         for day in days:
             wanted = {
                 Path(ci.item_id)
                 for b in day.buckets for ci in b.items
             }
-            items_by_day[day.day_number] = [
-                it for it in items if it.path in wanted
-            ]
+            items_by_day[day.day_number] = sorted(
+                (it for it in items if it.path in wanted),
+                key=lambda it: (
+                    it.timestamp is None,
+                    it.timestamp.isoformat()
+                    if it.timestamp is not None else "",
+                    it.path.name,
+                ),
+            )
 
         # The QS session helpers (`_qs_build_day_snapshots`,
         # `_qs_build_grid_items`) read from ``self._quick_sweep``. The
@@ -3060,7 +3078,11 @@ class MainWindow(QMainWindow):
             )
             title = snap.title if snap is not None else f"Day {day_number}"
             date_iso = snap.date_iso if snap is not None else ""
-            grid_items = self._qs_build_grid_items(day_items)
+            grid_items = self._qs_build_grid_items(day_number)
+            grid_page.set_paths_mode_callbacks(
+                state_lookup=self._qs_lookup_thumb_state,
+                day_rebuild=lambda: self._qs_build_grid_items(day_number),
+            )
             grid_page.setDay(day_number, title, date_iso, grid_items)
             stack.setCurrentWidget(grid_page)
             grid_page.setFocus()
@@ -4723,16 +4745,26 @@ class MainWindow(QMainWindow):
             return
 
         # Group SourceItems by day so day-card clicks can rebuild the
-        # grid without re-scanning.
+        # grid without re-scanning. Sort each day chronologically so
+        # the grid order matches the QuickSweepPage viewer's own
+        # timestamp sort (otherwise clicking the first grid cell
+        # would open the viewer at a different item — they'd disagree
+        # on what "first" means).
         items_by_day: dict[int, list] = {}
         for day in days:
             wanted = {
                 Path(ci.item_id)
                 for b in day.buckets for ci in b.items
             }
-            items_by_day[day.day_number] = [
-                it for it in items if it.path in wanted
-            ]
+            items_by_day[day.day_number] = sorted(
+                (it for it in items if it.path in wanted),
+                key=lambda it: (
+                    it.timestamp is None,
+                    it.timestamp.isoformat()
+                    if it.timestamp is not None else "",
+                    it.path.name,
+                ),
+            )
 
         self._quick_sweep = {
             "mode": "standalone",
@@ -4804,11 +4836,18 @@ class MainWindow(QMainWindow):
             self._quick_sweep.get("default", STATE_PICKED_LEGACY)
             if self._quick_sweep is not None else STATE_PICKED_LEGACY
         )
+        from mira.picked.model import REAL_CLUSTER_KINDS
         out: list = []
         for d in days:
             items_count = sum(
                 len(b.items) for b in d.buckets)
-            bucket_count = len(d.buckets)
+            # Match the gateway path: only real clusters (burst /
+            # focus_bracket / exposure_bracket / repeat) count toward
+            # the "Clusters · N" badge — individuals / moments /
+            # videos flatten to per-item cells in the grid.
+            bucket_count = sum(
+                1 for b in d.buckets if b.kind in REAL_CLUSTER_KINDS
+            )
             # Count picked / skipped per day from the ledger — Compare
             # counts as picked at Save time (QS contract); the bar
             # follows suit so the visible green tracks the kept pool.
@@ -4873,7 +4912,11 @@ class MainWindow(QMainWindow):
             )
             title = snap.title if snap is not None else f"Day {day_number}"
             date_iso = snap.date_iso if snap is not None else ""
-            grid_items = self._qs_build_grid_items(day_items)
+            grid_items = self._qs_build_grid_items(day_number)
+            self.days_grid_page.set_paths_mode_callbacks(
+                state_lookup=self._qs_lookup_thumb_state,
+                day_rebuild=lambda: self._qs_build_grid_items(day_number),
+            )
             self.days_grid_page.setDay(
                 day_number, title, date_iso, grid_items)
             self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
@@ -4937,48 +4980,170 @@ class MainWindow(QMainWindow):
         self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
         self.days_grid_page.setFocus()
 
-    def _qs_build_grid_items(self, items) -> list:
-        """SourceItem list → list[GridItem] for paths-mode DaysGridPage.
-        Items with no explicit decision in the session ledger fall back
-        to the resolved QS default so cells render the all-green entry
-        (or all-red if the user flipped ``quick_sweep_default_state``)."""
+    def _qs_lookup_thumb_state(self, path: Path):
+        """Translate a path's QS ledger state into the Thumb's wire
+        value (``"picked"`` / ``"skipped"`` / ``"compare"`` / ``None``).
+        Registered with :meth:`DaysGridPage.set_paths_mode_callbacks`
+        so the page can colour cluster-drill-in member cells without
+        a gateway."""
+        from core.cull_state import (
+            STATE_CANDIDATE as _C,
+            STATE_DISCARDED as _D,
+            STATE_KEPT as _K,
+        )
+        if self._quick_sweep is None:
+            return None
+        ledger = self._quick_sweep["state"]
+        default = self._quick_sweep["default"]
+        s = ledger.get(path, default)
+        if s == _K:
+            return "picked"
+        if s == _D:
+            return "skipped"
+        if s == _C:
+            return "compare"
+        return None
+
+    def _qs_build_grid_items(self, day_number: int) -> list:
+        """Build the day grid's GridItems from the session's PickDay
+        structure for ``day_number``. Real clusters (burst /
+        focus_bracket / exposure_bracket / repeat) collapse to ONE
+        cluster-cover GridItem with the §5a cluster_type icon, count
+        chip and (for mixed clusters) split chip; the cover carries
+        ``_cull_cluster`` so DaysGridPage's drill-in walks the members.
+        All other bucket kinds (individual / moment / video) flatten
+        to per-item cells. Items without an explicit decision in the
+        QS ledger fall back to the resolved
+        ``quick_sweep_default_state`` so the grid renders the all-
+        green-on-entry contract (or all-red when the user flipped the
+        setting).
+
+        Sort order: cluster covers + flat cells interleaved
+        chronologically by the cell's anchor capture time — clusters
+        anchor on their earliest member, flat cells anchor on their
+        own capture time. The same ISO-string sort key the
+        ``QuickSweepPage`` viewer uses, so the grid and the viewer
+        walk the day in the same order (the user clicks the leftmost
+        cell, the viewer opens with the leftmost cell selected — no
+        sneaky re-shuffle on entry)."""
+        from mira.picked.model import CullCluster, REAL_CLUSTER_KINDS
+        from mira.picked.status import CellColor
         from mira.ui.pages.days_grid_page import GridItem
         from core.cull_state import (
             STATE_CANDIDATE as STATE_CANDIDATE_LEGACY,
             STATE_DISCARDED as STATE_SKIPPED_LEGACY,
             STATE_KEPT as STATE_PICKED_LEGACY,
         )
-        # Map legacy QS state values to the Thumb's state key.
         state_to_thumb = {
             STATE_PICKED_LEGACY: "picked",
             STATE_SKIPPED_LEGACY: "skipped",
             STATE_CANDIDATE_LEGACY: "compare",
         }
+        cluster_type_for_kind = {
+            "burst": "burst",
+            "focus_bracket": "focus",
+            "exposure_bracket": "exposure",
+            "repeat": "repeated",
+        }
         is_video_ext = {
             ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".mts", ".mpg",
             ".mpeg",
         }
-        ledger = self._quick_sweep["state"] if self._quick_sweep else {}
-        default = (
-            self._quick_sweep.get("default", STATE_PICKED_LEGACY)
-            if self._quick_sweep is not None else STATE_PICKED_LEGACY
-        )
-        out: list = []
-        for it in items:
-            kind = (
-                "video" if it.path.suffix.lower() in is_video_ext
-                else "photo"
+        if self._quick_sweep is None:
+            return []
+        days = self._quick_sweep.get("days") or []
+        day = next(
+            (d for d in days if d.day_number == day_number), None)
+        if day is None:
+            return []
+        ledger = self._quick_sweep["state"]
+        default = self._quick_sweep["default"]
+
+        def _cluster_anchor(bucket) -> str:
+            times = [
+                ci.capture_time_corrected
+                for ci in bucket.items
+                if ci.capture_time_corrected
+            ]
+            return min(times) if times else ""
+
+        raw: list[tuple[str, "GridItem"]] = []
+        for bucket in day.buckets:
+            is_real_cluster = (
+                bucket.kind in REAL_CLUSTER_KINDS
+                and len(bucket.items) > 1
             )
-            s = ledger.get(it.path, default)
-            out.append(GridItem(
-                item_id=str(it.path),
-                item_kind=kind,
-                state=state_to_thumb.get(s),
-                visited=False,
-                exported=False,
-                _path=it.path,
-            ))
-        return out
+            if is_real_cluster:
+                picked_n = 0
+                skipped_n = 0
+                for ci in bucket.items:
+                    s = ledger.get(ci.path, default)
+                    if s == STATE_PICKED_LEGACY:
+                        picked_n += 1
+                    elif s == STATE_SKIPPED_LEGACY:
+                        skipped_n += 1
+                # Aggregate cluster colour: mixed when both picked +
+                # skipped members exist; else the dominant side.
+                if picked_n > 0 and skipped_n > 0:
+                    cover_state = "mixed"
+                    split = (picked_n, skipped_n)
+                elif skipped_n > 0:
+                    cover_state = "skipped"
+                    split = None
+                elif picked_n > 0:
+                    cover_state = "picked"
+                    split = None
+                else:
+                    cover_state = None
+                    split = None
+                cover_path = (
+                    bucket.items[0].path if bucket.items else None
+                )
+                cull_cluster = CullCluster(
+                    bucket_key=bucket.bucket_key,
+                    kind=bucket.kind,
+                    title=bucket.title,
+                    members=bucket.items,
+                    color=CellColor.UNTOUCHED,  # painted via GridItem.state
+                    detection_source=getattr(
+                        bucket, "detection_source", "") or "",
+                    camera=getattr(bucket, "camera", "") or "",
+                )
+                cover = GridItem(
+                    item_id=f"cluster:{bucket.bucket_key}",
+                    item_kind="cluster",
+                    state=cover_state,
+                    visited=False,
+                    exported=False,
+                    cluster_type=cluster_type_for_kind.get(bucket.kind),
+                    cluster_count=len(bucket.items),
+                    cluster_split=split,
+                    _path=cover_path,
+                    _cull_cluster=cull_cluster,
+                )
+                raw.append((_cluster_anchor(bucket), cover))
+            else:
+                for ci in bucket.items:
+                    kind = (
+                        "video"
+                        if ci.path.suffix.lower() in is_video_ext
+                        else "photo"
+                    )
+                    s = ledger.get(ci.path, default)
+                    flat = GridItem(
+                        item_id=str(ci.path),
+                        item_kind=kind,
+                        state=state_to_thumb.get(s),
+                        visited=False,
+                        exported=False,
+                        _path=ci.path,
+                    )
+                    raw.append(
+                        (ci.capture_time_corrected or "", flat))
+        # Chronological sort: empty timestamps to the back (matches
+        # the viewer's "None last" rule), then ISO ascending.
+        raw.sort(key=lambda pair: (pair[0] == "", pair[0]))
+        return [g for _, g in raw]
 
     def _qs_open_viewer_for_item(self, item_id: str) -> None:
         """Click on a Days Grid cell from a QS session → open the
@@ -5067,7 +5232,6 @@ class MainWindow(QMainWindow):
             if day_number is None:
                 self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
                 return
-            day_items = self._quick_sweep["current_day_items"]
             snap = next(
                 (s for s in self._qs_build_day_snapshots(
                     self._quick_sweep["days"])
@@ -5076,7 +5240,11 @@ class MainWindow(QMainWindow):
             )
             title = snap.title if snap is not None else f"Day {day_number}"
             date_iso = snap.date_iso if snap is not None else ""
-            grid_items = self._qs_build_grid_items(day_items)
+            grid_items = self._qs_build_grid_items(day_number)
+            self.days_grid_page.set_paths_mode_callbacks(
+                state_lookup=self._qs_lookup_thumb_state,
+                day_rebuild=lambda: self._qs_build_grid_items(day_number),
+            )
             self.days_grid_page.setDay(
                 day_number, title, date_iso, grid_items)
         else:

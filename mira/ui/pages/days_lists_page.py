@@ -321,13 +321,13 @@ class DayRow(Card):
         meta.setContentsMargins(0, 0, 0, 0)
         meta.setSpacing(2)
         meta.setAlignment(Qt.AlignmentFlag.AlignTop)
-        buckets_label = QLabel(
-            f"Buckets · <b>{snapshot.buckets}</b>"
+        clusters_label = QLabel(
+            f"Clusters · <b>{snapshot.buckets}</b>"
         )
-        buckets_label.setObjectName("Sub")
-        buckets_label.setTextFormat(Qt.TextFormat.RichText)
-        buckets_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        meta.addWidget(buckets_label)
+        clusters_label.setObjectName("Sub")
+        clusters_label.setTextFormat(Qt.TextFormat.RichText)
+        clusters_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        meta.addWidget(clusters_label)
         items_label = QLabel(f"Items · <b>{snapshot.items}</b>")
         items_label.setObjectName("Sub")
         items_label.setTextFormat(Qt.TextFormat.RichText)

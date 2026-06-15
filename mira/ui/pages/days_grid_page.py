@@ -1471,40 +1471,77 @@ class DaysGridPage(QWidget):
 
     # ── Export-mode primary trigger (spec/68 §3) ─────────────────────
 
-    def _on_export_clicked(self) -> None:
-        """Submit this day's not-yet-shipped green cells to the spec/60
-        batch engine via the spec/59 §8 ``BatchExportQueue``.
+    def _collect_ship_cells(self) -> tuple:
+        """Walk ``self._items`` and return ``(photo_cells, segment_rows,
+        snapshot_cells)`` for the spec/60 batch — the trio that
+        :func:`submit_export_batch` translates into PhotoUnits + the
+        slice-4-walker ClipUnits + frame-extracted snapshot PhotoUnits.
 
-        The pool is the day's flat photo cells whose state is
-        ``picked`` and that aren't already in
-        ``exported_item_ids()`` — re-shipping a file the user hasn't
-        un-exported is a no-op here (the user toggles red first to
-        clear the on-disk file + lineage, then green again to
-        re-ship). The engine + queue are locked (spec/68 §4); this
-        handler only builds the manifest and enqueues."""
-        if self._eg is None or not self._export_mode:
-            return
-        if self._eg.event_root is None:
-            return
-        from mira.ui.exported.batch import (
-            ExportCell,
-            day_label_for,
-            submit_export_batch,
-        )
+        Photo + cluster cells obey their cell ``state``. Video cells
+        EXPAND into their picked segments + picked snapshots (spec/56 —
+        a video's children carry the ship decisions; the parent video
+        cell is the aggregate). Already-shipped ids drop here so the
+        re-ship gate matches the photo path."""
+        from mira.ui.exported.batch import ExportCell, SnapshotCell
 
-        already_shipped = set()
+        already_shipped: set = set()
         try:
             already_shipped = self._eg.exported_item_ids()
         except Exception:                                          # noqa: BLE001
             log.exception("DaysGridPage: exported_item_ids failed")
 
-        # Flat photo cells that are green AND not yet shipped. Cluster
-        # covers are skipped (their members surface as their own flat
-        # cells in this grid; the cluster cover itself has no ship
-        # decision).
         event_root = Path(self._eg.event_root)
-        cells_to_ship: list[ExportCell] = []
+        try:
+            phase_states = self._eg.phase_states("edit")
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: phase_states('edit') failed")
+            phase_states = {}
+
+        photo_cells: list[ExportCell] = []
+        segment_rows: list = []
+        snapshot_cells: list[SnapshotCell] = []
+
         for it in self._items:
+            if it.item_kind == "cluster":
+                continue
+            if it.item_kind == "video":
+                # spec/56: a video's PICKED segments + snapshots are the
+                # ship units; the parent video cell is the aggregate.
+                try:
+                    segs = self._eg.video_segments(it.item_id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "DaysGridPage: video_segments(%s) failed",
+                        it.item_id)
+                    segs = []
+                for seg in segs:
+                    if seg.item_id in already_shipped:
+                        continue
+                    ps = phase_states.get(seg.item_id)
+                    if (ps is None) or (ps.state != STATE_PICKED):
+                        continue
+                    segment_rows.append(seg)
+                try:
+                    snaps = self._eg.video_snapshots(it.item_id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "DaysGridPage: video_snapshots(%s) failed",
+                        it.item_id)
+                    snaps = []
+                for snap in snaps:
+                    if snap.item_id in already_shipped:
+                        continue
+                    ps = phase_states.get(snap.item_id)
+                    if (ps is None) or (ps.state != STATE_PICKED):
+                        continue
+                    snapshot_cells.append(SnapshotCell(
+                        item_id=snap.item_id,
+                        video_item_id=it.item_id,
+                        at_ms=int(snap.at_ms),
+                        day_number=self._day_number,
+                    ))
+                continue
+            # Photo path — existing per-cell behaviour.
             if it.item_kind != "photo":
                 continue
             if it.state != STATE_PICKED:
@@ -1520,13 +1557,42 @@ class DaysGridPage(QWidget):
             )
             if not src or not Path(src).is_file():
                 continue
-            cells_to_ship.append(ExportCell(
+            photo_cells.append(ExportCell(
                 item_id=it.item_id,
                 path=Path(src),
                 day_number=self._day_number,
             ))
+        return photo_cells, segment_rows, snapshot_cells
 
-        if not cells_to_ship:
+    def _on_export_clicked(self) -> None:
+        """Submit this day's not-yet-shipped green cells to the spec/60
+        batch engine via the spec/59 §8 ``BatchExportQueue``.
+
+        The pool is the day's flat photo cells whose state is
+        ``picked`` and that aren't already in
+        ``exported_item_ids()`` — re-shipping a file the user hasn't
+        un-exported is a no-op here (the user toggles red first to
+        clear the on-disk file + lineage, then green again to
+        re-ship). For video cells, the ship targets are the video's
+        picked SEGMENTS (spec/56 — ClipUnits via the slice-4 walker)
+        and picked SNAPSHOTS (PhotoUnits over a frame extracted from
+        the source video). The engine + queue are locked (spec/68 §4);
+        this handler only builds the manifest and enqueues."""
+        if self._eg is None or not self._export_mode:
+            return
+        if self._eg.event_root is None:
+            return
+        from mira.ui.exported.batch import (
+            day_label_for,
+            submit_export_batch,
+        )
+
+        cells_to_ship, segment_rows, snapshot_cells = (
+            self._collect_ship_cells())
+        total_units = (
+            len(cells_to_ship) + len(segment_rows) + len(snapshot_cells))
+
+        if total_units == 0:
             show_info(
                 self,
                 tr("Nothing new to ship"),
@@ -1549,10 +1615,10 @@ class DaysGridPage(QWidget):
             )
             return
 
-        if len(cells_to_ship) >= 50 and not confirm(
+        if total_units >= 50 and not confirm(
             self,
-            tr("Export {n} photo(s)?").replace(
-                "{n}", str(len(cells_to_ship))),
+            tr("Export {n} item(s)?").replace(
+                "{n}", str(total_units)),
             tr(
                 "The job runs in the background — the strip below the "
                 "menu bar shows progress. You can keep working."
@@ -1570,6 +1636,8 @@ class DaysGridPage(QWidget):
                 cells=cells_to_ship,
                 day_labels=day_labels,
                 parent_widget=self,
+                segment_rows=segment_rows,
+                snapshot_cells=snapshot_cells,
             )
         except Exception as exc:                                   # noqa: BLE001
             log.exception("DaysGridPage: export submit failed")

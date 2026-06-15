@@ -2058,15 +2058,50 @@ class EditorPage(QWidget):
                 self._refresh_workshop_model()
                 return
 
+    def _status_target_at_cursor(self) -> Optional[tuple]:
+        """The Pick/Skip/Toggle target under the cursor (spec/59 §4 —
+        "the old culler rule").
+
+        Rules (cursor-position-only, never the click-driven
+        ``self._selection``):
+
+        * Cursor on a SNAPSHOT (within one frame of tolerance) →
+          ``("snapshot", snap_item_id)``.
+        * Otherwise → ``("segment", seg_item_id)`` for the segment
+          whose half-open ``[lo, hi)`` interval contains the cursor.
+          A position exactly ON a marker therefore targets the
+          segment that the marker STARTS (i.e. the clip to the
+          marker's right, per spec/56 §1).
+
+        Returns ``None`` when no video is loaded yet.
+        """
+        if self._video_id is None or not self._segment_items:
+            return None
+        tol = max(1, self._workshop_bar.frame_ms())
+        pos = self._video_pos_ms
+        # Snapshot wins — first-class graphical stops.
+        for s in self._snapshots:
+            if abs(int(s.at_ms) - pos) <= tol:
+                return ("snapshot", s.item_id)
+        # Else the segment whose [lo, hi) interval contains the cursor.
+        idx = self._segment_at(pos)
+        if idx is None or idx >= len(self._segment_items):
+            return None
+        return ("segment", self._segment_items[idx].id)
+
     def _toggle_status_at_selection(self) -> None:
-        """Flip the SELECTED segment or snapshot's phase state.
-        Anywhere else on the timeline this toggles the segment the
-        cursor is inside (spec/59 §4 — Toggle Status works anywhere)."""
-        if self._eg is None or self._selection is None:
+        """Flip the status of the stop UNDER THE CURSOR (spec/59 §4
+        "the old culler rule"). Snapshot wins; otherwise the segment
+        containing the cursor. Selection is for the development panel,
+        NOT for status — Pick/Skip/Toggle never read it (Nelson
+        2026-06-15: "the status control is not working as it should ...
+        look at the legacy and implement it exactly as it was")."""
+        if self._eg is None:
             return
-        kind, _idx, item_id = self._selection
-        if kind not in ("segment", "snapshot"):
+        target = self._status_target_at_cursor()
+        if target is None:
             return
+        kind, item_id = target
         try:
             ps_map = self._eg.phase_states(self._phase)
             current = ps_map.get(item_id)
@@ -2423,11 +2458,14 @@ class EditorPage(QWidget):
     # ── Locked-keymap routing for video items ──────────────────────────
 
     def _on_pick_key(self) -> None:
-        if self._video_id is None or self._selection is None:
+        """P — set the stop UNDER THE CURSOR to Picked (spec/59 §4).
+        Snapshot wins; otherwise the segment containing the cursor."""
+        if self._video_id is None or self._eg is None:
             return
-        _kind, _idx, item_id = self._selection
-        if self._eg is None:
+        target = self._status_target_at_cursor()
+        if target is None:
             return
+        _kind, item_id = target
         try:
             self._eg.set_phase_state(item_id, self._phase, STATE_PICKED)
         except Exception:                                          # noqa: BLE001
@@ -2435,11 +2473,13 @@ class EditorPage(QWidget):
         self._refresh_workshop_model()
 
     def _on_skip_key(self) -> None:
-        if self._video_id is None or self._selection is None:
+        """X — set the stop UNDER THE CURSOR to Skipped (spec/59 §4)."""
+        if self._video_id is None or self._eg is None:
             return
-        _kind, _idx, item_id = self._selection
-        if self._eg is None:
+        target = self._status_target_at_cursor()
+        if target is None:
             return
+        _kind, item_id = target
         try:
             self._eg.set_phase_state(item_id, self._phase, STATE_SKIPPED)
         except Exception:                                          # noqa: BLE001
@@ -2447,6 +2487,7 @@ class EditorPage(QWidget):
         self._refresh_workshop_model()
 
     def _on_toggle_key(self) -> None:
+        """Space — flip the stop UNDER THE CURSOR (spec/59 §4)."""
         if self._video_id is None:
             return
         self._toggle_status_at_selection()

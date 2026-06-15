@@ -330,6 +330,131 @@ def test_toggle_key_flips_selected_snapshot(
     page.close_event()
 
 
+# ── Cursor-position routing (spec/59 §4 "the old culler rule") ───────
+#
+# Nelson 2026-06-15: "the status control is not working as it should ...
+# look at the legacy and implement it exactly as it was". The rules:
+# * cursor on a SNAPSHOT → toggle the snapshot (NOT the underlying
+#   segment — they're independent items even though the snapshot sits
+#   inside one of the segments on the timeline)
+# * cursor on a MARKER → toggle the segment the marker OWNS (the
+#   segment starting at this marker, per spec/56's half-open [lo, hi))
+# * cursor anywhere INSIDE a segment → toggle that segment
+
+
+def test_pick_key_on_snapshot_position_toggles_snapshot_not_segment(
+        qapp, app_gateway, store_and_gateway):
+    """Cursor on a snapshot: P writes the snapshot's state and leaves
+    the underlying segment's state untouched. The two are independent
+    items per spec/56 §1 — the snapshot wins on tie."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    seg0_id = page._segment_items[0].id
+    page._video_pos_ms = 5_000
+    page._add_snapshot_at_playhead()
+    snap_id = page._snapshots[0].item_id
+    # Both are now in the DB. Skip the segment explicitly to detect a
+    # spurious write to it on snapshot keypress.
+    eg.set_phase_state(seg0_id, "edit", "skipped")
+    eg.set_phase_state(snap_id, "edit", "skipped")
+    # Cursor still at 5000 = snapshot position.
+    assert page._video_pos_ms == 5_000
+    page._on_pick_key()
+    assert eg.phase_states("edit")[snap_id].state == "picked"
+    assert eg.phase_states("edit")[seg0_id].state == "skipped"     # NOT touched
+    page.close_event()
+
+
+def test_skip_key_on_snapshot_position_toggles_snapshot_not_segment(
+        qapp, app_gateway, store_and_gateway):
+    """X behaves symmetrically — on a snapshot, the snapshot flips,
+    the underlying segment stays."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    seg0_id = page._segment_items[0].id
+    page._video_pos_ms = 5_000
+    page._add_snapshot_at_playhead()
+    snap_id = page._snapshots[0].item_id
+    eg.set_phase_state(seg0_id, "edit", "picked")
+    page._on_skip_key()
+    assert eg.phase_states("edit")[snap_id].state == "skipped"
+    assert eg.phase_states("edit")[seg0_id].state == "picked"      # NOT touched
+    page.close_event()
+
+
+def test_pick_key_at_marker_position_targets_owning_segment(
+        qapp, app_gateway, store_and_gateway):
+    """Cursor exactly on a marker: per spec/56's half-open [lo, hi)
+    tiling the marker STARTS the segment to its right. P targets that
+    owning segment, not the segment on the marker's LEFT."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    page._video_pos_ms = 4_000
+    page._add_marker_at_playhead()
+    # Two segments now: [0, 4000) and [4000, 10000). The marker at
+    # 4000 starts segment 1.
+    left_id = page._segment_items[0].id
+    right_id = page._segment_items[1].id
+    eg.set_phase_state(left_id, "edit", "skipped")
+    eg.set_phase_state(right_id, "edit", "skipped")
+    # Cursor sits ON the marker (4000).
+    assert page._video_pos_ms == 4_000
+    page._on_pick_key()
+    assert eg.phase_states("edit")[right_id].state == "picked"
+    assert eg.phase_states("edit")[left_id].state == "skipped"     # NOT touched
+    page.close_event()
+
+
+def test_pick_key_mid_segment_targets_containing_segment(
+        qapp, app_gateway, store_and_gateway):
+    """Cursor in the middle of a segment (no nearby snapshot/marker):
+    P targets the segment whose [lo, hi) contains the cursor."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    page._video_pos_ms = 4_000
+    page._add_marker_at_playhead()
+    left_id = page._segment_items[0].id
+    right_id = page._segment_items[1].id
+    eg.set_phase_state(left_id, "edit", "skipped")
+    eg.set_phase_state(right_id, "edit", "skipped")
+    # Walk into the middle of the LEFT segment.
+    page._on_video_position(2_000)
+    page._on_pick_key()
+    assert eg.phase_states("edit")[left_id].state == "picked"
+    assert eg.phase_states("edit")[right_id].state == "skipped"    # NOT touched
+    page.close_event()
+
+
+def test_keys_ignore_stale_selection_act_on_cursor(
+        qapp, app_gateway, store_and_gateway):
+    """Selection is for the development panel, NOT for status. If the
+    user clicked a snapshot (selection = snapshot) and then seeked
+    AWAY to a segment-only position, P targets the segment under the
+    cursor — never the stale snapshot selection. This is the legacy
+    rule the user invoked: "the status control is not working as it
+    should ... implement it exactly as it was"."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    seg0_id = page._segment_items[0].id
+    page._video_pos_ms = 5_000
+    page._add_snapshot_at_playhead()
+    snap_id = page._snapshots[0].item_id
+    # Place the click-driven selection on the snapshot. The user now
+    # seeks away to a position inside segment 0 with no snapshot here.
+    page._selection = ("snapshot", -1, snap_id)
+    page._on_video_position(1_000)        # mid-segment, far from snapshot
+    eg.set_phase_state(snap_id, "edit", "picked")
+    eg.set_phase_state(seg0_id, "edit", "skipped")
+    page._on_pick_key()
+    assert eg.phase_states("edit")[seg0_id].state == "picked"
+    assert eg.phase_states("edit")[snap_id].state == "picked"      # untouched (already picked)
+    # And X: the SEGMENT flips, the stale snapshot selection stays.
+    page._on_skip_key()
+    assert eg.phase_states("edit")[seg0_id].state == "skipped"
+    assert eg.phase_states("edit")[snap_id].state == "picked"
+    page.close_event()
+
+
 # ── Workshop reset semantics ──────────────────────────────────────────
 
 

@@ -74,6 +74,7 @@ from mira.ui.i18n import tr
 from mira.ui.media.photo_cache import photo_cache
 from mira.ui.media.photo_overlay import PhotoExposureOverlay
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+from mira.ui.pages.video_transport import VideoTransportBar
 
 log = logging.getLogger(__name__)
 
@@ -231,8 +232,58 @@ class PickerPage(QWidget):
 
         # ── STATE_BAR — hidden. State lives on the MediaHost border. ──
         self._surface.set_region_visible("state_bar", False)
-        # ── COMPACT_ROW — hidden (position lives in the top bar now). ──
-        self._surface.set_region_visible("compact_row", False)
+        # ── COMPACT_ROW — video transport reveal slot. The 64 px
+        # ``compact_row`` host stays VISIBLE on every item so the
+        # canvas position is invariant under photo↔video sweeps
+        # (Nelson 2026-06-15 — "the line where the transport buttons
+        # are placed has to exist (empty) when photos are displayed").
+        # Only the transport widget INSIDE the row toggles: hidden on
+        # photos, shown on videos. The compact_row QSS rule is
+        # transparent + borderless so an empty slot is invisible.
+        self._transport_bar = VideoTransportBar()
+        self._transport_bar.play_pause_requested.connect(
+            self.viewport.video_toggle_play)
+        self._transport_bar.seek_requested.connect(
+            self.viewport.video_seek)
+        self._transport_bar.volume_changed.connect(
+            self.viewport.video_set_volume)
+        self._transport_bar.speed_changed.connect(
+            self._on_video_speed_changed)
+        # The viewport pushes timeline state out as we play.
+        self.viewport.video_position_changed.connect(
+            self._on_video_position)
+        self.viewport.video_duration_changed.connect(
+            self._on_video_duration)
+        self.viewport.video_playing_changed.connect(
+            self._transport_bar.set_playing)
+        self.viewport.video_error.connect(self._transport_bar.show_error)
+        cr_layout = self._surface.compact_row.layout()
+        cr_layout.setContentsMargins(0, 0, 0, 0)
+        cr_layout.addWidget(self._transport_bar)
+        # Pin the compact_row host at the transport bar's fixed height
+        # (Nelson 2026-06-15 Fix A — "the slot reserves 64 px on photos
+        # and videos so the canvas bottom edge is pixel-identical
+        # across the boundary"). BasePickSurface ships the region at
+        # min=48 / max=96 (_make_h_region); setFixedHeight overrides
+        # both so the slot can't collapse on a photo or grow on a video.
+        self._surface.compact_row.setFixedHeight(64)
+        # Seed the viewport with the transport bar's initial volume so
+        # the first video respects the slider's default position. The
+        # speed selector defaults to 1× which matches the viewport's
+        # default playback rate — no need to push.
+        self.viewport.video_set_volume(self._transport_bar.volume.value())
+        # Hide the transport widget; the row container stays visible
+        # so the canvas geometry is invariant.
+        self._transport_bar.setVisible(False)
+        # Per-path video metadata cache + last position/duration the
+        # transport painted. Duration is seeded from ffprobe on landing
+        # so the scrubber + the |▶ "jump to end" snap to the correct
+        # endpoint before QtMultimedia's async ``durationChanged``
+        # arrives (Nelson 2026-06-15 Fix B — the fps/frame-step path
+        # retired with ◀|/|▶ repurposed as start/end jumps).
+        self._video_meta_cache: dict = {}
+        self._video_pos_ms = 0
+        self._video_duration_ms = 0
         # ── TOOLS — hidden (cluster controls moved into the nav row). ──
         self._surface.set_region_visible("tools", False)
 
@@ -572,11 +623,16 @@ class PickerPage(QWidget):
 
         # Teach the shared PhotoCache about this bucket's items so the
         # thumb tier is reachable for the items the surface is about to
-        # navigate over.
+        # navigate over. **Videos are filtered out** — the proxy builder
+        # decodes via PIL.Image.open which fails on MP4 ("cannot
+        # identify image file …"); videos play through QMediaPlayer
+        # via the viewport, no still proxy ever needed.
         try:
             sha256_by_path: dict = {}
             for ci in self._items:
                 if not getattr(ci, "path", None):
+                    continue
+                if getattr(ci, "kind", "photo") != "photo":
                     continue
                 it = self._eg.item(ci.item_id)
                 if it is None or not getattr(it, "sha256", None):
@@ -677,13 +733,16 @@ class PickerPage(QWidget):
         return exif
 
     def _spawn_exif_prefetch(self) -> None:
-        """One ``read_exif_batch`` over every item path in the current
-        bucket. Generation-tagged so a moved cursor drops stale results."""
+        """One ``read_exif_batch`` over every PHOTO item path in the
+        current bucket. Generation-tagged so a moved cursor drops stale
+        results. Videos are skipped — the exposure overlay is photo-only
+        (the transport-bar reveal handles video chrome separately)."""
         self._exif_gen += 1
         gen = self._exif_gen
         paths = [
             Path(ci.path) for ci in self._items
             if getattr(ci, "path", None) is not None
+            and getattr(ci, "kind", "photo") == "photo"
         ]
         if not paths:
             return
@@ -809,15 +868,18 @@ class PickerPage(QWidget):
             return
         self._index = index
         item = vp_item.payload
+        kind = getattr(item, "kind", "photo")
+        is_video = kind == "video"
 
         eff = self._effective(item.item_id)
         self._sync_state_pill(eff)
 
         # Exposure overlay ON the photo.
-        exif = self._exif_for(item.path)
-        self._expo_overlay.set_html(
-            caption_html(exif)
-            if getattr(item, "kind", "photo") == "photo" else "")
+        if is_video:
+            self._expo_overlay.set_html("")
+        else:
+            exif = self._exif_for(item.path)
+            self._expo_overlay.set_html(caption_html(exif))
 
         # AF — the viewport stores it for F10's inspection overlay.
         self.viewport.set_af_point(self._resolve_af(item.path))
@@ -829,20 +891,78 @@ class PickerPage(QWidget):
         # snapshots are out of scope here (the watermark is photo-only).
         shipped = (
             self._watermark_enabled
-            and getattr(item, "kind", "photo") == "photo"
+            and not is_video
             and item.item_id in self._exported_set
         )
         self.viewport.set_exported_watermark(shipped)
 
         # The lens button only makes sense for photos.
-        self._fullres_btn.setVisible(
-            getattr(item, "kind", "photo") == "photo")
+        self._fullres_btn.setVisible(not is_video)
 
-        # Sharpness (skips until sharp pixels land).
-        self._refresh_sharpness(item)
+        # spec/70 row 11 — the transport bar appears only on a landed
+        # video (Nelson 2026-06-15: "a few transport buttons appear").
+        # The whole compact_row collapses on photos so the canvas takes
+        # the space; the row appears with the transport when a video
+        # lands. ffprobe seeds the frame-step size lazily per path.
+        self._video_pos_ms = 0
+        self._video_duration_ms = 0
+        if is_video:
+            self._seed_video_metadata(item.path)
+            self._transport_bar.set_position(0, self._video_duration_ms)
+            self._transport_bar.set_playing(False)
+            self._transport_bar.setVisible(True)
+        else:
+            self._transport_bar.setVisible(False)
+
+        # Sharpness (skips until sharp pixels land). Skip for videos —
+        # the score is photo-only.
+        if not is_video:
+            self._refresh_sharpness(item)
 
         # Position chip.
         self._refresh_position_label()
+
+    # ── Video transport handlers ───────────────────────────────────────
+
+    def _seed_video_metadata(self, path) -> None:
+        """Probe (once per path) for duration so the scrubber paints +
+        the |▶ end-jump snaps to the real endpoint before
+        QtMultimedia's async ``durationChanged`` arrives. Best-effort —
+        a failed probe leaves the duration at 0 until the player
+        reports it."""
+        key = str(path) if path is not None else None
+        if key is None:
+            return
+        meta = self._video_meta_cache.get(key)
+        if meta is None:
+            try:
+                from core.video_extract import probe_video
+                meta = probe_video(path)
+            except Exception:                                      # noqa: BLE001
+                meta = None
+            self._video_meta_cache[key] = meta
+        dur = int(getattr(meta, "duration_ms", 0) or 0)
+        if dur > 0:
+            self._video_duration_ms = dur
+
+    def _on_video_position(self, pos_ms: int) -> None:
+        self._video_pos_ms = max(0, int(pos_ms))
+        self._transport_bar.set_position(
+            self._video_pos_ms, self._video_duration_ms)
+
+    def _on_video_duration(self, dur_ms: int) -> None:
+        self._video_duration_ms = max(0, int(dur_ms))
+        self._transport_bar.set_position(
+            self._video_pos_ms, self._video_duration_ms)
+
+    def _on_video_speed_changed(self, text: str) -> None:
+        """Parse the speed selector's "0.5×" / "1×" / "2×" labels and
+        push the rate to the viewport's media player."""
+        try:
+            rate = float(text.replace("×", "").strip())
+        except ValueError:
+            return
+        self.viewport.video_set_playback_rate(rate)
 
     def _refresh_position_label(self) -> None:
         if len(self._items) > 1:

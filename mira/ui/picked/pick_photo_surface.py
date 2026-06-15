@@ -287,7 +287,7 @@ class PickPhotoSurface(QWidget):
         """Mirror the cull state onto the (hidden) BasePickSurface KDPill AND
         push it to the BasePickSurface MEDIA host so its canonical state
         border paints. The MEDIA-border-as-state mechanism is the SAME
-        one QuickSweepPage and VideoPickPage use (spec/42 Nelson
+        one QuickSweepPage and the unified PickerPage use (spec/42 Nelson
         2026-06-04)."""
         labels = {
             STATE_PICKED: "✓ Pick",

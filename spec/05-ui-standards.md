@@ -190,6 +190,18 @@ does NOT mean "minimize all chrome everywhere":
 (Legacy docs/16.) Roles via `setObjectName`; light + dark themes always updated
 together; no inline `setStyleSheet` in widget code.
 
+Recent additions to the role catalog (the QSS files are the canonical list;
+this is a discoverability aid):
+
+- **Video Picker (surface 11)** — `#VideoTransport` (the strip card under the
+  stage), `#VideoScrubber` (position slider), `#VideoTime` (bold tabular time
+  readout), `#VideoVolume` + `#VideoVolIcon` (volume slider + icon),
+  `#VideoSpeed` (speed selector — extends the base `QComboBox`),
+  `#VideoDurationChip` / `#VideoVisitedEye` / `#VideoExportedChip` /
+  `#VideoBigPlay` (stage overlays riding the PhotoViewport). Every clickable
+  role carries hover · pressed · disabled affordances + pointing-hand cursor
+  per §1.
+
 ### 5.2 Keyboard nav + fullscreen on every photo-display surface
 
 (`[[feedback_keyboard_and_fullscreen_required]]`) — minimum viable, not

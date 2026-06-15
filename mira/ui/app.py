@@ -136,7 +136,7 @@ def _silence_libav_stderr() -> None:
     Best-effort and Windows-only: any failure is swallowed — a noisy
     console is a far smaller problem than a failed launch. Genuine decode
     failures still reach the user through ``QMediaPlayer.errorOccurred``
-    (→ ``VideoPickPage._on_player_error``), independent of this, so
+    (→ ``PickerPage`` video error display, independent of this, so
     QUIET hides nothing the user needs. Raise the level to ``16``
     (``AV_LOG_ERROR``) here if you want real FFmpeg errors back on the
     console while debugging.

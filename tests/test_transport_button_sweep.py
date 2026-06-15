@@ -61,19 +61,21 @@ def _transport_btn(w) -> QPushButton:
     return btns[0]
 
 
-def test_video_pick_page_transport_is_canonical(qapp):
-    """The Primary-role colour that used to paint Pick-video's
-    Play/Pause as a CTA is gone — the role is TransportButton, the
-    width is pinned."""
-    from mira.ui.picked.video_pick_page import VideoPickPage
-    page = VideoPickPage()
-    b = page._nav_play
+def test_unified_picker_video_transport_is_canonical(qapp):
+    """The Primary-role colour that used to paint video Play/Pause as
+    a CTA is gone — the role is TransportButton, the width is pinned.
+    (Nelson 2026-06-15: spec/70 row 11 folded into 07. PickerPage owns
+    the video transport bar on its compact_row reveal — same contract,
+    no separate page.)"""
+    from mira.ui.pages.video_transport import VideoTransportBar
+    bar = VideoTransportBar()
+    b = bar.play_btn
     assert b.objectName() == "TransportButton"
     w_before = b.sizeHint().width()
     set_transport_playing(b, True)
     assert b.sizeHint().width() == w_before
-    # The misrouted Primary role is GONE under the page.
-    misrouted = [x for x in page.findChildren(QPushButton)
+    # The misrouted Primary role is GONE under the bar.
+    misrouted = [x for x in bar.findChildren(QPushButton)
                  if x is b and x.objectName() == "Primary"]
     assert misrouted == []
 

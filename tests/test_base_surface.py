@@ -404,7 +404,7 @@ class TestComposition:
         assert s.nav.layout().count() >= 2
 
     def test_a_full_cull_surface_uses_all_regions(self, app):
-        """VideoPickPage-shape: every region visible."""
+        """Video-Pick shape: every region visible."""
         s = BasePickSurface()
         s.top_bar.layout().addWidget(back_button())
         s.state_bar.layout().addWidget(kd_pill())

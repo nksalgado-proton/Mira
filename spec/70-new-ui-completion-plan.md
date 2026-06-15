@@ -69,7 +69,7 @@ is stale — it lists Share/Cuts as route-swapped, but this tree wires the legac
 | 08 Editor | ✅ `editor_page.py` (shell) | ❌ | `edited/edit_host_page.py`, `edit_page.py`, `edit_video_page.py` |
 | 09 Share / Cuts | ✅ `share_cuts_page.py` | ✅ `ShareCutsPage` | — (`shared/cuts_shell.py` retired 2026-06-15) |
 | ~~10 Full Resolution~~ | **RETIRED 2026-06-14** — spec/63 §4 F10 lens supersedes | — | — |
-| 11 Video Picker | ✅ `video_picker_page.py` (shell) | ❌ | `picked/video_pick_page.py` |
+| ~~11 Video Picker~~ | **FOLDED INTO 07 — 2026-06-15.** No separate page; video is handled inline in `picker_page.py` (`PhotoViewport` arm-on-landing canvas + transport bar revealed on video). Per Nelson: seamless photo→video, same frame. | — | — (`video_picker_page.py` + `picked/video_pick_page.py` retired) |
 | 12 Video Editor | ✅ `video_editor_page.py` (shell) | ❌ | `edited/edit_video_page.py` |
 | 13 New Cut dialog | ✅ `new_cut_dialog.py` | ❌ | `shared/new_cut_dialog.py` (legacy) |
 | Export (new phase) | being built (spec/66 slice 5) | (in progress) | n/a — net new |
@@ -165,9 +165,33 @@ Order chosen by dependency + risk:
 
 ### Phase 4 — Video surfaces (heaviest; QMediaPlayer + spec/56)
 
-- **11 Video Picker** — `VideoPickerPage` rides the viewport's arm-on-landing
-  video path (spec/63 §3, slice 5e already proved it); poster extract; transport
-  bar with marker positions. Retire `picked/video_pick_page.py`.
+- ⚠️ **11 Video Picker — SUPERSEDED 2026-06-15 (no separate page).** A standalone
+  `VideoPickerPage` was built first, but the requirement (Nelson) is a **seamless
+  photo→video transition inside the ONE Picker**: same frame, same layout, the
+  canvas becomes a video imperceptibly, and a few transport buttons appear —
+  never a page jump. A separate page is by definition a jump, so it retires and
+  video folds into **Surface 07 (`picker_page.py`)**:
+  - The seamless canvas already exists: `PhotoViewport` arms video on landing
+    (poster→live flip in place, spec/63 §1/§3); PickPage already embeds it and
+    already passes item `kind`. No second media surface is needed or wanted.
+  - Videos STAY in the day bucket and are decided with the same Pick/Skip
+    grammar (they were never to be excluded).
+  - The transport bar (frame-step / play-pause / scrubber / volume / speed,
+    wired through the viewport's `video_*` signals) lives in PickPage's
+    `compact_row`, **revealed only when the landed item is a video, hidden on
+    photos** — the "few more buttons appear" moment; everything else on the
+    frame is unchanged.
+  - The proxy/EXIF prefetch skips `kind=='video'` (kills the "cannot identify
+    image file …MP4" warning from the still-render path).
+  - The Days-Grid kind-branch that routed video clicks to a separate page is
+    removed; every cell — photo or video — opens the one PickerPage.
+  - spec/63 §4 keymap pinned: Space toggles the **decision** (not transport —
+    the HTML mockup's "Space = play/pause" is the explicit deviation the spec
+    locks against); Tab is transport.
+  Retired: `mira/ui/pages/video_picker_page.py` (the separate page) and
+  `mira/ui/picked/video_pick_page.py` (legacy). Tests move onto PickPage:
+  `compact_row` reveal toggling with item `kind`, the transport contract, the
+  poster→live bridge, and F10 inertness on video.
 - **12 Video Editor** — same player integration + spec/56 marker partitions +
   draggable trim/segment composer; segment export via the spec/60 engine. Retire
   `edited/edit_video_page.py`.

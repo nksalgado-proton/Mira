@@ -760,6 +760,10 @@ class PhotoViewport(QWidget):
         self._video_live = False                    # poster flipped to frames
         self._video_playing = False                 # authoritative play state
         self._video_autoplay = True
+        # Cached audio / rate so the host can set them before the player
+        # arms on the first video landing; applied in ``_ensure_player``.
+        self._video_volume: float = 0.80
+        self._video_rate: float = 1.0
 
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
@@ -1035,6 +1039,11 @@ class PhotoViewport(QWidget):
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(self._video_widget)
+        # Apply the host-set volume + playback rate from before the
+        # player armed (so the first video respects the transport bar's
+        # initial slider/select values).
+        self._audio.setVolume(self._video_volume)
+        self._player.setPlaybackRate(self._video_rate)
         self._player.positionChanged.connect(self.video_position_changed.emit)
         self._player.durationChanged.connect(self.video_duration_changed.emit)
         self._player.playbackStateChanged.connect(self._on_playback_state)
@@ -1113,6 +1122,22 @@ class PhotoViewport(QWidget):
     def video_seek(self, ms: int) -> None:
         if self._player is not None and self._video_armed is not None:
             self._player.setPosition(int(ms))
+
+    def video_set_volume(self, percent: int) -> None:
+        """0..100 → 0.0..1.0 on the held QAudioOutput. Cached so a
+        change made before the player arms applies on the next clip."""
+        v = max(0.0, min(1.0, int(percent) / 100.0))
+        self._video_volume = v
+        if self._audio is not None:
+            self._audio.setVolume(v)
+
+    def video_set_playback_rate(self, rate: float) -> None:
+        """Set the player's playback rate (1.0 = real time). Cached so a
+        change made before the player arms applies on the next clip."""
+        r = max(0.05, float(rate))
+        self._video_rate = r
+        if self._player is not None:
+            self._player.setPlaybackRate(r)
 
     def shutdown_video(self) -> None:
         """Tear the player down (hosts call on close)."""

@@ -2124,8 +2124,12 @@ class MainWindow(QMainWindow):
         * Cluster sub-grid mode + photo → ``picker_page.open_to_cluster(...)``
           opens the REAL cluster bucket so Enter sweep, intra-cluster
           ← →, and Combined preview (exposure brackets) all work.
-        * Video → today still routes via the legacy ``video_pick_page``
-          on PickPage (the Video Picker reconciliation is Phase 4).
+        * Video → also ``picker_page.open_to_item(...)``. The unified
+          PickerPage handles both kinds: ``PhotoViewport`` arms video
+          on landing (poster→live in place) and the transport-bar
+          reveal on ``compact_row`` shows the few buttons that decorate
+          the video for as long as it is the current item. No separate
+          page, no jump (spec/70 row 11 folded into 07, 2026-06-15).
 
         Back from the Picker emits :sig:`closed` which routes the user
         back to the Days Grid (refreshed) via the bridge flag in
@@ -2154,6 +2158,11 @@ class MainWindow(QMainWindow):
         if self._edit_phase_active:
             self._open_edit_surface_for_item(event_id, day_number, item_id)
             return
+        # spec/70 row 11 folded into 07 (Nelson 2026-06-15): ONE
+        # PickerPage handles photos AND videos. The viewport already
+        # arms video on landing (poster→live in place) and the
+        # compact_row transport bar reveals only when the landed item
+        # is a video. No kind branch; no separate page.
         # If the user is inside a cluster sub-grid and clicked a member,
         # route to the cluster-bucket entry so in-cluster nav works.
         cluster = self.days_grid_page.current_cluster()

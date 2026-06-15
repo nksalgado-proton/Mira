@@ -5,12 +5,11 @@ from an interrupted prior run, …). Three fixes pinned here:
 1. ``core.thumb_cache.ensure_thumb`` self-heals an unreadable cached
    JPEG: drop the file (and the ``.vetted`` sidecar) and fall through
    to the ladder.
-2. ``mira.ui.picked.pick_page._decode_thumbnail`` logs failures
-   at WARNING (was DEBUG) so the app log carries enough breadcrumbs
-   to triage a repro.
-3. ``pick_page._placeholder_pixmap`` builds a kind-aware fallback
-   so a cell never stays visually blank; ``_load_some_thumbs``
-   substitutes it when extraction failed permanently.
+2. Thumb decoders log failures at WARNING (was DEBUG) so the app log
+   carries enough breadcrumbs to triage a repro.
+3. ``mira.ui.picked.placeholder.placeholder_pixmap`` builds a kind-aware
+   fallback so a cell never stays visually blank (extracted from the
+   retired ``picked/pick_page.py`` shell during the Surface 11 wiring).
 
 Module name dodges the conftest ``_SLICE_B_FILES`` bulk-skip.
 """
@@ -157,7 +156,7 @@ def test_ensure_thumb_keeps_a_healthy_cached_file_untouched(tmp_path):
 
 
 def test_placeholder_pixmap_built_for_video(qapp):
-    from mira.ui.picked.pick_page import _placeholder_pixmap
+    from mira.ui.picked.placeholder import placeholder_pixmap as _placeholder_pixmap
 
     pm = _placeholder_pixmap("video")
     assert pm is not None
@@ -166,7 +165,7 @@ def test_placeholder_pixmap_built_for_video(qapp):
 
 
 def test_placeholder_pixmap_built_for_photo(qapp):
-    from mira.ui.picked.pick_page import _placeholder_pixmap
+    from mira.ui.picked.placeholder import placeholder_pixmap as _placeholder_pixmap
 
     pm = _placeholder_pixmap("photo")
     assert pm is not None
@@ -177,7 +176,7 @@ def test_placeholder_pixmap_is_cached(qapp):
     """A placeholder is built once + reused — same QPixmap returned on
     repeat calls (saves rebuilding the same QPainter dance per blank
     cell on a big day)."""
-    from mira.ui.picked.pick_page import _placeholder_pixmap
+    from mira.ui.picked.placeholder import placeholder_pixmap as _placeholder_pixmap
 
     a = _placeholder_pixmap("video")
     b = _placeholder_pixmap("video")

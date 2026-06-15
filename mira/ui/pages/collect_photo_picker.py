@@ -20,9 +20,8 @@ presenting two short stages:
   thumb to preview; double-click OR Enter on the highlight commits.
 
 Single-selection only. There is no multi-pick — that's the explicit
-distinction from :class:`~mira.ui.picked.pick_page.PickPage` and
-:class:`~mira.ui.picked.quick_sweep_page.QuickSweepPage`, which are
-both built for multi-select Pick decisions.
+distinction from the multi-select Pick surfaces (the redesigned Picker /
+Video Picker / Quick Sweep), all built for batch decisions.
 
 Performance for 2k-photo-day scans (Nelson 2026-06-09 eyeball #2):
 * Videos are filtered out (the picker is for stills).

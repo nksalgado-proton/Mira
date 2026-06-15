@@ -1918,6 +1918,176 @@ QWidget#SurfaceCompactRow {{
     border: none;
 }}
 
+/* ──────────────────────────────────────────────────────────────────
+ * Video Picker (surface 11) — transport strip + stage overlays.
+ * spec/05 §5.1 — every role defined in BOTH themes; widgets opt in
+ * via setObjectName, no inline setStyleSheet. The strip lives in the
+ * BasePickSurface compact_row slot under the stage; the overlays ride
+ * the PhotoViewport directly.
+ * ───────────────────────────────────────────────────────────────── */
+
+/* Transport strip — card under the stage. */
+QWidget#VideoTransport {{
+    background-color: {base};
+    border-top: 1px solid {border_subtle};
+    border-bottom: 1px solid {border_subtle};
+}}
+
+/* Bold tabular time readout. */
+QLabel#VideoTime {{
+    color: {text};
+    font-weight: 700;
+    padding: 0 8px;
+}}
+
+/* Volume-icon glyph, neutral muted tone. */
+QLabel#VideoVolIcon {{
+    color: {text_muted};
+    font-size: 14px;
+    padding: 0 2px;
+}}
+
+/* Position scrubber — accent played portion, white-on-accent handle.
+ * All clickable affordance states present (hover · pressed · disabled). */
+QSlider#VideoScrubber::groove:horizontal {{
+    background: {subtle};
+    height: 8px;
+    border-radius: 4px;
+}}
+QSlider#VideoScrubber::sub-page:horizontal {{
+    background: {primary};
+    border-radius: 4px;
+}}
+QSlider#VideoScrubber::add-page:horizontal {{
+    background: {subtle};
+    border-radius: 4px;
+}}
+QSlider#VideoScrubber::handle:horizontal {{
+    background: {text_inverse};
+    border: 2px solid {primary};
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 9px;
+}}
+QSlider#VideoScrubber::handle:horizontal:hover {{
+    border-color: {primary_hover};
+}}
+QSlider#VideoScrubber::handle:horizontal:pressed {{
+    background: {primary};
+    border-color: {primary_pressed};
+}}
+QSlider#VideoScrubber:disabled::sub-page:horizontal {{
+    background: {disabled_text};
+}}
+QSlider#VideoScrubber:disabled::handle:horizontal {{
+    background: {disabled_text};
+    border-color: {disabled_text};
+}}
+
+/* Volume slider — thin accent strip. */
+QSlider#VideoVolume::groove:horizontal {{
+    background: {border_subtle};
+    height: 4px;
+    border-radius: 2px;
+}}
+QSlider#VideoVolume::sub-page:horizontal {{
+    background: {primary};
+    border-radius: 2px;
+}}
+QSlider#VideoVolume::add-page:horizontal {{
+    background: {border_subtle};
+    border-radius: 2px;
+}}
+QSlider#VideoVolume::handle:horizontal {{
+    background: {text_inverse};
+    border: 1px solid {primary};
+    width: 12px;
+    margin: -4px 0;
+    border-radius: 6px;
+}}
+QSlider#VideoVolume::handle:horizontal:hover {{
+    border-color: {primary_hover};
+}}
+QSlider#VideoVolume::handle:horizontal:pressed {{
+    background: {primary};
+    border-color: {primary_pressed};
+}}
+QSlider#VideoVolume:disabled::sub-page:horizontal {{
+    background: {disabled_text};
+}}
+QSlider#VideoVolume:disabled::handle:horizontal {{
+    background: {disabled_text};
+    border-color: {disabled_text};
+}}
+
+/* Speed selector — inherits the slim QComboBox base; pin the metrics
+ * so it sits flush with the 36 px transport row. */
+QComboBox#VideoSpeed {{
+    padding: 4px 10px;
+    min-height: 28px;
+}}
+QComboBox#VideoSpeed:hover {{
+    border-color: {hover_border};
+}}
+QComboBox#VideoSpeed:focus {{
+    border: 2px solid {focus_border};
+}}
+QComboBox#VideoSpeed:disabled {{
+    color: {disabled_text};
+    background-color: {disabled_bg};
+}}
+
+/* ── Stage overlays (ride the PhotoViewport — always over the dark
+ * video bed; the photo_canvas_bg context is what licenses the
+ * white-on-dark treatment even in light theme). */
+
+QLabel#VideoDurationChip {{
+    background-color: rgba(8, 10, 16, 188);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}}
+
+QLabel#VideoVisitedEye {{
+    background-color: rgba(8, 10, 16, 188);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    padding: 4px 8px;
+}}
+
+QLabel#VideoExportedChip {{
+    background-color: {primary};
+    color: {primary_text};
+    border: none;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-weight: 700;
+}}
+
+QPushButton#VideoBigPlay {{
+    background-color: rgba(8, 10, 16, 200);
+    color: #ffffff;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    border-radius: 36px;
+    font-size: 28px;
+    font-weight: 700;
+}}
+QPushButton#VideoBigPlay:hover {{
+    border-color: {primary};
+}}
+QPushButton#VideoBigPlay:pressed {{
+    background-color: rgba(8, 10, 16, 230);
+    border-color: {primary_pressed};
+}}
+QPushButton#VideoBigPlay:disabled {{
+    color: rgba(255, 255, 255, 0.40);
+    border-color: rgba(255, 255, 255, 0.16);
+}}
+
 QPushButton#EventInfoTagChip {{
     border: 1px solid {border_strong};
     border-radius: 12px;

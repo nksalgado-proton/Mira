@@ -3,7 +3,7 @@
 Every photo/video surface now opens a modal dialog with a uniform
 two-column table — monospace ``KEY`` on the left, action on the
 right. The QSS roles (``ShortcutsDialog`` / ``ShortcutKey`` /
-``ShortcutAction``) match what video_pick_page already shipped; the
+``ShortcutAction``) match what the unified PickerPage video reveal uses; the
 other surfaces had ad-hoc ``QMessageBox.information`` strings — those
 move to this dialog at the same time.
 

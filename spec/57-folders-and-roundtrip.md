@@ -82,6 +82,13 @@ event root by construction).
 
 ### 2.3 Stacker outputs — the one exception
 
+> **Refined by [spec/72](72-third-party-roundtrips.md) §2 (2026-06-14):** the
+> root-file→bracket match is a small **confirm step** ("Review merged results");
+> on adopt, the bracket **collapses to its merged master** and the member frames
+> are **auto-Skipped**; the master carries an item-level consolidation badge. No
+> schema change (`provenance='stack_output'` + `StackBracket.output_item_id` /
+> `action='stacked'` already exist).
+
 Stack consolidation **never happens in Mira** — always in external
 tools. The round trip:
 

@@ -61,6 +61,13 @@ Edit and Export are **two distinct surfaces**, deliberately de-cluttered:
   red = drop**. Materialising the green set to JPEGs is the existing batch
   export engine (spec/60), now triggered from here instead of from Edit.
 
+> **Superseded by [spec/72](72-third-party-roundtrips.md) §1 (2026-06-14):**
+> third-party returns are no longer `Edited Media/` *candidates* promoted on
+> green — they hardlink straight into `Exported Media/` on scan (Model B), show
+> only on Export with a provenance badge, and are keep-or-delete like any export.
+> Mira's own renders stay commit-on-export. The paragraph below is the original
+> framing.
+
 **External edits count as edited (LRC / Helicon, spec/57).** A keeper can be
 developed *outside* Mira via the round trip — projected out, edited in
 Lightroom Classic / Helicon / etc., then scanned back under `Edited Media` and

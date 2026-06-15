@@ -684,6 +684,21 @@ class ViewportItem:
     pixmap: Optional[QPixmap] = None
 
 
+#: Inner padding (px) between the media and the canvas edge.
+#: Keeps a sliver of the blurred backdrop visible all around the photo
+#: / video, so the media never touches the outer state-border (Nelson
+#: 2026-06-15 — "make the photo/video a little bit smaller so it never
+#: touches any border"). The hairline media frame painted in
+#: :meth:`PhotoViewport.paintEvent` sits just outside the inset rect.
+_MEDIA_INNER_PAD = 8
+
+#: Hairline frame around the displayed media — white at 38 % alpha,
+#: same FRAME_COLOR :class:`BlurredPhotoCanvas` carries on the Cut
+#: surfaces. Works on both the darkened blurred backdrop and the live
+#: video bed because both contexts read as dark.
+_MEDIA_FRAME_COLOR = QColor(255, 255, 255, 96)
+
+
 class PhotoViewport(QWidget):
     """The one way a current item gets on screen (spec/63 §1)."""
 
@@ -702,6 +717,10 @@ class PhotoViewport(QWidget):
     truth_requested = pyqtSignal()           # F10
     fullscreen_requested = pyqtSignal()      # F / F11
     back_requested = pyqtSignal()            # Esc
+
+    #: See module-level :data:`_MEDIA_INNER_PAD` / :data:`_MEDIA_FRAME_COLOR`.
+    _MEDIA_INNER_PAD = _MEDIA_INNER_PAD
+    _MEDIA_FRAME_COLOR = _MEDIA_FRAME_COLOR
 
     # ── video timeline (for surface scrubbers) ────────────────────
     video_position_changed = pyqtSignal(int)   # ms
@@ -1373,8 +1392,17 @@ class PhotoViewport(QWidget):
             size = self.size()
         if size.width() < 2 or size.height() < 2:
             return
+        # Inner padding so the media never touches the canvas edge —
+        # the soft blurred backdrop wraps it. The frame painted in
+        # ``paintEvent`` lives just outside this rect so it sits
+        # against the backdrop, never against the canvas border.
+        pad = self._MEDIA_INNER_PAD
+        inner = QSize(
+            max(2, size.width() - 2 * pad),
+            max(2, size.height() - 2 * pad),
+        )
         scaled = base.scaled(
-            size,
+            inner,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
         if override is None:
@@ -1389,6 +1417,10 @@ class PhotoViewport(QWidget):
         # the MediaCanvas contract (spec/63 §6.1).
         self._sync_exported_watermark_geometry()
         self.photo_geometry_changed.emit()
+        # The media rect just moved — pin the video widget to it.
+        if (self._video_widget is not None
+                and not self._video_widget.isHidden()):
+            self._sync_video_widget_geometry()
 
     # ── AF-point overlay (full-absorb 5a) ─────────────────────────
 
@@ -1608,14 +1640,17 @@ class PhotoViewport(QWidget):
 
     def paintEvent(self, _ev) -> None:  # noqa: N802
         """Paint the blurred-cover backdrop behind the QLabel + the
-        out-of-stack QVideoWidget.
+        out-of-stack QVideoWidget, then a hairline frame just outside
+        the media rect.
 
         The sharp media (centered QLabel pixmap; centered QVideoWidget
         for live video) paints on top — the backdrop fills the
-        letterbox bars instead of a flat black canvas. Per-frame cost
-        is one scale of the cached 48×48 tiny (cheap on
-        ``SmoothTransformation``); the downscale itself rides
-        ``_invalidate_backdrop`` on item / sharp change."""
+        letterbox bars instead of a flat black canvas, and the 1 px
+        frame separates the media from the soft backdrop. Per-frame
+        cost is one scale of the cached 48×48 tiny (cheap on
+        ``SmoothTransformation``) + one rect outline; the tiny
+        downscale rides ``_invalidate_backdrop`` on item / sharp
+        change."""
         from mira.ui.design.blurred_backdrop import blurred_cover, blurred_tiny
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -1636,6 +1671,16 @@ class PhotoViewport(QWidget):
             # No source yet — fall back to a neutral dark so the
             # canvas reads as "loading" rather than "broken".
             painter.fillRect(rect, QColor(20, 22, 30))
+        # Hairline frame around the displayed media (Nelson
+        # 2026-06-15 — "perceptible but not too thick"). Sits 1 px
+        # outside the inset media rect so the QVideoWidget / QLabel
+        # pixmap doesn't paint over it on the next frame.
+        media_rect = self.image_rect_in_photo_area()
+        if (not media_rect.isEmpty()
+                and media_rect != self._label.rect()):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(self._MEDIA_FRAME_COLOR, 1))
+            painter.drawRect(media_rect.adjusted(-1, -1, 0, 0))
         painter.end()
 
     def focusNextPrevChild(self, next: bool) -> bool:  # noqa: N802, A002

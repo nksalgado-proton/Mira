@@ -214,25 +214,33 @@ def test_video_widget_letterboxes_to_label_pixmap_not_full_canvas(
     bars around it show the blurred backdrop.
 
     With a 16:9 source in a 4:3 viewport the widget's height shrinks
-    to fit the aspect — its top/bottom never touch the canvas edges."""
+    to fit the aspect — its top/bottom never touch the canvas edges.
+    The pixmap is also inset by ``_MEDIA_INNER_PAD`` per side so the
+    media never touches the canvas border."""
     from PyQt6.QtCore import QSize
     from mira.ui.media.photo_viewport import PhotoViewport
     vp = PhotoViewport()
     try:
         vp.resize(QSize(1200, 900))                     # 4:3 canvas
         vp.show()
-        # Push a 16:9 pixmap through the display path.
-        _push_label_pixmap(vp, 160, 90)
+        pad = vp._MEDIA_INNER_PAD                        # 8
+        _push_label_pixmap(vp, 160, 90)                  # 16:9 source
         rect = vp.video_widget_rect()
-        # _fit scales the source to KeepAspectRatio fit inside the
-        # label (1200 wide → 675 high for 16:9). The rect is centered
-        # in the label.
-        assert rect.width() == 1200
-        assert rect.height() == 675
-        # Centered vertically — (900-675)/2 = 112.
-        assert rect.y() == 112
-        # The full canvas would be (0, 0, 1200, 900); confirm we're
-        # NOT painting that — that's the bar guarantee.
+        # Inner pad shrinks the fit area to (1200-2p, 900-2p); 16:9
+        # then constrains width → height. Width = 1200 - 2p = 1184;
+        # height = 1184 * 9/16 = 666. Centered in the 1200×900 label.
+        assert rect.width() == 1200 - 2 * pad
+        assert rect.height() == 666
+        # Left/top symmetric inset; vertical bars top + bottom.
+        assert rect.x() == pad
+        assert rect.y() == (900 - 666) // 2
+        # Confirm the canvas edge is not touched on any side.
+        assert rect.x() >= pad
+        assert rect.y() >= pad
+        assert rect.right() <= 1200 - pad
+        assert rect.bottom() <= 900 - pad
+        # Confirm we're NOT painting the full canvas — that's the
+        # bar guarantee.
         assert rect != vp.rect()
     finally:
         vp.deleteLater()
@@ -242,21 +250,48 @@ def test_video_widget_letterboxes_portrait_label_pixmap_horizontally(
     qapp, tmp_path,
 ):
     """The other axis: a portrait source (taller than the canvas)
-    letterboxes left/right — backdrop shows in the side bars."""
+    letterboxes left/right — backdrop shows in the side bars. The
+    inner pad shaves another 2×pad off the available space."""
     from PyQt6.QtCore import QSize
     from mira.ui.media.photo_viewport import PhotoViewport
     vp = PhotoViewport()
     try:
         vp.resize(QSize(1200, 600))                     # 2:1 canvas
         vp.show()
-        # 1:2 portrait source.
-        _push_label_pixmap(vp, 45, 90)
+        pad = vp._MEDIA_INNER_PAD                        # 8
+        _push_label_pixmap(vp, 45, 90)                   # 1:2 source
         rect = vp.video_widget_rect()
-        # Height pinned, width shrunk to honour the portrait aspect.
-        assert rect.height() == 600
-        assert rect.width() == 300                      # 600 * (1/2)
-        # Centered horizontally — (1200-300)/2 = 450.
-        assert rect.x() == 450
+        # Inner pad shrinks the fit area to (1184, 584); the portrait
+        # aspect constrains height → width. Height = 584; width =
+        # 584 * (1/2) = 292. Centered in the 1200×600 label.
+        assert rect.height() == 600 - 2 * pad
+        assert rect.width() == 292
+        assert rect.y() == pad
+        assert rect.x() == (1200 - 292) // 2
+    finally:
+        vp.deleteLater()
+
+
+def test_media_never_touches_the_canvas_edge(qapp, tmp_path):
+    """Nelson 2026-06-15 final touch — "make the photo/video a little
+    bit smaller so it never touches any border". With ANY source
+    aspect, the displayed pixmap's rect leaves the inner pad as a
+    margin all around. The hairline frame painted in ``paintEvent``
+    sits in that gap so it never butts against the canvas border."""
+    from PyQt6.QtCore import QSize
+    from mira.ui.media.photo_viewport import PhotoViewport
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(1200, 900))
+        vp.show()
+        pad = vp._MEDIA_INNER_PAD
+        for w, h in ((160, 90), (90, 160), (100, 100), (240, 75)):
+            _push_label_pixmap(vp, w, h)
+            rect = vp.video_widget_rect()
+            assert rect.x() >= pad, (w, h, rect)
+            assert rect.y() >= pad, (w, h, rect)
+            assert rect.right() <= vp.width() - pad, (w, h, rect)
+            assert rect.bottom() <= vp.height() - pad, (w, h, rect)
     finally:
         vp.deleteLater()
 
@@ -304,9 +339,12 @@ def test_video_widget_geometry_resyncs_when_poster_lands_after_arming(
         # Poster lands. _display must re-pin the widget geometry.
         _push_label_pixmap(vp, 160, 90)                 # 16:9
         # After _display, the widget's geometry tracks the letterboxed
-        # rect — bars exist, backdrop shows in them.
-        assert vp._video_widget.geometry().height() == 675
-        assert vp._video_widget.geometry().width() == 1200
+        # rect (with the inner pad applied) — bars exist top + bottom
+        # AND a sliver of backdrop on either side.
+        pad = vp._MEDIA_INNER_PAD
+        geom = vp._video_widget.geometry()
+        assert geom.width() == 1200 - 2 * pad           # 1184
+        assert geom.height() == 666                      # 1184 * 9/16
     finally:
         vp.deleteLater()
 

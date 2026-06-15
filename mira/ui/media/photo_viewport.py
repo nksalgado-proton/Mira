@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QCursor, QPainter, QPalette, QPen, QPixmap
+from PyQt6.QtGui import QColor, QCursor, QPainter, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QStackedLayout, QVBoxLayout, QWidget)
@@ -738,18 +738,34 @@ class PhotoViewport(QWidget):
         self._displayed: QPixmap = QPixmap()       # whatever is on screen
         self._target_key: Tuple[int, int] = (0, 0)
 
-        # Stacked siblings: [poster/photo label | video widget (lazy)].
-        # StackOne shows exactly one — the video widget can't be an
-        # overlay on Windows (native compositor; children paint under).
+        # Photo/poster label — only widget in the stack now. The video
+        # widget rides as a raised sibling (managed manually so it sits
+        # at the media's letterbox rect, not the full canvas — that
+        # leaves the soft blurred backdrop showing in the bars instead
+        # of QVideoWidget's opaque native black; Nelson 2026-06-15
+        # canvas sweep).
         self._stack = QStackedLayout(self)
         self._stack.setContentsMargins(0, 0, 0, 0)
         self._stack.setStackingMode(QStackedLayout.StackingMode.StackOne)
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Transparent bg so the viewport's paintEvent backdrop shows
+        # through the letterbox area around the centered pixmap.
+        self._label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._label.setAutoFillBackground(False)
         # Pixmaps must never drive layout minimums (cut_play lesson).
         self._label.setSizePolicy(QSizePolicy.Policy.Ignored,
                                   QSizePolicy.Policy.Ignored)
         self._stack.addWidget(self._label)
+
+        # Cached 48×48 darkened tiny for the blurred-cover backdrop
+        # (mira/ui/design/blurred_backdrop helpers — same recipe
+        # BlurredPhotoCanvas uses on the Cut detail grid + Cut player).
+        # Invalidated on item change and when a sharper source lands;
+        # never recomputed per paint (the viewport repaints during nav
+        # + peaking, so the downscale must not ride the hot path).
+        self._backdrop_tiny: Optional[QPixmap] = None
+        self._backdrop_source_key: Optional[int] = None
 
         # Video (lazy — QtMultimedia stays untouched on photos-only
         # surfaces, tests, and odd machines).
@@ -802,6 +818,11 @@ class PhotoViewport(QWidget):
         self._cache.scaled_pixmap_ready.connect(self._on_scaled_ready)
         self._cache.decode_failed.connect(self._on_decode_failed)
         self.truth_requested.connect(self._on_truth_requested)
+
+        # The viewport paints its own bg (the blurred-cover backdrop);
+        # WA_StyledBackground stays for QSS rule compatibility but the
+        # paintEvent below covers it.
+        self.setAutoFillBackground(False)
 
         # The Full-Resolution affordance (Nelson 2026-06-12): a subtle
         # corner magnifier mirroring F10, an overlay child so it rides
@@ -971,6 +992,11 @@ class PhotoViewport(QWidget):
         self._rendered_override = None
         self._sharp = None
         self._native = None
+        # Belt-and-suspenders: drop the cached tiny so the new item's
+        # backdrop rebuilds on next paint, even if the displayed
+        # pixmap is kept up (the spec/63 "never blank the canvas"
+        # path on a miss).
+        self._invalidate_backdrop()
         self._af_point = None        # host re-feeds per photo (5a)
         self._halfres_cache = None   # per-photo RAW peaking source (5b)
         self._peaking_mask_cache = None
@@ -1000,7 +1026,12 @@ class PhotoViewport(QWidget):
         self._cache.request_scaled_pixmap(item.path, target, priority=0)
 
     def _show_video_poster(self, item: ViewportItem) -> None:
+        # The QLabel stays the current stack widget; the QVideoWidget
+        # (when present) is a separate raised sibling — hide it until
+        # the player flips live so the poster reads clean.
         self._stack.setCurrentWidget(self._label)
+        if self._video_widget is not None:
+            self._video_widget.hide()
         poster = self._cache.get_thumb_pixmap_sync(item.path)
         if poster is not None and not poster.isNull():
             self._display(poster)
@@ -1033,8 +1064,15 @@ class PhotoViewport(QWidget):
             return
         from PyQt6.QtMultimediaWidgets import QVideoWidget
         from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+        # The QVideoWidget rides as a RAISED SIBLING of the stack —
+        # not inside it — so the host can size it to the media's
+        # letterbox rect instead of the full canvas. That keeps the
+        # blurred backdrop visible in the bars (the native HWND only
+        # paints black inside its own geometry on Windows).
         self._video_widget = QVideoWidget(self)
-        self._stack.addWidget(self._video_widget)
+        self._video_widget.setAspectRatioMode(
+            Qt.AspectRatioMode.KeepAspectRatio)
+        self._video_widget.hide()
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
@@ -1072,7 +1110,8 @@ class PhotoViewport(QWidget):
         self._video_armed = None
         self._video_live = False
         self._video_playing = False
-        self._stack.setCurrentWidget(self._label)
+        if self._video_widget is not None:
+            self._video_widget.hide()
 
     def _on_video_frame(self, frame) -> None:
         if self._video_live or self._video_armed is None:
@@ -1082,7 +1121,59 @@ class PhotoViewport(QWidget):
             if (item is not None and item.path is not None
                     and Path(item.path) == self._video_armed):
                 self._video_live = True
-                self._stack.setCurrentWidget(self._video_widget)
+                # Size + show + raise. The widget sits ON TOP of the
+                # QLabel (which still paints the poster centered with
+                # the same aspect — so the seam is invisible) and the
+                # blurred backdrop shows in the bars around it.
+                self._sync_video_widget_geometry()
+                self._video_widget.show()
+                self._video_widget.raise_()
+
+    def _sync_video_widget_geometry(self) -> None:
+        """Pin the out-of-stack QVideoWidget to the media's letterbox
+        rect so QVideoWidget's opaque native bars don't paint over the
+        blurred backdrop. Aspect ratio comes from the poster (host-
+        supplied pixmap on the current item) — it matches the live
+        video aspect by construction (the poster IS an extracted
+        frame). Falls back to filling the canvas if the aspect is
+        unknown — internal KeepAspectRatio then letterboxes the player
+        with its own opaque black (rare; the next poster lands ASAP)."""
+        if self._video_widget is None:
+            return
+        rect = self.video_widget_rect()
+        self._video_widget.setGeometry(rect)
+
+    def video_widget_rect(self) -> QRect:
+        """The QVideoWidget's target rect: the letterboxed rect of the
+        current item's poster aspect, centered in the canvas. Public
+        because a test pin checks "video widget geometry == media rect,
+        not full canvas" — that's the canvas-bar guarantee."""
+        full = self.rect()
+        item = self.current_item()
+        poster = item.pixmap if item is not None else None
+        if poster is None or poster.isNull():
+            return full
+        src_w, src_h = poster.width(), poster.height()
+        if src_w <= 0 or src_h <= 0:
+            return full
+        src_ratio = src_w / src_h
+        dst_w, dst_h = full.width(), full.height()
+        if dst_w <= 0 or dst_h <= 0:
+            return full
+        dst_ratio = dst_w / dst_h
+        if src_ratio > dst_ratio:
+            # Source wider than canvas — fit width, letterbox vertically.
+            w = dst_w
+            h = max(1, int(round(dst_w / src_ratio)))
+            x = 0
+            y = (dst_h - h) // 2
+        else:
+            # Source taller than canvas — fit height, letterbox horizontally.
+            h = dst_h
+            w = max(1, int(round(dst_h * src_ratio)))
+            x = (dst_w - w) // 2
+            y = 0
+        return QRect(x, y, w, h)
 
     def _on_playback_state(self, state) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
@@ -1232,7 +1323,38 @@ class PhotoViewport(QWidget):
 
     def _display(self, pm: QPixmap) -> None:
         self._displayed = pm
+        self._invalidate_backdrop()
         self._fit()
+
+    # ── Blurred backdrop (mira/ui/design/blurred_backdrop — same
+    # recipe BlurredPhotoCanvas uses on Cut surfaces). Soft fill in
+    # the letterbox bars; the sharp pixmap centers over it. ─────────
+
+    def _backdrop_source(self) -> Optional[QPixmap]:
+        """The pixmap the blurred tiny is computed from.
+
+        Prefer the sharp decode when we have it (best blur source for
+        photos); else the currently displayed pixmap (thumb / poster /
+        previous frame held while the next sharp lands); else the
+        host-supplied loose-slide pixmap on the current item."""
+        if self._sharp is not None and not self._sharp.isNull():
+            return self._sharp
+        if not self._displayed.isNull():
+            return self._displayed
+        item = self.current_item()
+        if item is not None and item.pixmap is not None \
+                and not item.pixmap.isNull():
+            return item.pixmap
+        return None
+
+    def _invalidate_backdrop(self) -> None:
+        """Drop the cached tiny so the next paint rebuilds it from the
+        fresher source. Called on item change AND when a sharper
+        pixmap lands (item arms with a thumb, then proxy / sharp
+        replaces it — the backdrop should follow)."""
+        self._backdrop_tiny = None
+        self._backdrop_source_key = None
+        self.update()
 
     def _fit(self) -> None:
         # A host-rendered override (Edit's developed view) displays
@@ -1466,6 +1588,10 @@ class PhotoViewport(QWidget):
         super().resizeEvent(ev)
         self._fit()
         self._position_inspect_btn()
+        # Keep the manually-managed QVideoWidget pinned to the media's
+        # letterbox rect (out-of-stack child; spec/63 + Nelson
+        # 2026-06-15 canvas sweep).
+        self._sync_video_widget_geometry()
         # A bucket change means the cached sharp no longer matches the
         # display target — re-request (cheap on hit, coalesced on miss).
         item = self.current_item()
@@ -1478,6 +1604,38 @@ class PhotoViewport(QWidget):
                 self._cache.request_scaled_pixmap(
                     item.path, target, priority=0)
                 self._settle.start()
+
+    def paintEvent(self, _ev) -> None:  # noqa: N802
+        """Paint the blurred-cover backdrop behind the QLabel + the
+        out-of-stack QVideoWidget.
+
+        The sharp media (centered QLabel pixmap; centered QVideoWidget
+        for live video) paints on top — the backdrop fills the
+        letterbox bars instead of a flat black canvas. Per-frame cost
+        is one scale of the cached 48×48 tiny (cheap on
+        ``SmoothTransformation``); the downscale itself rides
+        ``_invalidate_backdrop`` on item / sharp change."""
+        from mira.ui.design.blurred_backdrop import blurred_cover, blurred_tiny
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        rect = self.rect()
+        # Build the tiny lazily on first paint per source. The source
+        # key dedupes — same QPixmap object → same tiny.
+        source = self._backdrop_source()
+        source_key = source.cacheKey() if source is not None else None
+        if source_key != self._backdrop_source_key:
+            self._backdrop_tiny = blurred_tiny(source)
+            self._backdrop_source_key = source_key
+        cover = blurred_cover(self._backdrop_tiny, self.size())
+        if cover is not None:
+            bx = (self.width() - cover.width()) // 2
+            by = (self.height() - cover.height()) // 2
+            painter.drawPixmap(bx, by, cover)
+        else:
+            # No source yet — fall back to a neutral dark so the
+            # canvas reads as "loading" rather than "broken".
+            painter.fillRect(rect, QColor(20, 22, 30))
+        painter.end()
 
     def focusNextPrevChild(self, next: bool) -> bool:  # noqa: N802, A002
         # Tab is TRANSPORT on photo surfaces (spec/63 §4), never focus

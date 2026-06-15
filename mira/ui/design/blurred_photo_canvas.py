@@ -22,13 +22,14 @@ from __future__ import annotations
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import (
     QColor,
-    QImage,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
 )
 from PyQt6.QtWidgets import QSizePolicy, QWidget
+
+from mira.ui.design.blurred_backdrop import blurred_cover, blurred_tiny
 
 
 class BlurredPhotoCanvas(QWidget):
@@ -85,23 +86,12 @@ class BlurredPhotoCanvas(QWidget):
     # ── paint ──────────────────────────────────────────────────────────
 
     def _backdrop_src(self) -> QPixmap | None:
-        if self._pixmap is None or self._pixmap.isNull():
-            return None
+        """The cached 48×48 darkened tiny — the shared
+        :func:`mira.ui.design.blurred_backdrop.blurred_tiny` recipe so
+        every backdrop in the app stays visually identical."""
         if self._tiny is not None:
             return self._tiny
-        small = self._pixmap.scaled(
-            48, 48,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        img = small.toImage().convertToFormat(QImage.Format.Format_ARGB32)
-        p = QPainter(img)
-        p.setCompositionMode(
-            QPainter.CompositionMode.CompositionMode_SourceAtop
-        )
-        p.fillRect(img.rect(), QColor(0, 0, 0, 120))
-        p.end()
-        self._tiny = QPixmap.fromImage(img)
+        self._tiny = blurred_tiny(self._pixmap)
         return self._tiny
 
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
@@ -114,13 +104,8 @@ class BlurredPhotoCanvas(QWidget):
         clip.addRoundedRect(rect, self._radius, self._radius)
         painter.setClipPath(clip)
 
-        tiny = self._backdrop_src()
-        if tiny is not None:
-            cover = tiny.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        cover = blurred_cover(self._backdrop_src(), self.size())
+        if cover is not None:
             bx = (self.width() - cover.width()) // 2
             by = (self.height() - cover.height()) // 2
             painter.drawPixmap(bx, by, cover)

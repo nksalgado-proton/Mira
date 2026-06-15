@@ -244,16 +244,30 @@ def test_video_disarms_when_navigating_away(qapp, viewport, monkeypatch):
 def test_poster_to_live_flip_only_on_real_frame_for_current(
     qapp, viewport, monkeypatch,
 ):
+    """The video widget rides as a raised SIBLING of the stack (not
+    inside it — Nelson 2026-06-15 canvas sweep) so the blurred
+    backdrop shows in the bars. The poster→live flip swaps its
+    visibility, not the stack's current widget."""
     _install_fake_player(viewport, monkeypatch)
     v = Path("C:/x/clip.mp4")
     viewport.set_items([_vid(v), ViewportItem(path=Path("C:/x/p.jpg"))])
     viewport.show_index(0)
     viewport._on_settle()
-    assert viewport._stack.currentWidget() is viewport._label   # poster up
-    viewport._on_video_frame(_FakeFrame(valid=False))           # no frame yet
+    # Poster up: stack on the label, video widget hidden. Use
+    # ``isHidden()`` (negation of the explicit setVisible) so the
+    # check is parent-visibility-independent — the offscreen test
+    # parent never shows.
     assert viewport._stack.currentWidget() is viewport._label
+    assert viewport._video_widget is not None
+    assert viewport._video_widget.isHidden() is True
+    viewport._on_video_frame(_FakeFrame(valid=False))           # no frame yet
+    assert viewport._video_widget.isHidden() is True
     viewport._on_video_frame(_FakeFrame(valid=True))            # first frame
-    assert viewport._stack.currentWidget() is viewport._video_widget
+    # Live: the video widget is now visible (raised over the label),
+    # the stack's current widget stays the label so the backdrop
+    # paints behind everything.
+    assert viewport._video_widget.isHidden() is False
+    assert viewport._stack.currentWidget() is viewport._label
     assert viewport._video_live
 
 

@@ -1,14 +1,13 @@
-"""Real-asset smoke: the unified Picker, photo→video sweep with the
-inline transport reveal.
+"""Real-asset smoke: the unified Picker, sweeping
+portrait photo → landscape photo → video. Confirms the blurred-fill
+backdrop on every item and the inline transport reveal on the video.
 
 Drives :class:`PickerPage` directly (no event gateway, no MainWindow)
-with a synthetic bucket of one real photo + one real video. Lands on
-the photo (transport row hidden, canvas takes the page), then steps to
-the video (transport row appears, viewport arms the player). Saves two
-PNGs side-by-side for an eyeball check.
+with a synthetic bucket of three real items. Saves three PNGs side-by-
+side for an eyeball check.
 
 Usage:
-    python tests/smoke_picker_video_reveal.py <photo.jpg> <video.mp4>
+    python tests/smoke_picker_video_reveal.py <portrait.jpg> <landscape.jpg> <video.mp4>
 """
 from __future__ import annotations
 
@@ -31,14 +30,17 @@ def _ci(item_id: str, kind: str, path: Path) -> SimpleNamespace:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print("usage: smoke_picker_video_reveal.py <photo.jpg> <video.mp4>")
+    if len(sys.argv) < 4:
+        print("usage: smoke_picker_video_reveal.py "
+              "<portrait.jpg> <landscape.jpg> <video.mp4>")
         return 2
-    photo = Path(sys.argv[1])
-    video = Path(sys.argv[2])
-    if not photo.exists() or not video.exists():
-        print(f"missing: {photo if not photo.exists() else video}")
-        return 2
+    portrait = Path(sys.argv[1])
+    landscape = Path(sys.argv[2])
+    video = Path(sys.argv[3])
+    for p in (portrait, landscape, video):
+        if not p.exists():
+            print(f"missing: {p}")
+            return 2
 
     app = QApplication.instance() or QApplication(sys.argv)
     apply_theme(app, "dark")
@@ -53,8 +55,9 @@ def main() -> int:
     page.resize(1280, 820)
 
     payloads = [
-        _ci("p1", "photo", photo),
-        _ci("v1", "video", video),
+        _ci("portrait", "photo", portrait),
+        _ci("landscape", "photo", landscape),
+        _ci("video", "video", video),
     ]
     page._items = list(payloads)
     page._state = {ci.item_id: None for ci in payloads}
@@ -62,29 +65,35 @@ def main() -> int:
         ViewportItem(path=ci.path, kind=ci.kind, payload=ci)
         for ci in payloads
     ]
-    page.viewport.set_items(vitems, 0)              # land on the photo
+    page.viewport.set_items(vitems, 0)              # land on the portrait
     page.show()
 
-    state = {"step": 0}
+    step = [0]
+    targets = [
+        ("_smoke_picker_portrait.png", 0),
+        ("_smoke_picker_landscape.png", 1),
+        ("_smoke_picker_video.png", 2),
+    ]
 
     def _tick() -> None:
-        s = state["step"]
-        if s == 0:
-            out = Path("_smoke_picker_photo.png")
-            page.grab().save(str(out), "PNG")
-            print(f"saved: {out.resolve()} "
-                  f"(compact_row visible={page._surface.compact_row.isVisible()})")
-            page.viewport.show_index(1)             # cross to video
-            state["step"] = 1
-            QTimer.singleShot(1500, _tick)
-        else:
-            out = Path("_smoke_picker_video.png")
-            page.grab().save(str(out), "PNG")
-            print(f"saved: {out.resolve()} "
-                  f"(compact_row visible={page._surface.compact_row.isVisible()})")
-            app.quit()
+        i = step[0]
+        out, idx = targets[i]
+        page.viewport.show_index(idx)
 
-    QTimer.singleShot(1200, _tick)
+        def _shoot() -> None:
+            page.grab().save(out, "PNG")
+            print(f"saved: {Path(out).resolve()} "
+                  f"(compact_row={page._surface.compact_row.isVisible()}, "
+                  f"transport={page._transport_bar.isVisible()})")
+            step[0] += 1
+            if step[0] < len(targets):
+                QTimer.singleShot(1200, _tick)
+            else:
+                app.quit()
+
+        QTimer.singleShot(900, _shoot)
+
+    QTimer.singleShot(900, _tick)
     app.exec()
     return 0
 

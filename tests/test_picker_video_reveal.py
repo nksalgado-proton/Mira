@@ -189,6 +189,100 @@ def test_frame_step_path_is_retired(page):
     assert not hasattr(page, "_frame_ms")
 
 
+# --------------------------------------------------------------------- #
+# Blurred backdrop on the canvas — video widget geometry
+# --------------------------------------------------------------------- #
+
+
+def test_video_widget_letterboxes_to_poster_aspect_not_full_canvas(
+    qapp, tmp_path,
+):
+    """Nelson 2026-06-15 canvas sweep — the QVideoWidget paints opaque
+    black inside its own rect on Windows, so the host sizes it to the
+    poster's letterbox rect (the rect where the actual frames will
+    appear) instead of the full canvas. The bars around it show the
+    blurred backdrop.
+
+    With a 16:9 poster in a 4:3 viewport the widget's height shrinks
+    to fit the aspect — its top/bottom never touch the canvas edges."""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    from mira.ui.media.photo_viewport import PhotoViewport
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(1200, 900))                     # 4:3 canvas
+        # 16:9 poster — wider aspect, so it letterboxes top/bottom.
+        img = QImage(160, 90, QImage.Format.Format_RGB32)
+        img.fill(QColor("teal"))
+        poster = QPixmap.fromImage(img)
+        from mira.ui.media.photo_viewport import ViewportItem
+        vp.set_items([ViewportItem(
+            path=Path("c:/v.mp4"), kind="video",
+            payload=None, pixmap=poster)])
+        rect = vp.video_widget_rect()
+        # Width pinned, height shrunk to honour 16:9.
+        assert rect.width() == 1200
+        # 1200 * 9/16 = 675 → bars of (900-675)/2 = 112 px top/bottom.
+        assert rect.height() == 675
+        assert rect.x() == 0
+        assert rect.y() == 112
+        # The full canvas would be (0, 0, 1200, 900); confirm we're
+        # NOT painting that — that's the bar guarantee.
+        full = vp.rect()
+        assert rect != full
+    finally:
+        vp.deleteLater()
+
+
+def test_video_widget_letterboxes_portrait_poster_horizontally(
+    qapp, tmp_path,
+):
+    """The other axis: a portrait poster (taller than the canvas)
+    letterboxes left/right — backdrop shows in the side bars."""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(1200, 600))                     # 2:1 canvas
+        # 1:2 poster — taller aspect.
+        img = QImage(45, 90, QImage.Format.Format_RGB32)
+        img.fill(QColor("teal"))
+        poster = QPixmap.fromImage(img)
+        vp.set_items([ViewportItem(
+            path=Path("c:/v.mp4"), kind="video",
+            payload=None, pixmap=poster)])
+        rect = vp.video_widget_rect()
+        # Height pinned, width shrunk to honour the portrait aspect.
+        assert rect.height() == 600
+        assert rect.width() == 300                      # 600 * (1/2)
+        assert rect.y() == 0
+        assert rect.x() == 450                          # (1200 - 300) / 2
+    finally:
+        vp.deleteLater()
+
+
+def test_video_widget_rect_falls_back_to_full_canvas_without_poster(
+    qapp,
+):
+    """Defensive — no poster means we can't compute the aspect; the
+    widget then fills the canvas and ``KeepAspectRatio`` mode letterboxes
+    internally. Rare path (the next poster arrives within milliseconds)."""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QPixmap
+    from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(800, 600))
+        vp.set_items([ViewportItem(
+            path=Path("c:/v.mp4"), kind="video",
+            payload=None, pixmap=None)])
+        rect = vp.video_widget_rect()
+        assert rect == vp.rect()
+    finally:
+        vp.deleteLater()
+
+
 def test_mute_button_is_a_real_button_not_a_label(page):
     """Nelson 2026-06-15 — the 🔊 emoji label was inert AND ugly.
     The replacement is a real QPushButton (role ``#VideoMuteToggle``)

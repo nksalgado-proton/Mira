@@ -1144,36 +1144,31 @@ class PhotoViewport(QWidget):
         self._video_widget.setGeometry(rect)
 
     def video_widget_rect(self) -> QRect:
-        """The QVideoWidget's target rect: the letterboxed rect of the
-        current item's poster aspect, centered in the canvas. Public
-        because a test pin checks "video widget geometry == media rect,
-        not full canvas" — that's the canvas-bar guarantee."""
-        full = self.rect()
-        item = self.current_item()
-        poster = item.pixmap if item is not None else None
-        if poster is None or poster.isNull():
-            return full
-        src_w, src_h = poster.width(), poster.height()
-        if src_w <= 0 or src_h <= 0:
-            return full
-        src_ratio = src_w / src_h
-        dst_w, dst_h = full.width(), full.height()
-        if dst_w <= 0 or dst_h <= 0:
-            return full
-        dst_ratio = dst_w / dst_h
-        if src_ratio > dst_ratio:
-            # Source wider than canvas — fit width, letterbox vertically.
-            w = dst_w
-            h = max(1, int(round(dst_w / src_ratio)))
-            x = 0
-            y = (dst_h - h) // 2
-        else:
-            # Source taller than canvas — fit height, letterbox horizontally.
-            h = dst_h
-            w = max(1, int(round(dst_h * src_ratio)))
-            x = (dst_w - w) // 2
-            y = 0
-        return QRect(x, y, w, h)
+        """The QVideoWidget's target rect: the QLabel's centered-pixmap
+        rect — i.e. wherever the poster (or, for an arming-still video,
+        the previous frame held up by spec/63's "never blank the
+        canvas" rule) is currently drawn. Public because a test pin
+        checks "video widget geometry == media rect, not full canvas"
+        — that's the canvas-bar guarantee.
+
+        Falling back to the full canvas only when there is truly no
+        displayed pixmap — rare; the next poster lands within
+        milliseconds via the thumb cache and re-pins the geometry
+        through :meth:`_display` → :meth:`_sync_video_widget_geometry`.
+
+        Why not item.pixmap? The viewport host (PickerPage) doesn't
+        supply a per-item pixmap for videos — it lets the viewport's
+        poster path resolve one through the PhotoCache. The label's
+        own pixmap is the authoritative "what the user sees" source."""
+        rect = self.image_rect_in_photo_area()
+        label_rect = self._label.rect()
+        if rect.isEmpty() or rect == label_rect:
+            # No displayed pixmap or the pixmap fills the label —
+            # fall back to the full canvas (KeepAspectRatio inside the
+            # video widget letterboxes the player; the next poster
+            # arrival pins it tighter).
+            return self.rect()
+        return rect
 
     def _on_playback_state(self, state) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
@@ -1325,6 +1320,12 @@ class PhotoViewport(QWidget):
         self._displayed = pm
         self._invalidate_backdrop()
         self._fit()
+        # If the live video widget is up, re-pin its geometry to the
+        # new poster's letterbox rect. The poster can arrive after the
+        # widget shows (cache miss on first landing → async fetch).
+        if (self._video_widget is not None
+                and not self._video_widget.isHidden()):
+            self._sync_video_widget_geometry()
 
     # ── Blurred backdrop (mira/ui/design/blurred_backdrop — same
     # recipe BlurredPhotoCanvas uses on Cut surfaces). Soft fill in

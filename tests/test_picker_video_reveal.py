@@ -194,91 +194,119 @@ def test_frame_step_path_is_retired(page):
 # --------------------------------------------------------------------- #
 
 
-def test_video_widget_letterboxes_to_poster_aspect_not_full_canvas(
+def _push_label_pixmap(vp, w: int, h: int, colour: str = "teal") -> None:
+    """Drive ``_display`` directly so the QLabel ends up with the
+    centered, aspect-fitted pixmap the user would see in the live
+    app — this is what ``video_widget_rect`` reads."""
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    img.fill(QColor(colour))
+    vp._display(QPixmap.fromImage(img))
+
+
+def test_video_widget_letterboxes_to_label_pixmap_not_full_canvas(
     qapp, tmp_path,
 ):
     """Nelson 2026-06-15 canvas sweep — the QVideoWidget paints opaque
     black inside its own rect on Windows, so the host sizes it to the
-    poster's letterbox rect (the rect where the actual frames will
-    appear) instead of the full canvas. The bars around it show the
-    blurred backdrop.
+    QLabel's centered-pixmap rect (the rect the user is looking at —
+    poster or held-previous frame) instead of the full canvas. The
+    bars around it show the blurred backdrop.
 
-    With a 16:9 poster in a 4:3 viewport the widget's height shrinks
+    With a 16:9 source in a 4:3 viewport the widget's height shrinks
     to fit the aspect — its top/bottom never touch the canvas edges."""
     from PyQt6.QtCore import QSize
-    from PyQt6.QtGui import QColor, QImage, QPixmap
     from mira.ui.media.photo_viewport import PhotoViewport
     vp = PhotoViewport()
     try:
         vp.resize(QSize(1200, 900))                     # 4:3 canvas
-        # 16:9 poster — wider aspect, so it letterboxes top/bottom.
-        img = QImage(160, 90, QImage.Format.Format_RGB32)
-        img.fill(QColor("teal"))
-        poster = QPixmap.fromImage(img)
-        from mira.ui.media.photo_viewport import ViewportItem
-        vp.set_items([ViewportItem(
-            path=Path("c:/v.mp4"), kind="video",
-            payload=None, pixmap=poster)])
+        vp.show()
+        # Push a 16:9 pixmap through the display path.
+        _push_label_pixmap(vp, 160, 90)
         rect = vp.video_widget_rect()
-        # Width pinned, height shrunk to honour 16:9.
+        # _fit scales the source to KeepAspectRatio fit inside the
+        # label (1200 wide → 675 high for 16:9). The rect is centered
+        # in the label.
         assert rect.width() == 1200
-        # 1200 * 9/16 = 675 → bars of (900-675)/2 = 112 px top/bottom.
         assert rect.height() == 675
-        assert rect.x() == 0
+        # Centered vertically — (900-675)/2 = 112.
         assert rect.y() == 112
         # The full canvas would be (0, 0, 1200, 900); confirm we're
         # NOT painting that — that's the bar guarantee.
-        full = vp.rect()
-        assert rect != full
+        assert rect != vp.rect()
     finally:
         vp.deleteLater()
 
 
-def test_video_widget_letterboxes_portrait_poster_horizontally(
+def test_video_widget_letterboxes_portrait_label_pixmap_horizontally(
     qapp, tmp_path,
 ):
-    """The other axis: a portrait poster (taller than the canvas)
+    """The other axis: a portrait source (taller than the canvas)
     letterboxes left/right — backdrop shows in the side bars."""
     from PyQt6.QtCore import QSize
-    from PyQt6.QtGui import QColor, QImage, QPixmap
-    from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+    from mira.ui.media.photo_viewport import PhotoViewport
     vp = PhotoViewport()
     try:
         vp.resize(QSize(1200, 600))                     # 2:1 canvas
-        # 1:2 poster — taller aspect.
-        img = QImage(45, 90, QImage.Format.Format_RGB32)
-        img.fill(QColor("teal"))
-        poster = QPixmap.fromImage(img)
-        vp.set_items([ViewportItem(
-            path=Path("c:/v.mp4"), kind="video",
-            payload=None, pixmap=poster)])
+        vp.show()
+        # 1:2 portrait source.
+        _push_label_pixmap(vp, 45, 90)
         rect = vp.video_widget_rect()
         # Height pinned, width shrunk to honour the portrait aspect.
         assert rect.height() == 600
         assert rect.width() == 300                      # 600 * (1/2)
-        assert rect.y() == 0
-        assert rect.x() == 450                          # (1200 - 300) / 2
+        # Centered horizontally — (1200-300)/2 = 450.
+        assert rect.x() == 450
     finally:
         vp.deleteLater()
 
 
-def test_video_widget_rect_falls_back_to_full_canvas_without_poster(
+def test_video_widget_rect_falls_back_to_full_canvas_without_pixmap(
     qapp,
 ):
-    """Defensive — no poster means we can't compute the aspect; the
-    widget then fills the canvas and ``KeepAspectRatio`` mode letterboxes
-    internally. Rare path (the next poster arrives within milliseconds)."""
+    """Defensive — no label pixmap means we can't compute the aspect;
+    the widget then fills the canvas and ``KeepAspectRatio`` mode
+    letterboxes internally. Rare path (the next poster arrives within
+    milliseconds via the cache and re-pins through ``_display``)."""
     from PyQt6.QtCore import QSize
-    from PyQt6.QtGui import QPixmap
-    from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+    from mira.ui.media.photo_viewport import PhotoViewport
     vp = PhotoViewport()
     try:
         vp.resize(QSize(800, 600))
-        vp.set_items([ViewportItem(
-            path=Path("c:/v.mp4"), kind="video",
-            payload=None, pixmap=None)])
+        # No pixmap pushed — QLabel is empty.
         rect = vp.video_widget_rect()
         assert rect == vp.rect()
+    finally:
+        vp.deleteLater()
+
+
+def test_video_widget_geometry_resyncs_when_poster_lands_after_arming(
+    qapp, monkeypatch,
+):
+    """The bug Nelson hit live: PickerPage doesn't supply item.pixmap
+    for videos — the viewport's poster path resolves one through the
+    PhotoCache asynchronously. The poster can land AFTER the video
+    widget shows. Pin that ``_display`` re-pins the widget geometry
+    on every fresh poster while the widget is visible."""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    from PyQt6.QtMultimedia import QMediaPlayer
+    from mira.ui.media.photo_viewport import PhotoViewport
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(1200, 900))
+        vp.show()
+        # Fake the player + show the widget as if a live frame arrived.
+        vp._ensure_player()
+        vp._video_widget.show()
+        # No pixmap yet → full canvas (the "rare path" fallback).
+        assert vp.video_widget_rect() == vp.rect()
+        # Poster lands. _display must re-pin the widget geometry.
+        _push_label_pixmap(vp, 160, 90)                 # 16:9
+        # After _display, the widget's geometry tracks the letterboxed
+        # rect — bars exist, backdrop shows in them.
+        assert vp._video_widget.geometry().height() == 675
+        assert vp._video_widget.geometry().width() == 1200
     finally:
         vp.deleteLater()
 

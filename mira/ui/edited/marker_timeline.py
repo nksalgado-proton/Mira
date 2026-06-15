@@ -32,14 +32,29 @@ from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
+
+from mira.ui.palette import PALETTE
 
 
-# A REAL red (Nelson 2026-06-11: clips not picked are red, not the old
-# muted wash that read as brown next to green). Equal weight both ways —
-# red is a first-class status (not-marked-for-export), not de-emphasis.
-_C_KEEP = QColor(0x2E, 0xA0, 0x6B)
-_C_SKIP = QColor(0xC5, 0x30, 0x30)
+# The locked design-system §5a status colours — never re-derived, never
+# muted. The timeline reads them from PALETTE so a theme toggle
+# re-tints the bands without an asset edit, and so the workshop's
+# green/red match the photo grids' green/red exactly (cluster covers,
+# day grid, Picker badge — Nelson 2026-06-15 "use the same green and
+# red used elsewhere").
+def _picked_colour() -> QColor:
+    app = QApplication.instance()
+    mode = (app.property("theme") if app else None) or "dark"
+    return QColor(PALETTE[mode]["picked"])
+
+
+def _skipped_colour() -> QColor:
+    app = QApplication.instance()
+    mode = (app.property("theme") if app else None) or "dark"
+    return QColor(PALETTE[mode]["skipped"])
+
+
 _C_BASE = QColor(0x4A, 0x52, 0x5C)
 _C_MARKER = QColor(0xE8, 0xC5, 0x4A)            # cut-handle accent
 _C_PLAYHEAD = QColor(0xFF, 0xFF, 0xFF)
@@ -206,9 +221,11 @@ class MarkerTimeline(QWidget):
             shift = {mid: self._marker_paint_ms(mid, ms)
                      for mid, ms in self._markers}
             edges = [self._lo, *shift.values(), self._hi]
+            picked_c = _picked_colour()
+            skipped_c = _skipped_colour()
             for idx, state in enumerate(self._states[:max(0, len(edges) - 1)]):
                 x0, x1 = self._x(edges[idx]), self._x(edges[idx + 1])
-                colour = QColor(_C_KEEP if state == "picked" else _C_SKIP)
+                colour = QColor(picked_c if state == "picked" else skipped_c)
                 colour.setAlpha(120)
                 p.fillRect(x0, bar_t, max(1, x1 - x0), bar_b - bar_t, colour)
                 if idx == self._selected_seg:
@@ -226,7 +243,7 @@ class MarkerTimeline(QWidget):
                 sx = self._x(s_ms)
                 p.setPen(QPen(QColor(0, 0, 0, 220), 1))
                 p.setBrush(QColor(
-                    _C_KEEP if s_state == "picked" else _C_SKIP))
+                    picked_c if s_state == "picked" else skipped_c))
                 p.drawRect(sx - 4, bar_b + 1, 9, 9)
             # The permanent endpoint markers (auto start + end).
             for e_ms in (self._lo, self._hi):

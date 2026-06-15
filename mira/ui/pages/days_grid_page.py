@@ -93,6 +93,8 @@ from mira.ui.design import (
     danger_ghost_button,
     ghost_button,
     primary_button,
+    show_error,
+    show_info,
 )
 from mira.ui.i18n import tr
 from mira.ui.palette import PALETTE
@@ -266,9 +268,20 @@ class DaysGridPage(QWidget):
         # Live event state — set by ``open_for_day``; None when the
         # page is in smoke/mock mode (setItemsForPreview path).
         self._event_id: Optional[str] = None
+        self._event_name: str = ""
         self._eg = None
+        # ``_phase`` is the **phase_state storage key** the grid reads
+        # and writes (``"pick"`` or ``"edit"``). ``_export_mode`` is
+        # the orthogonal UX flag the Export phase carries: shares the
+        # ``"edit"`` phase_state storage with the Edit surface
+        # (spec/66 §1.1 — Edit and Export are one decision ledger),
+        # but flips the click handler from drill-in to in-place
+        # toggle and wires X-on-shipped to ``delete_exported_file``.
+        # The identity header reads ``_identity_phase`` separately
+        # ("export") so the surface chrome is green per spec/71.
         self._phase = "pick"
         self._phase_default = STATE_SKIPPED
+        self._export_mode = False
         # spec/71 identity phase — drives the SurfaceIdentityHeader rail
         # + badge. Defaults to ``"pick"``; ``open_for_day(phase=...)``
         # syncs it from ``self._phase`` (Pick/Edit) and Quick Sweep
@@ -356,6 +369,11 @@ class DaysGridPage(QWidget):
         self._new_pass_btn = primary_button("+ Start a new pass…")
         self._new_pass_btn.clicked.connect(self.new_pass_requested.emit)
         toolbar.addWidget(self._new_pass_btn)
+        # spec/68 §3 — Export-mode primary trigger. Hidden outside
+        # Export mode; the per-day batch submitter wires below.
+        self._export_btn = primary_button("↑ Export green")
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        toolbar.addWidget(self._export_btn)
         toolbar.addStretch()
         # Review progress on the right
         progress_block = QVBoxLayout()
@@ -441,14 +459,23 @@ class DaysGridPage(QWidget):
         so the QS default rules instead of ``pick_default_state``).
         Defaults to the configured ``{phase}_default_state``.
 
-        ``phase`` (spec/70 Phase 3) selects the phase the grid colours
-        + cell-state writes target — ``"pick"`` (the default) or
-        ``"edit"``. In Edit mode the Pick/Skip decision plumbing is
-        inert (spec/66 §1.1 — Edit is creative-only); cells stay at
-        the phase default and the bulk Pick all / Skip all bar drops
-        out. ``item_activated`` still fires so the host (MainWindow)
-        can route the click to the right surface (Picker for pick,
-        Editor for edit).
+        ``phase`` (spec/70 Phase 3 / spec/68 §3) selects the phase the
+        grid colours + cell-state writes target:
+
+        * ``"pick"`` (the default) — Pick decisions; cells read from
+          ``phase_state(phase="pick")``; click drills into the Picker.
+        * ``"edit"`` — Edit-phase chrome; creative-only (spec/66 §1.1),
+          no Pick/Skip decision; click drills into the Editor.
+        * ``"export"`` (spec/68 §3) — green/red ship decision; cells
+          read from ``phase_state(phase="edit")`` (the shared ledger
+          per spec/66 §1.1), default green ("born ship"), click
+          toggles in place (no drill-in), X on a shipped cell also
+          unlinks the file via ``delete_exported_file`` and the
+          toolbar carries an "Export green (N)" primary button.
+
+        ``item_activated`` still fires for Pick/Edit so the host
+        (MainWindow) can route to the leaf surface; in Export mode
+        the click handler swallows it (the decision lands in place).
 
         Returns ``True`` on success. On a gateway open failure the
         page is left in its previous state and ``False`` is returned;
@@ -465,19 +492,42 @@ class DaysGridPage(QWidget):
             return False
         self._eg = eg
         self._event_id = event_id
-        self._phase = phase if phase in ("pick", "edit") else "pick"
-        self._phase_default = (
-            default_state if default_state in (STATE_PICKED, STATE_SKIPPED)
-            else default_state_for(self.gateway.settings, self._phase)
-        )
+        try:
+            ev = eg.event()
+            self._event_name = ev.name or tr("(unnamed event)")
+        except Exception:                                          # noqa: BLE001
+            self._event_name = tr("(unnamed event)")
+        # spec/68 §3 — Export mode reuses the Edit phase_state storage
+        # (same green/red ledger as the Edit surface) but flips
+        # behaviour: born-green default, click toggles in place,
+        # X-on-shipped also cleans the on-disk file.
+        if phase == "export":
+            self._phase = "edit"             # shared storage
+            self._export_mode = True
+            self._phase_default = (
+                default_state if default_state in (
+                    STATE_PICKED, STATE_SKIPPED)
+                else STATE_PICKED            # born green
+            )
+            new_identity = "export"
+        else:
+            self._phase = phase if phase in ("pick", "edit") else "pick"
+            self._export_mode = False
+            self._phase_default = (
+                default_state if default_state in (
+                    STATE_PICKED, STATE_SKIPPED)
+                else default_state_for(self.gateway.settings, self._phase)
+            )
+            new_identity = self._phase
         # spec/66 §1.1 — Edit is creative-only: hide the Pick all /
         # Skip all / Start a new pass… buttons (no decision to make
         # here). They reappear when the page opens for the Pick phase.
+        # Export mode swaps the toolbar to the ship verbs.
         self._apply_phase_chrome()
-        # spec/71 — sync the identity header to the gateway phase. QS
-        # hosts override afterwards via :meth:`set_phase_identity`.
-        if self._identity_phase != self._phase:
-            self._identity_phase = self._phase
+        # spec/71 — sync the identity header. QS hosts override
+        # afterwards via :meth:`set_phase_identity`.
+        if self._identity_phase != new_identity:
+            self._identity_phase = new_identity
             self._refresh_identity()
         self._day_number = day_number
         self._day_title = title or ""
@@ -518,16 +568,44 @@ class DaysGridPage(QWidget):
         return None
 
     def _apply_phase_chrome(self) -> None:
-        """spec/70 Phase 3 — phase-driven chrome. In ``"edit"`` mode the
-        Pick all / Skip all / Start a new pass… buttons hide (Edit is
-        creative-only, no Pick/Skip decision to make here); they come
-        back in ``"pick"`` mode."""
-        is_pick = (self._phase == "pick")
-        for w in (self._pick_all_btn, self._skip_all_btn, self._new_pass_btn):
+        """spec/70 Phase 3 / spec/68 §3 — phase-driven chrome:
+
+        * **Pick**: Pick all / Skip all / Start a new pass… visible.
+        * **Edit**: bulk buttons hidden — Edit is creative-only
+          (spec/66 §1.1), no Pick/Skip decision to make on the grid.
+        * **Export**: Pick all + Skip all visible but **relabelled**
+          to the ship verbs (Export all / Drop all), Start-a-new-pass
+          hidden, and the Export-green primary action revealed.
+        """
+        is_pick = (self._phase == "pick" and not self._export_mode)
+        is_export = bool(self._export_mode)
+        # Pick all / Skip all show in Pick and Export. Their wiring is
+        # the same (bulk phase_state write); only the labels change.
+        for w in (self._pick_all_btn, self._skip_all_btn):
             try:
-                w.setVisible(is_pick)
+                w.setVisible(is_pick or is_export)
             except Exception:                                      # noqa: BLE001
                 pass
+        try:
+            self._new_pass_btn.setVisible(is_pick)
+        except Exception:                                          # noqa: BLE001
+            pass
+        try:
+            self._export_btn.setVisible(is_export)
+        except Exception:                                          # noqa: BLE001
+            pass
+        # Relabel the bulk verbs for the Export context (the
+        # underlying action stays a bulk phase_state write; spec/71's
+        # reminder line tells the user the verbs mean ship/drop here).
+        try:
+            if is_export:
+                self._pick_all_btn.setText(tr("✓ Export all"))
+                self._skip_all_btn.setText(tr("✗ Drop all"))
+            else:
+                self._pick_all_btn.setText(tr("✓ Pick all"))
+                self._skip_all_btn.setText(tr("✗ Skip all"))
+        except Exception:                                          # noqa: BLE001
+            pass
 
     # ── spec/71 identity header (per-phase chrome) ────────────────────
 
@@ -949,15 +1027,36 @@ class DaysGridPage(QWidget):
     # ── Click routing ──────────────────────────────────────────────────
 
     def _on_thumb_clicked(self, item_id: str, widget: Thumb) -> None:
-        """A click on a Thumb. Cluster covers expand in place; single
-        items emit :sig:`item_activated` so the host can route to the
-        Picker."""
+        """A click on a Thumb.
+
+        * Cluster covers expand in place (all modes).
+        * Pick / Edit modes: single items emit :sig:`item_activated`
+          so the host (MainWindow) drills the user into the Picker /
+          Editor.
+        * Export mode (spec/68 §3): no drill-in. The click is the
+          locked-grammar ``toggle`` verb on this cell — green↔red
+          flips, persisted to ``phase_state(phase="edit")``. If the
+          item was shipped and the toggle lands on red, the on-disk
+          file unlinks via ``delete_exported_file`` and the ship
+          status clears.
+        """
         widget.setFocus(Qt.FocusReason.MouseFocusReason)
         item = self._find_item(item_id)
         if item is None:
             return
         if item.item_kind == "cluster" and item._cull_cluster is not None:
             self._open_cluster(item._cull_cluster)
+            return
+        if self._export_mode:
+            # The clicked widget IS known — apply the toggle verb to
+            # its index directly so we don't depend on Qt's
+            # focusWidget() propagation (which doesn't hold in
+            # headless tests).
+            try:
+                idx = self._thumb_widgets.index(widget)
+            except ValueError:
+                return
+            self._apply_verb_at_index(idx, "toggle")
             return
         self.item_activated.emit(item_id)
 
@@ -1002,9 +1101,31 @@ class DaysGridPage(QWidget):
     def _verb_on_focused(self, verb: str) -> bool:
         """Apply a §4 verb to the currently focused Thumb. Returns
         ``True`` if a verb was applied (so the caller can accept the
-        event), ``False`` otherwise."""
+        event), ``False`` otherwise. Used by :meth:`keyPressEvent`
+        (P/X/Space/C); the click handler bypasses this and calls
+        :meth:`_apply_verb_at_index` directly with the widget's known
+        index."""
         idx = self._focused_thumb_index()
         if idx is None:
+            return False
+        return self._apply_verb_at_index(idx, verb)
+
+    def _apply_verb_at_index(self, idx: int, verb: str) -> bool:
+        """Apply a §4 verb to the cell at ``idx``. Returns ``True`` if
+        a verb landed (so a caller using this from keyPressEvent can
+        accept the event), ``False`` otherwise.
+
+        In Export mode (spec/68 §3) the verb's effect on the in-place
+        cell state is the same, but a landing on red (skipped) for a
+        cell that is already shipped also calls
+        :meth:`EventGateway.delete_exported_file` — the file under
+        ``Exported Media/`` unlinks, its lineage row drops, the
+        ``edit_exported`` flag clears, and Cut membership cascades
+        (spec/61 §1.4). This is the "delete exported file" affordance
+        the spec asks for — no separate UI, the existing X grammar
+        carries it (spec/68 §3 second bullet).
+        """
+        if idx < 0 or idx >= len(self._items):
             return False
         item = self._items[idx]
         if item.item_kind == "cluster":
@@ -1027,6 +1148,21 @@ class DaysGridPage(QWidget):
                 "set_phase_state(%s, %s, %s) failed",
                 item.item_id, self._phase, new_state)
             return True
+        # spec/68 §3 — Export-mode un-export: a green→red flip on a
+        # cell that already shipped also tears down the ship-side
+        # state (file + lineage row + edit_exported flag).
+        if (self._export_mode
+                and new_state == STATE_SKIPPED
+                and item.exported):
+            try:
+                self._eg.delete_exported_file(item.item_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "delete_exported_file(%s) failed", item.item_id)
+            # The cell's badge clears straight away — the shipped
+            # status is gone, the watermark must go with it.
+            item.exported = False
+            self._thumb_widgets[idx].setExported(False)
         item.state = new_state
         self._thumb_widgets[idx].setState(new_state)
         self._update_counts()
@@ -1088,6 +1224,117 @@ class DaysGridPage(QWidget):
 
     def _on_skip_all_clicked(self) -> None:
         self._bulk_set_state(STATE_SKIPPED)
+
+    # ── Export-mode primary trigger (spec/68 §3) ─────────────────────
+
+    def _on_export_clicked(self) -> None:
+        """Submit this day's not-yet-shipped green cells to the spec/60
+        batch engine via the spec/59 §8 ``BatchExportQueue``.
+
+        The pool is the day's flat photo cells whose state is
+        ``picked`` and that aren't already in
+        ``exported_item_ids()`` — re-shipping a file the user hasn't
+        un-exported is a no-op here (the user toggles red first to
+        clear the on-disk file + lineage, then green again to
+        re-ship). The engine + queue are locked (spec/68 §4); this
+        handler only builds the manifest and enqueues."""
+        if self._eg is None or not self._export_mode:
+            return
+        if self._eg.event_root is None:
+            return
+        from mira.ui.exported.batch import (
+            ExportCell,
+            day_label_for,
+            submit_export_batch,
+        )
+
+        already_shipped = set()
+        try:
+            already_shipped = self._eg.exported_item_ids()
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: exported_item_ids failed")
+
+        # Flat photo cells that are green AND not yet shipped. Cluster
+        # covers are skipped (their members surface as their own flat
+        # cells in this grid; the cluster cover itself has no ship
+        # decision).
+        event_root = Path(self._eg.event_root)
+        cells_to_ship: list[ExportCell] = []
+        for it in self._items:
+            if it.item_kind != "photo":
+                continue
+            if it.state != STATE_PICKED:
+                continue
+            if it.item_id in already_shipped:
+                continue
+            if it._path is None and it._sha256 is None:
+                continue
+            src = it._path or (
+                event_root / (
+                    self._eg.item(it.item_id).origin_relpath
+                    if self._eg.item(it.item_id) else "")
+            )
+            if not src or not Path(src).is_file():
+                continue
+            cells_to_ship.append(ExportCell(
+                item_id=it.item_id,
+                path=Path(src),
+                day_number=self._day_number,
+            ))
+
+        if not cells_to_ship:
+            show_info(
+                self,
+                tr("Nothing new to ship"),
+                tr(
+                    "Every green cell on this day is already exported "
+                    "— toggle one to red to un-ship, or open another "
+                    "day."
+                ),
+            )
+            return
+
+        batch_queue = getattr(self.window(), "batch_queue", None)
+        if batch_queue is None:
+            show_error(
+                self,
+                tr("Batch queue unavailable"),
+                tr(
+                    "The app's batch queue isn't reachable — try "
+                    "restarting Mira."),
+            )
+            return
+
+        if len(cells_to_ship) >= 50 and not confirm(
+            self,
+            tr("Export {n} photo(s)?").replace(
+                "{n}", str(len(cells_to_ship))),
+            tr(
+                "The job runs in the background — the strip below the "
+                "menu bar shows progress. You can keep working."
+            ),
+            primary_text=tr("Export"),
+        ):
+            return
+
+        day_labels = {self._day_number: day_label_for(
+            self._eg, self._day_number)}
+        try:
+            submit_export_batch(
+                self._eg, self.gateway.settings, batch_queue,
+                event_name=self._event_name,
+                cells=cells_to_ship,
+                day_labels=day_labels,
+                parent_widget=self,
+            )
+        except Exception as exc:                                   # noqa: BLE001
+            log.exception("DaysGridPage: export submit failed")
+            show_error(
+                self,
+                tr("Could not start the export"),
+                tr("The batch could not be queued.\n\n{err}").replace(
+                    "{err}", str(exc)),
+            )
 
     def _bulk_set_state(self, state: str) -> None:
         """Apply ``state`` to every item currently visible (day mode:
@@ -1171,6 +1418,7 @@ class DaysGridPage(QWidget):
         self._thumb_timer.stop()
         self._thumb_pending.clear()
         self._thumb_pixmap_cache.clear()
+        self._event_name = ""
         if self._eg is not None:
             try:
                 self._eg.close()

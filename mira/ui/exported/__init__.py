@@ -1,13 +1,22 @@
-"""Export-phase surface (spec/66 §1.1 + spec/68 §3).
+"""Export-phase support (spec/66 §1.1 + spec/68 §3).
 
-The Export surface is the green/red ship decision over all picked keepers.
-It is a new surface born from the design catalog (no port), composing
-``mira.ui.design`` widgets (Thumb / PageHeader / StageProgress / dialogs /
-buttons) over ``mira.ui.base.flow_layout.FlowLayout``. The spec/59 §8
-``BatchExportQueue`` and the spec/60 worker engine stay locked — Slice 5
-re-parents the *trigger* into this surface; the engine is untouched.
+Export retired its standalone flat-grid surface (the ``ExportPage`` MVP);
+the phase now rides the shared Phases → Days Lists → Days Grid spine
+like Pick/Edit. What survives here is the **batch submission helper** —
+:func:`mira.ui.exported.batch.submit_export_batch` — that the per-day
+Export-mode Days Grid calls when the user fires the "Export green"
+trigger. The spec/59 §8 ``BatchExportQueue`` + the spec/60 worker
+engine stay locked.
 """
 
-from mira.ui.exported.export_page import ExportPage
+from mira.ui.exported.batch import (
+    ExportCell,
+    day_label_for,
+    recipe_for_item,
+    submit_export_batch,
+)
 
-__all__ = ["ExportPage"]
+__all__ = [
+    "ExportCell", "day_label_for", "recipe_for_item",
+    "submit_export_batch",
+]

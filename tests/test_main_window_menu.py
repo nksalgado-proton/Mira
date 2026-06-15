@@ -297,6 +297,70 @@ def test_export_menu_visible_per_event(main_window):
     assert "Open Export phase" in labels
 
 
+# ─── Export route (spec/68 §3) ──────────────────────────────────────────────
+
+
+def test_export_tile_routes_through_days_lists(main_window):
+    """spec/68 §3 — Phases Export tile no longer opens a standalone
+    flat-grid surface. It sets ``_export_phase_active`` and routes
+    through ``_open_days_lists_for`` (same as Pick / Edit), so the
+    user lands on the per-day spine the rest of the phases use."""
+    main_window._current_event_id = "fake-evt-id"
+    assert main_window._export_phase_active is False
+    with patch.object(
+            MainWindow, "_open_days_lists_for",
+            autospec=True) as opener:
+        main_window._on_phase_activated("export")
+    assert main_window._export_phase_active is True
+    opener.assert_called_once_with(main_window, "fake-evt-id")
+
+
+def test_days_lists_identity_export_when_phase_active(main_window):
+    """When ``_export_phase_active`` is set, opening Days Lists hands
+    the page the ``"export"`` identity (green rail + EXPORT badge per
+    spec/71)."""
+    main_window._current_event_id = "fake-evt-id"
+    main_window._export_phase_active = True
+    captured: list[str] = []
+    with patch.object(
+            main_window.days_lists_page, "set_phase_identity",
+            side_effect=captured.append):
+        with patch.object(
+                MainWindow, "_build_day_snapshots", return_value=[]):
+            main_window._open_days_lists_for("fake-evt-id")
+    assert captured == ["export"]
+
+
+def test_days_grid_item_activated_is_short_circuited_in_export_mode(
+        main_window):
+    """spec/68 §3 — the Days Grid handles the click itself in Export
+    mode (toggle in place); the host's ``item_activated`` route is a
+    no-op so the user doesn't drill into Picker/Editor by accident."""
+    main_window._current_event_id = "fake-evt-id"
+    main_window._export_phase_active = True
+    main_window._edit_phase_active = False
+    # The grid would normally drill into Picker/Editor via these
+    # helpers. None of them should fire when Export is active.
+    with patch.object(
+            main_window.picker_page, "open_to_item",
+            return_value=True) as picker_open, \
+            patch.object(
+                MainWindow, "_open_edit_surface_for_item",
+                autospec=True) as edit_open:
+        main_window._on_days_grid_item_activated("any-id")
+    assert picker_open.call_count == 0
+    assert edit_open.call_count == 0
+
+
+def test_export_phase_active_clears_on_days_lists_back(main_window):
+    """Back from Days Lists clears the Export flag — same lifecycle
+    contract as ``_edit_phase_active``."""
+    main_window._current_event_id = "fake-evt-id"
+    main_window._export_phase_active = True
+    main_window._on_days_lists_back()
+    assert main_window._export_phase_active is False
+
+
 # ─── F-024 closed-event filter ──────────────────────────────────────────────
 
 

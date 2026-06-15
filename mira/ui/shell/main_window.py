@@ -99,8 +99,12 @@ class MainWindow(QMainWindow):
     # can route video items to it directly. ``EditVideoPage`` stays
     # unchanged from the legacy era (its own reconciliation is Phase 4).
     _PROCESS_VIDEO_PAGE_KEY = "__process_video__"
-    # spec/66 §1.1 — the Export phase is its own surface (slice 5).
-    _EXPORT_PAGE_KEY = "__export__"
+    # spec/68 §3 — Export retired its own surface (the flat-grid MVP
+    # at ``mira/ui/exported/export_page.py``); the phase now rides the
+    # shared Phases → Days Lists → Days Grid spine like Pick/Edit. The
+    # key constant survives as ``None`` so any straggling reference
+    # surfaces as an AttributeError instead of a silent miss.
+    _EXPORT_PAGE_KEY = None
     _CURATE_PAGE_KEY = "__curate__"
     # spec/70 Phase 3 — Quick Sweep (Collect-phase triage), redesigned.
     # Hosts both menu entries: "Standalone Quick Sweep…" (events list)
@@ -230,12 +234,16 @@ class MainWindow(QMainWindow):
         # (Surface 08 + Surface 12 page-stack entries were registered
         # alongside the redesigned Picker above — spec/70 Phase 3 §3.)
 
-        # spec/66 §1.1 — the Export phase surface (slice 5). Green/red
-        # ship decision over all picked keepers; triggers the spec/60
-        # batch engine through the spec/59 §8 BatchExportQueue.
-        from mira.ui.exported import ExportPage
-        self.export_page = ExportPage(self.gateway)
-        self.page_stack.add_page(self._EXPORT_PAGE_KEY, self.export_page)
+        # spec/68 §3 — the Export phase is no longer a flat event-wide
+        # surface (that pattern belongs to Share / Cuts, spec/61 §5.1).
+        # Export now reuses the same Phases → Days Lists → Days Grid
+        # spine as Pick / Edit (``_export_phase_active`` below + the
+        # ``"export"`` phase argument on
+        # :meth:`DaysGridPage.open_for_day`). The flat-grid MVP at
+        # ``mira/ui/exported/export_page.py`` was retired with this
+        # commit; the per-day batch trigger lives on the grid's
+        # toolbar and submits through
+        # :func:`mira.ui.exported.batch.submit_export_batch`.
 
         # spec/70 Phase 3 §5 — Surface 09 (Share / Cuts) is now the
         # redesigned ShareCutsPage: the spec/71 identity header + the
@@ -267,6 +275,12 @@ class MainWindow(QMainWindow):
         # EditVideoPage (videos) instead of PickerPage. Consumed when
         # the user leaves the Edit phase back to Phases.
         self._edit_phase_active: bool = False
+        # spec/68 §3 — set while the Export-phase route is active
+        # (Phases → DaysLists → DaysGrid in Export mode). The Days
+        # Grid in Export mode handles clicks itself (toggle in place,
+        # no drill-in), so the item-activated signal is short-circuited
+        # for this branch — see :meth:`_on_days_grid_item_activated`.
+        self._export_phase_active: bool = False
 
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
@@ -340,8 +354,9 @@ class MainWindow(QMainWindow):
             self._on_video_edit_back)
         self.video_edit_page.fullscreen_changed.connect(
             self._on_process_fullscreen)
-        self.export_page.closed.connect(self._on_export_closed)
-        self.export_page.fullscreen_changed.connect(self._on_export_fullscreen)
+        # spec/68 §3 — Export now reuses the DaysGrid; its lifecycle
+        # signals land on the existing Days Grid wiring (the back path
+        # clears ``_export_phase_active``).
         self.curate_page.closed.connect(self._on_curate_closed)
         # Quick Sweep — page-stack hosting: saved → mode-aware finalize
         # (copy keepers for standalone, log + leave the gateway alone
@@ -1838,6 +1853,8 @@ class MainWindow(QMainWindow):
         # active, else Pick (the default).
         if self._quick_sweep is not None:
             identity_phase = "collect"
+        elif self._export_phase_active:
+            identity_phase = "export"
         elif self._edit_phase_active:
             identity_phase = "edit"
         else:
@@ -1975,12 +1992,13 @@ class MainWindow(QMainWindow):
         """Back from Days Lists. During a QS session this is the
         outermost-back → confirm and finalize (copy_kept for standalone,
         log for per-event). Else returns to Phases (Surface 03). The
-        Edit-phase route flag clears here — leaving Days Lists ends the
-        Edit phase visit."""
+        Edit/Export phase route flags clear here — leaving Days Lists
+        ends the visit."""
         if self._quick_sweep is not None:
             self._qs_finalize_via_back()
             return
         self._edit_phase_active = False
+        self._export_phase_active = False
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
 
     def _on_days_lists_day_activated(self, day_number: int) -> None:
@@ -1998,11 +2016,16 @@ class MainWindow(QMainWindow):
             return
         title, date_iso = self._lookup_day_meta(
             self._current_event_id, day_number)
-        # spec/70 Phase 3 §3 — Edit-phase route hands the grid the
-        # ``"edit"`` phase so its chrome drops the Pick-all / Skip-all
-        # bar (Edit is creative-only) and the cells colour from the
-        # Edit phase default.
-        grid_phase = "edit" if self._edit_phase_active else "pick"
+        # spec/70 Phase 3 §3 / spec/68 §3 — phase-aware grid open:
+        # Edit hides Pick-all/Skip-all (creative-only, spec/66 §1.1),
+        # Export born-green + click-toggles + X-on-shipped cleanup +
+        # Export-green trigger on the toolbar.
+        if self._export_phase_active:
+            grid_phase = "export"
+        elif self._edit_phase_active:
+            grid_phase = "edit"
+        else:
+            grid_phase = "pick"
         if not self.days_grid_page.open_for_day(
             self._current_event_id, day_number,
             title=title, date_iso=date_iso, phase=grid_phase,
@@ -2113,6 +2136,12 @@ class MainWindow(QMainWindow):
         # :meth:`_qs_return_to_days_grid`.
         if self._quick_sweep is not None:
             self._qs_open_viewer_for_item(item_id)
+            return
+        # spec/68 §3 — Export mode handles the click itself (in-place
+        # green↔red toggle + X-on-shipped cleanup). The grid still
+        # fires item_activated for symmetry, but here the host does
+        # nothing — there's no drill-in destination for Export.
+        if self._export_phase_active:
             return
         event_id = self.days_grid_page.current_event_id()
         day_number = self.days_grid_page.current_day_number()
@@ -4630,10 +4659,12 @@ class MainWindow(QMainWindow):
             self._open_days_lists_for(self._current_event_id)
             return
         if phase == "export" and self._current_event_id is not None:
-            # spec/66 §1.1 — the Export phase: green/red ship decision
-            # over picked keepers, triggers the spec/60 batch engine.
-            if self.export_page.open_event(self._current_event_id):
-                self.page_stack.show_page(self._EXPORT_PAGE_KEY)
+            # spec/68 §3 — Export rides the Phases → Days Lists → Days
+            # Grid spine (same as Pick/Edit). The flat-grid MVP retired
+            # with this commit; the per-day batch trigger lives on the
+            # grid's toolbar.
+            self._export_phase_active = True
+            self._open_days_lists_for(self._current_event_id)
             return
         if phase == "share" and self._current_event_id is not None:
             if self.curate_page.open_event(self._current_event_id):
@@ -5597,15 +5628,11 @@ class MainWindow(QMainWindow):
             log.exception("video edit cleanup failed")
         self._on_process_closed()
 
-    def _on_export_closed(self) -> None:
-        """Back from the Export surface → the per-event phase grid (refreshed)."""
-        if self._current_event_id is not None:
-            self.phases_page.set_event(self._current_event_id)
-        self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
-
-    def _on_export_fullscreen(self, on: bool) -> None:
-        """Immersive export: mirror the other phase surfaces."""
-        self.menuBar().setVisible(not on)
+    # spec/68 §3 — the standalone _on_export_closed / _on_export_fullscreen
+    # handlers retired with the flat-grid MVP. Export now rides the
+    # shared Days Grid lifecycle; the Back path goes through
+    # _on_days_grid_back / _on_days_lists_back which clear
+    # _export_phase_active on the way out.
 
     def _on_curate_closed(self) -> None:
         """Back from the Cuts shell → the door the user came in through

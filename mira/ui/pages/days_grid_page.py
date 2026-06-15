@@ -61,6 +61,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -86,6 +87,7 @@ from mira.picked.status import (
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
     StageProgress,
+    SurfaceIdentityHeader,
     Thumb,
     confirm,
     danger_ghost_button,
@@ -178,15 +180,19 @@ class _DayNavigatorPill(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(10, 6, 10, 6)
         h.setSpacing(10)
-        prev_btn = ghost_button("‹")
-        prev_btn.setFixedSize(28, 28)
+        # ``#DayPillNav`` chevrons: tight, no Ghost padding (the prev/next
+        # used to render blank — see redesign.qss for the fix).
+        prev_btn = QPushButton("‹")
+        prev_btn.setObjectName("DayPillNav")
+        prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         prev_btn.clicked.connect(self.prev_clicked.emit)
         h.addWidget(prev_btn)
         self._label = QLabel("")
         self._label.setObjectName("Sub")
         h.addWidget(self._label)
-        next_btn = ghost_button("›")
-        next_btn.setFixedSize(28, 28)
+        next_btn = QPushButton("›")
+        next_btn.setObjectName("DayPillNav")
+        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         next_btn.clicked.connect(self.next_clicked.emit)
         h.addWidget(next_btn)
 
@@ -263,6 +269,13 @@ class DaysGridPage(QWidget):
         self._eg = None
         self._phase = "pick"
         self._phase_default = STATE_SKIPPED
+        # spec/71 identity phase — drives the SurfaceIdentityHeader rail
+        # + badge. Defaults to ``"pick"``; ``open_for_day(phase=...)``
+        # syncs it from ``self._phase`` (Pick/Edit) and Quick Sweep
+        # hosts call :meth:`set_phase_identity("collect")` so the shared
+        # grid reads Collect/blue under their wrappers.
+        self._identity_phase = "pick"
+        self._identity: Optional[SurfaceIdentityHeader] = None
         # Day-mode bookkeeping.
         self._day_number = 1
         self._day_title = ""
@@ -311,6 +324,17 @@ class DaysGridPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 22, 28, 22)
         outer.setSpacing(14)
+
+        # spec/71 identity header — the SHARED Days Grid inherits its
+        # host phase's colour. Rebuilt on every phase swap via
+        # _refresh_identity(); the existing legend strip below stays
+        # (it documents the badge/eye chrome unique to this grid).
+        self._identity_host = QWidget()
+        self._identity_host_layout = QVBoxLayout(self._identity_host)
+        self._identity_host_layout.setContentsMargins(0, 0, 0, 0)
+        self._identity_host_layout.setSpacing(0)
+        outer.addWidget(self._identity_host)
+        self._refresh_identity()
 
         # ── Sticky toolbar ──
         toolbar = QHBoxLayout()
@@ -450,6 +474,11 @@ class DaysGridPage(QWidget):
         # Skip all / Start a new pass… buttons (no decision to make
         # here). They reappear when the page opens for the Pick phase.
         self._apply_phase_chrome()
+        # spec/71 — sync the identity header to the gateway phase. QS
+        # hosts override afterwards via :meth:`set_phase_identity`.
+        if self._identity_phase != self._phase:
+            self._identity_phase = self._phase
+            self._refresh_identity()
         self._day_number = day_number
         self._day_title = title or ""
         self._day_date = date_iso or ""
@@ -499,6 +528,46 @@ class DaysGridPage(QWidget):
                 w.setVisible(is_pick)
             except Exception:                                      # noqa: BLE001
                 pass
+
+    # ── spec/71 identity header (per-phase chrome) ────────────────────
+
+    _IDENTITY_SPEC = {
+        "collect": ("Quick Sweep",
+                    "Fast pass — skip the obvious rejects"),
+        "pick":    ("Pick",
+                    "Decide each shot — pick the keepers"),
+        "edit":    ("Edit",
+                    "Develop your picked keepers"),
+        "export":  ("Export",
+                    "Choose what ships"),
+    }
+
+    def _refresh_identity(self) -> None:
+        """(Re)build the SurfaceIdentityHeader for the current host phase.
+
+        Replacing the widget rather than mutating in place is simpler than
+        chasing repolish() across the rail + badge property selectors and
+        is cheap (one paint, no decode)."""
+        if self._identity is not None:
+            self._identity_host_layout.removeWidget(self._identity)
+            self._identity.deleteLater()
+            self._identity = None
+        name, purpose = self._IDENTITY_SPEC.get(
+            self._identity_phase, self._IDENTITY_SPEC["pick"])
+        self._identity = SurfaceIdentityHeader(
+            phase=self._identity_phase,
+            name=tr(name),
+            purpose=tr(purpose),
+        )
+        self._identity_host_layout.addWidget(self._identity)
+
+    def set_phase_identity(self, phase: str) -> None:
+        """Override the identity-header phase (used by Quick Sweep hosts
+        whose paths-mode call sites don't go through ``open_for_day``).
+        Valid tokens: ``"collect" / "pick" / "edit" / "export"``."""
+        if phase in self._IDENTITY_SPEC and phase != self._identity_phase:
+            self._identity_phase = phase
+            self._refresh_identity()
 
     # ── Public API (smoke / mock path — kept for test ergonomics) ──────
 

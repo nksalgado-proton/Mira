@@ -50,10 +50,12 @@ from mira.gateway import Gateway
 from mira.ui.design import (
     Card,
     StageProgress,
+    SurfaceIdentityHeader,
     danger_ghost_button,
     ghost_button,
     primary_button,
 )
+from mira.ui.i18n import tr
 from mira.ui.palette import PALETTE
 
 
@@ -377,12 +379,27 @@ class DaysListsPage(QWidget):
         self._event_id: Optional[str] = None
         self._event_name: str = ""
         self._snapshots: list[DaySnapshot] = []
+        # spec/71 identity phase — drives the SurfaceIdentityHeader.
+        # Defaults to ``"pick"``; the host calls
+        # :meth:`set_phase_identity` for the Edit / Quick Sweep routes.
+        self._identity_phase = "pick"
+        self._identity: Optional[SurfaceIdentityHeader] = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(32, 24, 32, 24)
         outer.setSpacing(16)
+
+        # spec/71 identity header — the SHARED Days Lists inherits its
+        # host phase's colour (accent under Pick, amber under Edit, blue
+        # under Quick Sweep). Rebuilt on each :meth:`set_phase_identity`.
+        self._identity_host = QWidget()
+        self._identity_host_layout = QVBoxLayout(self._identity_host)
+        self._identity_host_layout.setContentsMargins(0, 0, 0, 0)
+        self._identity_host_layout.setSpacing(0)
+        outer.addWidget(self._identity_host)
+        self._refresh_identity()
 
         # Header — mockup `.head` proportions: Back · title block · action
         # cluster. The title block follows `.ttl h1{font-size:22px;
@@ -438,6 +455,38 @@ class DaysListsPage(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         outer.addWidget(self._scroll, 1)
+
+    # ── spec/71 identity header ────────────────────────────────────────
+
+    _IDENTITY_SPEC = {
+        "collect": ("Quick Sweep", "Choose a day to sweep"),
+        "pick":    ("Pick",        "Pick where to start — choose a day"),
+        "edit":    ("Edit",        "Edit where to start — choose a day"),
+        "export":  ("Export",      "Choose what ships"),
+    }
+
+    def _refresh_identity(self) -> None:
+        """(Re)build the SurfaceIdentityHeader for the current host phase."""
+        if self._identity is not None:
+            self._identity_host_layout.removeWidget(self._identity)
+            self._identity.deleteLater()
+            self._identity = None
+        name, purpose = self._IDENTITY_SPEC.get(
+            self._identity_phase, self._IDENTITY_SPEC["pick"])
+        self._identity = SurfaceIdentityHeader(
+            phase=self._identity_phase,
+            name=tr(name),
+            purpose=tr(purpose),
+        )
+        self._identity_host_layout.addWidget(self._identity)
+
+    def set_phase_identity(self, phase: str) -> None:
+        """Override the identity-header phase. Hosts call this before
+        showing the page so Pick / Edit / Quick Sweep route to their own
+        chrome (spec/71). Valid: ``"collect" / "pick" / "edit" / "export"``."""
+        if phase in self._IDENTITY_SPEC and phase != self._identity_phase:
+            self._identity_phase = phase
+            self._refresh_identity()
 
     # ── data ────────────────────────────────────────────────────────────
 

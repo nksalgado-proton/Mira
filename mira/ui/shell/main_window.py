@@ -1828,6 +1828,17 @@ class MainWindow(QMainWindow):
             snapshots = self._qs_apply_default_to_snapshots(snapshots)
         event_name = self._lookup_event_name(event_id) or tr("Event")
         self.days_lists_page.setEventForPreview(event_name, snapshots)
+        # spec/71 — the shared Days Lists takes the host phase's chrome.
+        # During a QS session it reads Collect/blue regardless of the
+        # underlying Pick store; otherwise Edit when the Edit bridge is
+        # active, else Pick (the default).
+        if self._quick_sweep is not None:
+            identity_phase = "collect"
+        elif self._edit_phase_active:
+            identity_phase = "edit"
+        else:
+            identity_phase = "pick"
+        self.days_lists_page.set_phase_identity(identity_phase)
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
 
     def _qs_apply_default_to_snapshots(self, snapshots: list) -> list:
@@ -3201,6 +3212,10 @@ class MainWindow(QMainWindow):
         lists_page = DaysListsPage()
         grid_page = DaysGridPage()
         viewer_page = QuickSweepPage()
+        # spec/71 — the modal wizard route is a Collect-phase Quick
+        # Sweep; the shared widgets read Collect/blue under it.
+        lists_page.set_phase_identity("collect")
+        grid_page.set_phase_identity("collect")
         stack.addWidget(lists_page)
         stack.addWidget(grid_page)
         stack.addWidget(viewer_page)
@@ -5075,6 +5090,8 @@ class MainWindow(QMainWindow):
             )
             self.days_grid_page.setDay(
                 day_number, title, date_iso, grid_items)
+            # spec/71 — Quick Sweep wears Collect chrome (blue).
+            self.days_grid_page.set_phase_identity("collect")
             self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
             self.days_grid_page.setFocus()
             return
@@ -5095,6 +5112,8 @@ class MainWindow(QMainWindow):
                 "QS per-event: open_for_day(%s, %s) failed",
                 event_id, day_number)
             return
+        # spec/71 — QS chrome even when reading from the Pick gateway.
+        self.days_grid_page.set_phase_identity("collect")
         # Per-event mode tracks the day items list so the QS viewer
         # has a Sequence to walk. Build it from the gateway items.
         from datetime import datetime
@@ -5415,6 +5434,8 @@ class MainWindow(QMainWindow):
                     title=title, date_iso=date_iso,
                     default_state=self._qs_default_phase_state(),
                 )
+        # spec/71 — keep the Collect chrome on returning from the viewer.
+        self.days_grid_page.set_phase_identity("collect")
         self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
         self.days_grid_page.setFocus()
 

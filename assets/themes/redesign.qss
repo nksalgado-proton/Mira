@@ -142,6 +142,19 @@ QPushButton#CarouselDot              { background: rgba(255,255,255,0.45);
 QPushButton#CarouselDot:hover        { background: rgba(255,255,255,0.75); }
 QPushButton#CarouselDot[active="true"] { background: {accent}; }
 
+/* ---- Tight pill-nav chevron (Day Navigator and similar inline pickers) ----
+ * Ghost padding (8px 14px) clipped a 28x28 fixed-size chevron button to
+ * zero text-box on the Day Navigator pill — the prev/next ‹ › rendered
+ * blank. This role drops the padding so the chevron fits at small sizes
+ * (Nelson 2026-06-15 eyeball). */
+QPushButton#DayPillNav            { background: transparent; color: {ink};
+                                    border: 1px solid {line}; border-radius: 6px;
+                                    min-width: 22px; min-height: 22px;
+                                    padding: 0px 6px;
+                                    font-size: 14px; font-weight: 800; }
+QPushButton#DayPillNav:hover      { border-color: {accent}; color: {accent}; }
+QPushButton#DayPillNav:disabled   { color: {ink_faint}; border-color: {line}; }
+
 /* ---- Surface identity header (spec/71) ----
  * Every decision surface (Quick Sweep, Picker, Editor, Export) carries the
  * identity header at its top: a 3px phase-colour rail + a phase-name badge

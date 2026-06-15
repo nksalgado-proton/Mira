@@ -155,6 +155,18 @@ QPushButton#DayPillNav            { background: transparent; color: {ink};
 QPushButton#DayPillNav:hover      { border-color: {accent}; color: {accent}; }
 QPushButton#DayPillNav:disabled   { color: {ink_faint}; border-color: {line}; }
 
+/* ---- Cut row kebab (⋮) menu — spec/65 §3.9 ----
+ * Rare actions (Rename / Delete) hide behind the kebab so the row's
+ * primary verbs (Open / Adjust) read cleanly. Match the ghost-button
+ * resting state, accent the hover border. */
+QToolButton#CutRowKebab           { background: transparent; color: {ink_soft};
+                                    border: 1px solid {line}; border-radius: 8px;
+                                    min-width: 28px; min-height: 28px;
+                                    padding: 0px 6px;
+                                    font-size: 18px; font-weight: 800; }
+QToolButton#CutRowKebab:hover     { border-color: {accent}; color: {accent}; }
+QToolButton#CutRowKebab::menu-indicator { image: none; width: 0; }
+
 /* ---- Surface identity header (spec/71) ----
  * Every decision surface (Quick Sweep, Picker, Editor, Export) carries the
  * identity header at its top: a 3px phase-colour rail + a phase-name badge
@@ -168,6 +180,10 @@ QFrame#SurfaceHeaderRail[phase="collect"]      { background: {blue}; }
 QFrame#SurfaceHeaderRail[phase="pick"]         { background: {accent}; }
 QFrame#SurfaceHeaderRail[phase="edit"]         { background: {amber}; }
 QFrame#SurfaceHeaderRail[phase="export"]       { background: {green}; }
+/* `share` is NOT a phase — Share is the closed-event STATE (spec/66/71);
+   the rail/badge carry the closed-card semantic (pink) so the surface
+   reads as "you are in a finished event," not as a fifth phase. */
+QFrame#SurfaceHeaderRail[phase="share"]        { background: {pink}; }
 
 QLabel#SurfaceHeaderBadge                      { color: {ink_soft}; background: {card2};
                                                  border: 1px solid {line}; border-radius: 10px;
@@ -181,6 +197,8 @@ QLabel#SurfaceHeaderBadge[phase="edit"]        { background: rgba(251,191,36,0.1
                                                  border-color: {amber}; color: {amber}; }
 QLabel#SurfaceHeaderBadge[phase="export"]      { background: rgba(52,211,153,0.16);
                                                  border-color: {green}; color: {green}; }
+QLabel#SurfaceHeaderBadge[phase="share"]       { background: rgba(255,93,162,0.16);
+                                                 border-color: {pink}; color: {pink}; }
 
 QLabel#SurfaceHeaderPurpose                    { color: {ink}; font-size: 13px; font-weight: 600; }
 QLabel#SurfaceHeaderReminder                   { color: {ink_soft}; font-size: 12px;

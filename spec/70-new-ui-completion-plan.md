@@ -67,7 +67,7 @@ is stale — it lists Share/Cuts as route-swapped, but this tree wires the legac
 | 06 Days Grid | ✅ `days_grid_page.py` | ❌ | `base/day_grid_view.py`, `day_grid_cell.py`, `picked/grid_view.py` |
 | 07 Picker | ✅ `picker_page.py` (shell) | ❌ | `picked/pick_page.py` → `pick_photo_surface.py` |
 | 08 Editor | ✅ `editor_page.py` (shell) | ❌ | `edited/edit_host_page.py`, `edit_page.py`, `edit_video_page.py` |
-| 09 Share / Cuts | ✅ `share_cuts_page.py` | ❌ (legacy live) | `shared/cuts_shell.py` `CutsShellPage` |
+| 09 Share / Cuts | ✅ `share_cuts_page.py` | ✅ `ShareCutsPage` | — (`shared/cuts_shell.py` retired 2026-06-15) |
 | ~~10 Full Resolution~~ | **RETIRED 2026-06-14** — spec/63 §4 F10 lens supersedes | — | — |
 | 11 Video Picker | ✅ `video_picker_page.py` (shell) | ❌ | `picked/video_pick_page.py` |
 | 12 Video Editor | ✅ `video_editor_page.py` (shell) | ❌ | `edited/edit_video_page.py` |
@@ -147,11 +147,21 @@ Order chosen by dependency + risk:
    and "Quick Sweep this event" menu entries to it (replacing `_coming_next`).
    Placed after the Picker because it reuses the Picker's single-photo viewport
    machinery.
-5. **09 Share / Cuts** — route-swap `CutsShellPage` → `ShareCutsPage`, **gated to
-   closed events** (spec/66/68). *Note:* the redesigned page's deep Cut
-   functionality is the **spec/61** program (separate, not yet scheduled); this
-   step is the route-swap + closed-event gating + fidelity (spec/65 §3.9), with
-   the full Cuts build tracked under spec/61.
+5. ✅ **09 Share / Cuts** (2026-06-15) — `ShareCutsPage` absorbed the
+   `CutsShellPage` chassis (list ↔ detail ↔ session stack + dialog
+   handlers) and is now what MainWindow mounts at `_CURATE_PAGE_KEY`;
+   `mira/ui/shared/cuts_shell.py` retired. Gated to **closed events
+   only** (spec/66/68) via `_SURFACE_CLOSED_EVENT` on the Share menu +
+   the closed-tile body click that already routes through
+   `_open_event_cuts_list`. spec/71 identity header applied — Share is
+   not a phase, so the header carries the **closed-card pink** rail +
+   `SHARE` badge instead of a four-phase identity colour. spec/65 §3.9
+   fidelity: the Open primary + Adjust ghost row stays, **Rename /
+   Delete moved behind a kebab (⋮) menu**. *Note:* the redesigned
+   page's deep Cut functionality is the **spec/61** program (pool
+   algebra, Picker-on-a-Cut, separators, audio, play/export) and is
+   tracked there — this step was the route-swap + closed-event gating
+   + identity-header + the §3.9 fidelity pass, no deep-cut work.
 
 ### Phase 4 — Video surfaces (heaviest; QMediaPlayer + spec/56)
 

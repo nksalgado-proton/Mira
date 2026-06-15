@@ -237,11 +237,15 @@ class MainWindow(QMainWindow):
         self.export_page = ExportPage(self.gateway)
         self.page_stack.add_page(self._EXPORT_PAGE_KEY, self.export_page)
 
-        # spec/61: the Cuts shell — the Share landing (#exported + user
-        # Cuts list → New Cut dialog → picking session; the Cut detail
-        # surface joins with the flat-grid slice).
-        from mira.ui.shared.cuts_shell import CutsShellPage
-        self.curate_page = CutsShellPage(self.gateway)
+        # spec/70 Phase 3 §5 — Surface 09 (Share / Cuts) is now the
+        # redesigned ShareCutsPage: the spec/71 identity header + the
+        # spec/65 §3.9 list visual (pool card + Cut rows with the kebab
+        # for rare actions), wrapping the spec/61 list ↔ detail ↔
+        # session stack. Gated to closed events only (spec/66/68) — the
+        # Share menu uses _SURFACE_CLOSED_EVENT and the closed-tile body
+        # click routes here directly via _open_event_cuts_list.
+        from mira.ui.pages.share_cuts_page import ShareCutsPage
+        self.curate_page = ShareCutsPage(self.gateway)
         self.page_stack.add_page(self._CURATE_PAGE_KEY, self.curate_page)
 
         self._current_event_id: Optional[str] = None

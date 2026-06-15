@@ -1,9 +1,16 @@
-"""spec/61 slice 6 — the Cuts shell (Share landing) + audio-library feeds.
+"""spec/61 slice 6 + spec/70 Phase 3 §5 — Surface 09 ShareCutsPage chassis
+(Share landing) + audio-library feeds.
 
-The shell is driven with a duck-typed app gateway over the real
+The chassis is driven with a duck-typed app gateway over the real
 event.db fixture: rows render from live gateway reads, the New Cut
 dialog kwargs wire the real probes, sessions mount/unmount in the
 stack, and Back closes the per-event gateway.
+
+History: pre-spec/70 these tests pointed at ``mira.ui.shared.cuts_shell``
+when the chassis was a separate host wrapping the redesigned list. The
+route swap (Phase 3 §5) folded the chassis into the redesigned page; the
+class names map ``CutsShellPage`` → :class:`ShareCutsPage`. The test
+file name stays so the test history is continuous.
 """
 from __future__ import annotations
 
@@ -19,7 +26,7 @@ from mira.gateway.event_gateway import EventGateway
 from mira.settings.model import Settings
 from mira.shared.cut_session import CutSession
 from mira.store.repo import EventStore
-from mira.ui.shared.cuts_shell import CutsShellPage, _RenameCutDialog
+from mira.ui.pages.share_cuts_page import ShareCutsPage, _RenameCutDialog
 
 from tests.test_cut_session import _draft
 from tests.test_gateway_cuts import _doc, _now
@@ -47,9 +54,9 @@ def gw(tmp_path):
     g.close()
 
 
-def _shell(gw, **settings_over) -> CutsShellPage:
+def _shell(gw, **settings_over) -> ShareCutsPage:
     settings = Settings(**settings_over)
-    shell = CutsShellPage(_FakeAppGateway(gw, settings))
+    shell = ShareCutsPage(_FakeAppGateway(gw, settings))
     assert shell.open_event("evt-c")
     return shell
 
@@ -122,7 +129,7 @@ def test_settings_repo_is_loaded_not_attribute_read(qapp, gw, tmp_path):
     (lib / "happy").mkdir(parents=True)
     (lib / "calm").mkdir()
     settings = Settings(audio_library_path=str(lib))
-    shell = CutsShellPage(_FakeAppGateway(gw, None))
+    shell = ShareCutsPage(_FakeAppGateway(gw, None))
     shell.gateway.settings = _RepoDuck(settings)
     assert shell.open_event("evt-c")
     kw = shell._dialog_kwargs()

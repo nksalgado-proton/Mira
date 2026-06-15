@@ -263,6 +263,205 @@ def test_x_on_unshipped_cell_does_not_call_delete_exported_file(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Bulk Drop-all in Export mode — the cascade (the correctness bug
+# that landed in 51e57b7 and was caught by the user's eyeball).
+# --------------------------------------------------------------------------- #
+
+
+def test_bulk_drop_all_cascades_un_export_for_shipped_items(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """The bulk Drop-all button (``✗ Drop all``) in Export mode must
+    delete the on-disk files for every shipped item it touches AND
+    drop their lineage rows. The pre-fix bug: it wrote
+    ``phase_state = skipped`` and stopped, leaving the JPEGs on disk
+    and the corner badge still painting — the surface lied about
+    its state."""
+    _, source_eg = store_and_gateway
+    shipped_x2 = _ship_one(source_eg, event_dir, "x2")
+    shipped_x4 = _ship_one(source_eg, event_dir, "x4")
+    assert shipped_x2.is_file() and shipped_x4.is_file()
+    assert source_eg.exported_item_ids() == {"x2", "x4"}
+
+    # Auto-confirm the destructive prompt for the test.
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda *args, **kwargs: True)
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_skip_all_clicked()
+
+    # Shipped files are gone, lineage is empty, exported_item_ids
+    # returns empty, and the corner badge cleared on every cell.
+    assert not shipped_x2.is_file()
+    assert not shipped_x4.is_file()
+    assert source_eg.exported_item_ids() == set()
+    for it in page._items:
+        assert it.exported is False
+        assert it.state == STATE_SKIPPED
+    page.close_event()
+
+
+def test_bulk_drop_all_confirm_text_names_shipped_count(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """The Drop-all confirm dialog in Export mode names the shipped
+    count explicitly so the user knows the on-disk blast before
+    confirming. (Without that, the prompt reads identically to a
+    Pick-mode bulk Skip — invisible blast.)"""
+    _, source_eg = store_and_gateway
+    _ship_one(source_eg, event_dir, "x1")
+    _ship_one(source_eg, event_dir, "x3")
+    captured: list[tuple] = []
+
+    def _capture_confirm(parent, title, body, primary_text=None):
+        captured.append((title, body, primary_text))
+        return False                        # cancel — keeps the test clean
+
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm", _capture_confirm)
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_skip_all_clicked()
+
+    assert len(captured) == 1
+    title, body, primary = captured[0]
+    assert "Drop all" in title and "4" in title       # 4 items total
+    assert "2" in body                                  # 2 are shipped
+    assert "Exported Media" in body
+    assert "Original Media" in body                     # charter pin
+    assert primary == "Drop"
+    page.close_event()
+
+
+def test_bulk_export_all_in_export_mode_uses_ship_verb_in_confirm(
+        qapp, app_gateway, monkeypatch):
+    """Pick-all in Export mode reads as "Export all" in the
+    confirm — the user shouldn't see Pick-mode chrome on the
+    Export-mode action."""
+    captured: list[tuple] = []
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda parent, title, body, primary_text=None:
+            captured.append((title, body, primary_text)) or False)
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_pick_all_clicked()
+
+    assert len(captured) == 1
+    title, body, primary = captured[0]
+    assert "Export all" in title
+    assert "ship" in body.lower()
+    assert primary == "Export"
+    page.close_event()
+
+
+# --------------------------------------------------------------------------- #
+# Single X-on-shipped — silent, fast, UNDOABLE (spec/63 §4 Ctrl+Z
+# + re-press-P quick-recover).
+# --------------------------------------------------------------------------- #
+
+
+def test_ctrl_z_after_x_on_shipped_restores_file_and_lineage(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """Ctrl+Z after a silent X-on-shipped puts the on-disk file back,
+    re-inserts the lineage row, and re-sets ``edit_exported`` — the
+    silent unlink is trivially recoverable."""
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+
+    _, source_eg = store_and_gateway
+    shipped = _ship_one(source_eg, event_dir, "x2")
+    original_bytes = shipped.read_bytes()
+    assert source_eg.exported_item_ids() == {"x2"}
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+
+    # X on the shipped cell → file vanishes.
+    idx = next(i for i, it in enumerate(page._items) if it.item_id == "x2")
+    page._thumb_widgets[idx].setFocus(Qt.FocusReason.MouseFocusReason)
+    page._apply_verb_at_index(idx, "skip")
+    assert not shipped.is_file()
+    assert source_eg.exported_item_ids() == set()
+
+    # Ctrl+Z → file + lineage + flag come back.
+    ev = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Z,
+        Qt.KeyboardModifier.ControlModifier, "z")
+    page.keyPressEvent(ev)
+
+    assert shipped.is_file()
+    assert shipped.read_bytes() == original_bytes
+    assert source_eg.exported_item_ids() == {"x2"}
+    by_id = {it.item_id: it for it in page._items}
+    assert by_id["x2"].exported is True
+    assert by_id["x2"].state == STATE_PICKED
+    page.close_event()
+
+
+def test_repress_p_after_x_on_shipped_restores_file_and_lineage(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """Pressing P (or otherwise re-greening the cell) after X-on-
+    shipped IS the undo of that un-export — the user doesn't need to
+    know about Ctrl+Z to recover one stray X."""
+    _, source_eg = store_and_gateway
+    shipped = _ship_one(source_eg, event_dir, "x3")
+    original_bytes = shipped.read_bytes()
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    idx = next(i for i, it in enumerate(page._items) if it.item_id == "x3")
+    page._thumb_widgets[idx].setFocus(Qt.FocusReason.MouseFocusReason)
+    page._apply_verb_at_index(idx, "skip")
+    assert not shipped.is_file()
+
+    # Re-press P → re-pick should restore the file.
+    page._apply_verb_at_index(idx, "pick")
+    assert shipped.is_file()
+    assert shipped.read_bytes() == original_bytes
+    assert source_eg.exported_item_ids() == {"x3"}
+    page.close_event()
+
+
+def test_ctrl_z_with_empty_stack_is_a_no_op(qapp, app_gateway):
+    """A Ctrl+Z with nothing to undo doesn't crash and doesn't mutate
+    state — the no-op makes the key safe to press idly."""
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    states_before = [it.state for it in page._items]
+    ev = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Z,
+        Qt.KeyboardModifier.ControlModifier, "z")
+    page.keyPressEvent(ev)
+    states_after = [it.state for it in page._items]
+    assert states_before == states_after
+    page.close_event()
+
+
+def test_undo_stack_clears_on_close_event(qapp, app_gateway):
+    """The captured JPEG bytes don't outlive the event session —
+    closing the gateway drops the undo stack so memory doesn't
+    leak across day re-opens."""
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # Push something onto the stack by toggling a cell.
+    page._apply_verb_at_index(0, "skip")
+    assert len(page._undo_stack) == 1
+    page.close_event()
+    assert page._undo_stack == []
+
+
 def test_pick_mode_chrome_unchanged(qapp, app_gateway):
     """Pick mode still shows the Pick verbs and emits item_activated on
     photo click — the Export reroute is additive, not a takeover."""

@@ -136,6 +136,49 @@ _TILE_SIZE = QSize(196, 146)
 
 
 @dataclass
+class _UnexportSnapshot:
+    """One ``Exported Media/`` ship row captured for the
+    Export-mode undo (Ctrl+Z and re-press-P).
+
+    The file bytes are held in memory until the snapshot is restored
+    or evicted from the page's undo stack; that keeps the locked X
+    grammar fast (no dialog, instant feedback) while making the
+    silent unlink trivially reversible (the user can recover one
+    stray X with a single keystroke). The trade is small — the cap
+    on the undo stack (``_UNDO_MAX``) bounds memory; the bytes drop
+    when the user leaves the day or fills the stack with newer
+    decisions."""
+
+    item_id: str
+    file_bytes: bytes
+    dest_path: Path
+    lineage_row: object        # m.Lineage — typed loosely to avoid an import cycle
+
+
+@dataclass
+class _UndoEntry:
+    """One reversible Days-Grid decision. Plain phase-state flips
+    record only ``item_id`` + ``prev_state``; the Export-mode
+    un-export adds the file snapshot so the restore reproduces both
+    the in-DB state AND the on-disk file."""
+
+    item_id: str
+    prev_state: Optional[str]   # what phase_state.state was before the verb
+    new_state: str              # what the verb wrote
+    snapshots: list = None      # list[_UnexportSnapshot] when X-on-shipped, else empty
+
+    def __post_init__(self) -> None:
+        if self.snapshots is None:
+            self.snapshots = []
+
+
+# Per-page Ctrl+Z stack size. Each Export-mode undo snapshot keeps a
+# JPEG's bytes alive; ~16 entries × 2-5 MB each stays under 100 MB
+# even at the high end. The next snapshot drops the oldest.
+_UNDO_MAX = 16
+
+
+@dataclass
 class GridItem:
     """One grid cell's rendered content. The page builds these from
     :class:`CullCell` on the gateway path; smokes and tests can build
@@ -311,6 +354,14 @@ class DaysGridPage(QWidget):
         # Counts displayed in the toolbar progress block.
         self._reviewed = 0
         self._total = 0
+
+        # spec/63 §4 Ctrl+Z = undo last decision. Plain phase-state
+        # flips push lightweight entries (~80 bytes); Export-mode
+        # X-on-shipped pushes a snapshot of the deleted JPEG + its
+        # lineage row so the restore reproduces the on-disk state.
+        # Stack-bounded by ``_UNDO_MAX`` so the bytes can't grow
+        # unbounded; cleared on event close.
+        self._undo_stack: list[_UndoEntry] = []
 
         # Per-cell focus tracking — the locked P/X/Space/C keys act on
         # the Thumb the user last clicked (Qt focus follows). The
@@ -1071,8 +1122,15 @@ class DaysGridPage(QWidget):
     def keyPressEvent(self, ev: QKeyEvent) -> None:  # noqa: N802 — Qt
         """Locked §4 keymap. Events bubble up from the focused Thumb
         when no Thumb captures them (Thumb has no keyPressEvent
-        override). The verb applies to the currently focused Thumb."""
+        override). The verb applies to the currently focused Thumb.
+
+        Ctrl+Z (spec/63 §4) undoes the most recent decision on this
+        page — a phase_state flip restores the previous state; an
+        Export-mode X-on-shipped (the silent file unlink) restores
+        the on-disk JPEG + its lineage row + the ``edit_exported``
+        flag from the in-memory snapshot captured at the verb."""
         key = ev.key()
+        mods = ev.modifiers()
         if key == Qt.Key.Key_Escape:
             if self._mode == "cluster":
                 self._close_cluster()
@@ -1080,6 +1138,11 @@ class DaysGridPage(QWidget):
                 self.back_requested.emit()
             ev.accept()
             return
+        if (key == Qt.Key.Key_Z
+                and mods & Qt.KeyboardModifier.ControlModifier):
+            if self._undo_last_decision():
+                ev.accept()
+                return
         if key == Qt.Key.Key_P:
             if self._verb_on_focused("pick"):
                 ev.accept()
@@ -1109,6 +1172,162 @@ class DaysGridPage(QWidget):
         if idx is None:
             return False
         return self._apply_verb_at_index(idx, verb)
+
+    # ── Undo stack (spec/63 §4 Ctrl+Z) ────────────────────────────────
+
+    def _push_undo(self, entry: "_UndoEntry") -> None:
+        """Append ``entry`` to the page's undo stack, evicting the
+        oldest if the cap is reached so the captured JPEG bytes can't
+        grow unbounded."""
+        self._undo_stack.append(entry)
+        while len(self._undo_stack) > _UNDO_MAX:
+            self._undo_stack.pop(0)
+
+    def _pop_most_recent_unexport(
+        self, item_id: str,
+    ) -> "Optional[_UndoEntry]":
+        """Find + remove the most recent un-export entry for
+        ``item_id``. Used by re-press-P so a stray X is trivially
+        recoverable: pressing P after X on a shipped cell restores
+        everything (file + lineage + flag) without the user needing
+        to know about Ctrl+Z. Returns ``None`` if no un-export entry
+        for that item is in the stack."""
+        for i in range(len(self._undo_stack) - 1, -1, -1):
+            e = self._undo_stack[i]
+            if e.item_id == item_id and e.snapshots:
+                return self._undo_stack.pop(i)
+        return None
+
+    def _capture_unexport(
+        self, item_id: str,
+    ) -> list["_UnexportSnapshot"]:
+        """Snapshot every ``Exported Media/`` lineage row + on-disk
+        file for ``item_id`` so a later restore can put both back.
+
+        Reads happen BEFORE the caller invokes
+        :meth:`EventGateway.delete_exported_file`, which is the only
+        way to capture the bytes — once that helper runs the file is
+        gone. Empty list when no shipped rows exist (a no-op snapshot
+        wraps a no-op delete so the verb path stays branch-free at
+        the call site)."""
+        if self._eg is None or self._eg.event_root is None:
+            return []
+        snapshots: list[_UnexportSnapshot] = []
+        try:
+            # spec/61 §1.2 / spec/66 §1.2 — the same WHERE
+            # delete_exported_file uses, so the capture/delete pair
+            # operates on the same row set.
+            rows = self._eg.store.conn.execute(
+                "SELECT * FROM lineage "
+                "WHERE phase = 'edit' AND source_item_id = ? "
+                "AND export_relpath LIKE 'Exported Media/%'",
+                (item_id,),
+            ).fetchall()
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: capture lineage for %s failed", item_id)
+            return []
+        from mira.store import models as _m
+        from mira.store.repo import _BY_CLS
+        info = _BY_CLS.get(_m.Lineage)
+        event_root = Path(self._eg.event_root)
+        for r in rows:
+            rel = r["export_relpath"]
+            abs_path = event_root / rel
+            try:
+                file_bytes = (
+                    abs_path.read_bytes() if abs_path.is_file() else b"")
+            except OSError:
+                log.exception(
+                    "DaysGridPage: read %s for undo failed", abs_path)
+                file_bytes = b""
+            try:
+                lineage_row = (
+                    self._eg.store._row_to_obj(r, info)
+                    if info is not None else None)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: row_to_obj for %s failed", rel)
+                lineage_row = None
+            if lineage_row is None:
+                # Without the row we can't restore the lineage; skip
+                # the snapshot rather than save half-state.
+                continue
+            snapshots.append(_UnexportSnapshot(
+                item_id=item_id, file_bytes=file_bytes,
+                dest_path=abs_path, lineage_row=lineage_row,
+            ))
+        return snapshots
+
+    def _restore_unexport(self, snapshots: list) -> None:
+        """Replay a captured un-export: rewrite the file bytes, re-
+        insert the lineage row, set ``edit_exported = True``. Each
+        snapshot is restored independently — a partial failure on
+        one doesn't abort the others."""
+        if self._eg is None:
+            return
+        for snap in snapshots:
+            try:
+                snap.dest_path.parent.mkdir(parents=True, exist_ok=True)
+                if snap.file_bytes:
+                    snap.dest_path.write_bytes(snap.file_bytes)
+            except OSError:
+                log.exception(
+                    "DaysGridPage: restore write %s failed",
+                    snap.dest_path)
+            try:
+                self._eg.record_lineage(snap.lineage_row)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: restore record_lineage for %s "
+                    "failed", snap.item_id)
+            try:
+                self._eg.set_edit_exported(snap.item_id, True)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: restore set_edit_exported for %s "
+                    "failed", snap.item_id)
+
+    def _undo_last_decision(self) -> bool:
+        """Ctrl+Z — pop and apply the most recent undo entry. Returns
+        ``True`` if anything was undone (so the key handler can
+        accept the event)."""
+        if not self._undo_stack or self._eg is None:
+            return False
+        entry = self._undo_stack.pop()
+        self._apply_undo_entry(entry)
+        return True
+
+    def _apply_undo_entry(self, entry: "_UndoEntry") -> None:
+        """Restore phase_state + (when present) the on-disk file +
+        lineage row, then refresh the cell's chrome."""
+        idx = None
+        for i, it in enumerate(self._items):
+            if it.item_id == entry.item_id:
+                idx = i
+                break
+        if idx is None:
+            return
+        item = self._items[idx]
+        # phase_state restoration — write prev explicitly. If the
+        # original was ``None`` (born-default), write the phase
+        # default so the cell reads the same as before the verb.
+        restore_state = entry.prev_state or self._phase_default
+        try:
+            self._eg.set_phase_state(
+                entry.item_id, self._phase, restore_state)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "_apply_undo_entry: set_phase_state(%s) failed",
+                entry.item_id)
+        item.state = restore_state
+        self._thumb_widgets[idx].setState(restore_state)
+        # Export-side restoration when this entry carried a file.
+        if entry.snapshots:
+            self._restore_unexport(entry.snapshots)
+            item.exported = True
+            self._thumb_widgets[idx].setExported(True)
+        self._update_counts()
 
     def _apply_verb_at_index(self, idx: int, verb: str) -> bool:
         """Apply a §4 verb to the cell at ``idx``. Returns ``True`` if
@@ -1141,6 +1360,20 @@ class DaysGridPage(QWidget):
         new_state = self._next_state(item.item_kind, cur_state, verb)
         if new_state is None or new_state == cur_state:
             return True
+        # spec/63 §4 + spec/68 §3 — re-press-P quick-recover: if the
+        # user pressed P (or otherwise lands on green) on a cell
+        # whose most recent decision was an X-on-shipped un-export,
+        # the press IS the undo of that un-export. The file + lineage
+        # row come back without the user needing to know about
+        # Ctrl+Z. Falls through to the normal verb path when no
+        # pending un-export entry exists for this item.
+        if (self._export_mode
+                and new_state == STATE_PICKED
+                and not item.exported):
+            entry = self._pop_most_recent_unexport(item.item_id)
+            if entry is not None:
+                self._apply_undo_entry(entry)
+                return True
         try:
             self._eg.set_phase_state(item.item_id, self._phase, new_state)
         except Exception:                                          # noqa: BLE001
@@ -1150,10 +1383,16 @@ class DaysGridPage(QWidget):
             return True
         # spec/68 §3 — Export-mode un-export: a green→red flip on a
         # cell that already shipped also tears down the ship-side
-        # state (file + lineage row + edit_exported flag).
+        # state (file + lineage row + edit_exported flag). The bytes
+        # + lineage row are captured BEFORE the gateway tears them
+        # down so the undo stack can put them back if the user
+        # presses Ctrl+Z (or re-presses P) — the silent unlink is
+        # trivially recoverable.
+        snapshots: list[_UnexportSnapshot] = []
         if (self._export_mode
                 and new_state == STATE_SKIPPED
                 and item.exported):
+            snapshots = self._capture_unexport(item.item_id)
             try:
                 self._eg.delete_exported_file(item.item_id)
             except Exception:                                      # noqa: BLE001
@@ -1163,6 +1402,11 @@ class DaysGridPage(QWidget):
             # status is gone, the watermark must go with it.
             item.exported = False
             self._thumb_widgets[idx].setExported(False)
+        # Push the undo entry AFTER the writes land so a Ctrl+Z
+        # pop'd state restoration can rewrite to the correct prev.
+        self._push_undo(_UndoEntry(
+            item_id=item.item_id, prev_state=cur_state,
+            new_state=new_state, snapshots=snapshots))
         item.state = new_state
         self._thumb_widgets[idx].setState(new_state)
         self._update_counts()
@@ -1340,7 +1584,16 @@ class DaysGridPage(QWidget):
         """Apply ``state`` to every item currently visible (day mode:
         all flat items + every cluster member; cluster mode: every
         member of the open cluster). Goes through one bulk gateway
-        call (single transaction) per the spec/63 §5d pattern."""
+        call (single transaction) per the spec/63 §5d pattern.
+
+        Export-mode Drop all (spec/68 §3 second bullet) cascades the
+        un-export: every item in the affected set that was already
+        shipped gets its ``Exported Media/`` file deleted + its
+        lineage row dropped + ``edit_exported`` cleared. The confirm
+        text reads the shipped count out loud so the user knows the
+        on-disk blast before confirming. Charter-safe: only
+        ``Exported Media/`` is touched; ``Original Media/`` stays
+        immutable."""
         if self._eg is None:
             # Mock mode — apply against in-memory items so smokes/tests
             # see the visual change. No gateway round trip.
@@ -1359,26 +1612,80 @@ class DaysGridPage(QWidget):
         item_ids = self._affected_item_ids()
         if not item_ids:
             return
-        verb = "Pick" if state == STATE_PICKED else "Skip"
-        confirmed = confirm(
-            self,
-            tr("{verb} all in view?").replace("{verb}", verb),
-            tr(
+        is_drop_all = (
+            self._export_mode and state == STATE_SKIPPED)
+        # spec/68 §3 — figure out the on-disk blast for the confirm
+        # text + the un-export cascade.
+        shipped_to_drop: list[str] = []
+        if is_drop_all:
+            try:
+                shipped_set = self._eg.exported_item_ids()
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: exported_item_ids failed; bulk "
+                    "Drop-all may leave orphans")
+                shipped_set = set()
+            shipped_to_drop = [
+                iid for iid in item_ids if iid in shipped_set]
+        if self._export_mode:
+            # Export-mode confirm: name the verb + the shipped blast.
+            if is_drop_all and shipped_to_drop:
+                title = tr("Drop all {n}?").replace(
+                    "{n}", str(len(item_ids)))
+                body = tr(
+                    "{shipped} of these are already exported — their "
+                    "files will be deleted from Exported Media/ "
+                    "(Original Media/ is untouched). Continue?"
+                ).replace("{shipped}", str(len(shipped_to_drop)))
+                primary = tr("Drop")
+            elif is_drop_all:
+                title = tr("Drop all {n}?").replace(
+                    "{n}", str(len(item_ids)))
+                body = tr(
+                    "None of these have shipped yet — Drop just "
+                    "marks them won't-export. Continue?")
+                primary = tr("Drop")
+            else:
+                title = tr("Export all {n}?").replace(
+                    "{n}", str(len(item_ids)))
+                body = tr(
+                    "Every cell turns green — they'll all ship on the "
+                    "next Export-green run. Continue?")
+                primary = tr("Export")
+        else:
+            verb = "Pick" if state == STATE_PICKED else "Skip"
+            title = tr("{verb} all in view?").replace("{verb}", verb)
+            body = tr(
                 "This marks {n} item(s) as {verb}. Continue?"
-            ).replace("{n}", str(len(item_ids))).replace("{verb}", verb.lower()),
-            primary_text=verb,
-        )
+            ).replace("{n}", str(len(item_ids))).replace(
+                "{verb}", verb.lower())
+            primary = verb
+        confirmed = confirm(self, title, body, primary_text=primary)
         if not confirmed:
             return
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self._eg.set_items_phase_state(item_ids, self._phase, state)
+            # spec/68 §3 — un-export cascade. Runs AFTER the
+            # phase_state write so the per-item teardown sees a
+            # consistent gateway view (the phase_state already says
+            # skipped). delete_exported_file is idempotent — a missing
+            # row is a no-op — so partial failures don't corrupt the
+            # remaining items.
+            for iid in shipped_to_drop:
+                try:
+                    self._eg.delete_exported_file(iid)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "delete_exported_file(%s) failed during "
+                        "bulk Drop-all", iid)
         except Exception:                                          # noqa: BLE001
             log.exception("bulk state set failed for %d items", len(item_ids))
         finally:
             QGuiApplication.restoreOverrideCursor()
-        # Rebuild from gateway so cluster covers, aggregates, and
-        # the toolbar progress all settle consistently.
+        # Rebuild from gateway so cluster covers, aggregates,
+        # toolbar progress, AND the corner exported badge all settle
+        # consistently against the now-truthful lineage.
         if self._mode == "cluster" and self._cluster is not None:
             self._open_cluster(self._cluster)
         else:
@@ -1419,6 +1726,9 @@ class DaysGridPage(QWidget):
         self._thumb_pending.clear()
         self._thumb_pixmap_cache.clear()
         self._event_name = ""
+        # Drop any pending undo entries so their captured JPEG bytes
+        # don't outlive the event's session.
+        self._undo_stack.clear()
         if self._eg is not None:
             try:
                 self._eg.close()

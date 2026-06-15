@@ -733,6 +733,13 @@ class EditorPage(QWidget):
             for ci in self._items:
                 if not getattr(ci, "path", None):
                     continue
+                # Skip videos: the photo proxy/thumb caches can't
+                # decode MP4 etc., and queuing them spams the log with
+                # "cannot identify image file" warnings (Nelson
+                # 2026-06-15 log report). Matches the Picker's filter
+                # at picker_page.py:635.
+                if getattr(ci, "kind", "photo") != "photo":
+                    continue
                 it = self._eg.item(ci.item_id)
                 if it is None or not getattr(it, "sha256", None):
                     continue

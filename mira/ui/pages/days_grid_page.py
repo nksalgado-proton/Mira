@@ -2116,20 +2116,29 @@ class DaysGridPage(QWidget):
         it. Same pipeline the legacy PickPage uses — the engines are
         reused, not rewritten (spec/70 §7).
 
+        Routing is by FILE EXTENSION, not ``item_kind`` — a synthetic
+        video cluster cover (spec/56 Export-mode) has
+        ``item_kind="cluster"`` but its ``_path`` is the source MP4, so
+        the photo thumb cache would log "cannot identify image file"
+        (Nelson 2026-06-15 log spam report). Extension routing handles
+        it correctly.
+
         Paths mode (standalone Quick Sweep — no gateway, no sha256):
         decode the source AT the tile size (JPEG DCT-domain downscale,
         ~3× faster than full decode + scale). Videos in paths mode
         return ``None`` — there is no event ``.cache/`` to materialise
         a frame thumb into; the Thumb widget paints its placeholder.
         """
+        from core.video_discovery import VIDEO_EXTENSIONS
         from mira.ui.media.image_loader import load_pixmap
 
         path = item._path
         if path is None:
             return None
+        is_video_source = path.suffix.lower() in VIDEO_EXTENSIONS
         try:
             if self._eg is not None:
-                if item.item_kind == "video":
+                if is_video_source:
                     from core.thumb_cache import ensure_thumb
                     thumb_path = ensure_thumb(
                         event_root=Path(self._eg.event_root),
@@ -2150,7 +2159,7 @@ class DaysGridPage(QWidget):
                     )
                     return load_pixmap(thumb_path)
                 return load_pixmap(path)
-            if item.item_kind == "video":
+            if is_video_source:
                 return None
             return load_pixmap(path, _TILE_SIZE)
         except Exception:                                          # noqa: BLE001

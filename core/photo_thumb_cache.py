@@ -112,6 +112,14 @@ def ensure_photo_thumb(
     dest = photo_thumb_path(event_root, sha256)
     if dest.exists():
         return dest
+    # Defence-in-depth: a video file accidentally fed to the photo
+    # cache (e.g. a video item slipped into a ``set_event_context``
+    # batch) used to log "cannot identify image file" on every
+    # request. Short-circuit on extension — no decode, no log spam.
+    from core.photo_decoder import is_supported as _is_image_supported
+
+    if not _is_image_supported(source_path):
+        return source_path
     try:
         jpeg_bytes = _render_photo_thumb(source_path)
     except FileNotFoundError:

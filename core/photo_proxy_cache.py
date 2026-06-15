@@ -244,6 +244,14 @@ def ensure_photo_proxy(
     source_path = Path(source_path)
     if resolve_proxy(event_root, sha256, source_path) is not None:
         return True
+    # Defence-in-depth: a video file accidentally seeded into the
+    # proxy builder (e.g. via a stale ``set_event_context`` batch)
+    # used to log "cannot identify image file" on every build.
+    # Short-circuit on extension — no decode, no log spam.
+    from core.photo_decoder import is_supported as _is_image_supported
+
+    if not _is_image_supported(source_path):
+        return False
     try:
         jpeg_bytes, native_w, native_h = _render_proxy(source_path)
     except FileNotFoundError:

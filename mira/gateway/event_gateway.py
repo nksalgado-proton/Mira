@@ -1949,6 +1949,103 @@ class EventGateway:
             conn.execute("DELETE FROM lineage WHERE phase = ?", (phase,))
             self._touch()
 
+    def rescan_exported_media(self) -> int:
+        """Backfill missing ``Exported Media/`` lineage rows.
+
+        Mirrors the spec/57 §3 ``Edited Media/`` returns scan: walk the
+        on-disk tree, find files that have no lineage row pointing at
+        them, match each back to a source ``Item`` by source-filename
+        stem, and write the missing rows + ``Adjustment.edit_exported``.
+
+        Self-heals **lost-commit** failures of the Export run — e.g.
+        when the spec/60 worker process exits cleanly but echoes no ``ok``
+        unit messages, the spec/68 §3 ``ExportPage._submit_batch.commit``
+        closure short-circuits on empty ``ok_unit_ids`` and writes
+        nothing, even though the engine could have rendered the JPEGs.
+        The rescan finds those orphan files and writes the rows the
+        Export run forgot, so the Exported watermark + Share's
+        ``#exported`` pool catch up on the next surface entry.
+
+        Match rule: stem of the on-disk file (without extension) against
+        the stem of every Pick-kept photo's ``origin_relpath``. Ambiguous
+        stems (more than one Pick-kept photo with the same filename, e.g.
+        ``DSC0001.cr3`` on day 1 AND day 2) are SKIPPED — the rescan is
+        conservative; the user re-runs Export to disambiguate. Returns
+        the number of rows written.
+
+        Cheap: scans only the existing ``Exported Media/`` subtree, runs
+        the stem map once. Suitable to call on every Share/Export entry
+        as a no-op when nothing is orphaned.
+        """
+        if self.event_root is None:
+            return 0
+        exported_root = Path(self.event_root) / "Exported Media"
+        if not exported_root.is_dir():
+            return 0
+
+        # Already-recorded ship rows — skip files that already have one.
+        already_rows = self.store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE phase = 'edit' "
+            "AND export_relpath LIKE 'Exported Media/%'"
+        ).fetchall()
+        already_recorded: set = {r["export_relpath"] for r in already_rows}
+
+        # Pick-kept photo items, keyed by source-filename stem. Ambiguous
+        # stems (same filename appearing twice in the picked pool) are
+        # marked None so the rescan refuses to guess.
+        stem_to_item_id: dict = {}
+        for it in self.items(phase="pick", state="picked", kind="photo",
+                             provenance="captured"):
+            if not it.origin_relpath:
+                continue
+            stem = Path(it.origin_relpath).stem
+            if stem in stem_to_item_id:
+                stem_to_item_id[stem] = None  # ambiguous — skip both
+            else:
+                stem_to_item_id[stem] = it.id
+
+        # Walk Exported Media/ and write rows for the orphans.
+        stamp = self._now()
+        written = 0
+        for f in exported_root.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                rel = f.relative_to(self.event_root).as_posix()
+            except ValueError:
+                continue
+            if rel in already_recorded:
+                continue
+            item_id = stem_to_item_id.get(f.stem)
+            if not item_id:
+                # Unknown stem (item not in picked pool) or ambiguous —
+                # leave the file alone. Honest: a re-export from the
+                # surface remains the authoritative path for these.
+                log.info(
+                    "rescan_exported_media: orphan %s — no unique source "
+                    "stem match", rel)
+                continue
+            try:
+                self.record_lineage(m.Lineage(
+                    export_relpath=rel,
+                    phase="edit",
+                    source_kind="item",
+                    source_item_id=item_id,
+                    recipe_json=None,
+                    exported_at=stamp,
+                ))
+                self.set_edit_exported(item_id, True)
+                written += 1
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "rescan_exported_media: backfill failed for %s", rel)
+        if written:
+            log.info(
+                "rescan_exported_media: backfilled %d lineage row(s) "
+                "under %s", written, exported_root)
+        return written
+
     # ----- event ---------------------------------------------------------- #
 
     def set_closed(self, value: bool) -> None:

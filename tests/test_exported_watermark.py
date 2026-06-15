@@ -118,6 +118,149 @@ def test_edit_exported_flag_is_not_the_driver(tmp_path):
         eg.store.close()
 
 
+def _make_eg_picked(tmp_path) -> EventGateway:
+    """:func:`_make_eg` plus a Pick-kept phase_state row per item — the
+    rescan needs the picked pool to do its stem match."""
+    eg = _make_eg(tmp_path)
+    for iid in ("p1", "p2", "p3"):
+        eg.store.upsert(
+            m.PhaseState(item_id=iid, phase="pick", state="picked"))
+    return eg
+
+
+# --------------------------------------------------------------------------- #
+# rescan_exported_media — the self-heal for lost-commit Exports
+# --------------------------------------------------------------------------- #
+
+
+def test_rescan_backfills_orphan_files(tmp_path):
+    """A JPEG sitting under ``Exported Media/`` with no lineage row is
+    backfilled: the rescan matches it back to its source ``Item`` by
+    source-filename stem, writes the row, and flips
+    ``Adjustment.edit_exported``.
+
+    Mirrors the spec/57 §3 returns scan: the next Edit / Share / Export
+    entry catches files the Export run dropped on disk but forgot to
+    commit a row for. The Inseto na Varanda silent fail (2026-06-15)
+    would have left orphans here — this test guards the recovery path
+    so a future regression doesn't reintroduce a lost-row gap."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        # Drop a JPEG matching ``p1``'s origin stem (= ``p1`` for
+        # ``origin_relpath="d/p1.jpg"``) into the ship tree. No lineage
+        # row yet — the simulated lost commit.
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        # Pre-rescan: the watermark / Share view is empty.
+        assert eg.exported_item_ids() == set()
+
+        n = eg.rescan_exported_media()
+        assert n == 1
+        # Post-rescan: the source item now reads as shipped.
+        assert eg.exported_item_ids() == {"p1"}
+        # ``Adjustment.edit_exported`` flipped — the freshness chip lights.
+        adj = eg.adjustment("p1")
+        assert adj is not None and adj.edit_exported is True
+        # The lineage row carries the correct relpath under Exported Media/.
+        files = eg.exported_files()
+        assert [f.export_relpath for f in files] == [
+            "Exported Media/Dia 1/p1.jpg"]
+    finally:
+        eg.store.close()
+
+
+def test_rescan_is_idempotent(tmp_path):
+    """Running the rescan twice writes the row once — the second call
+    is a no-op. Lets every Edit / Share / Export entry call it without
+    risk of duplicating lineage."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        assert eg.rescan_exported_media() == 1
+        # Second pass — the row exists, nothing new.
+        assert eg.rescan_exported_media() == 0
+        # And the ship pool stays a single row, no duplication.
+        assert len(eg.exported_files()) == 1
+    finally:
+        eg.store.close()
+
+
+def test_rescan_skips_files_with_existing_rows(tmp_path):
+    """A file that already has a lineage row pointing at it is left
+    alone (the row keeps its original recipe / exported_at / etc.)."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json='{"look": "natural"}',
+            exported_at="2026-06-01T00:00:00"))
+        assert eg.rescan_exported_media() == 0
+        # The original row's recipe + timestamp survive.
+        files = eg.exported_files()
+        assert len(files) == 1
+        assert files[0].recipe_json == '{"look": "natural"}'
+        assert files[0].exported_at == "2026-06-01T00:00:00"
+    finally:
+        eg.store.close()
+
+
+def test_rescan_skips_ambiguous_stems(tmp_path):
+    """Two Pick-kept photos with the same filename stem (``DSC0001.cr3``
+    on day 1 AND day 2) make the stem map ambiguous — the rescan
+    refuses to guess and leaves both unresolved files alone."""
+    eg = _make_eg(tmp_path)
+    # _make_eg gives day 1 only — the second item lives on day 2.
+    eg.store.upsert(m.TripDay(day_number=2, date="2026-04-02"))
+    # Two items share the same source filename stem ``dup`` — different
+    # paths, but a stem-keyed map can only point at one of them.
+    eg.store.upsert(m.Item(
+        id="d1", kind="photo", origin_relpath="day1/dup.jpg",
+        sha256="d1", byte_size=2, materialized_at="t",
+        materialized_phase="ingest", camera_id="C1",
+        capture_time_raw="2026-04-01T08:00:00",
+        capture_time_corrected="2026-04-01T08:00:00",
+        created_at="t", day_number=1, provenance="captured"))
+    eg.store.upsert(m.Item(
+        id="d2", kind="photo", origin_relpath="day2/dup.jpg",
+        sha256="d2", byte_size=2, materialized_at="t",
+        materialized_phase="ingest", camera_id="C1",
+        capture_time_raw="2026-04-02T08:00:00",
+        capture_time_corrected="2026-04-02T08:00:00",
+        created_at="t", day_number=2, provenance="captured"))
+    eg.store.upsert(m.PhaseState(item_id="d1", phase="pick", state="picked"))
+    eg.store.upsert(m.PhaseState(item_id="d2", phase="pick", state="picked"))
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "dup.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        # Ambiguous → skip. The user re-runs Export from the surface
+        # to disambiguate; the rescan does not guess between days.
+        assert eg.rescan_exported_media() == 0
+        assert eg.exported_item_ids() == set()
+    finally:
+        eg.store.close()
+
+
+def test_rescan_no_op_when_no_exported_media_folder(tmp_path):
+    """Nothing on disk → nothing to do. The rescan never creates the
+    folder; it only observes."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        assert not (tmp_path / "Exported Media").exists()
+        assert eg.rescan_exported_media() == 0
+        # No phantom row writes.
+        assert eg.exported_item_ids() == set()
+    finally:
+        eg.store.close()
+
+
 def test_edit_candidate_helpers_for_third_party_returns(tmp_path):
     """spec/66 §1.2 — ``edit_candidate_item_ids`` returns items with a
     third-party return sitting in ``Edited Media/`` (and not yet shipped);

@@ -585,6 +585,21 @@ class ShareCutsPage(QWidget):
                 tr("This event could not be opened for Share."))
             return False
         self._event_id = event_id
+        # Self-heal lost-commit Exports — backfill lineage rows for any
+        # JPEGs that landed under ``Exported Media/`` but never got a
+        # row written (the silent empty-ok_unit_ids fail in
+        # ``ExportPage._submit_batch.commit``). #exported reads from
+        # those rows, so the pool card + Cut rows reflect every shipped
+        # file on the next entry. No-op when nothing is orphaned.
+        try:
+            n = self._eg.rescan_exported_media()
+            if n:
+                log.info(
+                    "ShareCutsPage.open_event: backfilled %d Exported "
+                    "Media lineage row(s) on entry", n)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "ShareCutsPage: rescan_exported_media failed on entry")
         self.refresh()
         self._stack.setCurrentWidget(self.list_page)
         return True

@@ -220,6 +220,20 @@ class ExportPage(QWidget):
             log.exception("ExportPage: cannot open event %s", event_id)
             return False
         self._event_id = event_id
+        # Self-heal lost commits — scan Exported Media/ for JPEGs that
+        # landed on disk but never got a lineage row (the silent empty-
+        # ok_unit_ids fail this surface guards against above). No-op
+        # when nothing is orphaned; the cost is one rglob over the
+        # ship tree.
+        try:
+            n = self._eg.rescan_exported_media()
+            if n:
+                log.info(
+                    "ExportPage.open_event: backfilled %d Exported "
+                    "Media lineage row(s) on entry", n)
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "ExportPage: rescan_exported_media failed on entry")
         try:
             ev = self._eg.event()
             self._event_name = ev.name or tr("(unnamed event)")
@@ -452,6 +466,7 @@ class ExportPage(QWidget):
         change the pixels. Hardlinks run synchronously here (file-system
         op, sub-second); the no-return cells take the render path.
         """
+        from core.cull_export import ExportFileType
         from core.export_manifest import ExportManifest, PhotoUnit
         from core.settings import load_settings
         from mira.ui.edited.export_job import BatchExportJob
@@ -528,7 +543,18 @@ class ExportPage(QWidget):
                     unit_id=c.item_id,
                     source=str(c.path),
                     dest_dir=dest_dir,
-                    file_type="JPEG",
+                    # PhotoUnit.file_type holds the Enum *value*
+                    # (``"jpeg"`` / ``"tiff"`` / ``"original"``); the
+                    # worker constructs ``ExportFileType(unit.file_type)``
+                    # and a name-cased ``"JPEG"`` raises ValueError → every
+                    # unit reports ``status="error"`` → ``ok_unit_ids``
+                    # stays empty → the commit closure short-circuits
+                    # silently. This was the Inseto na Varanda
+                    # silent-fail (2026-06-15): five Export runs reported
+                    # finished, zero files, zero lineage rows. Use the
+                    # Enum's ``.value`` so a rename of the member can't
+                    # reintroduce the same bug.
+                    file_type=ExportFileType.JPEG.value,
                     jpeg_quality=92,
                     look=look,
                     auto_on=True,
@@ -553,14 +579,37 @@ class ExportPage(QWidget):
         def commit(result) -> None:
             """Per-unit truth (spec/60 §5): set ``edit_exported`` +
             record lineage only for ok units. Failures simply don't
-            commit; the Edit-entry return scan (spec/57 §3) heals any
-            lost commit."""
+            commit; the Exported Media re-scan
+            (:meth:`EventGateway.rescan_exported_media`, invoked on the
+            next Export / Share entry) heals any lost commit by
+            stem-matching orphan files back to their sources."""
             if self._eg is None:
                 return
             ok_ids = getattr(result, "ok_unit_ids", set())
             if not ok_ids:
+                # The queue line shows "finished" whether or not the
+                # worker emitted ok units. A silent empty result is the
+                # exact silent-fail this surface had — log loud so the
+                # next session can see it. The Exported Media re-scan
+                # backfills lineage rows for any JPEGs that *did* land
+                # on disk; if none did, the user re-runs Export.
+                total = len(render_cells)
+                log.warning(
+                    "ExportPage: batch finished with NO ok units "
+                    "(submitted %d render unit(s)); nothing committed. "
+                    "The Exported Media re-scan will backfill any "
+                    "orphans on the next entry.", total)
                 return
             ok_cells = [c for c in render_cells if c.item_id in ok_ids]
+            if len(ok_cells) < len(ok_ids):
+                # Stems echoed back that we don't know — usually a
+                # round-trip encoding glitch on unit_id. The lineage
+                # writer will quietly drop them; surface here so the
+                # next debug round catches it.
+                log.warning(
+                    "ExportPage: %d ok unit(s) but only %d match "
+                    "render_cells — some unit_ids did not round-trip.",
+                    len(ok_ids), len(ok_cells))
             for c in ok_cells:
                 try:
                     self._eg.set_edit_exported(c.item_id, True)

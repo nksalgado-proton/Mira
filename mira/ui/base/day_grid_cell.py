@@ -33,6 +33,7 @@ from mira.picked.model import CullCell
 from mira.picked.status import CellColor
 from mira.ui.base.cluster_icons import cluster_icon
 from mira.ui.base.exported_watermark import ExportedWatermark
+from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
 from mira.ui.i18n import tr
 
 # Border thickness scales proportionally with cell size. Hit-test for the
@@ -74,11 +75,28 @@ class DayGridCell(QFrame):
         data: CellRenderData,
         *,
         size: int = 140,
+        photo_canvas_mode: str = "qss",
         parent: Optional[QWidget] = None,
     ) -> None:
+        """``photo_canvas_mode`` (spec/61 §5.1 — Nelson 2026-06-15):
+
+        * ``"qss"`` (default) — plain ``QLabel`` inner whose background
+          paints from the ``DayGridCellInner`` QSS rule. The Pick /
+          Quick Sweep grids have used this since the cell was born.
+        * ``"blurred"`` — :class:`BlurredPhotoCanvas` inner: blurred-
+          fill backdrop + KeepAspectRatio photo + hairline frame +
+          inner padding (same treatment as :class:`Thumb`). The Cut
+          detail grid uses this so aspect-mismatched photos and 16:9
+          separator cards no longer letterbox against the cell's dark
+          base colour.
+        """
         super().__init__(parent)
         self._data = data
         self._size = int(size)
+        self._photo_canvas_mode = (
+            photo_canvas_mode if photo_canvas_mode in ("qss", "blurred")
+            else "qss"
+        )
 
         self.setObjectName("DayGridCell")
         # Set the QSS ``status`` property BEFORE the widget's first polish so
@@ -98,10 +116,17 @@ class DayGridCell(QFrame):
         b = self._border_px()
         layout.setContentsMargins(b, b, b, b)
         layout.setSpacing(0)
-        self._inner = QLabel(self)
-        self._inner.setObjectName("DayGridCellInner")
-        self._inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._inner.setScaledContents(False)
+        if self._photo_canvas_mode == "blurred":
+            # The Cut detail grid (spec/61 §5.1) — blurred-fill backdrop
+            # + KeepAspectRatio framed photo. No "..." placeholder text
+            # — the dark backdrop reads as "loading" on its own.
+            self._inner = BlurredPhotoCanvas(parent=self)
+            self._inner.setObjectName("DayGridCellInner")
+        else:
+            self._inner = QLabel(self)
+            self._inner.setObjectName("DayGridCellInner")
+            self._inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._inner.setScaledContents(False)
         self._inner.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self._inner)
@@ -261,22 +286,35 @@ class DayGridCell(QFrame):
             tinted_svg_pixmap(GLYPH_CHECK, glyph_size, "#ffffff"))
 
     def _apply_pixmap(self) -> None:
-        """Set the inner label's pixmap from the cell's content."""
+        """Set the inner widget's pixmap from the cell's content.
+
+        QSS mode pre-scales the pixmap to the inner side (the QLabel
+        only centres what it gets), then falls back to the "…" loading
+        glyph when nothing is loaded yet. Blurred mode hands the raw
+        pixmap to :class:`BlurredPhotoCanvas` — it does its own
+        KeepAspectRatio scaling and paints a dark placeholder when no
+        pixmap is set, so the "…" glyph is unnecessary.
+        """
         inner_side = max(1, self._size - 2 * self._border_px())
         cell = self._data.cell
         if cell.is_cluster and cell.cluster is not None:
             pm = cluster_icon(cell.cluster.kind, inner_side, cell.cluster.count)
         else:
             pm = self._data.thumbnail
-            if pm is not None and not pm.isNull():
+            if (
+                self._photo_canvas_mode == "qss"
+                and pm is not None
+                and not pm.isNull()
+            ):
                 pm = pm.scaled(
                     inner_side, inner_side,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-        if pm is None or pm.isNull():
-            # No thumb yet — clear & show "…" placeholder so the cell still
-            # renders its border/status.
+        if self._photo_canvas_mode == "blurred":
+            self._inner.setPixmap(pm if pm is not None and not pm.isNull()
+                                  else None)
+        elif pm is None or pm.isNull():
             self._inner.clear()
             self._inner.setText(tr("…"))
         else:

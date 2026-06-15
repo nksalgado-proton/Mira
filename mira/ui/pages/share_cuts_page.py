@@ -27,8 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -52,7 +52,6 @@ from mira.gateway import Gateway
 from mira.shared.cut_session import CutSession
 from mira.ui.design import (
     Card,
-    Thumb,
     danger_ghost_button,
     ghost_button,
     primary_button,
@@ -85,7 +84,6 @@ class CutSnapshot:
     duration_seconds: int = 0
     description: str = ""
     exported_date: str = ""
-    cover_pixmap: QPixmap | None = None
 
 
 @dataclass
@@ -294,7 +292,17 @@ class CutRow(Card):
     """One user Cut card row — Open primary + Adjust ghost + kebab (⋮)
     menu carrying the rare actions (Rename / Delete), per spec/65 §3.9
     ("4 ghost buttons reads as crowded; mockup uses a kebab menu with
-    the rare actions hidden")."""
+    the rare actions hidden").
+
+    Fixed height (Nelson 2026-06-15): the row's vertical size is pinned
+    so the list scrolls when it overflows; without it the rows balloon
+    to fill the available height and there is no scrolling. The earlier
+    cover-thumb slot was empty (``cover_pixmap`` never wired) and has
+    been removed — spec/61 §3 lists the row fields as tag · item count
+    · duration · music category · exported status only.
+    """
+
+    ROW_HEIGHT = 92
 
     open_requested = pyqtSignal(str)
     adjust_requested = pyqtSignal(str)
@@ -308,18 +316,15 @@ class CutRow(Card):
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
-        self.setMinimumHeight(120)
-        self.layout().setContentsMargins(16, 14, 16, 14)
+        self.setFixedHeight(self.ROW_HEIGHT)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.layout().setContentsMargins(18, 18, 18, 18)
         self.layout().setSpacing(10)
 
         row = QHBoxLayout()
         row.setSpacing(14)
-        # Cover thumb (no state border — Cuts are post-pick)
-        cover = Thumb(
-            snapshot.cover_pixmap,
-            state=None, size=QSize(140, 100),
-        )
-        row.addWidget(cover)
 
         # Info block
         info = QVBoxLayout()
@@ -498,7 +503,11 @@ class _CutsListView(QWidget):
         # Section label
         self._section_label.setText(f"Cuts · {len(self._cuts)}")
 
-        # Cuts list
+        # Cuts list — clear EVERY item (rows AND the trailing stretch
+        # left by the previous render). Without this the stretch
+        # accumulates one per refresh; AlignTop alone doesn't stop
+        # Preferred-policy children from filling the scroll viewport,
+        # so the trailing stretch is what keeps the rows at the top.
         while self._cuts_layout.count():
             it = self._cuts_layout.takeAt(0)
             w = it.widget() if it else None
@@ -511,6 +520,7 @@ class _CutsListView(QWidget):
             row.rename_requested.connect(self.rename_requested.emit)
             row.delete_requested.connect(self.delete_requested.emit)
             self._cuts_layout.addWidget(row)
+        self._cuts_layout.addStretch(1)
 
 
 # ── chassis — the page MainWindow mounts ──────────────────────────────

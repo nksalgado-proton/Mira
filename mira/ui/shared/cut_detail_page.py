@@ -117,9 +117,14 @@ class CutDetailPage(QWidget):
         outer.addLayout(head)
 
         self._stack = QStackedWidget()
+        # spec/61 §5.1 — Cuts are post-pick, so the grid carries no
+        # decision-state border. The blurred-fill photo canvas + hairline
+        # frame replace the QSS QLabel inner so aspect-mismatched photos
+        # and 16:9 separator cards no longer letterbox against the cell.
         self._grid = DayGridView(
             show_play_button=show_play,
             show_export_all_button=show_export,
+            cell_photo_canvas="blurred",
         )
         self._grid.back_requested.connect(self.back_requested.emit)
         self._grid.cell_activated.connect(self._open_single)

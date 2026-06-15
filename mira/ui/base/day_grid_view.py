@@ -126,10 +126,19 @@ class DayGridView(QWidget):
         show_export_all_button: bool = False,
         show_compare_button: bool = False,
         show_play_button: bool = False,
+        cell_photo_canvas: str = "qss",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DayGridView")
+        # spec/61 §5.1 (Nelson 2026-06-15): hosts can opt cells into the
+        # blurred-fill + framed-photo paint by passing
+        # ``cell_photo_canvas="blurred"``. Default keeps the QSS-based
+        # QLabel inner so Pick / Quick Sweep are unchanged.
+        self._cell_photo_canvas = (
+            cell_photo_canvas if cell_photo_canvas in ("qss", "blurred")
+            else "qss"
+        )
         # ``cell_size=None`` (default) reads the user-tunable
         # ``default_day_grid_cell_size`` setting (Nelson 2026-06-09 audit).
         # An explicit value still overrides for tests / call-site needs.
@@ -424,7 +433,12 @@ class DayGridView(QWidget):
 
         Caller must guarantee ``idx == len(self._cells)`` (append order)."""
         data = self._all_cell_data[idx]
-        cell = DayGridCell(data, size=self._cell_size, parent=self._host)
+        cell = DayGridCell(
+            data,
+            size=self._cell_size,
+            photo_canvas_mode=self._cell_photo_canvas,
+            parent=self._host,
+        )
         cell.border_clicked.connect(
             lambda _bound=idx: self.cell_border_clicked.emit(_bound))
         cell.center_clicked.connect(

@@ -20,6 +20,7 @@ Module map:
 Later commits add: progress (StageBar / hero glow), donut, thumbs, media_nav,
 stable_stage, carousel, dialog templates.
 """
+from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
 from mira.ui.design.brand import MiraLogo, MiraMark
 from mira.ui.design.buttons import (
     danger_ghost_button,
@@ -77,6 +78,7 @@ from mira.ui.design.title_bar import TitleBar
 from mira.ui.design.toolbar import toolbar_row
 
 __all__ = [
+    "BlurredPhotoCanvas",
     "CATEGORIES_DIR",
     "CLUSTERS_DIR",
     "Card",

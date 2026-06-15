@@ -22,9 +22,10 @@ from typing import List, Optional, Tuple
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QLabel, QSizePolicy, QStackedLayout, QWidget)
+    QDialog, QSizePolicy, QStackedLayout, QWidget)
 
 from core import audio_library
+from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
 from mira.ui.i18n import tr
 from mira.ui.media.image_loader import load_pixmap
 from mira.ui.shared.separator_card import render_separator_image
@@ -74,17 +75,25 @@ class CutPlayerDialog(QDialog):
 
         self._layout = QStackedLayout(self)
         self._layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
-        self._photo = QLabel(self)
-        self._photo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Ignored policy: the label's pixmap must NEVER drive the layout.
-        # A QLabel's minimum size hint is its pixmap size, and a top-level
-        # layout enforces that as the WINDOW minimum — after fullscreen the
-        # window could never shrink back to its windowed size, and the
-        # min-size fight inside Windows' synchronous resize negotiation
-        # could wedge the event loop (2026-06-12 freeze).
+        # spec/61 §5.4 (Nelson 2026-06-15): blurred-fill canvas + framed
+        # photo replaces the plain centred ``QLabel``. The dialog's black
+        # background is the canvas of last resort — between the canvas
+        # and the frame, aspect-mismatched photos no longer ride on
+        # bare black, and 16:9 separators don't letterbox in a square
+        # window.
+        self._photo = BlurredPhotoCanvas(
+            parent=self, inner_pad=28, radius=10.0,
+        )
+        # Ignored policy: the canvas's pixmap must NEVER drive the layout.
+        # The previous QLabel set its minimumSizeHint to its pixmap size,
+        # which a top-level layout enforced as the WINDOW minimum — after
+        # fullscreen the window could never shrink back to its windowed
+        # size, and the min-size fight inside Windows' synchronous resize
+        # negotiation could wedge the event loop (2026-06-12 freeze).
         self._photo.setSizePolicy(QSizePolicy.Policy.Ignored,
                                   QSizePolicy.Policy.Ignored)
         self._layout.addWidget(self._photo)
+        self._missing_label = None              # lazy "(file missing)"
         self._normal_geometry = None        # saved on entering fullscreen
         self._video_widget = None           # lazy — QtMultimedia on demand
         self._player = None
@@ -210,16 +219,35 @@ class CutPlayerDialog(QDialog):
         self._photo.show()
         self._raw_pixmap = pm
         if pm.isNull():
-            self._photo.setText(tr("(file missing)"))
+            self._show_missing_label()
             return
-        self._photo.setText("")
+        self._hide_missing_label()
         self._fit_current()
         self._layout.setCurrentWidget(self._photo)
+
+    def _show_missing_label(self) -> None:
+        if self._missing_label is None:
+            from PyQt6.QtWidgets import QLabel
+            self._missing_label = QLabel(self)
+            self._missing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._missing_label.setStyleSheet(
+                "color: #cccccc; background: transparent;")
+            self._layout.addWidget(self._missing_label)
+        self._missing_label.setText(tr("(file missing)"))
+        self._layout.setCurrentWidget(self._missing_label)
+
+    def _hide_missing_label(self) -> None:
+        if self._missing_label is not None:
+            self._missing_label.setText("")
 
     def _fit_current(self) -> None:
         pm = getattr(self, "_raw_pixmap", QPixmap())
         if pm.isNull():
             return
+        # Pre-scale the raw pixmap to the dialog's current size so the
+        # canvas's per-paint scale-into-frame stays cheap on large
+        # originals. The BlurredPhotoCanvas itself runs the
+        # KeepAspectRatio fit + blurred backdrop on whatever it gets.
         size = self.size()
         if size.width() > 0 and size.height() > 0:
             pm = pm.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,

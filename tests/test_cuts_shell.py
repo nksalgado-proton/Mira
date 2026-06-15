@@ -19,14 +19,19 @@ import random
 
 import pytest
 
-from PyQt6.QtWidgets import QFrame, QLabel
+from PyQt6.QtWidgets import QFrame, QLabel, QScrollArea, QSizePolicy
 
 from core import audio_library
 from mira.gateway.event_gateway import EventGateway
 from mira.settings.model import Settings
 from mira.shared.cut_session import CutSession
 from mira.store.repo import EventStore
-from mira.ui.pages.share_cuts_page import ShareCutsPage, _RenameCutDialog
+from mira.ui.pages.share_cuts_page import (
+    CutRow,
+    CutSnapshot,
+    ShareCutsPage,
+    _RenameCutDialog,
+)
 
 from tests.test_cut_session import _draft
 from tests.test_gateway_cuts import _doc, _now
@@ -96,6 +101,30 @@ def test_separators_setting_off_changes_duration(qapp, gw, tmp_path):
     cut = shell.list_page._cuts[0]         # noqa: SLF001
     # 1 photo only, no separator card -> 6 s
     assert cut.duration_seconds == 6
+
+
+def test_cut_row_is_fixed_height_and_list_scrolls(qapp, gw):
+    """spec/61 §3 + Nelson 2026-06-15: rows are a fixed height so the
+    list scrolls when it overflows — without this the rows balloon to
+    fill the viewport and there is no scrolling. The cuts layout sits
+    inside a ``QScrollArea`` and is the cuts-list's load-bearing seam."""
+    row = CutRow(CutSnapshot(cut_id="c1", name="anything", item_count=3))
+    # Fixed height = setFixedHeight collapses min/max to the same value;
+    # vertical size policy refuses to grow beyond sizeHint.
+    assert row.minimumHeight() == CutRow.ROW_HEIGHT
+    assert row.maximumHeight() == CutRow.ROW_HEIGHT
+    assert row.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+
+    shell = _shell(gw)
+    list_view = shell.list_page                # noqa: SLF001
+    # The cuts area is wrapped in a QScrollArea; without it overflow
+    # would have nowhere to go.
+    scrolls = list_view.findChildren(QScrollArea)
+    assert any(
+        s.widget() is not None
+        and s.widget().layout() is list_view._cuts_layout   # noqa: SLF001
+        for s in scrolls
+    )
 
 
 # --------------------------------------------------------------------------- #

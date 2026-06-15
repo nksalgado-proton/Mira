@@ -225,8 +225,9 @@ class AdjustmentSurface(QWidget):
         # self-displaying widget — it's a state-holder that exposes its
         # display widget + tools widget for re-parenting into a
         # ``BaseEditSurface``'s ``media`` + ``tools_panel`` regions.
-        # The host (EditPage / EditVideoPage) calls :meth:`display_widget`
-        # and :meth:`tools_widget` and reparents them; AdjustmentSurface
+        # The host (the spec/70 EditorPage owns BOTH photo and video
+        # Edit-phase items) calls :meth:`display_widget` and
+        # :meth:`tools_widget` and reparents them; AdjustmentSurface
         # itself paints nothing.
         #
         # spec/63 §6.1 (6b, 2026-06-12): the display is THE PhotoViewport
@@ -718,9 +719,7 @@ class AdjustmentSurface(QWidget):
         visually when only the parent is disabled — same propagation quirk
         that forced the click-cursor event filter (CLAUDE.md "Clickable
         affordances"). Hosts can mark widgets to be skipped by setting
-        the Qt property ``excludeFromToolsEnable = True`` on them — used
-        by EditVideoPage to keep its Fade/Stabilise extras enabled
-        regardless of Adjust mode."""
+        the Qt property ``excludeFromToolsEnable = True`` on them."""
         from PyQt6.QtWidgets import (
             QComboBox, QLineEdit, QPushButton, QSlider,
         )

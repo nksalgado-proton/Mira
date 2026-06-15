@@ -85,13 +85,13 @@ def test_picked_segments_become_clip_units(tmp_path):
     ]
 
     # Override-shim stub matching the workshop's _OverrideShim duck.
+    # Markers ARE the trim (spec/56 §1 — Surface 12 fold 2026-06-15):
+    # the shim no longer carries the trim_*_delta fields.
     class _Shim:
         def __init__(self, adj, _params):
             self.params = None
             self.crop_norm = None
             self.box_angle = 0.0
-            self.trim_start_delta_ms = 0
-            self.trim_end_delta_ms = 0
             self.include_audio = bool(adj.include_audio) if adj else True
             self.audio_volume = adj.audio_volume if adj else 1.0
             self.audio_fade_ms = adj.audio_fade_ms if adj else 0

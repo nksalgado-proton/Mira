@@ -57,9 +57,10 @@ Signals:
     * ``closed`` — Back / Esc; the host returns to the Days Grid.
     * ``fullscreen_changed(bool)`` — shell hides/restores its chrome.
 
-The legacy ``mira/ui/edited/edit_page.py`` + ``edit_host_page.py`` are
-retired with this surface; ``edit_video_page.py`` stays (Surface 12 is
-a separate reconciliation).
+The legacy ``mira/ui/edited/edit_page.py`` + ``edit_host_page.py`` +
+``edit_video_page.py`` + ``mira/ui/pages/video_editor_page.py`` all
+retire with this surface — every Edit-phase item (photo OR video)
+flows through the one route now.
 """
 from __future__ import annotations
 
@@ -85,6 +86,8 @@ from mira.gateway import Gateway
 from mira.gateway.event_gateway import EventGateway
 from mira.picked import CullBucket, CullCluster, CullItem
 from mira.picked.status import (
+    STATE_PICKED,
+    STATE_SKIPPED,
     default_state_for,
     project_status,
 )
@@ -99,6 +102,10 @@ from mira.ui.edited.adjustment_surface import (
     normalize_style,
 )
 from mira.ui.edited.edit_prep import PrepResult, edit_prep
+from mira.ui.edited.video_workshop_bar import (
+    VideoWorkshopBar,
+    WORKSHOP_REVEAL_HEIGHT,
+)
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import ViewportItem, open_inspect_lens
 
@@ -147,6 +154,51 @@ class EditorPage(QWidget):
         self._exported_set: set = set()
         self._watermark_enabled: bool = True
 
+        # ── Video workshop state (spec/56 §1 + spec/59 §4-§5) ─────────
+        # The current source video's workshop model: markers, segment
+        # rows + their backing items, snapshots, derived bounds. Loaded
+        # in :meth:`_load_video_workshop` whenever the viewport lands on
+        # a video; cleared when leaving for a photo.
+        self._video_id: Optional[str] = None
+        self._video_source_path: Optional[Path] = None
+        self._video_duration_ms: int = 0
+        self._video_pos_ms: int = 0
+        self._video_fps: float = 30.0
+        self._video_meta_cache: dict = {}
+        self._markers: list = []                       # list[VideoMarker]
+        self._segments: list = []                      # list[VideoSegment]
+        self._segment_items: list = []                 # list[Item], same order
+        self._segment_bounds: list = []                # list[(in_ms, out_ms)]
+        self._snapshots: list = []                     # list[VideoSnapshot]
+        # Cache for extracted segment-anchor frames (decoded as numpy
+        # arrays). Keyed by (video_item_id, seg_index_or_-1, at_ms);
+        # the F10 lens reads them.
+        self._video_frame_cache: dict = {}
+        # ── Modeless development (spec/59 §3) ─────────────────────────
+        # When the video is PAUSED and the cursor sits on a stop
+        # (marker = segment start, snapshot, or the implicit start),
+        # the canvas swaps to a DEVELOPED frame: the QVideoWidget
+        # hides and the AdjustmentSurface pushes a fully-developed
+        # pixmap into the viewport. Adjustments fan out automatically
+        # because the surface already calls render_now() on every
+        # state change. Stepping off / playing exits the swap. The
+        # state lives here so position / playing / selection handlers
+        # can coordinate.
+        self._dev_mode_active: bool = False
+        self._dev_mode_item_id: Optional[str] = None
+        self._dev_mode_anchor_ms: Optional[int] = None
+        # The current selection — what the development panel binds to.
+        # ``("segment", seg_index, item_id)`` for a segment under the
+        # cursor; ``("snapshot", -1, item_id)`` for a held snapshot.
+        self._selection: Optional[tuple] = None
+        # Guard while pushing state INTO AdjustmentSurface from a
+        # selection swap so its ``changed`` signal doesn't echo back as
+        # a write (the legacy EditVideoPage tracked the same guard).
+        self._suppress_persist: bool = False
+        # Default phase state for newly-born segments — read from
+        # settings on _open_event (spec/59 §8 — born-green).
+        self._edit_default_state: str = "skipped"
+
         # ── The engine: AdjustmentSurface owns the math + state +
         # display_widget (PhotoViewport) + the CropOverlay's draggable
         # handles. We reparent its tools_widget into our controls area
@@ -166,9 +218,21 @@ class EditorPage(QWidget):
         self._viewport.truth_requested.connect(self._open_processed_lens)
         self._viewport.fullscreen_requested.connect(self._toggle_fullscreen)
         self._viewport.back_requested.connect(self._on_esc)
-        # spec/66 §1.1 — Edit is creative-only. P/X/Space/C STILL fire
-        # on the viewport (the locked map is universal) but this page
-        # does not connect to them.
+        # Video transport signals → the workshop bar's timeline + play
+        # button. Wired here (before _build_ui) because the workshop bar
+        # is constructed in the layout pass.
+        self._viewport.video_position_changed.connect(self._on_video_position)
+        self._viewport.video_duration_changed.connect(self._on_video_duration)
+        self._viewport.video_playing_changed.connect(self._on_video_playing)
+        # spec/66 §1.1 — Edit is creative-only on PHOTOS. P/X/Space/C
+        # STILL fire on the viewport (the locked map is universal); the
+        # page connects to them only to scope decisions onto the
+        # SELECTED video segment / snapshot when a video is landed.
+        self._viewport.pick_requested.connect(self._on_pick_key)
+        self._viewport.skip_requested.connect(self._on_skip_key)
+        self._viewport.toggle_requested.connect(self._on_toggle_key)
+        self._viewport.cycle_requested.connect(self._on_toggle_key)
+        self._viewport.sweep_requested.connect(self._on_sweep_key)
 
         # ── Prep worker (off-thread decode + downsample + Natural). ──
         # The process-wide singleton — the worker emits ONLY to it,
@@ -252,6 +316,26 @@ class EditorPage(QWidget):
         self._viewport.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._outer.addWidget(self._viewport, 1)
+
+        # ── Workshop reveal host — fixed reserved height (spec/56 §1).
+        # The host stays visible on photos AND videos so the canvas
+        # geometry above is invariant under photo↔video sweeps (the
+        # no-canvas-jump rule, lifted from PickerPage's compact_row Fix
+        # A 2026-06-15). On photos the inner workshop is hidden; on
+        # videos it appears in place. The viewport's video machinery
+        # (arm-on-landing, position/duration/playing signals) handles
+        # the in-place player swap above this row.
+        self._workshop_host = QWidget()
+        self._workshop_host.setObjectName("EditorWorkshopHost")
+        self._workshop_host.setFixedHeight(WORKSHOP_REVEAL_HEIGHT)
+        wh_layout = QVBoxLayout(self._workshop_host)
+        wh_layout.setContentsMargins(0, 0, 0, 0)
+        wh_layout.setSpacing(0)
+        self._workshop_bar = VideoWorkshopBar()
+        wh_layout.addWidget(self._workshop_bar)
+        self._workshop_bar.setVisible(False)
+        self._wire_workshop_signals()
+        self._outer.addWidget(self._workshop_host)
 
         # ── Bottom bar — ◀ prev · spacer · Full Resolution F10 · Full
         # Screen F11 · spacer · ▶ next. The bucket-level filmstrip
@@ -337,12 +421,16 @@ class EditorPage(QWidget):
         self, event_id: str, day_number: int, item_id: str,
     ) -> bool:
         """Open the Editor on a flat single-item click from the Days Grid
-        (Surface 06). Loads the ENTIRE day's navigable photo items
+        (Surface 06). Loads the ENTIRE day's navigable items
         (chronological; cluster members flattened in place) and
         positions the viewport at the clicked item — so prev/next walks
         the whole day, not just that one click (Nelson 2026-06-14
-        eyeball #3: a 1-item bucket made nav dead). Videos are filtered
-        out — they belong on Surface 12 (Video Editor).
+        eyeball #3: a 1-item bucket made nav dead).
+
+        Videos STAY in the list (surface 12 fold, 2026-06-15): the
+        EditorPage sweeps photos AND videos in one unified surface;
+        when the cursor lands on a video the canvas becomes a video in
+        place and the spec/56 workshop reveals under it.
 
         Returns ``True`` on success. ``False`` leaves the page in a clean
         state so the host can leave the user on the Days Grid.
@@ -350,7 +438,7 @@ class EditorPage(QWidget):
         if not self._open_event(event_id):
             return False
         try:
-            items = self._day_navigable_items(day_number, photos_only=True)
+            items = self._day_navigable_items(day_number)
         except Exception:                                          # noqa: BLE001
             log.exception(
                 "open_to_item: day-items build failed for %s/%s",
@@ -361,12 +449,11 @@ class EditorPage(QWidget):
             None,
         )
         if idx is None:
-            # The clicked item didn't surface in the navigable list
-            # (e.g. a video clicked in Edit mode is filtered out here —
-            # the host routes those to EditVideoPage — OR the day's
-            # buckets aren't materialised in this gateway snapshot).
-            # Fall back to a single-item bucket so the surface still
-            # opens rather than collapsing back to the grid silently.
+            # The clicked item didn't surface in the navigable list —
+            # OR the day's buckets aren't materialised in this gateway
+            # snapshot. Fall back to a single-item bucket so the
+            # surface still opens rather than collapsing back to the
+            # grid silently.
             cull_item = self._cull_item_for(item_id)
             if cull_item is None:
                 self._close_event()
@@ -385,17 +472,15 @@ class EditorPage(QWidget):
         self._load_bucket(bucket, entry_idx=idx)
         return True
 
-    def _day_navigable_items(
-        self, day_number: int, *, photos_only: bool,
-    ) -> list[CullItem]:
+    def _day_navigable_items(self, day_number: int) -> list[CullItem]:
         """Build the day's navigable item list in chronological order.
 
         Walks :func:`day_grid_cells` and FLATTENS clusters into their
         members so prev/next steps through every individual frame the
-        user can edit, not just the cluster covers. ``photos_only=True``
-        drops video items (they belong on Surface 12). Each surviving
-        item id is rehydrated into a :class:`CullItem` carrying the
-        absolute path under ``event_root``.
+        user can edit, not just the cluster covers. Both photos AND
+        videos surface (the Surface 12 fold, 2026-06-15) — the viewport
+        sweeps both kinds and EditorPage reveals the spec/56 workshop
+        in place when a video lands.
         """
         if self._eg is None:
             return []
@@ -419,8 +504,6 @@ class EditorPage(QWidget):
         for iid in ordered_ids:
             it = self._eg.item(iid)
             if it is None or not it.origin_relpath:
-                continue
-            if photos_only and (it.kind or "photo") == "video":
                 continue
             out.append(CullItem(
                 item_id=it.id,
@@ -528,6 +611,11 @@ class EditorPage(QWidget):
             log.warning("EditorPage._open_event called without a gateway")
             return False
         self._close_event()
+        # Re-connect to the prep singleton — ``_close_event`` cleared the
+        # fan-out so a stale delivery couldn't reach us; opening a new
+        # event re-arms the wire so this session's preps land.
+        self._prep.prepared.connect(self._on_prep_ready)
+        self._prep.prep_failed.connect(self._on_prep_failed)
         try:
             self._eg = self.gateway.open_event(event_id)
         except Exception:                                          # noqa: BLE001
@@ -538,6 +626,14 @@ class EditorPage(QWidget):
         # the single-photo viewport's diagonal "Exported" overlay.
         self._exported_set, self._watermark_enabled = (
             self._load_exported_state())
+        # spec/59 §8 — the configured edit default ("born green" out of
+        # the box) governs segment lazy-birth too.
+        try:
+            self._edit_default_state = default_state_for(
+                self.gateway.settings, self._phase)
+        except Exception:                                          # noqa: BLE001
+            log.exception("EditorPage: default_state_for failed")
+            self._edit_default_state = "skipped"
         return True
 
     def _load_exported_state(self) -> "tuple[set, bool]":
@@ -563,16 +659,41 @@ class EditorPage(QWidget):
 
     def _close_event(self) -> None:
         self._settle.stop()
-        if self._eg is not None:
+        # Tear the video workshop down BEFORE the gateway closes — its
+        # row arrays reference rows we read through ``self._eg``; we
+        # don't want stale references to outlive the gateway.
+        self._teardown_video_workshop()
+        # Disconnect from the prep singleton's signal fan-out — without
+        # this an in-flight prep delivery from this event can land
+        # AFTER the gateway closed and reach ``_on_prep_ready`` against
+        # a half-torn page (the cross-test interference Nelson saw on
+        # 2026-06-15 verify). Mirrors :meth:`shutdown` but runs at every
+        # event boundary, not only at destruction. Idempotent.
+        for sig, slot in (
+                (self._prep.prepared, self._on_prep_ready),
+                (self._prep.prep_failed, self._on_prep_failed)):
             try:
-                self._eg.close()
+                sig.disconnect(slot)
             except Exception:                                      # noqa: BLE001
-                log.exception("EventGateway close failed")
+                pass
+        # CRITICAL ORDER (Nelson 2026-06-15 race): null out ``_eg``
+        # BEFORE calling ``.close()`` on the held reference. A queued
+        # prep delivery firing between the close() and the assignment
+        # would see ``self._eg`` still pointing at a CLOSED gateway and
+        # crash with "Cannot operate on a closed database". With the
+        # null in place first, the delivery's ``if self._eg`` guard
+        # reads False and returns harmlessly.
+        eg = self._eg
         self._eg = None
         self._event_id = None
         self._bucket = None
         self._items = []
         self._index = 0
+        if eg is not None:
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                log.exception("EventGateway close failed")
         self._cached_path = None
         self._exported_set = set()
         self._watermark_enabled = True
@@ -650,7 +771,12 @@ class EditorPage(QWidget):
         """A navigation landed. The browse pixels are already on screen
         (the viewport's job). Tools grey for the development gap (the
         Q1 ruling — undeveloped flash accepted); set_state re-syncs the
-        crop overlay; the working copy preps on settle (Q3)."""
+        crop overlay; the working copy preps on settle (Q3).
+
+        For a VIDEO landing the spec/56 workshop reveals under the
+        canvas in place (no page jump); the development panel stays on
+        top and its writes route to the selected segment's
+        ``VideoAdjustment`` (or a snapshot's photo ``Adjustment``)."""
         if not self._items:
             return
         self._index = max(0, min(index, len(self._items) - 1))
@@ -662,29 +788,41 @@ class EditorPage(QWidget):
             self._day_index = self._index + 1
         ci = self._current_item()
         self._refresh_position_label()
-        developed = (
-            ci is not None
-            and ci.path == self._cached_path
-            and self._surface._full_array is not None
-        )
-        if not developed:
-            self._surface.set_tools_enabled(False)
-            # The overlay still carries the PREVIOUS photo's rect —
-            # hidden until set_state re-syncs it for the landed photo.
-            if self._surface._crop_overlay is not None:
-                self._surface._crop_overlay.setVisible(False)
-        # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" overlay.
-        # Photo items only; videos (legacy bridge) skip the watermark
-        # because their own snapshot lineage rides record_single_lineage
-        # and the Edit Video Page wires its own gate (spec/59 §8).
-        shipped = (
-            ci is not None
-            and self._watermark_enabled
-            and getattr(ci, "kind", "photo") == "photo"
-            and ci.item_id in self._exported_set
-        )
-        self._viewport.set_exported_watermark(shipped)
-        self._settle.start()
+        is_video = ci is not None and (getattr(ci, "kind", "photo") == "video")
+
+        if is_video:
+            # The spec/56 workshop branch. Tear the photo-prep down so
+            # a left-over working copy isn't pushed through the panel;
+            # the development panel rebinds in _load_video_workshop.
+            self._settle.stop()
+            self._cached_path = None
+            self._viewport.set_exported_watermark(False)
+            self._load_video_workshop(ci)
+        else:
+            # The standard photo branch — develop the working copy on
+            # settle (Q3), keep the workshop reserved-but-hidden so the
+            # canvas geometry is invariant.
+            self._teardown_video_workshop()
+            developed = (
+                ci is not None
+                and ci.path == self._cached_path
+                and self._surface._full_array is not None
+            )
+            if not developed:
+                self._surface.set_tools_enabled(False)
+                # The overlay still carries the PREVIOUS photo's rect —
+                # hidden until set_state re-syncs it for the landed photo.
+                if self._surface._crop_overlay is not None:
+                    self._surface._crop_overlay.setVisible(False)
+            # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" overlay.
+            shipped = (
+                ci is not None
+                and self._watermark_enabled
+                and ci.item_id in self._exported_set
+            )
+            self._viewport.set_exported_watermark(shipped)
+            self._settle.start()
+
         # Persist the bucket's resume cursor (cluster sub-grids restore
         # here; the single-item bucket is a no-op).
         if self._eg is not None and self._bucket is not None:
@@ -781,7 +919,15 @@ class EditorPage(QWidget):
         ci = self._current_item()
         if ci is None or Path(result.path) != Path(ci.path):
             return                                                  # stale
-        adj = self._eg.adjustment(ci.item_id) if self._eg else None
+        # Defensive — a queued delivery firing between ``_close_event``
+        # disconnecting and the next ``_open_event`` re-arming can land
+        # while ``_eg`` references a closed gateway. Any read here would
+        # throw ``sqlite3.ProgrammingError: Cannot operate on a closed
+        # database`` (Nelson 2026-06-15 verify race). Treat as stale.
+        try:
+            adj = self._eg.adjustment(ci.item_id) if self._eg else None
+        except Exception:                                          # noqa: BLE001
+            return
         item_classification = None
         cls_source: Optional[str] = None
         cls_confidence: Optional[float] = None
@@ -793,7 +939,9 @@ class EditorPage(QWidget):
                     cls_source = it.classification_source
                     cls_confidence = it.classification_confidence
             except Exception:                                      # noqa: BLE001
-                log.exception("item lookup failed for %s", ci.item_id)
+                # Same closed-DB race as above; treat as stale rather
+                # than logging (it floods the test log otherwise).
+                return
         default_style = normalize_style(item_classification)
         style, look, creative_filter, crop, angle, aspect = \
             self._unpack_adjustment(adj, default_style=default_style)
@@ -867,21 +1015,56 @@ class EditorPage(QWidget):
     def _on_style_decided(self, style: str) -> None:
         """spec/58 §2 — picking a style (even the one already shown) IS
         the human decision: the item's classification flips to
-        ``source='user'``."""
+        ``source='user'``. On a VIDEO with a segment selected the style
+        decision targets the SEGMENT's parent video classification (the
+        snapshot inherits the parent's classification at birth)."""
+        if self._eg is None:
+            return
         ci = self._current_item()
-        if ci is None or self._eg is None:
+        target_id = None
+        if self._video_id is not None and self._selection is not None:
+            kind_sel = self._selection[0]
+            if kind_sel == "snapshot":
+                target_id = self._selection[2]
+            elif kind_sel == "segment":
+                # Style on a segment doesn't flip a per-segment
+                # classification (segments inherit from the parent video
+                # which inherits from capture metadata); skip the write
+                # rather than misroute it. The segment's own
+                # VideoAdjustment.style is persisted by the surface-changed
+                # router.
+                return
+        else:
+            target_id = ci.item_id if ci else None
+        if target_id is None:
             return
         try:
-            self._eg.set_classification(ci.item_id, style, "user")
+            self._eg.set_classification(target_id, style, "user")
         except Exception:                                          # noqa: BLE001
             log.exception(
-                "style decision write failed for %s", ci.item_id)
+                "style decision write failed for %s", target_id)
 
     def _on_surface_changed(self, kind: str) -> None:
         """The surface edited something — every kind persists immediately
-        (spec/54: all edits are discrete clicks now)."""
-        if (self._cached_path is None
-                or self._eg is None or not self._items):
+        (spec/54: all edits are discrete clicks now). When a video
+        segment is selected the writes route to ``save_video_adjustment``;
+        a snapshot routes to the standard ``save_adjustment`` (it IS a
+        photo Adjustment row); a photo on the photo branch uses the
+        original path."""
+        if self._suppress_persist or self._eg is None or not self._items:
+            return
+        # Video segment branch ───────────────────────────────────────
+        if self._video_id is not None and self._selection is not None \
+                and self._selection[0] == "segment":
+            self._persist_video_adjustment(kind)
+            return
+        # Snapshot branch (uses the photo Adjustment row) ────────────
+        if self._video_id is not None and self._selection is not None \
+                and self._selection[0] == "snapshot":
+            self._persist_snapshot_adjustment(kind)
+            return
+        # Photo branch — the original behaviour. ─────────────────────
+        if self._cached_path is None:
             return
         if kind in ("look", "style", "filter", "tone"):
             self._persist_choice()
@@ -961,6 +1144,109 @@ class EditorPage(QWidget):
         except Exception:                                          # noqa: BLE001
             log.exception("persist failed for %s", ci.item_id)
 
+    # ── Video-branch persistence (selection-scoped) ────────────────────
+
+    def _persist_video_adjustment(self, kind: str) -> None:
+        """The surface changed and a SEGMENT is selected: write to
+        ``video_adjustment(seg_item_id)``. Mirrors the photo branch's
+        shape (Look / Style / Filter / Crop / Aspect / Rotation /
+        Angle / Reset). Per-segment audio / speed / stabilise live in
+        the workshop bar — those write their own paths."""
+        if self._selection is None or self._eg is None:
+            return
+        _kind_sel, _idx, item_id = self._selection
+        vadj = self._eg.video_adjustment(item_id) or m.VideoAdjustment(
+            item_id=item_id)
+        state = self._surface.get_state()
+        if kind in ("look", "style", "filter", "tone"):
+            vadj.style = state.style
+            vadj.look = state.look
+            vadj.creative_filter = state.creative_filter
+        elif kind == "crop":
+            rect = self._surface._crop_norm
+            if rect is not None:
+                vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h = rect
+            else:
+                vadj.crop_x = vadj.crop_y = vadj.crop_w = vadj.crop_h = None
+        elif kind == "angle":
+            vadj.box_angle = self._surface._box_angle or 0.0
+        elif kind == "rotation":
+            vadj.rotation_degrees = int(self._surface._rotation or 0)
+            vadj.crop_x = vadj.crop_y = vadj.crop_w = vadj.crop_h = None
+            vadj.box_angle = 0.0
+        elif kind == "aspect":
+            vadj.aspect_ratio_label = self._surface._aspect_label
+            rect = self._surface._crop_norm
+            if rect is not None:
+                vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h = rect
+            else:
+                vadj.crop_x = vadj.crop_y = vadj.crop_w = vadj.crop_h = None
+        elif kind == "reset":
+            vadj.crop_x = vadj.crop_y = vadj.crop_w = vadj.crop_h = None
+            vadj.box_angle = 0.0
+            vadj.rotation_degrees = 0
+            vadj.look = "natural"
+            vadj.creative_filter = None
+            vadj.style = None
+            vadj.aspect_ratio_label = None
+        else:
+            return
+        try:
+            self._eg.save_video_adjustment(vadj)
+        except Exception:                                          # noqa: BLE001
+            log.exception("save_video_adjustment failed for %s", item_id)
+
+    def _persist_snapshot_adjustment(self, kind: str) -> None:
+        """A SNAPSHOT is selected: it's a photo item shape (the
+        gateway creates it with ``kind='photo'`` + ``provenance='snapshot'``
+        per spec/56 §1). Reuse the photo-branch routes via the standard
+        ``save_adjustment`` mutator."""
+        if self._selection is None or self._eg is None:
+            return
+        _kind_sel, _idx, item_id = self._selection
+        adj = self._eg.adjustment(item_id) or m.Adjustment(
+            item_id=item_id)
+        if kind in ("look", "style", "filter", "tone"):
+            state = self._surface.get_state()
+            adj.style = state.style
+            adj.look = state.look
+            adj.creative_filter = state.creative_filter
+            adj.look_strength = max(0.0, min(2.0, float(
+                getattr(state, "look_strength", 1.0))))
+        elif kind == "crop":
+            rect = self._surface._crop_norm
+            if rect is not None:
+                adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h = rect
+            else:
+                adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
+        elif kind == "angle":
+            adj.crop_angle = self._surface._box_angle or 0.0
+        elif kind == "rotation":
+            adj.rotation = int(self._surface._rotation or 0)
+            adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
+            adj.crop_angle = 0.0
+        elif kind == "aspect":
+            adj.aspect_label = self._surface._aspect_label
+            rect = self._surface._crop_norm
+            if rect is not None:
+                adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h = rect
+            else:
+                adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
+        elif kind == "reset":
+            adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
+            adj.crop_angle = 0.0
+            adj.rotation = 0
+            adj.look = "natural"
+            adj.creative_filter = None
+            adj.style = None
+            adj.aspect_label = None
+        else:
+            return
+        try:
+            self._eg.save_adjustment(adj)
+        except Exception:                                          # noqa: BLE001
+            log.exception("snapshot adjustment save failed for %s", item_id)
+
     # ── F10 — the developed Preview lens ───────────────────────────────
 
     @contextmanager
@@ -982,11 +1268,27 @@ class EditorPage(QWidget):
         showing the PROCESSED, CROPPED image at FULL resolution —
         exactly what Export produces, seen before exporting. The
         in-canvas Toggle-Crop preview (button-driven, full-res
-        computed, canvas-fit) keeps working — this ADDS to it."""
+        computed, canvas-fit) keeps working — this ADDS to it.
+
+        On a VIDEO segment (spec/56 §1 fold, 2026-06-15) the lens
+        extracts the segment's anchor frame, develops it through the
+        segment's ``VideoAdjustment`` (Look / Style / Filter / Crop)
+        and shows that — the user's first-class way to verify
+        adjustments work before Export. Live in-canvas preview swap
+        on pause is a follow-up slice.
+        """
         if self._busy_flag or not self._items:
             return
         ci = self._current_item()
-        if ci is None or not is_supported(ci.path):
+        if ci is None:
+            return
+
+        # Video segment branch — extract + develop the anchor frame.
+        if self._video_id is not None:
+            self._open_video_processed_lens(ci)
+            return
+
+        if not is_supported(ci.path):
             return
         if self._surface._full_array is None:
             # The working copy is still preparing (the Q1 gap) — the
@@ -998,6 +1300,198 @@ class EditorPage(QWidget):
             return
         self._lens = open_inspect_lens(
             pm, parent=self, path=ci.path, with_tools=False)
+
+    def _open_video_processed_lens(self, ci: CullItem) -> None:
+        """Video F10 — extract the SELECTED segment's anchor frame,
+        develop it through that segment's adjustments, show in the
+        standard inspect lens. Develops via the core pipeline
+        DIRECTLY (not through AdjustmentSurface) so the page's
+        canvas / video widget Z-order stays untouched."""
+        if (self._selection is None
+                or self._selection[0] not in ("segment", "snapshot")
+                or self._video_source_path is None
+                or not self._video_source_path.exists()):
+            return
+        kind, idx, item_id = self._selection
+        if kind == "segment":
+            if not (0 <= idx < len(self._segment_bounds)):
+                return
+            in_ms, _out_ms = self._segment_bounds[idx]
+            anchor_ms = in_ms
+        else:                                                       # snapshot
+            snap = next(
+                (s for s in self._snapshots if s.item_id == item_id),
+                None,
+            )
+            if snap is None:
+                return
+            anchor_ms = int(snap.at_ms)
+
+        with self._busy():
+            arr = self._extract_video_frame_array(item_id, anchor_ms)
+            if arr is None:
+                return
+            pm = self._develop_array_for_lens(arr, item_id, kind)
+        if pm is None or pm.isNull():
+            return
+        self._lens = open_inspect_lens(
+            pm, parent=self, path=self._video_source_path,
+            with_tools=False)
+
+    def _develop_array_for_lens(
+        self, arr, item_id: str, kind: str,
+    ) -> Optional["QPixmap"]:
+        """Apply the SELECTED stop's adjustments to a frame array using
+        the SAME pipeline a photo uses (core.photo_render +
+        core.photo_auto). Pure read against the surface's tone math —
+        no AdjustmentSurface mutation, so the canvas / video widget
+        Z-order stays untouched."""
+        try:
+            import numpy as np
+            from core.photo_auto import (
+                compute_auto_params,
+                creative_filter_amount,
+                look_params_from_natural,
+                resolve_filter_recipe,
+            )
+            from core.photo_render import (
+                FilterRecipe, apply_crop_norm, apply_filter, apply_params,
+                apply_rotation, extract_rotated_crop,
+            )
+            from mira.ui.edited.adjustment_surface import _array_to_pixmap
+        except Exception:                                          # noqa: BLE001
+            log.exception("lens develop: import failed")
+            return None
+        # Resolve refinements from the row (segment → VideoAdjustment,
+        # snapshot → Adjustment).
+        if kind == "segment":
+            vadj = self._eg.video_adjustment(item_id) if self._eg else None
+            look_key = (vadj.look if vadj else "natural") or "natural"
+            style_key = (vadj.style if vadj else None) \
+                or self._style_for_selection()
+            creative_filter = vadj.creative_filter if vadj else None
+            crop = None
+            if vadj is not None and all(v is not None for v in (
+                    vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h)):
+                crop = (vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h)
+            box_angle = float(vadj.box_angle) if vadj else 0.0
+            rotation = int(vadj.rotation_degrees) if vadj else 0
+            look_strength = 1.0                                     # video looks: uncalibrated
+        else:                                                       # snapshot
+            adj = self._eg.adjustment(item_id) if self._eg else None
+            look_key = (adj.look if adj else "natural") or "natural"
+            style_key = (adj.style if adj else None) \
+                or self._style_for_selection()
+            creative_filter = adj.creative_filter if adj else None
+            crop = None
+            if adj is not None and all(v is not None for v in (
+                    adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)):
+                crop = (adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)
+            box_angle = float(adj.crop_angle) if adj else 0.0
+            rotation = int(adj.rotation) if adj else 0
+            look_strength = float(getattr(adj, "look_strength", 1.0)) \
+                if adj else 1.0
+
+        try:
+            out = arr
+            if rotation:
+                out = apply_rotation(out, rotation)
+            # The pipeline: tone (look_params, style-routed) → filter →
+            # crop. Mirrors core.photo_render usage in AdjustmentSurface.
+            # Natural = the A-routed correction computed on this
+            # frame; ``look_params_from_natural`` then layers the mood
+            # bias on top (it handles ``"original"`` / ``"natural"`` /
+            # any LOOK_BIASES key itself, applies ``strength``, raises
+            # on unknown looks).
+            natural_params = compute_auto_params(out, style=style_key)
+            params = look_params_from_natural(
+                natural_params, look_key, strength=look_strength)
+            if not params.is_identity:
+                out = apply_params(out, params)
+            if creative_filter:
+                recipe = resolve_filter_recipe(creative_filter, style_key)
+                if recipe is not None:
+                    out = apply_filter(
+                        out, FilterRecipe.from_dict(recipe),
+                        creative_filter_amount(creative_filter))
+            if crop is not None:
+                if box_angle:
+                    out = extract_rotated_crop(out, crop, box_angle)
+                else:
+                    out = np.ascontiguousarray(apply_crop_norm(out, crop))
+            return _array_to_pixmap(out)
+        except Exception:                                          # noqa: BLE001
+            log.exception("lens develop pipeline failed")
+            return None
+
+    def _extract_video_frame_array(
+        self, anchor_id: str, anchor_ms: int,
+    ) -> Optional[object]:
+        """Extract one frame at ``anchor_ms`` from the loaded source
+        video, return it as a numpy array suitable for
+        :meth:`AdjustmentSurface.load_image`. Caches per
+        ``(video_id, anchor_id, anchor_ms)`` so repeat F10 presses
+        on the same selection don't re-spawn FFmpeg.
+        """
+        if self._video_source_path is None:
+            return None
+        key = (self._video_id, anchor_id, int(anchor_ms))
+        cached = self._video_frame_cache.get(key)
+        if cached is not None:
+            return cached
+        import tempfile
+        from core.photo_decoder import decode_image
+        from core.video_extract import extract_frame
+        tmp = Path(tempfile.gettempdir()) / (
+            f"mira_segframe_{self._video_id}_{anchor_id}_{int(anchor_ms)}.jpg")
+        try:
+            extract_frame(
+                self._video_source_path, int(anchor_ms), tmp,
+                timeout=20.0,
+            )
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "extract_frame failed for %s @ %dms",
+                self._video_source_path, anchor_ms)
+            return None
+        try:
+            arr = decode_image(tmp)
+        except Exception:                                          # noqa: BLE001
+            log.exception("decode of extracted frame failed: %s", tmp)
+            return None
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:                                      # noqa: BLE001
+                pass
+        if arr is None:
+            return None
+        self._video_frame_cache[key] = arr
+        return arr
+
+    def _style_for_selection(self) -> str:
+        """The A-router style for the SELECTED item's classification
+        (photo Adjustment for snapshot, segment's stored style or the
+        parent video's classification for a segment)."""
+        if self._selection is None or self._eg is None:
+            return "general"
+        kind, _idx, item_id = self._selection
+        try:
+            if kind == "segment":
+                vadj = self._eg.video_adjustment(item_id)
+                if vadj is not None and vadj.style:
+                    return vadj.style
+                # Inherit from the source video's classification.
+                src = self._eg.item(self._video_id) if self._video_id else None
+                return normalize_style(
+                    src.classification if src else None) or "general"
+            if kind == "snapshot":
+                it = self._eg.item(item_id)
+                return normalize_style(
+                    it.classification if it else None) or "general"
+        except Exception:                                          # noqa: BLE001
+            log.exception("style resolution failed for %s", item_id)
+        return "general"
 
     # ── Fullscreen ─────────────────────────────────────────────────────
 
@@ -1129,8 +1623,830 @@ class EditorPage(QWidget):
             self._surface._on_reset_all()
             event.accept()
             return
-        # spec/66 §1.1 — Edit is creative-only: P/X/Space/C inert here.
+        # spec/66 §1.1 — Edit is creative-only ON PHOTOS: P/X/Space/C
+        # are inert on the photo branch (no Pick/Skip ledger). The video
+        # branch routes them through _on_*_key earlier (those handlers
+        # consult ``self._video_id``).
         super().keyPressEvent(event)
+
+    # ── Video workshop wiring (spec/56 §1 + spec/59 §4-§5) ─────────────
+
+    def _wire_workshop_signals(self) -> None:
+        """Connect the VideoWorkshopBar's high-level signals to gateway
+        mutators + viewport transport. Called once during _build_ui."""
+        wb = self._workshop_bar
+        # Timeline
+        wb.seek_requested.connect(self._on_workshop_seek)
+        wb.segment_clicked.connect(self._on_segment_clicked)
+        wb.marker_selected.connect(self._on_marker_selected)
+        wb.marker_moved.connect(self._on_marker_moved)
+        # Tools row
+        wb.add_marker_requested.connect(self._add_marker_at_playhead)
+        wb.add_snapshot_requested.connect(self._add_snapshot_at_playhead)
+        wb.remove_requested.connect(self._remove_stop_at_playhead)
+        wb.toggle_status_requested.connect(self._toggle_status_at_selection)
+        wb.reset_all_requested.connect(self._workshop_reset_all)
+        wb.clear_markers_requested.connect(self._workshop_clear_markers)
+        wb.clear_snapshots_requested.connect(self._workshop_clear_snapshots)
+        # Transport
+        wb.play_pause_requested.connect(self._viewport.video_toggle_play)
+        wb.jump_start_requested.connect(lambda: self._viewport.video_seek(0))
+        wb.jump_end_requested.connect(
+            lambda: self._viewport.video_seek(max(0, self._video_duration_ms - 1)))
+        wb.prev_stop_requested.connect(lambda: self._jump_stop(-1))
+        wb.next_stop_requested.connect(lambda: self._jump_stop(+1))
+        wb.prev_frame_requested.connect(lambda: self._step_frame(-1))
+        wb.next_frame_requested.connect(lambda: self._step_frame(+1))
+        wb.jump_to_marker_requested.connect(self._jump_to_marker)
+        wb.jump_to_snapshot_requested.connect(self._jump_to_snapshot)
+        # Per-segment extras
+        wb.mute_toggled.connect(self._on_mute_toggled)
+        wb.volume_changed.connect(self._on_volume_changed)
+        wb.speed_changed.connect(self._on_speed_changed)
+
+    def _load_video_workshop(self, ci: CullItem) -> None:
+        """Land on a video item — ensure segments exist, load markers /
+        segments / snapshots from the gateway, reveal the workshop bar,
+        seed transport + selection."""
+        if self._eg is None or ci is None:
+            return
+        self._video_id = ci.item_id
+        self._video_source_path = Path(ci.path) if ci.path else None
+        # Probe duration + fps once per path. The viewport's
+        # arm-on-landing kicks in independently to display the player.
+        self._seed_video_metadata(ci.path)
+        # Make segments exist for the current marker set (lazy birth,
+        # default-state from settings — spec/59 §8).
+        try:
+            self._eg.ensure_video_segments(
+                self._video_id, default_state=self._edit_default_state)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "ensure_video_segments failed for %s", self._video_id)
+        self._reload_workshop_rows()
+        # Reset transport state for the new clip.
+        self._video_pos_ms = 0
+        self._workshop_bar.set_position(0)
+        self._workshop_bar.set_playing(False)
+        self._workshop_bar.set_duration(self._video_duration_ms)
+        # Show the workshop in place; the canvas above keeps geometry
+        # by virtue of the host's fixed height.
+        self._workshop_bar.setVisible(True)
+        # The cursor lands at position 0 — select the segment that
+        # contains it (the segment that starts at the first marker).
+        # ``_select_segment_for_position`` calls ``_bind_panel_to_selection``
+        # which pushes adjustment state into the surface AND enables
+        # the tools so Look/Style/Filter/Crop clicks actually flow
+        # through the persistence router (Nelson 2026-06-15 eyeball —
+        # "none of the adjustments made no difference").
+        self._refresh_workshop_model()
+        self._select_segment_for_position(0)
+        self._surface.set_tools_enabled(True)
+        # Push initial transport state — fps hint drives prev/next-frame.
+        self._workshop_bar.set_fps_hint(self._video_fps)
+        # Initial landing is PAUSED at 0 (a stop) — engage dev mode so
+        # the user sees the developed first-frame BEFORE pressing play
+        # (spec/59 §3 modeless development).
+        self._maybe_enter_dev_mode()
+
+    def _teardown_video_workshop(self) -> None:
+        """Leaving a video for a photo (or unloading): hide the
+        workshop, drop loaded rows. The host stays at fixed height so
+        the canvas above doesn't shift."""
+        if self._video_id is None and not self._workshop_bar.isVisible():
+            return
+        # Exit dev mode FIRST so the video widget visibility is
+        # restored and the rendered pixmap clears before the photo
+        # branch's own display semantics take over.
+        self._exit_dev_mode()
+        self._workshop_bar.setVisible(False)
+        self._video_id = None
+        self._video_source_path = None
+        self._video_duration_ms = 0
+        self._video_pos_ms = 0
+        self._markers = []
+        self._segments = []
+        self._segment_items = []
+        self._segment_bounds = []
+        self._snapshots = []
+        self._selection = None
+
+    def _seed_video_metadata(self, path) -> None:
+        """One-shot ffprobe per path for duration + fps. Failure leaves
+        duration at 0 until QtMultimedia's async durationChanged fills
+        it in; fps falls back to 30."""
+        key = str(path) if path is not None else None
+        if key is None:
+            return
+        meta = self._video_meta_cache.get(key)
+        if meta is None:
+            try:
+                from core.video_extract import probe_video
+                meta = probe_video(path)
+            except Exception:                                      # noqa: BLE001
+                meta = None
+            self._video_meta_cache[key] = meta
+        dur = int(getattr(meta, "duration_ms", 0) or 0)
+        fps = float(getattr(meta, "fps", 0.0) or 0.0)
+        if dur > 0:
+            self._video_duration_ms = dur
+        if fps > 0:
+            self._video_fps = fps
+
+    def _reload_workshop_rows(self) -> None:
+        """Re-read markers / segments / snapshots from the gateway —
+        call after every mutator that changes the row sets."""
+        if self._eg is None or self._video_id is None:
+            return
+        try:
+            self._markers = list(self._eg.video_markers(self._video_id))
+            self._segments = list(self._eg.video_segments(self._video_id))
+            self._segment_items = list(self._eg.segment_items(self._video_id))
+            self._snapshots = list(self._eg.video_snapshots(self._video_id))
+            if self._video_duration_ms > 0:
+                self._segment_bounds = list(
+                    self._eg.segment_bounds(self._video_id))
+            else:
+                self._segment_bounds = []
+        except Exception:                                          # noqa: BLE001
+            log.exception("workshop rows reload failed")
+            self._markers = []
+            self._segments = []
+            self._segment_items = []
+            self._segment_bounds = []
+            self._snapshots = []
+
+    def _segment_state(self, seg_item_id: str) -> str:
+        """Return 'picked' or 'skipped' for a segment item — reads
+        phase_state(item, 'edit'); falls back to the configured default
+        when no row exists (matches the lazy-birth contract)."""
+        if self._eg is None:
+            return self._edit_default_state
+        try:
+            ps_map = self._eg.phase_states(self._phase)
+        except Exception:                                          # noqa: BLE001
+            return self._edit_default_state
+        ps = ps_map.get(seg_item_id)
+        if ps is None:
+            return self._edit_default_state
+        return ps.state or self._edit_default_state
+
+    def _snapshot_state(self, snap_item_id: str) -> str:
+        if self._eg is None:
+            return "picked"
+        try:
+            ps_map = self._eg.phase_states(self._phase)
+        except Exception:                                          # noqa: BLE001
+            return "picked"
+        ps = ps_map.get(snap_item_id)
+        return (ps.state if ps else "picked") or "picked"
+
+    def _refresh_workshop_model(self) -> None:
+        """Build the timeline model from the loaded rows + push it to
+        the workshop bar. Cheap; called after every mutation and on the
+        playhead arrival of a new segment."""
+        if self._video_id is None:
+            return
+        markers = [(mk.id, int(mk.at_ms)) for mk in self._markers]
+        bounds = list(self._segment_bounds)
+        seg_states: list[str] = []
+        for seg, item in zip(self._segments, self._segment_items):
+            seg_states.append(self._segment_state(item.id))
+        snaps = [(int(s.at_ms), self._snapshot_state(s.item_id))
+                 for s in self._snapshots]
+        # Selection — the cursor selects a segment when the user hasn't
+        # explicitly grabbed a snapshot.
+        sel_seg = -1
+        sel_marker = ""
+        if self._selection is not None:
+            kind = self._selection[0]
+            if kind == "segment":
+                sel_seg = int(self._selection[1])
+            elif kind == "marker":
+                sel_marker = str(self._selection[2])
+        self._workshop_bar.set_timeline_model(
+            markers=markers, bounds=bounds, states=seg_states,
+            snapshots=snaps, selected_seg=sel_seg,
+            selected_marker=sel_marker,
+            duration_ms=self._video_duration_ms,
+        )
+        # Segment info chip
+        if sel_seg >= 0 and sel_seg < len(bounds):
+            in_ms, out_ms = bounds[sel_seg]
+            self._workshop_bar.set_segment_info(
+                sel_seg, len(bounds), out_ms - in_ms)
+        else:
+            self._workshop_bar.set_segment_info(0, len(bounds), 0)
+        # Tools enable rules (spec/59 §4): Marker greys ON a stop AND
+        # at the permanent endpoints (the gateway rejects markers at
+        # 0 / duration); Snapshot greys only ON an existing stop;
+        # Remove only fires on a stop and never at the endpoints (the
+        # endpoint markers are permanent).
+        on_stop = self._cursor_on_stop()
+        on_end = self._cursor_on_endpoint()
+        self._workshop_bar.set_tools_enabled(
+            marker=not on_stop and not on_end,
+            snapshot=not on_stop,
+            remove=on_stop and not on_end,
+            toggle=True,
+        )
+
+    def _cursor_on_stop(self) -> bool:
+        """True iff the playhead sits on a marker or snapshot (within
+        one frame's tolerance)."""
+        tol = max(1, self._workshop_bar.frame_ms())
+        pos = self._video_pos_ms
+        if any(abs(mk.at_ms - pos) <= tol for mk in self._markers):
+            return True
+        if any(abs(int(s.at_ms) - pos) <= tol for s in self._snapshots):
+            return True
+        return False
+
+    def _cursor_on_endpoint(self) -> bool:
+        return (self._video_pos_ms <= 1
+                or self._video_pos_ms >= max(0, self._video_duration_ms - 1))
+
+    def _select_segment_for_position(self, pos_ms: int) -> None:
+        """Pick the segment whose half-open span [in, out) contains
+        ``pos_ms`` and bind the development panel to it."""
+        if not self._segment_bounds:
+            return
+        idx = 0
+        for i, (lo, hi) in enumerate(self._segment_bounds):
+            if lo <= pos_ms < hi:
+                idx = i
+                break
+        else:
+            idx = len(self._segment_bounds) - 1
+        if idx >= len(self._segment_items):
+            return
+        item_id = self._segment_items[idx].id
+        self._selection = ("segment", idx, item_id)
+        self._bind_panel_to_selection()
+        self._refresh_workshop_model()
+
+    def _bind_panel_to_selection(self) -> None:
+        """Push the selected item's adjustment state into
+        AdjustmentSurface so the panel reflects what the cursor's on.
+        Suppress the resulting ``changed`` echo so the load doesn't
+        loop back as a write.
+
+        For a SEGMENT: reads VideoAdjustment(item_id) — Look / Style /
+        Filter / Crop / box_angle / aspect.
+        For a SNAPSHOT: reads Adjustment(item_id) — same shape as a
+        photo, so we use the standard unpack path.
+        """
+        if self._selection is None or self._eg is None:
+            return
+        kind, _idx, item_id = self._selection
+        self._suppress_persist = True
+        try:
+            if kind == "segment":
+                vadj = self._eg.video_adjustment(item_id)
+                style = (vadj.style if vadj and vadj.style else "general")
+                look = (vadj.look if vadj else "natural") or "natural"
+                creative_filter = vadj.creative_filter if vadj else None
+                crop = None
+                if vadj is not None and all(v is not None for v in (
+                        vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h)):
+                    crop = (vadj.crop_x, vadj.crop_y, vadj.crop_w, vadj.crop_h)
+                angle = (vadj.box_angle if vadj else 0.0) or 0.0
+                aspect = (vadj.aspect_ratio_label if vadj else None) or "Original"
+                rotation = int(vadj.rotation_degrees if vadj else 0) or 0
+                # Push state into the panel. Per-segment extras (mute /
+                # volume / speed / fade / stabilise) drive the workshop
+                # bar's cluster — push them too.
+                self._surface.set_state(
+                    look=look, crop_norm=crop, box_angle=angle,
+                    style=style, aspect_label=aspect, rotation=rotation,
+                    creative_filter=creative_filter,
+                    look_strength=1.0,
+                )
+                volume_pct = int(round((vadj.audio_volume if vadj else 1.0) * 100))
+                volume_pct = max(0, min(200, volume_pct))   # the schema goes to 2.0
+                self._workshop_bar.set_volume(min(100, volume_pct))
+                self._workshop_bar.set_muted(
+                    (vadj.audio_volume if vadj else 1.0) == 0.0
+                    or not (vadj.include_audio if vadj else True))
+                self._workshop_bar.set_speed(vadj.speed if vadj else 1.0)
+            elif kind == "snapshot":
+                adj = self._eg.adjustment(item_id)
+                style, look, creative_filter, crop, angle, aspect = \
+                    self._unpack_adjustment(adj, default_style="general")
+                rotation = int(getattr(adj, "rotation", 0) or 0) if adj else 0
+                look_strength = float(
+                    getattr(adj, "look_strength", 1.0)) if adj else 1.0
+                self._surface.set_state(
+                    look=look, crop_norm=crop, box_angle=angle or 0.0,
+                    style=style, aspect_label=aspect, rotation=rotation,
+                    creative_filter=creative_filter,
+                    look_strength=look_strength,
+                )
+        finally:
+            self._suppress_persist = False
+
+    # ── Workshop signal handlers (timeline) ────────────────────────────
+
+    def _on_workshop_seek(self, ms: int) -> None:
+        self._viewport.video_seek(int(ms))
+
+    def _on_segment_clicked(self, seg_idx: int) -> None:
+        if 0 <= seg_idx < len(self._segment_items):
+            item_id = self._segment_items[seg_idx].id
+            self._selection = ("segment", seg_idx, item_id)
+            self._bind_panel_to_selection()
+            self._refresh_workshop_model()
+            # If we're already in dev mode, switching segments means
+            # re-extracting a different anchor frame.
+            if self._dev_mode_active:
+                self._maybe_enter_dev_mode()
+
+    def _on_marker_selected(self, marker_id: str) -> None:
+        if marker_id:
+            self._selection = ("marker", -1, marker_id)
+        else:
+            # Cleared — fall back to the segment under the playhead.
+            self._select_segment_for_position(self._video_pos_ms)
+            return
+        self._refresh_workshop_model()
+
+    def _on_marker_moved(self, marker_id: str, new_at_ms: int) -> None:
+        if self._eg is None:
+            return
+        try:
+            self._eg.move_video_marker(marker_id, int(new_at_ms))
+        except ValueError as e:
+            log.info("marker move rejected: %s", e)
+        except Exception:                                          # noqa: BLE001
+            log.exception("marker move failed: %s", marker_id)
+        self._reload_workshop_rows()
+        self._refresh_workshop_model()
+
+    # ── Workshop signal handlers (tools row) ───────────────────────────
+
+    def _add_marker_at_playhead(self) -> None:
+        if self._eg is None or self._video_id is None:
+            return
+        try:
+            self._eg.add_video_marker(self._video_id, self._video_pos_ms)
+        except ValueError as e:
+            log.info("marker add rejected: %s", e)
+            return
+        except Exception:                                          # noqa: BLE001
+            log.exception("marker add failed")
+            return
+        self._reload_workshop_rows()
+        self._select_segment_for_position(self._video_pos_ms)
+        self._refresh_workshop_model()
+
+    def _add_snapshot_at_playhead(self) -> None:
+        if self._eg is None or self._video_id is None:
+            return
+        try:
+            new_id = self._eg.create_video_snapshot(
+                self._video_id, self._video_pos_ms)
+        except ValueError as e:
+            log.info("snapshot add rejected: %s", e)
+            return
+        except Exception:                                          # noqa: BLE001
+            log.exception("snapshot add failed")
+            return
+        self._reload_workshop_rows()
+        self._selection = ("snapshot", -1, new_id)
+        self._bind_panel_to_selection()
+        self._refresh_workshop_model()
+        # A snapshot landed at the playhead — the cursor IS on a stop
+        # now, so swap to the developed frame view.
+        self._maybe_enter_dev_mode()
+
+    def _remove_stop_at_playhead(self) -> None:
+        """Remove the marker or snapshot under the cursor."""
+        if self._eg is None:
+            return
+        tol = max(1, self._workshop_bar.frame_ms())
+        pos = self._video_pos_ms
+        # Snapshot first (snapshots are first-class stops with their own
+        # graphical representation; if both are within tolerance, the
+        # snapshot wins — the user can move the playhead to disambiguate
+        # if they wanted the marker).
+        for s in self._snapshots:
+            if abs(int(s.at_ms) - pos) <= tol:
+                try:
+                    self._eg.delete_child(s.item_id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("snapshot delete failed")
+                self._reload_workshop_rows()
+                self._select_segment_for_position(pos)
+                self._refresh_workshop_model()
+                return
+        for mk in self._markers:
+            if abs(int(mk.at_ms) - pos) <= tol:
+                try:
+                    self._eg.delete_video_marker(mk.id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("marker delete failed")
+                self._reload_workshop_rows()
+                self._select_segment_for_position(pos)
+                self._refresh_workshop_model()
+                return
+
+    def _toggle_status_at_selection(self) -> None:
+        """Flip the SELECTED segment or snapshot's phase state.
+        Anywhere else on the timeline this toggles the segment the
+        cursor is inside (spec/59 §4 — Toggle Status works anywhere)."""
+        if self._eg is None or self._selection is None:
+            return
+        kind, _idx, item_id = self._selection
+        if kind not in ("segment", "snapshot"):
+            return
+        try:
+            ps_map = self._eg.phase_states(self._phase)
+            current = ps_map.get(item_id)
+            cur_state = (current.state if current else None)
+            if cur_state is None:
+                cur_state = self._edit_default_state if kind == "segment" else "picked"
+            new_state = STATE_SKIPPED if cur_state == STATE_PICKED else STATE_PICKED
+            self._eg.set_phase_state(item_id, self._phase, new_state)
+        except Exception:                                          # noqa: BLE001
+            log.exception("toggle status failed for %s", item_id)
+            return
+        self._refresh_workshop_model()
+
+    def _workshop_reset_all(self) -> None:
+        """Reset everything — drop every marker (segments merge back to
+        one), drop every snapshot, set the surviving segment to the
+        configured default state."""
+        if self._eg is None or self._video_id is None:
+            return
+        try:
+            for mk in list(self._markers):
+                try:
+                    self._eg.delete_video_marker(mk.id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("reset: marker delete failed")
+            for s in list(self._snapshots):
+                try:
+                    self._eg.delete_child(s.item_id)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("reset: snapshot delete failed")
+            # The surviving single segment — set to default state.
+            self._reload_workshop_rows()
+            if self._segment_items:
+                try:
+                    self._eg.set_phase_state(
+                        self._segment_items[0].id,
+                        self._phase, self._edit_default_state)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("reset: phase_state reset failed")
+        finally:
+            self._reload_workshop_rows()
+            self._select_segment_for_position(self._video_pos_ms)
+            self._refresh_workshop_model()
+
+    def _workshop_clear_markers(self) -> None:
+        if self._eg is None or self._video_id is None:
+            return
+        for mk in list(self._markers):
+            try:
+                self._eg.delete_video_marker(mk.id)
+            except Exception:                                      # noqa: BLE001
+                log.exception("clear markers: delete failed")
+        self._reload_workshop_rows()
+        self._select_segment_for_position(self._video_pos_ms)
+        self._refresh_workshop_model()
+
+    def _workshop_clear_snapshots(self) -> None:
+        if self._eg is None or self._video_id is None:
+            return
+        for s in list(self._snapshots):
+            try:
+                self._eg.delete_child(s.item_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception("clear snapshots: delete failed")
+        self._reload_workshop_rows()
+        self._refresh_workshop_model()
+
+    # ── Workshop signal handlers (transport) ───────────────────────────
+
+    def _step_frame(self, direction: int) -> None:
+        delta = int(direction) * max(1, self._workshop_bar.frame_ms())
+        new = max(0, min(self._video_duration_ms, self._video_pos_ms + delta))
+        self._viewport.video_seek(new)
+
+    def _jump_stop(self, direction: int) -> None:
+        """Walk markers ∪ snapshots ∪ endpoints; the spec/59 §4 ◀ Stop /
+        Stop ▶ semantics. One frame of tolerance keeps a repeat press
+        from re-landing on the stop under the playhead."""
+        tol = max(1, self._workshop_bar.frame_ms())
+        stops: list[int] = [0, max(0, self._video_duration_ms - 1)]
+        stops.extend(int(mk.at_ms) for mk in self._markers)
+        stops.extend(int(s.at_ms) for s in self._snapshots)
+        stops = sorted(set(stops))
+        pos = self._video_pos_ms
+        if direction < 0:
+            cand = [s for s in stops if s < pos - tol]
+            target = cand[-1] if cand else stops[0] if stops else 0
+        else:
+            cand = [s for s in stops if s > pos + tol]
+            target = cand[0] if cand else stops[-1] if stops else 0
+        self._viewport.video_seek(target)
+
+    def _jump_to_marker(self, marker_id: str) -> None:
+        for mk in self._markers:
+            if mk.id == marker_id:
+                self._viewport.video_seek(int(mk.at_ms))
+                return
+
+    def _jump_to_snapshot(self, at_ms_str: str) -> None:
+        try:
+            at_ms = int(at_ms_str)
+        except ValueError:
+            return
+        self._viewport.video_seek(at_ms)
+
+    # ── Per-segment extras handlers ────────────────────────────────────
+
+    def _on_mute_toggled(self, muted: bool) -> None:
+        """Mute = LIVE audio off + ``include_audio=False`` on the row
+        (Nelson 2026-06-15 eyeball — "Mute does not work").
+        Unmuting restores the volume slider's current value to the
+        live player AND flips ``include_audio`` back on."""
+        # Live player: push 0 when muted, restore from the slider on
+        # unmute. The viewport caches the volume so a later arm still
+        # carries it.
+        if muted:
+            self._viewport.video_set_volume(0)
+        else:
+            self._viewport.video_set_volume(
+                self._workshop_bar.vol_slider.value())
+        # Persist to the SELECTED segment's row.
+        if self._selection is None or self._eg is None:
+            return
+        kind, _idx, item_id = self._selection
+        if kind != "segment":
+            return
+        try:
+            vadj = self._eg.video_adjustment(item_id) or m.VideoAdjustment(
+                item_id=item_id)
+            vadj.include_audio = not bool(muted)
+            self._eg.save_video_adjustment(vadj)
+        except Exception:                                          # noqa: BLE001
+            log.exception("save mute failed for %s", item_id)
+
+    def _on_volume_changed(self, percent: int) -> None:
+        """Apply 0..100 percent to the live player AND persist to the
+        selected segment's VideoAdjustment.audio_volume (0..2 schema)."""
+        v = max(0, min(100, int(percent)))
+        self._viewport.video_set_volume(v)
+        if self._selection is None or self._eg is None:
+            return
+        kind, _idx, item_id = self._selection
+        if kind != "segment":
+            return
+        try:
+            vadj = self._eg.video_adjustment(item_id) or m.VideoAdjustment(
+                item_id=item_id)
+            vadj.audio_volume = max(0.0, min(2.0, v / 100.0))
+            self._eg.save_video_adjustment(vadj)
+        except Exception:                                          # noqa: BLE001
+            log.exception("save volume failed for %s", item_id)
+
+    def _on_speed_changed(self, rate: float) -> None:
+        r = max(0.05, float(rate))
+        self._viewport.video_set_playback_rate(r)
+        if self._selection is None or self._eg is None:
+            return
+        kind, _idx, item_id = self._selection
+        if kind != "segment":
+            return
+        try:
+            vadj = self._eg.video_adjustment(item_id) or m.VideoAdjustment(
+                item_id=item_id)
+            vadj.speed = r
+            self._eg.save_video_adjustment(vadj)
+        except Exception:                                          # noqa: BLE001
+            log.exception("save speed failed for %s", item_id)
+
+    # ── Viewport transport signals → workshop bar ──────────────────────
+
+    def _on_video_position(self, pos_ms: int) -> None:
+        self._video_pos_ms = max(0, int(pos_ms))
+        if self._video_id is None:
+            return
+        self._workshop_bar.set_position(self._video_pos_ms)
+        # The cursor moved — if the user isn't holding a snapshot or
+        # marker explicitly, re-select the segment under the new
+        # position so the development panel binds to the right row.
+        if self._selection is None or self._selection[0] == "segment":
+            new_idx = self._segment_at(self._video_pos_ms)
+            sel_changed = (
+                new_idx is not None
+                and (self._selection is None
+                     or self._selection[0] != "segment"
+                     or self._selection[1] != new_idx)
+            )
+            if sel_changed:
+                self._on_segment_clicked(new_idx)
+                self._maybe_enter_dev_mode()
+                return
+        # Tools-enable (Marker / Snapshot grey ON a stop; Remove greys
+        # off-stop and at endpoints) depends on the live cursor — must
+        # recompute on EVERY position move, not only on segment swap.
+        # Without this, after placing a marker the cursor sits on it
+        # → button greys → seeking elsewhere within the same segment
+        # never re-runs the rule and the button stays greyed (Nelson
+        # 2026-06-15 eyeball — "I could place only one marker, then
+        # the button became non responsive").
+        self._refresh_workshop_model()
+        # Dev mode check — paused + on a stop = developed frame in
+        # the canvas (spec/59 §3 modeless development).
+        self._maybe_enter_dev_mode()
+
+    def _segment_at(self, pos_ms: int) -> Optional[int]:
+        for i, (lo, hi) in enumerate(self._segment_bounds):
+            if lo <= pos_ms < hi:
+                return i
+        if self._segment_bounds:
+            return len(self._segment_bounds) - 1
+        return None
+
+    def _on_video_duration(self, dur_ms: int) -> None:
+        # If ffprobe gave us a better number on landing, keep it.
+        if int(dur_ms) > self._video_duration_ms:
+            self._video_duration_ms = int(dur_ms)
+        if self._video_id is None:
+            return
+        self._workshop_bar.set_duration(self._video_duration_ms)
+        # Segment bounds depend on duration — re-derive if it just
+        # became known.
+        if self._video_id is not None and self._video_duration_ms > 0 and \
+                not self._segment_bounds:
+            self._reload_workshop_rows()
+            self._refresh_workshop_model()
+
+    def _on_video_playing(self, playing: bool) -> None:
+        if self._video_id is None:
+            return
+        self._workshop_bar.set_playing(bool(playing))
+        # Playing → exit dev mode (the player resumes). Paused →
+        # re-check whether we're on a stop and should enter.
+        if bool(playing):
+            self._exit_dev_mode()
+        else:
+            self._maybe_enter_dev_mode()
+
+    # ── Modeless development (spec/59 §3) ──────────────────────────────
+
+    def _stop_anchor_at_cursor(self) -> Optional[tuple]:
+        """Return ``(kind, item_id, anchor_ms)`` for the stop under
+        the cursor, or ``None`` if not on a stop.
+
+        Per Nelson 2026-06-15 #2 eyeball:
+        * a **snapshot** at the cursor → its at_ms
+        * a **marker** that STARTS a segment (segments are indexed by
+          the marker order; segment ``k`` starts at marker ``k``) →
+          the segment's item id + that marker's at_ms
+        * the implicit start at 0 → segment 0's item id + 0
+
+        The user wanted "marker that is the start point of a video or
+        in a snapshot" — both are first-class entry points to dev mode.
+        """
+        if self._video_id is None or not self._segment_items:
+            return None
+        tol = max(1, self._workshop_bar.frame_ms())
+        pos = self._video_pos_ms
+        # Snapshot wins on tie — they're first-class graphical stops.
+        for s in self._snapshots:
+            if abs(int(s.at_ms) - pos) <= tol:
+                return ("snapshot", s.item_id, int(s.at_ms))
+        # The implicit start at 0 → segment 0 anchors here.
+        if pos <= tol:
+            return ("segment", self._segment_items[0].id, 0)
+        # User markers — each starts segment ``k = marker_order + 1``.
+        for mk in self._markers:
+            if abs(int(mk.at_ms) - pos) <= tol:
+                # Resolve the segment whose start IS this marker.
+                for i, (lo, _hi) in enumerate(self._segment_bounds):
+                    if abs(lo - int(mk.at_ms)) <= tol \
+                            and i < len(self._segment_items):
+                        return (
+                            "segment",
+                            self._segment_items[i].id,
+                            int(mk.at_ms),
+                        )
+        return None
+
+    def _maybe_enter_dev_mode(self) -> None:
+        """Re-check whether the swap-to-developed-frame view should be
+        active. Conditions (spec/59 §3): the video is PAUSED AND the
+        cursor sits on a stop. Otherwise exit."""
+        if self._video_id is None:
+            self._exit_dev_mode()
+            return
+        if self._viewport.video_is_playing():
+            self._exit_dev_mode()
+            return
+        anchor = self._stop_anchor_at_cursor()
+        if anchor is None:
+            self._exit_dev_mode()
+            return
+        _kind, item_id, anchor_ms = anchor
+        # Already on this anchor → nothing to re-extract (adjustment
+        # changes re-render through AdjustmentSurface automatically).
+        if (self._dev_mode_active
+                and self._dev_mode_item_id == item_id
+                and self._dev_mode_anchor_ms == anchor_ms):
+            return
+        self._enter_dev_mode(item_id, anchor_ms)
+
+    def _enter_dev_mode(self, item_id: str, anchor_ms: int) -> None:
+        """Extract the anchor frame, push it through AdjustmentSurface
+        (load_image → set_state → render_now pushes the developed
+        pixmap to the viewport). Hide the video widget so the
+        developed frame is visible. Subsequent adjustment clicks
+        re-render automatically via AdjustmentSurface's existing
+        changed→render_now plumbing — no extra wiring needed."""
+        if self._video_source_path is None or self._eg is None:
+            return
+        with self._busy():
+            arr = self._extract_video_frame_array(item_id, anchor_ms)
+            if arr is None:
+                return
+            try:
+                self._surface.load_image(
+                    arr, style=self._style_for_selection())
+                # set_state pushes adjustments and calls render_now →
+                # the developed pixmap lands on the viewport's QLabel.
+                self._bind_panel_to_selection()
+                # Hide the video widget so the pixmap is visible.
+                self._viewport.set_video_widget_visible(False)
+            except Exception:                                      # noqa: BLE001
+                log.exception("enter dev mode failed for %s @ %dms",
+                              item_id, anchor_ms)
+                return
+        self._dev_mode_active = True
+        self._dev_mode_item_id = item_id
+        self._dev_mode_anchor_ms = anchor_ms
+
+    def _exit_dev_mode(self) -> None:
+        """Step off the stop / play / change selection → restore the
+        normal viewport view (video widget visible, no rendered
+        override). The AdjustmentSurface's _full_array is cleared so
+        subsequent adjustment clicks DO NOT re-render-to-canvas while
+        the player is in control."""
+        if not self._dev_mode_active:
+            return
+        self._dev_mode_active = False
+        self._dev_mode_item_id = None
+        self._dev_mode_anchor_ms = None
+        try:
+            self._viewport.set_video_widget_visible(True)
+            self._viewport.clear_rendered_pixmap()
+        except Exception:                                          # noqa: BLE001
+            log.exception("exit dev mode: viewport restore failed")
+        try:
+            self._surface.clear()
+        except Exception:                                          # noqa: BLE001
+            log.exception("exit dev mode: surface clear failed")
+
+    # ── Locked-keymap routing for video items ──────────────────────────
+
+    def _on_pick_key(self) -> None:
+        if self._video_id is None or self._selection is None:
+            return
+        _kind, _idx, item_id = self._selection
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_phase_state(item_id, self._phase, STATE_PICKED)
+        except Exception:                                          # noqa: BLE001
+            log.exception("Pick on %s failed", item_id)
+        self._refresh_workshop_model()
+
+    def _on_skip_key(self) -> None:
+        if self._video_id is None or self._selection is None:
+            return
+        _kind, _idx, item_id = self._selection
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_phase_state(item_id, self._phase, STATE_SKIPPED)
+        except Exception:                                          # noqa: BLE001
+            log.exception("Skip on %s failed", item_id)
+        self._refresh_workshop_model()
+
+    def _on_toggle_key(self) -> None:
+        if self._video_id is None:
+            return
+        self._toggle_status_at_selection()
+
+    def _on_sweep_key(self) -> None:
+        """Enter — the locked map's cluster-sweep verb. On a video this
+        toggles play/pause (the second transport key alongside Tab),
+        matching the legacy EditVideoPage's behaviour. No-op on photos
+        (cluster sweep doesn't apply on a creative-only surface)."""
+        if self._video_id is not None:
+            self._viewport.video_toggle_play()
 
 
 __all__ = ["EditorPage"]

@@ -314,7 +314,7 @@ def test_open_to_item_loads_whole_day_items_not_one(
     ]
     monkeypatch.setattr(
         EditorPage, "_day_navigable_items",
-        lambda self, day_number, *, photos_only: day_items)
+        lambda self, day_number: day_items)
     assert page.open_to_item("evt-e", 1, "e2")
     # All three items landed on the surface — not just the clicked one.
     assert len(page._items) == 3

@@ -1305,6 +1305,22 @@ class PhotoViewport(QWidget):
         """Tear the player down (hosts call on close)."""
         self._disarm_video()
 
+    def set_video_widget_visible(self, visible: bool) -> None:
+        """Show / hide the ``QVideoWidget`` overlay sibling without
+        disarming the player. Used by the Editor's spec/59 §3
+        modeless-development swap: paused on a picked stop hides the
+        video so a host-pushed developed pixmap is visible; stepping
+        off / playing shows the player again. The player itself stays
+        armed and can resume seamlessly. No-op when the widget hasn't
+        been built yet (no video has landed)."""
+        if self._video_widget is None:
+            return
+        if visible:
+            self._video_widget.show()
+            self._video_widget.raise_()
+        else:
+            self._video_widget.hide()
+
     # ── F10: the truth view ───────────────────────────────────────
 
     def set_truth_internal(self, on: bool) -> None:

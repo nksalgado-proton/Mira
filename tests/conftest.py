@@ -129,9 +129,9 @@ _SLICE_B_FILES = {
     "test_edit_host_page",
     "test_edit_page",
     "test_edit_page_rebuild",
-    "test_edit_video_page",
-    # test_edit_video_page_rebuild rewrote for the spec/56 slice-3
-    # workshop (2026-06-10) — live again, no longer Slice-B deferred.
+    # (test_edit_video_page + test_edit_video_page_rebuild retired
+    # with the Surface 12 fold 2026-06-15 — the separate video edit
+    # page is gone; its workshop coverage moves onto EditorPage.)
     "test_pick_phase_sync",
     "test_pick_clip_index",
     # test_pick_top_bar rewrote 2026-06-13 against the post-classification-strip

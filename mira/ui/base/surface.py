@@ -645,7 +645,7 @@ def populate_nav_row(
 
     ``centre_widget`` is dropped in the centre stretch slot — for the
     Grid-toggle button on PickPhotoSurface, the Fullscreen button on
-    QuickSweepPage, or the video transport on PickerPage / EditVideoPage.
+    QuickSweepPage, or the video transport on PickerPage / EditorPage.
     Use ``None`` for a plain stretch.
 
     Returns the four buttons (with ``prev_bucket`` and ``next_bucket`` as

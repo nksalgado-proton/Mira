@@ -145,6 +145,8 @@ GLYPH_PLAY = GLYPHS_DIR / "play.svg"
 GLYPH_PAUSE = GLYPHS_DIR / "pause.svg"
 GLYPH_TO_START = GLYPHS_DIR / "to_start.svg"
 GLYPH_TO_END = GLYPHS_DIR / "to_end.svg"
+GLYPH_CLIP = GLYPHS_DIR / "clip.svg"
+GLYPH_SNAPSHOT = GLYPHS_DIR / "snapshot.svg"
 
 # Phase glyphs — drawn for Surface 01's open-card pipeline rows so the
 # mockup's `📥 / ⭐ / 🎨 / 📤` emojis become real line-icons (spec/65
@@ -162,6 +164,7 @@ __all__ = [
     "CLUSTERS_DIR",
     "GLYPHS_DIR",
     "GLYPH_CHECK",
+    "GLYPH_CLIP",
     "GLYPH_CROSS",
     "GLYPH_CROSS_EVENT",
     "GLYPH_CUT",
@@ -170,6 +173,7 @@ __all__ = [
     "GLYPH_PAUSE",
     "GLYPH_PLAY",
     "GLYPH_SEARCH",
+    "GLYPH_SNAPSHOT",
     "GLYPH_TO_END",
     "GLYPH_TO_START",
     "GLYPH_VOLUME",

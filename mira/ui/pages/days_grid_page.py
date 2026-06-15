@@ -115,11 +115,15 @@ _CELL_TO_THUMB_STATE: Dict[CellColor, Optional[str]] = {
 
 # Bucket-scanner cluster kind → Thumb cluster_type. The Thumb's cluster
 # badge family (assets/icons/clusters/badge/) keys on these short names.
+# ``video`` is the spec/56 Export-mode synthetic cluster — one source
+# video's clips + snapshots grouped under one cover (not a scanner
+# bucket; the days-grid Export reshape emits it).
 _CLUSTER_KIND_TO_THUMB: Dict[str, str] = {
     "burst": "burst",
     "focus_bracket": "focus",
     "exposure_bracket": "exposure",
     "repeat": "repeated",
+    "video": "video",
 }
 
 
@@ -190,6 +194,11 @@ class GridItem:
 
     ``item_kind`` is ``"photo"`` | ``"video"`` | ``"cluster"``; the page
     routes clicks by this.
+
+    ``stamp`` (spec/56) is the per-cell type stamp shown by Thumb on
+    Export-mode child cells: ``"clip"`` → "Video Clip", ``"snapshot"``
+    → "Snapshot". ``None`` on photos, parent clusters, and Pick/Edit
+    grids (the stamp is Export-mode-only).
     """
 
     item_id: str
@@ -201,12 +210,17 @@ class GridItem:
     cluster_type: str | None = None
     cluster_count: int = 0
     cluster_split: tuple[int, int] | None = None
+    stamp: str | None = None
     # Internal — populated only on the gateway path. Held so the
     # P/X/Space/C verbs can persist directly via the EventGateway and
     # so cluster covers can expand without a second lookup.
     _path: Path | None = None
     _sha256: str | None = None
     _cull_cluster: Optional[CullCluster] = None
+    # Backing video item id, for video clusters. Used by the ship
+    # logic to find segments/snapshots when iterating cluster covers
+    # at the day level.
+    _video_item_id: Optional[str] = None
 
 
 class _DayNavigatorPill(QFrame):
@@ -774,6 +788,12 @@ class DaysGridPage(QWidget):
         Engine is :func:`day_grid_cells` (the spec/32 cell list); the
         page only maps the resulting :class:`CullCell` shape onto the
         Thumb-shaped :class:`GridItem` model.
+
+        Export-mode reshape (spec/56): a video cell that owns picked
+        segments / snapshots becomes a "video" cluster cover; drilling
+        in surfaces each member as its own cell with a "Video Clip" /
+        "Snapshot" type stamp. Pick/Edit grids are NOT reshaped — the
+        clustering is an Export-only presentation, not a model change.
         """
         if self._eg is None:
             return
@@ -789,10 +809,125 @@ class DaysGridPage(QWidget):
             exported_ids=self._exported_ids_for_grid(),
         )
         phase_states = self._eg.phase_states(self._phase)
-        self._day_items = self._items_from_cells(cells, phase_states)
+        day_items = self._items_from_cells(cells, phase_states)
+        if self._export_mode:
+            day_items = self._reshape_for_export(day_items, phase_states)
+        self._day_items = day_items
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+
+    def _reshape_for_export(
+        self,
+        items: List["GridItem"],
+        phase_states: Dict,
+    ) -> List["GridItem"]:
+        """Export-mode reshape (spec/56): replace each flat video cell
+        whose source owns ≥1 segment or snapshot with a synthetic
+        "video" cluster cover. Videos with no workshop touch yet (zero
+        segments + zero snapshots) stay flat. Photos + scanner clusters
+        pass through unchanged."""
+        if self._eg is None:
+            return items
+        event_root = (
+            Path(self._eg.event_root) if self._eg.event_root else Path("."))
+        out: list[GridItem] = []
+        for it in items:
+            if it.item_kind != "video":
+                out.append(it)
+                continue
+            cluster_item = self._video_cluster_grid_item(
+                it, event_root, phase_states)
+            out.append(cluster_item if cluster_item is not None else it)
+        return out
+
+    def _video_cluster_grid_item(
+        self,
+        video_item: "GridItem",
+        event_root: Path,
+        phase_states: Dict,
+    ) -> Optional["GridItem"]:
+        """Build a synthetic "video" cluster cover for one source video,
+        bundling its segment + snapshot child items as members. Returns
+        ``None`` when the video has no children yet (caller keeps the
+        flat cell). The cluster's ``bucket_key`` is
+        ``video:<video_item_id>`` so the day-grid soft-state (and the
+        existing visited / browsed plumbing) doesn't collide with
+        scanner buckets."""
+        if self._eg is None:
+            return None
+        video_id = video_item.item_id
+        try:
+            segs = self._eg.video_segments(video_id)
+        except Exception:                                              # noqa: BLE001
+            log.exception(
+                "DaysGridPage: video_segments(%s) failed", video_id)
+            segs = []
+        try:
+            snaps = self._eg.video_snapshots(video_id)
+        except Exception:                                              # noqa: BLE001
+            log.exception(
+                "DaysGridPage: video_snapshots(%s) failed", video_id)
+            snaps = []
+        if not segs and not snaps:
+            return None
+        video_row = self._eg.item(video_id)
+        video_path = (
+            event_root / video_row.origin_relpath
+            if (video_row and video_row.origin_relpath) else None
+        )
+
+        members: list[CullItem] = []
+        for seg in segs:
+            seg_item = self._eg.item(seg.item_id)
+            if seg_item is None:
+                continue
+            members.append(CullItem(
+                item_id=seg.item_id,
+                path=video_path or Path(""),
+                kind="video",
+            ))
+        for snap in snaps:
+            snap_item = self._eg.item(snap.item_id)
+            if snap_item is None:
+                continue
+            members.append(CullItem(
+                item_id=snap.item_id,
+                path=video_path or Path(""),
+                kind="photo",
+            ))
+        if not members:
+            return None
+
+        member_colors = [
+            cell_color_for_item(
+                m.item_id, m.kind, self._phase, phase_states,
+                default_state=self._phase_default)
+            for m in members
+        ]
+        color = cluster_color(member_colors)
+        cluster = CullCluster(
+            bucket_key=f"video:{video_id}",
+            kind="video",
+            title="",
+            members=tuple(members),
+            color=color,
+        )
+        split = self._cluster_split_for(cluster, phase_states)
+        return GridItem(
+            item_id=f"cluster:video:{video_id}",
+            item_kind="cluster",
+            state=_CELL_TO_THUMB_STATE.get(color),
+            visited=bool(video_item.visited),
+            exported=False,
+            cluster_type="video",
+            cluster_count=len(members),
+            cluster_split=split,
+            _path=video_path,
+            _sha256=video_item._sha256,
+            _cull_cluster=cluster,
+            _video_item_id=video_id,
+        )
 
     def _items_from_cells(
         self,
@@ -914,7 +1049,14 @@ class DaysGridPage(QWidget):
         bucket-browsed mark has no gateway target, so it is a no-op
         here. When no lookup is registered, members render in the
         Thumb's "no state" placeholder.
+
+        Video clusters (spec/56 Export-mode synthetic): each member
+        wears a "clip" / "snapshot" type stamp derived from the source
+        item's provenance. The synthetic ``video:<id>`` bucket_key is
+        NOT recorded as a browsed bucket — scanner soft-state stays
+        clean of UI synthetics.
         """
+        is_video_cluster = (cluster.kind == "video")
         if self._eg is None:
             members: list[GridItem] = []
             lookup = self._paths_state_lookup
@@ -936,11 +1078,12 @@ class DaysGridPage(QWidget):
             self._update_counts()
             self._refresh()
             return
-        try:
-            self._eg.set_bucket_browsed(cluster.bucket_key, self._phase)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "set_bucket_browsed failed for %s", cluster.bucket_key)
+        if not is_video_cluster:
+            try:
+                self._eg.set_bucket_browsed(cluster.bucket_key, self._phase)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "set_bucket_browsed failed for %s", cluster.bucket_key)
         # Rebuild items from the cluster members; the cluster cover's
         # ``visited`` flips True on its day-mode rebuild so the user
         # comes back to the right tick.
@@ -955,12 +1098,23 @@ class DaysGridPage(QWidget):
                 ci.item_id, ci.kind, self._phase, phase_states,
                 default_state=self._phase_default,
             )
+            stamp = None
+            if is_video_cluster:
+                # Map provenance → stamp so the type chip reads
+                # "Video Clip" / "Snapshot" on every member.
+                m_item = self._eg.item(ci.item_id)
+                prov = getattr(m_item, "provenance", None) if m_item else None
+                if prov == "clip":
+                    stamp = "clip"
+                elif prov == "snapshot":
+                    stamp = "snapshot"
             members.append(GridItem(
                 item_id=ci.item_id,
                 item_kind=ci.kind,
                 state=_CELL_TO_THUMB_STATE.get(color),
                 visited=False,
                 exported=False,
+                stamp=stamp,
                 _path=path,
                 _sha256=getattr(ci, "sha256", None) or None,
             ))
@@ -1056,6 +1210,7 @@ class DaysGridPage(QWidget):
                 cluster_split=item.cluster_split,
                 visited=item.visited,
                 exported=item.exported,
+                stamp=item.stamp,
             )
             # Make the thumb keyboard-focusable so the locked §63 keys
             # P/X/Space/C act on whichever Thumb the user last clicked
@@ -1477,11 +1632,17 @@ class DaysGridPage(QWidget):
         :func:`submit_export_batch` translates into PhotoUnits + the
         slice-4-walker ClipUnits + frame-extracted snapshot PhotoUnits.
 
-        Photo + cluster cells obey their cell ``state``. Video cells
-        EXPAND into their picked segments + picked snapshots (spec/56 —
-        a video's children carry the ship decisions; the parent video
-        cell is the aggregate). Already-shipped ids drop here so the
-        re-ship gate matches the photo path."""
+        Day mode: photos ship as ExportCells; flat videos and synthetic
+        video clusters (spec/56) expand into their picked segments +
+        snapshots. Scanner clusters (burst / focus / exposure / repeat)
+        are skipped — the user drills in to ship from their members,
+        matching the existing grammar.
+
+        Sub-grid mode (after drilling into a video cluster): each
+        member already carries its type stamp (``"clip"`` →
+        :class:`VideoSegment`, ``"snapshot"`` → :class:`SnapshotCell`).
+        The walker reverses to a :class:`VideoSegment` / at_ms via the
+        gateway so segments + snapshots ship in their own lanes."""
         from mira.ui.exported.batch import ExportCell, SnapshotCell
 
         already_shipped: set = set()
@@ -1501,45 +1662,104 @@ class DaysGridPage(QWidget):
         segment_rows: list = []
         snapshot_cells: list[SnapshotCell] = []
 
+        def _expand_video(video_id: str) -> None:
+            """Expand one source video into its picked segments +
+            picked snapshots."""
+            try:
+                segs = self._eg.video_segments(video_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: video_segments(%s) failed", video_id)
+                segs = []
+            for seg in segs:
+                if seg.item_id in already_shipped:
+                    continue
+                ps = phase_states.get(seg.item_id)
+                if (ps is None) or (ps.state != STATE_PICKED):
+                    continue
+                segment_rows.append(seg)
+            try:
+                snaps = self._eg.video_snapshots(video_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: video_snapshots(%s) failed", video_id)
+                snaps = []
+            for snap in snaps:
+                if snap.item_id in already_shipped:
+                    continue
+                ps = phase_states.get(snap.item_id)
+                if (ps is None) or (ps.state != STATE_PICKED):
+                    continue
+                snapshot_cells.append(SnapshotCell(
+                    item_id=snap.item_id,
+                    video_item_id=video_id,
+                    at_ms=int(snap.at_ms),
+                    day_number=self._day_number,
+                ))
+
         for it in self._items:
+            # Sub-grid members of a video cluster carry their type
+            # stamp directly — translate by stamp before the kind-based
+            # branches fire (a clip's item_kind is "video", a
+            # snapshot's is "photo"; the stamp disambiguates from a
+            # source video / regular photo).
+            if it.stamp == "clip":
+                if it.item_id in already_shipped:
+                    continue
+                ps = phase_states.get(it.item_id)
+                if (ps is None) or (ps.state != STATE_PICKED):
+                    continue
+                seg_item = self._eg.item(it.item_id)
+                parent_id = (
+                    getattr(seg_item, "parent_item_id", None)
+                    if seg_item else None)
+                if not parent_id:
+                    continue
+                for seg in self._eg.video_segments(parent_id):
+                    if seg.item_id == it.item_id:
+                        segment_rows.append(seg)
+                        break
+                continue
+            if it.stamp == "snapshot":
+                if it.item_id in already_shipped:
+                    continue
+                ps = phase_states.get(it.item_id)
+                if (ps is None) or (ps.state != STATE_PICKED):
+                    continue
+                snap_item = self._eg.item(it.item_id)
+                parent_id = (
+                    getattr(snap_item, "parent_item_id", None)
+                    if snap_item else None)
+                if not parent_id:
+                    continue
+                for snap in self._eg.video_snapshots(parent_id):
+                    if snap.item_id == it.item_id:
+                        snapshot_cells.append(SnapshotCell(
+                            item_id=snap.item_id,
+                            video_item_id=parent_id,
+                            at_ms=int(snap.at_ms),
+                            day_number=self._day_number,
+                        ))
+                        break
+                continue
+
             if it.item_kind == "cluster":
+                # Synthetic video cluster (spec/56) — expand its
+                # source video's children. Scanner clusters
+                # (_video_item_id is None) are skipped; the user drills
+                # in to ship from them.
+                video_id = getattr(it, "_video_item_id", None)
+                if not video_id:
+                    continue
+                _expand_video(video_id)
                 continue
             if it.item_kind == "video":
                 # spec/56: a video's PICKED segments + snapshots are the
                 # ship units; the parent video cell is the aggregate.
-                try:
-                    segs = self._eg.video_segments(it.item_id)
-                except Exception:                                  # noqa: BLE001
-                    log.exception(
-                        "DaysGridPage: video_segments(%s) failed",
-                        it.item_id)
-                    segs = []
-                for seg in segs:
-                    if seg.item_id in already_shipped:
-                        continue
-                    ps = phase_states.get(seg.item_id)
-                    if (ps is None) or (ps.state != STATE_PICKED):
-                        continue
-                    segment_rows.append(seg)
-                try:
-                    snaps = self._eg.video_snapshots(it.item_id)
-                except Exception:                                  # noqa: BLE001
-                    log.exception(
-                        "DaysGridPage: video_snapshots(%s) failed",
-                        it.item_id)
-                    snaps = []
-                for snap in snaps:
-                    if snap.item_id in already_shipped:
-                        continue
-                    ps = phase_states.get(snap.item_id)
-                    if (ps is None) or (ps.state != STATE_PICKED):
-                        continue
-                    snapshot_cells.append(SnapshotCell(
-                        item_id=snap.item_id,
-                        video_item_id=it.item_id,
-                        at_ms=int(snap.at_ms),
-                        day_number=self._day_number,
-                    ))
+                # (In Export mode the reshape turns most videos into
+                # clusters above — this branch covers videos with no
+                # workshop touch yet, where the flat cell survives.)
+                _expand_video(it.item_id)
                 continue
             # Photo path — existing per-cell behaviour.
             if it.item_kind != "photo":

@@ -56,6 +56,20 @@ _CLUSTER_LABELS = {
     "burst": "Burst shot",
     "focus": "Focus bracket",
     "exposure": "Exposure bracket",
+    # spec/56 Export-mode clustering — clips + snapshots of one source
+    # video are grouped under a "video" cluster cover so a day with a
+    # workshopped video reads as ONE pile, drillable to its members.
+    "video": "Video",
+}
+
+# Per-cell type stamp — the spec/56 "Video Clip" / "Snapshot" badge a
+# child cell wears inside a video cluster sub-grid. Mirrors the cluster
+# badge slot (top-left chip), so a parent video cluster cover shows its
+# "Video" cluster badge and its children show what KIND of unit each
+# is. Keys map to the line-icon glyph alongside the label.
+_STAMP_LABELS = {
+    "clip": "Video Clip",
+    "snapshot": "Snapshot",
 }
 _BADGE_DIR = (
     Path(__file__).resolve().parents[3] / "assets" / "icons" / "clusters" / "badge"
@@ -76,12 +90,16 @@ class Thumb(QWidget):
     Properties set via constructor and updatable through setters:
         pixmap          QPixmap or None
         state           "picked" | "skipped" | "compare" | "mixed" | None
-        cluster_type    "repeated"|"burst"|"focus"|"exposure" | None
+        cluster_type    "repeated"|"burst"|"focus"|"exposure"|"video" | None
         cluster_count   int (for the bottom-right chip on clusters)
         cluster_split   tuple[int,int] (picked, skipped) when mixed — overrides
                         the count chip with a 3✓·2✗ split chip per §5a.
         visited         bool — adds the top-right eye chip
         exported        bool — adds the bottom-left accent badge
+        stamp           "clip" | "snapshot" | None — type stamp shown on
+                        Export-mode child cells (a clip / snapshot inside a
+                        video cluster). Same top-left chip slot as the
+                        cluster badge; never shown simultaneously with one.
     """
 
     clicked = pyqtSignal()
@@ -97,6 +115,7 @@ class Thumb(QWidget):
         cluster_split: tuple[int, int] | None = None,
         visited: bool = False,
         exported: bool = False,
+        stamp: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -107,6 +126,7 @@ class Thumb(QWidget):
         self._cluster_split = cluster_split
         self._visited = visited
         self._exported = exported
+        self._stamp = stamp
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -126,6 +146,10 @@ class Thumb(QWidget):
 
     def setExported(self, exported: bool) -> None:
         self._exported = exported
+        self.update()
+
+    def setStamp(self, stamp: str | None) -> None:
+        self._stamp = stamp
         self.update()
 
     def setClusterCount(self, n: int) -> None:
@@ -236,6 +260,7 @@ class Thumb(QWidget):
         self._paint_visited(painter, palette)
         self._paint_exported(painter, palette)
         self._paint_cluster_badge(painter, palette)
+        self._paint_type_stamp(painter, palette)
         self._paint_count_chip(painter, palette)
 
         painter.end()
@@ -337,6 +362,55 @@ class Thumb(QWidget):
         text_rect = chip_rect.adjusted(28, 0, 0, 0)
         painter.drawText(
             text_rect,
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            label,
+        )
+
+    def _paint_type_stamp(
+        self, painter: QPainter, palette: dict[str, str]
+    ) -> None:
+        """Top-left "Video Clip" / "Snapshot" type stamp for Export-mode
+        child cells (spec/56). Shares the chip slot with the cluster
+        badge but is never set on the same cell (a parent cluster cover
+        has a cluster_type; its children have stamps), so the two slots
+        never collide. Uses the line-icon family via tinted_svg_pixmap,
+        matching the split chip's pattern (theme-aware tint, cached)."""
+        if self._stamp is None or self._cluster_type is not None:
+            return
+        label = _STAMP_LABELS.get(self._stamp)
+        if label is None:
+            return
+        from mira.ui.design.icons import (
+            GLYPH_CLIP, GLYPH_SNAPSHOT, tinted_svg_pixmap,
+        )
+
+        glyph_path = (
+            GLYPH_CLIP if self._stamp == "clip" else GLYPH_SNAPSHOT)
+        glyph_size = 16
+        spacing = 6
+        pad_x = 8
+        f = painter.font()
+        f.setPointSizeF(9.5)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        label_w = fm.horizontalAdvance(label)
+        chip_w = pad_x + glyph_size + spacing + label_w + pad_x
+        chip_rect = QRectF(8, 8, chip_w, 24)
+        self._paint_chip(
+            painter, chip_rect,
+            QColor(8, 10, 16, 188), QColor(255, 255, 255, 46),
+        )
+        white = QColor("#ffffff")
+        glyph_pm = tinted_svg_pixmap(glyph_path, glyph_size, white)
+        glyph_x = chip_rect.x() + pad_x
+        glyph_y = chip_rect.y() + (chip_rect.height() - glyph_size) / 2
+        painter.drawPixmap(int(glyph_x), int(glyph_y), glyph_pm)
+        text_x = chip_rect.x() + pad_x + glyph_size + spacing
+        painter.setPen(white)
+        painter.drawText(
+            QRectF(text_x, chip_rect.y(),
+                   chip_rect.right() - text_x - pad_x, chip_rect.height()),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
             label,
         )

@@ -1676,10 +1676,17 @@ class EditorPage(QWidget):
         # arm-on-landing kicks in independently to display the player.
         self._seed_video_metadata(ci.path)
         # Make segments exist for the current marker set (lazy birth,
-        # default-state from settings — spec/59 §8).
+        # default Skip per spec/56 §1 — segments do NOT inherit the
+        # ``edit_default_state`` "born green" setting that governs
+        # photos. The marker-partition model means each segment is a
+        # boundary, not an endorsement: adding a marker splits a
+        # parent and BOTH halves inherit the parent's state (so an
+        # un-touched video starts at one default-Skip segment, and
+        # the user explicitly picks the cuts they want to ship —
+        # Nelson 2026-06-15, "the status was lost" bug report).
         try:
             self._eg.ensure_video_segments(
-                self._video_id, default_state=self._edit_default_state)
+                self._video_id, default_state=STATE_SKIPPED)
         except Exception:                                          # noqa: BLE001
             log.exception(
                 "ensure_video_segments failed for %s", self._video_id)
@@ -1778,18 +1785,19 @@ class EditorPage(QWidget):
 
     def _segment_state(self, seg_item_id: str) -> str:
         """Return 'picked' or 'skipped' for a segment item — reads
-        phase_state(item, 'edit'); falls back to the configured default
-        when no row exists (matches the lazy-birth contract)."""
+        phase_state(item, 'edit'); falls back to ``"skipped"`` when no
+        row exists (spec/56 §1 default Skip — matches the lazy-birth
+        contract in :meth:`_reload_workshop_rows`)."""
         if self._eg is None:
-            return self._edit_default_state
+            return STATE_SKIPPED
         try:
             ps_map = self._eg.phase_states(self._phase)
         except Exception:                                          # noqa: BLE001
-            return self._edit_default_state
+            return STATE_SKIPPED
         ps = ps_map.get(seg_item_id)
         if ps is None:
-            return self._edit_default_state
-        return ps.state or self._edit_default_state
+            return STATE_SKIPPED
+        return ps.state or STATE_SKIPPED
 
     def _snapshot_state(self, snap_item_id: str) -> str:
         if self._eg is None:
@@ -2064,7 +2072,9 @@ class EditorPage(QWidget):
             current = ps_map.get(item_id)
             cur_state = (current.state if current else None)
             if cur_state is None:
-                cur_state = self._edit_default_state if kind == "segment" else "picked"
+                # spec/56 §1 — segments default-Skip; snapshots auto-Pick
+                # on placement (creating one IS the intent).
+                cur_state = STATE_SKIPPED if kind == "segment" else STATE_PICKED
             new_state = STATE_SKIPPED if cur_state == STATE_PICKED else STATE_PICKED
             self._eg.set_phase_state(item_id, self._phase, new_state)
         except Exception:                                          # noqa: BLE001
@@ -2074,8 +2084,9 @@ class EditorPage(QWidget):
 
     def _workshop_reset_all(self) -> None:
         """Reset everything — drop every marker (segments merge back to
-        one), drop every snapshot, set the surviving segment to the
-        configured default state."""
+        one), drop every snapshot, set the surviving segment back to
+        the spec/56 §1 default ("skipped"). Matches the lazy-birth
+        contract so a reset reads identically to a fresh open."""
         if self._eg is None or self._video_id is None:
             return
         try:
@@ -2089,13 +2100,13 @@ class EditorPage(QWidget):
                     self._eg.delete_child(s.item_id)
                 except Exception:                                  # noqa: BLE001
                     log.exception("reset: snapshot delete failed")
-            # The surviving single segment — set to default state.
+            # The surviving single segment — spec/56 §1 default Skip.
             self._reload_workshop_rows()
             if self._segment_items:
                 try:
                     self._eg.set_phase_state(
                         self._segment_items[0].id,
-                        self._phase, self._edit_default_state)
+                        self._phase, STATE_SKIPPED)
                 except Exception:                                  # noqa: BLE001
                     log.exception("reset: phase_state reset failed")
         finally:

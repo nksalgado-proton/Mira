@@ -333,6 +333,84 @@ def test_toggle_key_flips_selected_snapshot(
 # ── Workshop reset semantics ──────────────────────────────────────────
 
 
+def test_segments_born_default_skipped_per_spec56(
+        qapp, app_gateway, store_and_gateway, monkeypatch):
+    """Nelson 2026-06-15 "the status was lost" bug:
+
+    The user opened a video in the workshop, added several markers,
+    explicitly Picked two segments, and went to Export — only to find
+    every segment shipped, not just the two picks. Root cause: the
+    workshop called ``ensure_video_segments(default_state=
+    edit_default_state)``; ``edit_default_state`` defaults to
+    ``"picked"`` (the "born green" setting that governs photos), so
+    every segment was born picked + marker splits inherited "picked"
+    from the parent → every Pick keypress was a no-op + every
+    untouched segment shipped.
+
+    The fix restores spec/56 §1's rule for SEGMENTS only: segments
+    always default-Skip regardless of ``edit_default_state``. This
+    test pins that invariant — flipping the setting to "picked" must
+    NOT change segment lazy-birth."""
+    _, eg = store_and_gateway
+
+    # Force the "born green" setting that previously broke segments,
+    # restoring it on teardown so the leak doesn't dirty other tests
+    # in the same session (Gateway() defaults to the global settings
+    # path; an unrestored "picked" would persist beyond the fixture).
+    from mira.picked.status import STATE_SKIPPED
+    prior = app_gateway.settings.load().edit_default_state
+    app_gateway.settings.update(edit_default_state="picked")
+    try:
+        page = _editor_on_video(app_gateway)
+        seg_id = page._segment_items[0].id
+        assert eg.phase_states("edit")[seg_id].state == STATE_SKIPPED
+        page.close_event()
+    finally:
+        app_gateway.settings.update(edit_default_state=prior)
+
+
+def test_added_markers_birth_skipped_segments(
+        qapp, app_gateway, store_and_gateway):
+    """Adding markers splits the parent and BOTH halves inherit the
+    parent's state (spec/56 §1 split rule). With segments born
+    default-Skip, an un-touched marker insert leaves all segments
+    skipped — the user has to explicitly Pick the cuts they want to
+    ship."""
+    from mira.picked.status import STATE_SKIPPED
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+
+    page._video_pos_ms = 3_000
+    page._add_marker_at_playhead()
+    page._video_pos_ms = 6_000
+    page._add_marker_at_playhead()
+    assert len(page._segment_items) == 3
+    ps = eg.phase_states("edit")
+    for seg in page._segment_items:
+        assert ps[seg.id].state == STATE_SKIPPED
+    page.close_event()
+
+
+def test_toggle_status_on_untouched_segment_goes_to_picked(
+        qapp, app_gateway, store_and_gateway):
+    """Pressing Space/toggle on an untouched segment cycles from the
+    spec/56 default-Skip → Picked (not to Skipped, which would be a
+    no-op on a default-skipped row). The fallback default the toggle
+    reads is now hardcoded "skipped" for segments."""
+    from mira.picked.status import STATE_PICKED
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    seg_id = page._segment_items[0].id
+    # The lazy-birth wrote an explicit row, so clear it to simulate
+    # the "no row yet" fallback path.
+    eg.store.conn.execute(
+        "DELETE FROM phase_state WHERE item_id = ? AND phase = 'edit'",
+        (seg_id,))
+    page._on_toggle_key()
+    assert eg.phase_states("edit")[seg_id].state == STATE_PICKED
+    page.close_event()
+
+
 def test_reset_everything_clears_markers_snapshots(
         qapp, app_gateway, store_and_gateway):
     _, eg = store_and_gateway

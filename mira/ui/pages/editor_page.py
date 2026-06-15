@@ -85,8 +85,6 @@ from mira.gateway import Gateway
 from mira.gateway.event_gateway import EventGateway
 from mira.picked import CullBucket, CullCluster, CullItem
 from mira.picked.status import (
-    BADGE_UNTOUCHED,
-    BucketStatus,
     default_state_for,
     project_status,
 )
@@ -320,8 +318,12 @@ class EditorPage(QWidget):
         self, event_id: str, day_number: int, item_id: str,
     ) -> bool:
         """Open the Editor on a flat single-item click from the Days Grid
-        (Surface 06). Builds a synthetic 1-item bucket so the chrome
-        + viewport navigate within just that item.
+        (Surface 06). Loads the ENTIRE day's navigable photo items
+        (chronological; cluster members flattened in place) and
+        positions the viewport at the clicked item — so prev/next walks
+        the whole day, not just that one click (Nelson 2026-06-14
+        eyeball #3: a 1-item bucket made nav dead). Videos are filtered
+        out — they belong on Surface 12 (Video Editor).
 
         Returns ``True`` on success. ``False`` leaves the page in a clean
         state so the host can leave the user on the Days Grid.
@@ -329,26 +331,107 @@ class EditorPage(QWidget):
         if not self._open_event(event_id):
             return False
         try:
-            cull_item = self._cull_item_for(item_id)
+            items = self._day_navigable_items(day_number, photos_only=True)
         except Exception:                                          # noqa: BLE001
             log.exception(
-                "open_to_item: cannot resolve %s in event %s",
-                item_id, event_id)
-            self._close_event()
-            return False
-        if cull_item is None:
-            self._close_event()
-            return False
+                "open_to_item: day-items build failed for %s/%s",
+                event_id, day_number)
+            items = []
+        idx = next(
+            (i for i, it in enumerate(items) if it.item_id == item_id),
+            None,
+        )
+        if idx is None:
+            # The clicked item didn't surface in the navigable list
+            # (e.g. a video clicked in Edit mode is filtered out here —
+            # the host routes those to EditVideoPage — OR the day's
+            # buckets aren't materialised in this gateway snapshot).
+            # Fall back to a single-item bucket so the surface still
+            # opens rather than collapsing back to the grid silently.
+            cull_item = self._cull_item_for(item_id)
+            if cull_item is None:
+                self._close_event()
+                return False
+            items = [cull_item]
+            idx = 0
         # spec/32 §2.10 — opening an item marks it visited at Edit.
         try:
             self._eg.set_item_visited(item_id, self._phase)
         except Exception:                                          # noqa: BLE001
             log.exception("set_item_visited failed for %s", item_id)
-        bucket = self._synthetic_bucket(cull_item)
+        bucket = self._day_bucket(day_number, items)
         self._day_number = day_number
-        self._compute_day_position(day_number, item_id)
-        self._load_bucket(bucket, entry_idx=0)
+        self._day_index = idx + 1
+        self._day_total = len(items)
+        self._load_bucket(bucket, entry_idx=idx)
         return True
+
+    def _day_navigable_items(
+        self, day_number: int, *, photos_only: bool,
+    ) -> list[CullItem]:
+        """Build the day's navigable item list in chronological order.
+
+        Walks :func:`day_grid_cells` and FLATTENS clusters into their
+        members so prev/next steps through every individual frame the
+        user can edit, not just the cluster covers. ``photos_only=True``
+        drops video items (they belong on Surface 12). Each surviving
+        item id is rehydrated into a :class:`CullItem` carrying the
+        absolute path under ``event_root``.
+        """
+        if self._eg is None:
+            return []
+        from mira.picked import day_grid_cells
+        try:
+            default_state = default_state_for(
+                self.gateway.settings, self._phase)
+        except Exception:                                          # noqa: BLE001
+            default_state = "skipped"
+        cells = day_grid_cells(
+            self._eg, day_number, phase=self._phase,
+            default_state=default_state,
+        )
+        ordered_ids: list[str] = []
+        for c in cells:
+            if c.is_cluster and c.cluster is not None:
+                ordered_ids.extend(m.item_id for m in c.cluster.members)
+            elif c.item_id is not None:
+                ordered_ids.append(c.item_id)
+        out: list[CullItem] = []
+        for iid in ordered_ids:
+            it = self._eg.item(iid)
+            if it is None or not it.origin_relpath:
+                continue
+            if photos_only and (it.kind or "photo") == "video":
+                continue
+            out.append(CullItem(
+                item_id=it.id,
+                path=Path(self._eg.event_root) / it.origin_relpath,
+                kind=it.kind,
+                capture_time_corrected=it.capture_time_corrected or None,
+                duration_ms=it.duration_ms,
+            ))
+        return out
+
+    def _day_bucket(
+        self, day_number: int, items: list[CullItem],
+    ) -> CullBucket:
+        """Wrap a whole-day item list in a CullBucket the load path
+        understands. Status uses ``project_status`` so the bucket reads
+        sensibly if anything ever inspects it (the surface itself only
+        cares about ``items``)."""
+        if self._eg is not None:
+            phase_states = self._eg.phase_states(self._phase)
+        else:
+            phase_states = {}
+        status = project_status(
+            [ci.item_id for ci in items], phase_states, None)
+        return CullBucket(
+            bucket_key=f"day:{day_number}",
+            kind="day",
+            title="",
+            items=tuple(items),
+            status=status,
+        )
 
     def open_to_cluster(
         self, event_id: str, day_number: int,
@@ -464,43 +547,6 @@ class EditorPage(QWidget):
             duration_ms=item.duration_ms,
         )
 
-    def _synthetic_bucket(self, ci: CullItem) -> CullBucket:
-        """Wrap a single CullItem in a 1-item bucket so the page's
-        bucket-shaped load path lights up uniformly."""
-        return CullBucket(
-            bucket_key=f"single:{ci.item_id}",
-            kind=ci.kind,
-            title="",
-            items=(ci,),
-            status=BucketStatus(
-                total=1, kept=0, candidate=0, discarded=0, untouched=1,
-                reviewed=False, browsed=False, badge=BADGE_UNTOUCHED),
-        )
-
-    def _compute_day_position(self, day_number: int, item_id: str) -> None:
-        """Resolve "Cell N of Total" for the position chip. Mirrors
-        :class:`PickerPage._compute_day_position`."""
-        if self._eg is None:
-            return
-        try:
-            from mira.picked import day_grid_cells
-            cells = day_grid_cells(
-                self._eg, day_number, phase=self._phase,
-                default_state=default_state_for(
-                    self.gateway.settings, self._phase),
-            )
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "day_grid_cells(%s) failed for position chip", day_number)
-            self._day_index, self._day_total = 1, 1
-            return
-        idx = next(
-            (i for i, c in enumerate(cells) if c.item_id == item_id),
-            None,
-        )
-        self._day_index = (idx or 0) + 1
-        self._day_total = len(cells) if cells else 1
-
     # ── Bucket load ────────────────────────────────────────────────────
 
     def _load_bucket(
@@ -562,6 +608,12 @@ class EditorPage(QWidget):
         if not self._items:
             return
         self._index = max(0, min(index, len(self._items) - 1))
+        # In a whole-day bucket the day-position IS the within-bucket
+        # position; keep day_index in sync so the chip reads honestly
+        # as the user navigates. Cluster buckets keep day_index fixed
+        # at the entry point.
+        if self._bucket is not None and self._bucket.kind == "day":
+            self._day_index = self._index + 1
         ci = self._current_item()
         self._refresh_position_label()
         developed = (
@@ -593,18 +645,26 @@ class EditorPage(QWidget):
         return self._items[self._index]
 
     def _refresh_position_label(self) -> None:
+        """Position chip — single-line "N / Total" reflecting the
+        viewport's cursor within the loaded bucket. For a whole-day
+        bucket (the open_to_item path) ``day_*`` and bucket counts
+        agree, so we show one figure. For a cluster bucket (the
+        open_to_cluster path) the day-position diverges from the
+        within-cluster position; both surface as "DAY/DAYTOTAL · N/T"
+        so the user can tell where they are in the day vs the cluster."""
         if not self._items:
             self._counter.setText("0 / 0")
             return
-        if len(self._items) > 1:
-            in_n = self._index + 1
-            in_total = len(self._items)
+        in_n = self._index + 1
+        in_total = len(self._items)
+        same = (in_n == self._day_index and in_total == self._day_total)
+        if not same and in_total > 1:
             txt = (
                 f"{self._day_index} / {self._day_total}"
                 f"  ·  {in_n} / {in_total}"
             )
         else:
-            txt = f"{self._day_index} / {self._day_total}"
+            txt = f"{in_n} / {in_total}"
         self._counter.setText(txt)
 
     def _on_edge(self, _delta: int) -> None:

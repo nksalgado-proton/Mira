@@ -287,8 +287,13 @@ class PickerPage(QWidget):
         self, event_id: str, day_number: int, item_id: str,
     ) -> bool:
         """Open the Picker on a flat single-item click from the Days Grid
-        (Surface 06). Builds a synthetic 1-item bucket so the Picker chrome
-        + viewport navigate within just that item.
+        (Surface 06). Loads the ENTIRE day's navigable items
+        (chronological; cluster members flattened in place) and
+        positions the viewport at the clicked item — so prev/next walks
+        the whole day, not just that one click (Nelson 2026-06-14
+        eyeball #3: a 1-item bucket made nav dead). Videos stay in the
+        list (the Picker can decide on a video — Skip / Pick — just like
+        a photo; the viewport's arm-on-landing handles poster + clip).
 
         Returns ``True`` on success. ``False`` leaves the page in a clean
         state so the host can leave the user on the Days Grid.
@@ -296,26 +301,98 @@ class PickerPage(QWidget):
         if not self._open_event(event_id):
             return False
         try:
-            cull_item = self._cull_item_for(item_id)
+            items = self._day_navigable_items(day_number)
         except Exception:                                          # noqa: BLE001
             log.exception(
-                "open_to_item: cannot resolve %s in event %s",
-                item_id, event_id)
-            self._close_event()
-            return False
-        if cull_item is None:
-            self._close_event()
-            return False
+                "open_to_item: day-items build failed for %s/%s",
+                event_id, day_number)
+            items = []
+        idx = next(
+            (i for i, it in enumerate(items) if it.item_id == item_id),
+            None,
+        )
+        if idx is None:
+            # The clicked item didn't surface in the navigable list —
+            # OR the day's buckets aren't materialised in this gateway
+            # snapshot. Fall back to a synthetic single-item bucket so
+            # the surface still opens rather than collapsing back to
+            # the grid silently.
+            cull_item = self._cull_item_for(item_id)
+            if cull_item is None:
+                self._close_event()
+                return False
+            items = [cull_item]
+            idx = 0
         # spec/32 §2.10 item tick.
         try:
             self._eg.set_item_visited(item_id, self._phase)
         except Exception:                                          # noqa: BLE001
             log.exception("set_item_visited failed for %s", item_id)
-        bucket = self._synthetic_bucket(cull_item)
+        bucket = self._day_bucket(day_number, items)
         self._day_number = day_number
-        self._compute_day_position(day_number, item_id)
-        self._load_bucket(bucket, entry_idx=0)
+        self._day_index = idx + 1
+        self._day_total = len(items)
+        self._load_bucket(bucket, entry_idx=idx)
         return True
+
+    def _day_navigable_items(self, day_number: int) -> list:
+        """Build the day's navigable item list in chronological order.
+
+        Walks :func:`day_grid_cells` and FLATTENS clusters into their
+        members so prev/next steps through every individual frame the
+        user can decide on. Photos AND videos stay in the list — the
+        Picker can decide on either kind."""
+        if self._eg is None:
+            return []
+        from mira.picked import day_grid_cells
+        from mira.picked.status import default_state_for
+        try:
+            default_state = default_state_for(
+                self.gateway.settings, self._phase)
+        except Exception:                                          # noqa: BLE001
+            default_state = "skipped"
+        cells = day_grid_cells(
+            self._eg, day_number, phase=self._phase,
+            default_state=default_state,
+        )
+        ordered_ids: list[str] = []
+        for c in cells:
+            if c.is_cluster and c.cluster is not None:
+                ordered_ids.extend(m.item_id for m in c.cluster.members)
+            elif c.item_id is not None:
+                ordered_ids.append(c.item_id)
+        out: list = []
+        for iid in ordered_ids:
+            it = self._eg.item(iid)
+            if it is None or not it.origin_relpath:
+                continue
+            out.append(CullItem(
+                item_id=it.id,
+                path=Path(self._eg.event_root) / it.origin_relpath,
+                kind=it.kind,
+                capture_time_corrected=it.capture_time_corrected or None,
+                duration_ms=it.duration_ms,
+            ))
+        return out
+
+    def _day_bucket(self, day_number: int, items: list) -> CullBucket:
+        """Wrap a whole-day item list in a CullBucket the load path
+        understands. Status uses ``project_status`` so the bucket reads
+        sensibly if anything inspects it."""
+        from mira.picked.status import project_status
+        if self._eg is not None:
+            phase_states = self._eg.phase_states(self._phase)
+        else:
+            phase_states = {}
+        status = project_status(
+            [ci.item_id for ci in items], phase_states, None)
+        return CullBucket(
+            bucket_key=f"day:{day_number}",
+            kind="day",
+            title="",
+            items=tuple(items),
+            status=status,
+        )
 
     def open_to_cluster(
         self, event_id: str, day_number: int,
@@ -406,8 +483,10 @@ class PickerPage(QWidget):
         )
 
     def _synthetic_bucket(self, ci: CullItem) -> CullBucket:
-        """Wrap a single CullItem in a 1-item bucket so the page's
-        bucket-shaped load path lights up uniformly."""
+        """Fallback: wrap a single CullItem in a 1-item bucket when the
+        clicked item doesn't surface in :meth:`_day_navigable_items`
+        (the surface still opens rather than collapsing back to the
+        grid). The normal open_to_item path uses :meth:`_day_bucket`."""
         from mira.picked.status import (
             BADGE_UNTOUCHED, BucketStatus,
         )
@@ -420,29 +499,6 @@ class PickerPage(QWidget):
                 total=1, kept=0, candidate=0, discarded=0, untouched=1,
                 reviewed=False, browsed=False, badge=BADGE_UNTOUCHED),
         )
-
-    def _compute_day_position(self, day_number: int, item_id: str) -> None:
-        """Resolve "Cell N of Total" for the day-grid position chip. We
-        ask the gateway for the day's cells once per item open — same
-        engine the Days Grid uses, so a second call is cache-hit cheap."""
-        if self._eg is None:
-            return
-        try:
-            from mira.picked import day_grid_cells
-            cells = day_grid_cells(
-                self._eg, day_number, phase=self._phase,
-                default_state=self._default_state)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "day_grid_cells(%s) failed for position chip", day_number)
-            self._day_index, self._day_total = 1, 1
-            return
-        idx = next(
-            (i for i, c in enumerate(cells) if c.item_id == item_id),
-            None,
-        )
-        self._day_index = (idx or 0) + 1
-        self._day_total = len(cells) if cells else 1
 
     # ── Bucket load (the absorbed PickPhotoSurface.load wiring) ────────
 

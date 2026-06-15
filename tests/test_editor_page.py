@@ -290,6 +290,48 @@ def test_unpack_adjustment_defaults_to_natural(qapp):
     assert aspect == "Original"
 
 
+def test_open_to_item_loads_whole_day_items_not_one(
+        qapp, app_gateway, event_dir, monkeypatch):
+    """Nelson 2026-06-14 eyeball #3 — open_to_item must load the whole
+    day's navigable items (chronological) positioned at the clicked
+    item, so prev/next walks the entire day. The legacy synthetic
+    1-item bucket made nav dead — only the clicked item was in
+    ``self._items``."""
+    from mira.picked import CullItem
+    page = EditorPage(app_gateway)
+    # The test event has 3 day-1 items (e1/e2/e3); make
+    # _day_navigable_items return all of them, in order, regardless
+    # of whether the fixture has buckets materialised — that's a
+    # separate model concern.
+    day_items = [
+        CullItem(
+            item_id=f"e{i}",
+            path=event_dir / "Original Media" / f"e{i}.jpg",
+            kind="photo",
+            capture_time_corrected=f"2026-04-01T08:0{i}:00",
+        )
+        for i in range(1, 4)
+    ]
+    monkeypatch.setattr(
+        EditorPage, "_day_navigable_items",
+        lambda self, day_number, *, photos_only: day_items)
+    assert page.open_to_item("evt-e", 1, "e2")
+    # All three items landed on the surface — not just the clicked one.
+    assert len(page._items) == 3
+    assert [it.item_id for it in page._items] == ["e1", "e2", "e3"]
+    # Positioned at e2 (index 1).
+    assert page._index == 1
+    assert page._day_index == 2
+    assert page._day_total == 3
+    assert "2 / 3" in page._counter.text()
+    # Pressing → advances to e3; nothing's locked at the start.
+    page._on_next()
+    assert page._viewport.current_index() == 2
+    # Pressing ← from there returns to e2.
+    page._on_prev()
+    assert page._viewport.current_index() == 1
+
+
 def test_chrome_widgets_are_no_focus_so_keys_keep_firing(qapp):
     """Nelson 2026-06-14 eyeball — ghost_button has StrongFocus by
     default, so clicking Back / nav arrows / Full Screen / Full

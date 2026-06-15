@@ -37,6 +37,13 @@ Notes on the metrics (Nelson 2026-06-14):
   optional polish, not a gate.
 - **Export** progress = **exported ÷ picked** = *actual materialised files* —
   the real artifact that survives the pipeline and that Share later draws on.
+- **Bars encode phase identity, not state (Nelson 2026-06-14).** Phases advance
+  freely (per-day, non-linear: a user may run one day all the way to Export, or
+  sweep one phase across every day), so "in progress" / "closed" is not a real
+  per-phase status. The events-card pipeline bars are therefore coloured by
+  **phase** — Collect blue · Pick accent · Edit amber · Export green (the
+  closed-card stat palette) — with **length = %**. No done/in-progress/zero
+  state colour. (Same applies to the PhasesPage donuts in slice 3.)
 
 ### 1.1 The Edit and Export surfaces are separate (Nelson 2026-06-14)
 

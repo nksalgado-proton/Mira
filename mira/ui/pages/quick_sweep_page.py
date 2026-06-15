@@ -61,6 +61,7 @@ from mira.ui.base.surface import (
     transport_button,
 )
 from mira.ui.design import (
+    SurfaceIdentityHeader,
     danger_ghost_button,
     ghost_button,
     nav_arrow,
@@ -246,6 +247,30 @@ class QuickSweepPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # spec/71 identity header — Collect phase chrome (blue rail +
+        # QUICK SWEEP badge). Quick Sweep's permissive contract drives
+        # the legend: green = Keeping (default), red = Skipped, yellow
+        # = Mixed cluster.
+        self._identity = SurfaceIdentityHeader(
+            phase="collect",
+            name=tr("Quick Sweep"),
+            purpose=tr("Fast pass — skip the obvious rejects"),
+            legend=[
+                ("picked", tr("Keeping")),
+                ("skipped", tr("Skipped")),
+                ("mixed", tr("Mixed")),
+            ],
+            reminder=tr(
+                "Everything starts kept — press X to skip the rejects."),
+        )
+        identity_host = QWidget()
+        ihl = QVBoxLayout(identity_host)
+        ihl.setContentsMargins(24, 14, 24, 6)
+        ihl.setSpacing(0)
+        ihl.addWidget(self._identity)
+        outer.addWidget(identity_host)
+
         self._surface = self._build_viewer()
         outer.addWidget(self._surface)
 

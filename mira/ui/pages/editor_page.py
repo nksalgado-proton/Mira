@@ -90,6 +90,7 @@ from mira.picked.status import (
 )
 from mira.store import models as m
 from mira.ui.design import (
+    SurfaceIdentityHeader,
     ghost_button,
     nav_arrow,
 )
@@ -199,6 +200,19 @@ class EditorPage(QWidget):
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(20, 16, 20, 16)
         self._outer.setSpacing(10)
+
+        # spec/71 identity header — Edit phase chrome (amber rail + EDIT
+        # badge). NO state legend: P/X are inert on a creative-only
+        # surface (spec/66 §1.1). The reminder names the two truth-keys
+        # the user actually presses here.
+        self._identity = SurfaceIdentityHeader(
+            phase="edit",
+            name=tr("Edit"),
+            purpose=tr("Develop your picked keepers"),
+            reminder=tr(
+                "\\ compare before/after · F10 full-res preview."),
+        )
+        self._outer.addWidget(self._identity)
 
         # ── Toolbar — Back · counter ──
         self._toolbar_widget = QWidget()

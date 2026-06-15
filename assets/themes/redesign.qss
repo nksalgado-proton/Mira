@@ -142,6 +142,37 @@ QPushButton#CarouselDot              { background: rgba(255,255,255,0.45);
 QPushButton#CarouselDot:hover        { background: rgba(255,255,255,0.75); }
 QPushButton#CarouselDot[active="true"] { background: {accent}; }
 
+/* ---- Surface identity header (spec/71) ----
+ * Every decision surface (Quick Sweep, Picker, Editor, Export) carries the
+ * identity header at its top: a 3px phase-colour rail + a phase-name badge
+ * + a purpose line + the §5a legend. Phase chrome lives ONLY on the rail +
+ * badge — the §5a state colours stay on cell borders unchanged. The badge
+ * + rail read the phase token (collect=blue / pick=accent / edit=amber /
+ * export=green) via the `phase` property selector so the shared Days List
+ * / Days Grid colour follows the host. */
+QFrame#SurfaceHeaderRail                       { background: {line}; border: none; }
+QFrame#SurfaceHeaderRail[phase="collect"]      { background: {blue}; }
+QFrame#SurfaceHeaderRail[phase="pick"]         { background: {accent}; }
+QFrame#SurfaceHeaderRail[phase="edit"]         { background: {amber}; }
+QFrame#SurfaceHeaderRail[phase="export"]       { background: {green}; }
+
+QLabel#SurfaceHeaderBadge                      { color: {ink_soft}; background: {card2};
+                                                 border: 1px solid {line}; border-radius: 10px;
+                                                 padding: 3px 11px;
+                                                 font-size: 11px; font-weight: 800; }
+QLabel#SurfaceHeaderBadge[phase="collect"]     { background: rgba(34,211,238,0.16);
+                                                 border-color: {blue}; color: {blue}; }
+QLabel#SurfaceHeaderBadge[phase="pick"]        { background: rgba(124,108,255,0.16);
+                                                 border-color: {accent}; color: {accent}; }
+QLabel#SurfaceHeaderBadge[phase="edit"]        { background: rgba(251,191,36,0.18);
+                                                 border-color: {amber}; color: {amber}; }
+QLabel#SurfaceHeaderBadge[phase="export"]      { background: rgba(52,211,153,0.16);
+                                                 border-color: {green}; color: {green}; }
+
+QLabel#SurfaceHeaderPurpose                    { color: {ink}; font-size: 13px; font-weight: 600; }
+QLabel#SurfaceHeaderReminder                   { color: {ink_soft}; font-size: 12px;
+                                                 font-style: italic; }
+
 /* ---- Photo-state border tag (used on legends + thumbnails when not painted manually) ---- */
 QFrame#StatePicked    { border: 3px solid {picked}; border-radius: {radius_md}px; }
 QFrame#StateSkipped   { border: 3px solid {skipped}; border-radius: {radius_md}px; }

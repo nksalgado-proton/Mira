@@ -65,6 +65,7 @@ from mira.ui.base.surface import (
     transport_button,
 )
 from mira.ui.design import (
+    SurfaceIdentityHeader,
     danger_ghost_button,
     ghost_button,
     nav_arrow,
@@ -159,6 +160,29 @@ class PickerPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # spec/71 identity header — Pick phase chrome (accent rail + PICK
+        # badge). The §5a state colours stay on the media border below
+        # unchanged; the rail/badge carry the phase identity only.
+        self._identity = SurfaceIdentityHeader(
+            phase="pick",
+            name=tr("Pick"),
+            purpose=tr("Decide each shot — pick the keepers"),
+            legend=[
+                ("picked", tr("Picked")),
+                ("skipped", tr("Skipped")),
+                ("compare", tr("Compare")),
+                ("mixed", tr("Mixed cluster")),
+            ],
+            reminder=tr(
+                "Border = your pick · P pick · X skip · C compare."),
+        )
+        identity_host = QWidget()
+        ihl = QVBoxLayout(identity_host)
+        ihl.setContentsMargins(24, 14, 24, 6)
+        ihl.setSpacing(0)
+        ihl.addWidget(self._identity)
+        outer.addWidget(identity_host)
 
         # ── Surface scaffold — the state border lives on this host. ──
         self._surface = BasePickSurface()

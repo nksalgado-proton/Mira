@@ -73,6 +73,7 @@ is stale — it lists Share/Cuts as route-swapped, but this tree wires the legac
 | 12 Video Editor | ✅ `video_editor_page.py` (shell) | ❌ | `edited/edit_video_page.py` |
 | 13 New Cut dialog | ✅ `new_cut_dialog.py` | ❌ | `shared/new_cut_dialog.py` (legacy) |
 | Export (new phase) | being built (spec/66 slice 5) | (in progress) | n/a — net new |
+| Quick Sweep (Collect) | ❌ none | ❌ — **"coming next" placeholder** (`main_window._coming_next`) | logic only: `mira/picked/quick_sweep_buckets.py` (no UI page) |
 
 **First action of every session: re-verify the row you're attacking against
 `main_window.py`.** The table above will drift as the phase spine and earlier
@@ -137,7 +138,16 @@ Order chosen by dependency + risk:
    with drag handles, embeds the viewport (spec/63 §6/6b). **Export is no longer
    here** (it moved to the Export surface in the phase spine). Retire
    `edited/edit_page.py` + `edit_host_page.py` (fold what survives).
-4. **09 Share / Cuts** — route-swap `CutsShellPage` → `ShareCutsPage`, **gated to
+4. **Quick Sweep (Collect)** — **net-new build, not a reconciliation.** Today
+   the menu items route to a `_coming_next` placeholder; there is no UI page and
+   **no mockup** (like the Export surface, it needs a deliberate design against
+   the catalog first). Build it as its own surface that **embeds the same
+   `PhotoViewport`** the Picker uses (spec/63), over the existing
+   `mira/picked/quick_sweep_buckets.py` logic; wire the "Standalone Quick Sweep"
+   and "Quick Sweep this event" menu entries to it (replacing `_coming_next`).
+   Placed after the Picker because it reuses the Picker's single-photo viewport
+   machinery.
+5. **09 Share / Cuts** — route-swap `CutsShellPage` → `ShareCutsPage`, **gated to
    closed events** (spec/66/68). *Note:* the redesigned page's deep Cut
    functionality is the **spec/61** program (separate, not yet scheduled); this
    step is the route-swap + closed-event gating + fidelity (spec/65 §3.9), with
@@ -198,6 +208,10 @@ Order chosen by dependency + risk:
 - **The spec/63 keymap is LOCKED** — P/X/Space/C/Tab/Enter/F10/F11/Esc unchanged.
 - **Verify with real assets**, not placeholder smokes.
 - **Scope creep is the enemy** — "more chrome" ≠ "the design's voice" (spec/65 §6).
+- **Every decision surface carries the identity header** ([spec/71](71-surface-identity-header.md)):
+  phase-colour chrome + phase name + purpose line + the surface's legend; §5a
+  state colours stay on the cell borders only. Build new surfaces with it from
+  the start.
 
 ## 8. Rough size
 

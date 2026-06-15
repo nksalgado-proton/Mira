@@ -47,7 +47,11 @@ from mira.ui.design.chips import (
     pill_toggle,
     tag,
 )
-from mira.ui.design.headers import PageHeader, ThemeToggle
+from mira.ui.design.headers import (
+    PageHeader,
+    SurfaceIdentityHeader,
+    ThemeToggle,
+)
 from mira.ui.design.icons import (
     CATEGORIES_DIR,
     CLUSTERS_DIR,
@@ -99,6 +103,7 @@ __all__ = [
     "StableMediaStage",
     "StageProgress",
     "StatTile",
+    "SurfaceIdentityHeader",
     "ThemeToggle",
     "Thumb",
     "TitleBar",

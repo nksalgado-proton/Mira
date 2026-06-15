@@ -45,8 +45,8 @@ from mira.picked.status import STATE_PICKED, STATE_SKIPPED, default_state_for
 from mira.store import models as m
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
-    PageHeader,
     StageProgress,
+    SurfaceIdentityHeader,
     Thumb,
     confirm,
     danger_ghost_button,
@@ -56,7 +56,6 @@ from mira.ui.design import (
     show_info,
 )
 from mira.ui.i18n import tr
-from mira.ui.palette import PALETTE
 
 log = logging.getLogger(__name__)
 
@@ -76,27 +75,6 @@ class _Cell:
     kind: str
     state: str            # "picked" (green) or "skipped" (red)
     widget: Thumb
-
-
-def _state_swatch(token: str, label: str) -> QWidget:
-    """Tiny legend chip — the §5a colour swatch + a label. Matches the
-    Days Grid legend so the two surfaces read as one decision grammar."""
-    host = QWidget()
-    h = QHBoxLayout(host)
-    h.setContentsMargins(0, 0, 0, 0)
-    h.setSpacing(6)
-    color = PALETTE["dark"][token]
-    swatch = QLabel()
-    swatch.setFixedSize(18, 14)
-    swatch.setStyleSheet(
-        f"background: transparent; border: 3px solid {color};"
-        f" border-radius: 5px;"
-    )
-    h.addWidget(swatch)
-    txt = QLabel(label)
-    txt.setObjectName("Sub")
-    h.addWidget(txt)
-    return host
 
 
 class ExportPage(QWidget):
@@ -142,14 +120,25 @@ class ExportPage(QWidget):
         outer.setContentsMargins(28, 22, 28, 22)
         outer.setSpacing(14)
 
-        # ── PageHeader: title with weight + sub line + Export action ──
-        # The primary action lives on the header so the user always sees
-        # "what ships" without having to scroll the grid.
+        # spec/71 identity header — Export phase chrome (green rail +
+        # EXPORT badge). The §5a state colours live on the cell borders
+        # below unchanged; the rail/badge carry phase identity. The
+        # primary Export action lives on the header so the user always
+        # sees "what ships" without having to scroll the grid.
         self._export_btn = primary_button(tr("Export green"))
         self._export_btn.clicked.connect(self._on_export_clicked)
-        self._header = PageHeader(
-            title=tr("Export"),
-            sub=tr("Pick what ships — green flows to Exported Media/."),
+        self._header = SurfaceIdentityHeader(
+            phase="export",
+            name=tr("Export"),
+            purpose=tr("Choose what ships"),
+            legend=[
+                ("picked", tr("Will export")),
+                ("skipped", tr("Won't export")),
+                ("mixed", tr("Mixed")),
+            ],
+            reminder=tr(
+                "Everything ships by default — press X to drop what you "
+                "don't want."),
             action=self._export_btn,
         )
         outer.addWidget(self._header)
@@ -189,24 +178,6 @@ class ExportPage(QWidget):
         progress_block.addWidget(self._count_bar)
         toolbar.addLayout(progress_block)
         outer.addLayout(toolbar)
-
-        # ── Legend strip — same vocabulary as Days Grid, only the verb
-        # shifts: here green = will export, red = drop.
-        legend = QHBoxLayout()
-        legend.setSpacing(18)
-        legend.addWidget(_state_swatch("picked", tr("Will export")))
-        legend.addWidget(_state_swatch("skipped", tr("Drop")))
-        reminder = QLabel(
-            "<span style='color:#8b94a7'>"
-            "border <b style='color:#eef1f7'>= ship state</b>"
-            " · click a tile to toggle"
-            "</span>"
-        )
-        reminder.setObjectName("Sub")
-        reminder.setTextFormat(Qt.TextFormat.RichText)
-        legend.addWidget(reminder)
-        legend.addStretch()
-        outer.addLayout(legend)
 
         # ── Scrolling grid (Thumb cells in a FlowLayout) ──
         self._scroll = QScrollArea()
@@ -266,7 +237,6 @@ class ExportPage(QWidget):
             self._phase_default = STATE_PICKED
 
         self._build_cells()
-        self._refresh_header_sub()
         return True
 
     def _close_gateway(self) -> None:
@@ -780,19 +750,6 @@ class ExportPage(QWidget):
         self._export_btn.setEnabled(green > 0)
         self._empty_state.setVisible(total == 0)
         self._scroll.setVisible(total > 0)
-
-    def _refresh_header_sub(self) -> None:
-        # PageHeader's sub is set at construction; rebuild it to include
-        # the event name once we know it. (PageHeader doesn't expose a
-        # setSub yet — we mutate the QLabel inside it.)
-        for child in self._header.findChildren(QLabel):
-            if child.objectName() == "Sub":
-                child.setText(
-                    tr("Pick what ships for “{name}” — green flows to "
-                       "Exported Media/.")
-                    .replace("{name}", self._event_name)
-                )
-                break
 
     def _find_cell(self, item_id: str) -> Optional[_Cell]:
         for c in self._cells:

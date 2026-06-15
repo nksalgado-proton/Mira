@@ -152,6 +152,12 @@ class PickerPage(QWidget):
         self._exif_prefetch_signals.fetched.connect(
             self._on_exif_prefetched)
 
+        # spec/59 §8 / spec/66 §1.2 — shipped-item set + watermark gate.
+        # Loaded on _open_event; consumed per nav in _on_current_changed
+        # to drive ``PhotoViewport.set_exported_watermark``.
+        self._exported_set: set = set()
+        self._watermark_enabled: bool = True
+
         self._build_ui()
 
     # ── UI assembly ────────────────────────────────────────────────────
@@ -478,7 +484,34 @@ class PickerPage(QWidget):
         self._event_id = event_id
         self._default_state = default_state_for(
             self.gateway.settings, self._phase)
+        # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" watermark
+        # on the single-photo viewport. The set is cached for the
+        # session; an Export run mid-session refreshes it on next
+        # event entry. Gated by ``show_exported_watermark``.
+        self._exported_set, self._watermark_enabled = (
+            self._load_exported_state())
         return True
+
+    def _load_exported_state(self) -> "tuple[set, bool]":
+        """Read the shipped-item set + watermark gate for the open
+        event. Falls back to (empty set, True) on either error so the
+        viewport never mistakenly stamps an unshipped item."""
+        if self._eg is None or self.gateway is None:
+            return set(), True
+        try:
+            settings = self.gateway.settings.load()
+            enabled = bool(getattr(
+                settings, "show_exported_watermark", True))
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "PickerPage: settings.load failed; assuming watermark on")
+            enabled = True
+        try:
+            shipped = self._eg.exported_item_ids()
+        except Exception:                                          # noqa: BLE001
+            log.exception("PickerPage: exported_item_ids failed")
+            shipped = set()
+        return shipped, enabled
 
     def _close_event(self) -> None:
         if self._eg is not None:
@@ -492,6 +525,8 @@ class PickerPage(QWidget):
         self._items = []
         self._index = 0
         self._state = {}
+        self._exported_set: set = set()
+        self._watermark_enabled = True
 
     def _cull_item_for(self, item_id: str) -> Optional[CullItem]:
         """Build a one-shot ``CullItem`` for a flat single-item bridge."""
@@ -786,6 +821,18 @@ class PickerPage(QWidget):
 
         # AF — the viewport stores it for F10's inspection overlay.
         self.viewport.set_af_point(self._resolve_af(item.path))
+
+        # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" overlay
+        # over the displayed image when the item shipped (lineage row
+        # under ``Exported Media/``) AND the user hasn't hidden the
+        # indicator via ``show_exported_watermark``. Videos and
+        # snapshots are out of scope here (the watermark is photo-only).
+        shipped = (
+            self._watermark_enabled
+            and getattr(item, "kind", "photo") == "photo"
+            and item.item_id in self._exported_set
+        )
+        self.viewport.set_exported_watermark(shipped)
 
         # The lens button only makes sense for photos.
         self._fullres_btn.setVisible(

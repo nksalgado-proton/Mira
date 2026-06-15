@@ -618,6 +618,27 @@ class DaysGridPage(QWidget):
 
     # ── Gateway → grid items ───────────────────────────────────────────
 
+    def _exported_ids_for_grid(self) -> Optional[set]:
+        """The shipped-item id set the corner exported badge reads from
+        (spec/59 §8 + spec/66 §1.2). Returns ``None`` when the user has
+        hidden the indicator (``show_exported_watermark = False``), so
+        :func:`day_grid_cells` stamps no cells. Safe to call without a
+        gateway — empty set as a fall-through."""
+        if self._eg is None:
+            return None
+        try:
+            settings = self.gateway.settings.load()
+            if not bool(getattr(settings, "show_exported_watermark", True)):
+                return None
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: settings.load failed; "
+                          "defaulting to show watermark")
+        try:
+            return self._eg.exported_item_ids()
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: exported_item_ids failed")
+            return set()
+
     def _refresh_from_gateway(self) -> None:
         """Rebuild ``self._day_items`` from the live gateway and render.
 
@@ -630,6 +651,13 @@ class DaysGridPage(QWidget):
         cells = day_grid_cells(
             self._eg, self._day_number, phase=self._phase,
             default_state=self._phase_default,
+            # spec/59 §8 / spec/66 §1.2 — shipped items wear the
+            # corner exported badge (the redesign replaced the legacy
+            # diagonal in grids). Gated by the app-wide
+            # ``show_exported_watermark`` setting; ``None`` stamps
+            # nothing so the cells stay clean when the user hides
+            # the indicator.
+            exported_ids=self._exported_ids_for_grid(),
         )
         phase_states = self._eg.phase_states(self._phase)
         self._day_items = self._items_from_cells(cells, phase_states)

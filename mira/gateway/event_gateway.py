@@ -1949,6 +1949,101 @@ class EventGateway:
             conn.execute("DELETE FROM lineage WHERE phase = ?", (phase,))
             self._touch()
 
+    def delete_exported_file(self, item_id: str) -> Dict:
+        """Undo one item's Export ship: delete its on-disk JPEG(s) under
+        ``Exported Media/``, drop its lineage row(s), and flip
+        ``Adjustment.edit_exported`` back to False.
+
+        Returns ``{"deleted_files": [Path…], "missing_files": [str…],
+        "rows_deleted": N}``. Charter-safe: only files under
+        ``event_root/Exported Media/`` get unlinked (the derived /
+        regenerable tier — spec/66 §1.2); ``Original Media/`` is never
+        touched. Multiple lineage rows for the same item (re-exports
+        under the spec/54 §8 versions-as-exports policy each get their
+        own row) are all dropped — undoing the ship undoes every
+        registered ship file for that item.
+
+        Cut membership (spec/61 §1.4) is cleaned automatically: the
+        ``cut_member.export_relpath`` foreign key carries
+        ``ON DELETE CASCADE`` on the schema, so deleting the lineage
+        row also drops every cut_member row pointing at it. The Cut
+        definition itself stays; only the membership of this file goes.
+        """
+        if self.event_root is None:
+            return {"deleted_files": [], "missing_files": [],
+                    "rows_deleted": 0}
+        rows = self.store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE phase = 'edit' AND source_item_id = ? "
+            "AND export_relpath LIKE 'Exported Media/%'",
+            (item_id,),
+        ).fetchall()
+        if not rows:
+            return {"deleted_files": [], "missing_files": [],
+                    "rows_deleted": 0}
+
+        event_root = Path(self.event_root)
+        deleted: list = []
+        missing: list = []
+        for r in rows:
+            rel = r["export_relpath"]
+            abs_path = event_root / rel
+            if abs_path.is_file():
+                try:
+                    abs_path.unlink()
+                    deleted.append(abs_path)
+                except OSError:
+                    log.exception(
+                        "delete_exported_file: unlink failed for %s",
+                        abs_path)
+                    # Leave the row alone — the file is still on disk,
+                    # the user should resolve manually before we erase
+                    # the only record of where it landed.
+                    continue
+            else:
+                # File already gone (manual deletion, archive move) —
+                # drop the row anyway so the watermark / Share clear.
+                missing.append(rel)
+
+        # Drop the lineage rows we successfully handled (file gone OR
+        # file deleted). The CASCADE on cut_member.export_relpath does
+        # the spec/61 §1.4 Cut-membership cleanup for free.
+        with self.store.transaction() as conn:
+            kept_paths = {
+                str((event_root / r["export_relpath"]))
+                for r in rows
+            } - {str(p) for p in deleted}
+            kept_paths -= set()  # placeholder for clarity
+            # Build the set of relpaths whose rows we actually want to
+            # drop (deleted files + missing files).
+            handled_rels = (
+                {p.relative_to(event_root).as_posix() for p in deleted}
+                | set(missing)
+            )
+            for rel in handled_rels:
+                conn.execute(
+                    "DELETE FROM lineage WHERE export_relpath = ?",
+                    (rel,))
+            self._touch()
+        rows_deleted = len(deleted) + len(missing)
+
+        # Clear the freshness flag — the item has no shipped file any
+        # more. ``set_edit_exported`` re-saves the Adjustment via the
+        # normal mutator so ``updated_at`` ticks.
+        if rows_deleted:
+            try:
+                self.set_edit_exported(item_id, False)
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "delete_exported_file: set_edit_exported(False) "
+                    "failed for %s", item_id)
+
+        return {
+            "deleted_files": deleted,
+            "missing_files": missing,
+            "rows_deleted": rows_deleted,
+        }
+
     def rescan_exported_media(self) -> int:
         """Backfill missing ``Exported Media/`` lineage rows.
 

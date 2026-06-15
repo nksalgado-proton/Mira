@@ -445,3 +445,318 @@ def test_media_canvas_watermark_host_api(qapp):
 
 def test_watermark_setting_ships_on():
     assert Settings().show_exported_watermark is True
+
+
+# --------------------------------------------------------------------------- #
+# delete_exported_file — the engine behind X-on-shipped (Commit B
+# wires it from the Days Grid Export-phase toggle; here we pin the
+# gateway contract in isolation).
+# --------------------------------------------------------------------------- #
+
+
+def test_delete_exported_file_unlinks_drops_lineage_and_clears_flag(tmp_path):
+    """Happy path: a real file under ``Exported Media/`` disappears, its
+    lineage row drops, ``edit_exported`` flips back to False, and the
+    return struct reports the counts honestly."""
+    eg = _make_eg(tmp_path)
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        f = ship / "p1.jpg"
+        f.write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json='{"look": "natural"}', exported_at="t"))
+        eg.set_edit_exported("p1", True)
+        assert eg.exported_item_ids() == {"p1"}
+        assert f.is_file()
+
+        result = eg.delete_exported_file("p1")
+        assert result["rows_deleted"] == 1
+        assert len(result["deleted_files"]) == 1
+        assert result["missing_files"] == []
+        assert not f.is_file()
+        assert eg.exported_item_ids() == set()
+        adj = eg.adjustment("p1")
+        assert adj is not None and adj.edit_exported is False
+    finally:
+        eg.store.close()
+
+
+def test_delete_exported_file_handles_already_missing_file(tmp_path):
+    """The lineage row's file was manually removed off-disk — the rescan
+    would clean it next pass, but if the user fires the action and the
+    file is already gone, we still drop the row + flip the flag so the
+    state is consistent. ``missing_files`` reports what was already
+    absent for honesty."""
+    eg = _make_eg(tmp_path)
+    try:
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+        eg.set_edit_exported("p1", True)
+
+        result = eg.delete_exported_file("p1")
+        assert result["rows_deleted"] == 1
+        assert result["deleted_files"] == []
+        assert result["missing_files"] == ["Exported Media/Dia 1/p1.jpg"]
+        assert eg.exported_item_ids() == set()
+        adj = eg.adjustment("p1")
+        assert adj is not None and adj.edit_exported is False
+    finally:
+        eg.store.close()
+
+
+def test_delete_exported_file_no_op_when_no_rows(tmp_path):
+    eg = _make_eg(tmp_path)
+    try:
+        result = eg.delete_exported_file("p1")
+        assert result == {
+            "deleted_files": [], "missing_files": [], "rows_deleted": 0}
+    finally:
+        eg.store.close()
+
+
+def test_delete_exported_file_drops_every_shipped_row_for_the_item(tmp_path):
+    """A re-export under the spec/54 §8 versions-as-exports policy gives
+    a single item multiple ``Exported Media/`` lineage rows (the second
+    landed as ``name (2).jpg``). Undoing the ship removes every shipped
+    file + every row for that item — the user gets back to "not exported"
+    cleanly, no half-state."""
+    eg = _make_eg(tmp_path)
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        f1 = ship / "p1.jpg"
+        f2 = ship / "p1 (2).jpg"
+        f1.write_bytes(b"\xff\xd8\xff\xd9")
+        f2.write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1 (2).jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+
+        result = eg.delete_exported_file("p1")
+        assert result["rows_deleted"] == 2
+        assert not f1.is_file() and not f2.is_file()
+        assert eg.exported_item_ids() == set()
+    finally:
+        eg.store.close()
+
+
+def test_delete_exported_file_charter_safe_leaves_edited_media_alone(tmp_path):
+    """``Edited Media/`` rows are third-party return *candidates*
+    (spec/57 §3), not shipped finals. The helper only touches
+    ``Exported Media/`` — never the third-party inbox, never the
+    immutable ``Original Media/`` tree (the charter §7 invariant)."""
+    eg = _make_eg(tmp_path)
+    try:
+        # A third-party return candidate — must survive the delete.
+        eg.record_lineage(m.Lineage(
+            export_relpath="Edited Media/LRC/p1-edit.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+        # A real ship row alongside it.
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+
+        result = eg.delete_exported_file("p1")
+        assert result["rows_deleted"] == 1
+        # The Edited Media/ inbox row survives — Mira's hands stay off
+        # the third-party returns; only the shipped final is undone.
+        assert eg.edit_candidate_relpath("p1") == (
+            "Edited Media/LRC/p1-edit.jpg")
+    finally:
+        eg.store.close()
+
+
+def test_delete_exported_file_cascades_to_cut_membership(tmp_path):
+    """spec/61 §1.4 — cut_member.export_relpath REFERENCES
+    lineage(export_relpath) ON DELETE CASCADE, so dropping the lineage
+    row also drops every Cut membership pointing at that file. The Cut
+    *definition* survives; only this file's membership goes."""
+    eg = _make_eg(tmp_path)
+    try:
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+        # A Cut definition + a membership row pointing at the file.
+        eg.store.upsert(m.Cut(
+            id="cut-1", tag="best", target_s=60, max_s=120,
+            photo_s=4, pool_expr_json="[]",
+            style_filter_json="[]", type_filter="both",
+            default_state="picked", music_category=None,
+            created_at="t", updated_at="t",
+            last_exported_at=None))
+        eg.store.upsert(m.CutMember(
+            cut_id="cut-1",
+            export_relpath="Exported Media/Dia 1/p1.jpg",
+            added_at="t"))
+        # Sanity: membership is in place.
+        rows = eg.store.conn.execute(
+            "SELECT COUNT(*) FROM cut_member WHERE cut_id='cut-1'"
+        ).fetchone()[0]
+        assert rows == 1
+
+        eg.delete_exported_file("p1")
+        # Cut definition survives.
+        cut_rows = eg.store.conn.execute(
+            "SELECT id FROM cut WHERE id='cut-1'"
+        ).fetchall()
+        assert len(cut_rows) == 1
+        # Membership cascaded out via the FK.
+        rows_after = eg.store.conn.execute(
+            "SELECT COUNT(*) FROM cut_member WHERE cut_id='cut-1'"
+        ).fetchone()[0]
+        assert rows_after == 0
+    finally:
+        eg.store.close()
+
+
+# --------------------------------------------------------------------------- #
+# DaysGridPage._exported_ids_for_grid — settings gate on the corner
+# exported badge wiring (spec/59 §8 / spec/66 §1.2). The wiring itself
+# (passing the set into day_grid_cells) is covered by the existing
+# day_grid_cells tests above; here we pin the per-page gate.
+# --------------------------------------------------------------------------- #
+
+
+def test_days_grid_exported_ids_returns_set_when_setting_on(qapp, tmp_path):
+    """Indicator on (the default) → the page hands ``day_grid_cells``
+    the shipped set so cells stamp ``exported=True`` for shipped items."""
+    from mira.ui.pages.days_grid_page import DaysGridPage
+
+    eg = _make_eg_picked(tmp_path)
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+        source_kind="item", source_item_id="p1",
+        recipe_json="{}", exported_at="t"))
+    try:
+        page = DaysGridPage()
+        page.gateway = SimpleNamespace(
+            settings=SimpleNamespace(load=lambda: Settings(
+                show_exported_watermark=True)))
+        page._eg = eg
+        got = page._exported_ids_for_grid()
+        assert got == {"p1"}
+    finally:
+        eg.store.close()
+
+
+def test_days_grid_exported_ids_returns_none_when_setting_off(qapp, tmp_path):
+    """Setting off → ``None`` so ``day_grid_cells`` stamps nothing and
+    the corner badge stays off across every cell."""
+    from mira.ui.pages.days_grid_page import DaysGridPage
+
+    eg = _make_eg_picked(tmp_path)
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+        source_kind="item", source_item_id="p1",
+        recipe_json="{}", exported_at="t"))
+    try:
+        page = DaysGridPage()
+        page.gateway = SimpleNamespace(
+            settings=SimpleNamespace(load=lambda: Settings(
+                show_exported_watermark=False)))
+        page._eg = eg
+        assert page._exported_ids_for_grid() is None
+    finally:
+        eg.store.close()
+
+
+def test_days_grid_exported_ids_no_gateway_returns_none(qapp):
+    """Smoke / no-gateway mode → no set (the smoke path drives
+    ``exported`` straight on the GridItem instead)."""
+    from mira.ui.pages.days_grid_page import DaysGridPage
+
+    page = DaysGridPage()
+    assert page._exported_ids_for_grid() is None
+
+
+# --------------------------------------------------------------------------- #
+# Picker / Editor viewport — the diagonal watermark per nav. The
+# helper is the seam; we drive the chrome refresh directly with a fake
+# viewport to keep the test compact (the full Picker/Editor end-to-end
+# is covered by their own page tests).
+# --------------------------------------------------------------------------- #
+
+
+class _FakeViewport:
+    """Records the boolean handed to ``set_exported_watermark`` so the
+    test can assert per-navigation behaviour."""
+
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    def set_exported_watermark(self, on: bool) -> None:
+        self.calls.append(bool(on))
+
+
+def test_picker_load_exported_state_reads_setting_and_lineage(
+        qapp, tmp_path):
+    """``PickerPage._load_exported_state`` returns the shipped set +
+    the watermark gate. Setting on → (set, True); setting off → (set,
+    False)."""
+    from mira.ui.pages.picker_page import PickerPage
+
+    eg = _make_eg(tmp_path)
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/p2.jpg", phase="edit",
+        source_kind="item", source_item_id="p2",
+        recipe_json="{}", exported_at="t"))
+    try:
+        page = PickerPage()
+        page.gateway = SimpleNamespace(
+            settings=SimpleNamespace(load=lambda: Settings(
+                show_exported_watermark=True)))
+        page._eg = eg
+        shipped, enabled = page._load_exported_state()
+        assert shipped == {"p2"}
+        assert enabled is True
+
+        page.gateway = SimpleNamespace(
+            settings=SimpleNamespace(load=lambda: Settings(
+                show_exported_watermark=False)))
+        shipped, enabled = page._load_exported_state()
+        assert shipped == {"p2"}
+        assert enabled is False
+    finally:
+        eg.store.close()
+
+
+def test_editor_load_exported_state_reads_setting_and_lineage(
+        qapp, tmp_path):
+    """``EditorPage._load_exported_state`` mirrors ``PickerPage``."""
+    from mira.ui.pages.editor_page import EditorPage
+
+    eg = _make_eg(tmp_path)
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/p3.jpg", phase="edit",
+        source_kind="item", source_item_id="p3",
+        recipe_json="{}", exported_at="t"))
+    try:
+        page = EditorPage()
+        page.gateway = SimpleNamespace(
+            settings=SimpleNamespace(load=lambda: Settings(
+                show_exported_watermark=True)))
+        page._eg = eg
+        shipped, enabled = page._load_exported_state()
+        assert shipped == {"p3"}
+        assert enabled is True
+    finally:
+        eg.store.close()

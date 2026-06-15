@@ -75,11 +75,19 @@ spec/67 slice 5 says "reuse the Thumb widget + FlowLayout." That is necessary
 but **not sufficient**. The Export surface must be composed from the redesign
 component catalog and carry the design's voice from its first commit. Concretely:
 
-- **Grid:** mirror `mira/ui/pages/days_grid_page.py` — it already composes
-  `mira.ui.design.Thumb` cells in a `mira.ui.base.flow_layout.FlowLayout`
-  (responsive ~180 px tiles), with a themed toolbar, a `PageHeader`, and the
-  palette. The Export surface is the same shape with a different decision
-  semantic. Do not hand-roll a grid.
+- **Navigation = the full Days List → Days Grid hierarchy, NOT a flat grid.**
+  Export is a decision pass over keepers, exactly like Pick — so it reuses the
+  same `DaysListsPage` → `DaysGridPage` components (per-day grids, drill in/out),
+  with the Export identity (green, spec/71) and green/red = ship/drop semantics.
+  A **flat** grid belongs to **Share/Cuts** (spec/61 §5.1, WYSIWYG show order),
+  *not* to the Export phase — do not build Export as a flat grid.
+- **Default green; exported items show green + watermark.** Toggling an already
+  -exported cell to **red** (individually, or in batch via Export-all/Drop-all on
+  the day list/grid) **un-exports** it: delete the `Exported Media/` file + its
+  lineage row + clear `edit_exported`. This is the delete-export affordance — no
+  separate delete UI. Charter-safe: `Exported Media/` is derived/regenerable;
+  never touch `Original Media/`. (Un-exporting also drops it from any Cut,
+  spec/61 §1.4.)
 - **State colors (§5a):** reuse the fixed photo-state coloring the `Thumb`
   already renders — here **green = will export (the default, opt-out), red =
   dropped**. Never remap these colors; they are the app's one decision grammar

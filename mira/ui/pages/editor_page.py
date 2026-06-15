@@ -141,6 +141,11 @@ class EditorPage(QWidget):
         # Re-entrancy guard for laggy ops (the developed-preview render
         # cost; the wait-cursor pattern from the legacy EditPage).
         self._busy_flag = False
+        # spec/59 §8 / spec/66 §1.2 — shipped-item set + watermark gate.
+        # Loaded on _open_event; consumed per nav in _on_current_changed
+        # to drive ``PhotoViewport.set_exported_watermark``.
+        self._exported_set: set = set()
+        self._watermark_enabled: bool = True
 
         # ── The engine: AdjustmentSurface owns the math + state +
         # display_widget (PhotoViewport) + the CropOverlay's draggable
@@ -529,7 +534,32 @@ class EditorPage(QWidget):
             log.exception("EditorPage: cannot open event %s", event_id)
             return False
         self._event_id = event_id
+        # spec/59 §8 / spec/66 §1.2 — shipped set + watermark gate for
+        # the single-photo viewport's diagonal "Exported" overlay.
+        self._exported_set, self._watermark_enabled = (
+            self._load_exported_state())
         return True
+
+    def _load_exported_state(self) -> "tuple[set, bool]":
+        """Read the shipped-item set + watermark gate for the open
+        event. Falls back to (empty set, True) on either error so the
+        viewport never mistakenly stamps an unshipped item."""
+        if self._eg is None or self.gateway is None:
+            return set(), True
+        try:
+            settings = self.gateway.settings.load()
+            enabled = bool(getattr(
+                settings, "show_exported_watermark", True))
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "EditorPage: settings.load failed; assuming watermark on")
+            enabled = True
+        try:
+            shipped = self._eg.exported_item_ids()
+        except Exception:                                          # noqa: BLE001
+            log.exception("EditorPage: exported_item_ids failed")
+            shipped = set()
+        return shipped, enabled
 
     def _close_event(self) -> None:
         self._settle.stop()
@@ -544,6 +574,8 @@ class EditorPage(QWidget):
         self._items = []
         self._index = 0
         self._cached_path = None
+        self._exported_set = set()
+        self._watermark_enabled = True
 
     def _cull_item_for(self, item_id: str) -> Optional[CullItem]:
         """Build a one-shot ``CullItem`` for a flat single-item bridge."""
@@ -641,6 +673,17 @@ class EditorPage(QWidget):
             # hidden until set_state re-syncs it for the landed photo.
             if self._surface._crop_overlay is not None:
                 self._surface._crop_overlay.setVisible(False)
+        # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" overlay.
+        # Photo items only; videos (legacy bridge) skip the watermark
+        # because their own snapshot lineage rides record_single_lineage
+        # and the Edit Video Page wires its own gate (spec/59 §8).
+        shipped = (
+            ci is not None
+            and self._watermark_enabled
+            and getattr(ci, "kind", "photo") == "photo"
+            and ci.item_id in self._exported_set
+        )
+        self._viewport.set_exported_watermark(shipped)
         self._settle.start()
         # Persist the bucket's resume cursor (cluster sub-grids restore
         # here; the single-item bucket is a no-op).

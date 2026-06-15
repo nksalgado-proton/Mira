@@ -94,6 +94,11 @@ class MainWindow(QMainWindow):
     _DAYS_GRID_PAGE_KEY = "__days_grid__"
     _SELECT_PAGE_KEY = "__select__"
     _PROCESS_PAGE_KEY = "__process__"
+    # spec/70 Phase 3 §3 — Surface 12 (Video Editor) is hosted on the
+    # page stack alongside Surface 08 so the Days Grid → Editor bridge
+    # can route video items to it directly. ``EditVideoPage`` stays
+    # unchanged from the legacy era (its own reconciliation is Phase 4).
+    _PROCESS_VIDEO_PAGE_KEY = "__process_video__"
     # spec/66 §1.1 — the Export phase is its own surface (slice 5).
     _EXPORT_PAGE_KEY = "__export__"
     _CURATE_PAGE_KEY = "__curate__"
@@ -189,6 +194,22 @@ class MainWindow(QMainWindow):
         self.picker_page = PickerPage(self.gateway)
         self.page_stack.add_page(self._SELECT_PAGE_KEY, self.picker_page)
 
+        # spec/70 Phase 3 §3 — Surface 08 (Editor) is now the redesigned
+        # EditorPage: PhotoViewport (embedded) + the absorbed
+        # AdjustmentSurface engine + edit_prep working-copy worker +
+        # the crop overlay's draggable handles. The legacy
+        # ``mira/ui/edited/edit_host_page.py`` + ``edit_page.py`` retire
+        # with this surface; ``edit_video_page.py`` stays for Surface 12
+        # (Video Editor) and is hosted directly on the page stack so
+        # the day-grid → video-editor route still works.
+        from mira.ui.pages.editor_page import EditorPage
+        self.edit_page = EditorPage(self.gateway)
+        self.page_stack.add_page(self._PROCESS_PAGE_KEY, self.edit_page)
+        from mira.ui.edited.edit_video_page import EditVideoPage
+        self.video_edit_page = EditVideoPage()
+        self.page_stack.add_page(
+            self._PROCESS_VIDEO_PAGE_KEY, self.video_edit_page)
+
         # spec/70 Phase 3 — Quick Sweep (Collect-phase triage). Redesigned
         # over the SAME DaysLists → DaysGrid → viewer route the Picker
         # uses (Nelson 2026-06-14). The QuickSweepPage is the leaf viewer;
@@ -206,9 +227,8 @@ class MainWindow(QMainWindow):
         # is the list the viewer walks.
         self._quick_sweep: Optional[dict] = None
 
-        from mira.ui.edited.edit_host_page import EditHostPage
-        self.edit_page = EditHostPage(self.gateway)
-        self.page_stack.add_page(self._PROCESS_PAGE_KEY, self.edit_page)
+        # (Surface 08 + Surface 12 page-stack entries were registered
+        # alongside the redesigned Picker above — spec/70 Phase 3 §3.)
 
         # spec/66 §1.1 — the Export phase surface (slice 5). Green/red
         # ship decision over all picked keepers; triggers the spec/60
@@ -237,6 +257,12 @@ class MainWindow(QMainWindow):
         # returns to the Days Grid, not Phases. Cleared whenever the
         # user lands on Days Grid via the normal route.
         self._days_grid_bridge_active: bool = False
+        # spec/70 Phase 3 §3 — set while the Edit-phase route is active
+        # (Phases → DaysLists → DaysGrid → EditorPage). Tells the shared
+        # Days Grid item-click handler to route to EditorPage (photos) /
+        # EditVideoPage (videos) instead of PickerPage. Consumed when
+        # the user leaves the Edit phase back to Phases.
+        self._edit_phase_active: bool = False
 
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
@@ -302,6 +328,14 @@ class MainWindow(QMainWindow):
         self.picker_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
         self.edit_page.fullscreen_changed.connect(self._on_process_fullscreen)
+        # spec/70 Phase 3 §3 — Surface 12 (Video Editor). The EditVideoPage
+        # ships its legacy ``back_requested`` / ``fullscreen_changed`` /
+        # ``navigate_at_edge`` signals; we route them through the same
+        # "Edit phase Back" landing the Editor uses.
+        self.video_edit_page.back_requested.connect(
+            self._on_video_edit_back)
+        self.video_edit_page.fullscreen_changed.connect(
+            self._on_process_fullscreen)
         self.export_page.closed.connect(self._on_export_closed)
         self.export_page.fullscreen_changed.connect(self._on_export_fullscreen)
         self.curate_page.closed.connect(self._on_curate_closed)
@@ -1925,10 +1959,13 @@ class MainWindow(QMainWindow):
     def _on_days_lists_back(self) -> None:
         """Back from Days Lists. During a QS session this is the
         outermost-back → confirm and finalize (copy_kept for standalone,
-        log for per-event). Else returns to Phases (Surface 03)."""
+        log for per-event). Else returns to Phases (Surface 03). The
+        Edit-phase route flag clears here — leaving Days Lists ends the
+        Edit phase visit."""
         if self._quick_sweep is not None:
             self._qs_finalize_via_back()
             return
+        self._edit_phase_active = False
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
 
     def _on_days_lists_day_activated(self, day_number: int) -> None:
@@ -1946,15 +1983,20 @@ class MainWindow(QMainWindow):
             return
         title, date_iso = self._lookup_day_meta(
             self._current_event_id, day_number)
+        # spec/70 Phase 3 §3 — Edit-phase route hands the grid the
+        # ``"edit"`` phase so its chrome drops the Pick-all / Skip-all
+        # bar (Edit is creative-only) and the cells colour from the
+        # Edit phase default.
+        grid_phase = "edit" if self._edit_phase_active else "pick"
         if not self.days_grid_page.open_for_day(
             self._current_event_id, day_number,
-            title=title, date_iso=date_iso,
+            title=title, date_iso=date_iso, phase=grid_phase,
         ):
             log.warning(
-                "DaysGridPage.open_for_day(%s, %s) failed; staying on "
-                "Days Lists. (The legacy PickPage fallback retired with "
-                "spec/70 Phase 3 §2.)",
-                self._current_event_id, day_number)
+                "DaysGridPage.open_for_day(%s, %s, phase=%s) failed; "
+                "staying on Days Lists. (The legacy PickPage fallback "
+                "retired with spec/70 Phase 3 §2.)",
+                self._current_event_id, day_number, grid_phase)
             return
         self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
         self.days_grid_page.setFocus()
@@ -2061,6 +2103,13 @@ class MainWindow(QMainWindow):
         day_number = self.days_grid_page.current_day_number()
         if event_id is None:
             return
+        # spec/70 Phase 3 §3 — Edit-phase route: photos open EditorPage
+        # (Surface 08), videos open EditVideoPage (Surface 12). The
+        # synthetic 1-item bucket for the video matches the legacy
+        # EditHostPage._open_video_item shape.
+        if self._edit_phase_active:
+            self._open_edit_surface_for_item(event_id, day_number, item_id)
+            return
         # If the user is inside a cluster sub-grid and clicked a member,
         # route to the cluster-bucket entry so in-cluster nav works.
         cluster = self.days_grid_page.current_cluster()
@@ -2084,6 +2133,107 @@ class MainWindow(QMainWindow):
         # Days Grid (refreshed). Cleared by _on_select_closed.
         self._days_grid_bridge_active = True
         self.page_stack.show_page(self._SELECT_PAGE_KEY)
+
+    def _open_edit_surface_for_item(
+        self, event_id: str, day_number: int, item_id: str,
+    ) -> None:
+        """spec/70 Phase 3 §3 — Days Grid (Edit phase) → Surface 08
+        (photo) / Surface 12 (video) router. Photos go through the
+        redesigned :class:`EditorPage` (cluster bucket if inside a
+        sub-grid, synthetic 1-item bucket otherwise). Videos go through
+        the legacy :class:`EditVideoPage` (Surface 12 reconciliation is
+        Phase 4); a synthetic 1-item bucket matches the legacy
+        EditHostPage shape so the video page's load API doesn't
+        change."""
+        eg = self.gateway.open_event(event_id)
+        try:
+            item = eg.item(item_id)
+        finally:
+            eg.close()
+        if item is None or not item.origin_relpath:
+            log.warning(
+                "Edit bridge: cannot resolve item %s in %s",
+                item_id, event_id)
+            return
+        kind = item.kind or "photo"
+        if kind == "video":
+            self._open_video_edit_for_item(
+                event_id, day_number, item_id)
+            return
+        cluster = self.days_grid_page.current_cluster()
+        if cluster is not None:
+            entry_idx = next(
+                (i for i, m in enumerate(cluster.members)
+                 if m.item_id == item_id),
+                0,
+            )
+            ok = self.edit_page.open_to_cluster(
+                event_id, day_number, cluster, entry_idx=entry_idx)
+        else:
+            ok = self.edit_page.open_to_item(
+                event_id, day_number, item_id)
+        if not ok:
+            log.warning(
+                "EditorPage open from Days Grid failed (%s, %s, %s)",
+                event_id, day_number, item_id)
+            return
+        self._days_grid_bridge_active = True
+        self.page_stack.show_page(self._PROCESS_PAGE_KEY)
+
+    def _open_video_edit_for_item(
+        self, event_id: str, day_number: int, item_id: str,
+    ) -> None:
+        """spec/70 Phase 3 §3 — Edit-phase video route. Builds the same
+        synthetic 1-item CullBucket the legacy EditHostPage built for
+        a Day-Grid centre-click, then hands it to EditVideoPage. The
+        page stays alive on the page stack; Back returns through
+        :meth:`_on_video_edit_back`."""
+        eg = self.gateway.open_event(event_id)
+        from pathlib import Path as _Path
+        try:
+            item = eg.item(item_id)
+            if item is None or not item.origin_relpath:
+                log.warning(
+                    "Video edit bridge: cannot resolve item %s in %s",
+                    item_id, event_id)
+                return
+            from mira.picked import (
+                CullBucket, CullItem,
+            )
+            from mira.picked.status import project_status
+            ci = CullItem(
+                item_id=item.id,
+                path=_Path(eg.event_root) / item.origin_relpath,
+                kind=item.kind,
+                capture_time_corrected=item.capture_time_corrected or None,
+                duration_ms=item.duration_ms,
+            )
+            phase_states = eg.phase_states("edit")
+            bucket = CullBucket(
+                bucket_key=f"daygrid|{day_number}|{item.id}",
+                kind="individual", title="",
+                items=(ci,),
+                status=project_status([ci.item_id], phase_states, None),
+            )
+            try:
+                eg.set_item_visited(item_id, "edit")
+            except Exception:                                      # noqa: BLE001
+                log.exception("set_item_visited failed for %s", item_id)
+            # EditVideoPage.load takes the gateway directly; we hand it
+            # the same one (it owns lifecycle while shown) — Back closes
+            # the page; the gateway closes when we re-open another item.
+            self.video_edit_page.load(eg, bucket)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Video edit bridge failed (%s, %s, %s)",
+                event_id, day_number, item_id)
+            try:
+                eg.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+            return
+        self._days_grid_bridge_active = True
+        self.page_stack.show_page(self._PROCESS_VIDEO_PAGE_KEY)
 
     def _on_days_lists_new_pass_stub(self) -> None:
         """+ Start a new pass… — out of scope for the route-swap. Logs
@@ -4451,8 +4601,14 @@ class MainWindow(QMainWindow):
             # (§2.2) so the doorway is current the moment the parallel
             # tracks begin. Quiet unless something user-relevant happened.
             self._run_edit_entry_seams()
-            if self.edit_page.open_event(self._current_event_id):
-                self.page_stack.show_page(self._PROCESS_PAGE_KEY)
+            # spec/70 Phase 3 §3 — Edit phase now lands on the Days
+            # Lists dashboard, same shape as Pick. The user picks a day
+            # → Days Grid → EditorPage on a single click. The Edit
+            # bridge flag tells :meth:`_on_days_grid_item_activated` to
+            # route to the EditorPage instead of the Picker; it's
+            # consumed by :meth:`_on_process_closed`.
+            self._edit_phase_active = True
+            self._open_days_lists_for(self._current_event_id)
             return
         if phase == "export" and self._current_event_id is not None:
             # spec/66 §1.1 — the Export phase: green/red ship decision
@@ -5370,7 +5526,27 @@ class MainWindow(QMainWindow):
         self.menuBar().setVisible(not on)
 
     def _on_process_closed(self) -> None:
-        """Back from the Process surface → the per-event phase grid (refreshed)."""
+        """Back from the Process (Edit) surface. spec/70 Phase 3 §3 —
+        when the Days Grid bridge is active the user entered EditorPage
+        from the grid; return them there (refreshed). Otherwise fall
+        back to the activity dashboard. The Edit-phase flag stays on
+        until the user navigates back out to Phases (so a Back-and-
+        re-open within the same day still routes to the Editor)."""
+        if self._days_grid_bridge_active:
+            self._days_grid_bridge_active = False
+            event_id = self.days_grid_page.current_event_id()
+            day_number = self.days_grid_page.current_day_number()
+            if event_id is not None:
+                title, date_iso = self._lookup_day_meta(event_id, day_number)
+                grid_phase = "edit" if self._edit_phase_active else "pick"
+                if self.days_grid_page.open_for_day(
+                    event_id, day_number,
+                    title=title, date_iso=date_iso, phase=grid_phase,
+                ):
+                    self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
+                    self.days_grid_page.setFocus()
+                    return
+        self._edit_phase_active = False
         if self._current_event_id is not None:
             self.phases_page.set_event(self._current_event_id)
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
@@ -5378,6 +5554,23 @@ class MainWindow(QMainWindow):
     def _on_process_fullscreen(self, on: bool) -> None:
         """Immersive process: mirror the cull/select fullscreen behaviour."""
         self.menuBar().setVisible(not on)
+
+    def _on_video_edit_back(self) -> None:
+        """Back from EditVideoPage — closes its gateway, then routes via
+        the same Days Grid → Phases ladder Surface 08 uses."""
+        try:
+            # EditVideoPage doesn't auto-close its gateway; we own that
+            # for the page-stack-hosted surface so a re-open opens a
+            # fresh gateway.
+            if getattr(self.video_edit_page, "_eg", None) is not None:
+                try:
+                    self.video_edit_page._eg.close()
+                except Exception:                                      # noqa: BLE001
+                    log.exception("video edit gateway close failed")
+                self.video_edit_page._eg = None
+        except Exception:                                          # noqa: BLE001
+            log.exception("video edit cleanup failed")
+        self._on_process_closed()
 
     def _on_export_closed(self) -> None:
         """Back from the Export surface → the per-event phase grid (refreshed)."""

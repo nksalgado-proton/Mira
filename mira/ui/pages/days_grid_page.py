@@ -404,6 +404,7 @@ class DaysGridPage(QWidget):
         title: str = "",
         date_iso: str = "",
         default_state: Optional[str] = None,
+        phase: str = "pick",
     ) -> bool:
         """Open ``event_id`` and render its ``day_number`` grid.
 
@@ -415,6 +416,15 @@ class DaysGridPage(QWidget):
         items (e.g. host sets ``"picked"`` during a Quick Sweep session
         so the QS default rules instead of ``pick_default_state``).
         Defaults to the configured ``{phase}_default_state``.
+
+        ``phase`` (spec/70 Phase 3) selects the phase the grid colours
+        + cell-state writes target — ``"pick"`` (the default) or
+        ``"edit"``. In Edit mode the Pick/Skip decision plumbing is
+        inert (spec/66 §1.1 — Edit is creative-only); cells stay at
+        the phase default and the bulk Pick all / Skip all bar drops
+        out. ``item_activated`` still fires so the host (MainWindow)
+        can route the click to the right surface (Picker for pick,
+        Editor for edit).
 
         Returns ``True`` on success. On a gateway open failure the
         page is left in its previous state and ``False`` is returned;
@@ -431,10 +441,15 @@ class DaysGridPage(QWidget):
             return False
         self._eg = eg
         self._event_id = event_id
+        self._phase = phase if phase in ("pick", "edit") else "pick"
         self._phase_default = (
             default_state if default_state in (STATE_PICKED, STATE_SKIPPED)
             else default_state_for(self.gateway.settings, self._phase)
         )
+        # spec/66 §1.1 — Edit is creative-only: hide the Pick all /
+        # Skip all / Start a new pass… buttons (no decision to make
+        # here). They reappear when the page opens for the Pick phase.
+        self._apply_phase_chrome()
         self._day_number = day_number
         self._day_title = title or ""
         self._day_date = date_iso or ""
@@ -472,6 +487,18 @@ class DaysGridPage(QWidget):
         if self._mode == "cluster":
             return self._cluster
         return None
+
+    def _apply_phase_chrome(self) -> None:
+        """spec/70 Phase 3 — phase-driven chrome. In ``"edit"`` mode the
+        Pick all / Skip all / Start a new pass… buttons hide (Edit is
+        creative-only, no Pick/Skip decision to make here); they come
+        back in ``"pick"`` mode."""
+        is_pick = (self._phase == "pick")
+        for w in (self._pick_all_btn, self._skip_all_btn, self._new_pass_btn):
+            try:
+                w.setVisible(is_pick)
+            except Exception:                                      # noqa: BLE001
+                pass
 
     # ── Public API (smoke / mock path — kept for test ergonomics) ──────
 

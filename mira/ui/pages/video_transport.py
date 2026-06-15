@@ -12,17 +12,23 @@ embedded :class:`PhotoViewport`'s video API (``video_toggle_play`` /
 
 The ``◀|`` / ``|▶`` buttons jump to start / end (Nelson 2026-06-15 Fix
 B — the frame-step path retired; both buttons reuse the existing seek
-wiring).
+wiring). Every icon comes from the SVG line-icon family
+(:mod:`mira.ui.design.icons`) tinted to the active theme's palette
+token via :func:`tinted_svg_pixmap` and re-tinted on
+``QEvent.PaletteChange`` — the "white emoji disappears on light" bug
+is dead (Nelson 2026-06-15 line-icon sweep).
 
 Visual treatment lives in the theme QSS (spec/05 §5.1):
 ``#VideoTransport`` (the strip card), ``#VideoScrubber``, ``#VideoTime``,
-``#VideoVolume``, ``#VideoVolIcon``, ``#VideoSpeed``. Both light + dark
-themes carry the rules; no inline ``setStyleSheet`` in this widget.
+``#VideoVolume``, ``#VideoMuteToggle``, ``#VideoSpeed``. Both light +
+dark themes carry the rules; no inline ``setStyleSheet`` in this widget.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -37,6 +43,8 @@ from mira.ui.base.surface import (
     transport_button,
 )
 from mira.ui.design import (
+    GLYPH_TO_END,
+    GLYPH_TO_START,
     GLYPH_VOLUME,
     GLYPH_VOLUME_MUTED,
     ghost_button,
@@ -44,6 +52,31 @@ from mira.ui.design import (
     tinted_svg_pixmap,
 )
 from mira.ui.i18n import tr
+from mira.ui.palette import PALETTE
+
+
+#: Render size for the side-button glyphs (◀| / |▶ / mute) — matches
+#: the line-icon family's 16 px reference for inline icons. The mute
+#: chip is slightly larger (18 px) so it stays legible inside its
+#: 34×34 button face.
+_SIDE_ICON_PX = 16
+_MUTE_ICON_PX = 18
+
+
+def _theme_mode() -> str:
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
+
+
+def _ink(mode: str) -> QColor:
+    """Active-state tint for transport glyphs — full ink token."""
+    return QColor(PALETTE[mode]["ink"])
+
+
+def _ink_soft(mode: str) -> QColor:
+    """Muted / inactive-state tint — the palette's ``ink_soft`` token,
+    the same the search field's magnifier uses."""
+    return QColor(PALETTE[mode]["ink_soft"])
 
 
 def _fmt_time(ms: int) -> str:
@@ -97,12 +130,12 @@ class _Scrubber(QSlider):
 
 
 class VideoTransportBar(QWidget):
-    """Frame-step ◀ · play/pause · frame-step ▶ · time · scrubber ·
-    volume · speed.
+    """Jump-to-start · play/pause · jump-to-end · time · scrubber ·
+    mute · volume · speed.
 
     Roles owned by the theme QSS: ``#VideoTransport`` (strip card),
     ``#VideoScrubber``, ``#VideoTime``, ``#VideoVolume``,
-    ``#VideoVolIcon``, ``#VideoSpeed``.
+    ``#VideoMuteToggle``, ``#VideoSpeed``.
     """
 
     play_pause_requested = pyqtSignal()
@@ -121,11 +154,12 @@ class VideoTransportBar(QWidget):
         h.setContentsMargins(18, 10, 18, 10)
         h.setSpacing(12)
 
-        # ◀| — jump to the first frame. Reuses ``seek_requested`` so
-        # the host's existing wiring to ``viewport.video_seek`` covers
-        # it; no new connection needed.
-        self.prev_frame = ghost_button("◀|")
+        # ◀| — jump to the first frame. Icon-only via tinted SVG (no
+        # text glyph). Reuses ``seek_requested`` so the host's existing
+        # wiring to ``viewport.video_seek`` covers it.
+        self.prev_frame = ghost_button("")
         self.prev_frame.setFixedSize(36, 36)
+        self.prev_frame.setIconSize(QSize(_SIDE_ICON_PX, _SIDE_ICON_PX))
         self.prev_frame.setToolTip(tr("Jump to start"))
         self.prev_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.prev_frame.clicked.connect(self._on_jump_to_start)
@@ -138,10 +172,11 @@ class VideoTransportBar(QWidget):
         h.addWidget(self.play_btn)
 
         # |▶ — jump to the last frame. Guarded against unknown
-        # duration (the player hasn't reported it yet); falls back to 0
-        # so the click is never a dangling no-op.
-        self.next_frame = ghost_button("|▶")
+        # duration in :meth:`_on_jump_to_end` (the player hasn't
+        # reported it yet); the click is a deliberate no-op then.
+        self.next_frame = ghost_button("")
         self.next_frame.setFixedSize(36, 36)
+        self.next_frame.setIconSize(QSize(_SIDE_ICON_PX, _SIDE_ICON_PX))
         self.next_frame.setToolTip(tr("Jump to end"))
         self.next_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_frame.clicked.connect(self._on_jump_to_end)
@@ -160,11 +195,12 @@ class VideoTransportBar(QWidget):
         # Mute toggle — a real QPushButton (not a label). Click flips
         # between 0 and the last non-zero volume; the slider tracks the
         # state so manually dragging to 0 reads as muted too. Icon
-        # swaps between #VideoMuteToggle's two SVG glyphs (line-icon
-        # family — spec/69 — no Segoe UI Emoji).
+        # swaps between GLYPH_VOLUME / GLYPH_VOLUME_MUTED via the line-
+        # icon family (no Segoe UI Emoji); colour follows the palette.
         self.mute_btn = QPushButton()
         self.mute_btn.setObjectName("VideoMuteToggle")
         self.mute_btn.setFixedSize(34, 34)
+        self.mute_btn.setIconSize(QSize(_MUTE_ICON_PX, _MUTE_ICON_PX))
         self.mute_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mute_btn.setToolTip(tr("Mute / unmute"))
@@ -183,8 +219,6 @@ class VideoTransportBar(QWidget):
         # somewhere to restore to. Seeded from the slider's initial
         # value (80).
         self._last_volume = self.volume.value()
-        # Paint the initial icon (un-muted because seed > 0).
-        self._refresh_mute_icon()
 
         self.speed = select(["0.25×", "0.5×", "1×", "1.5×", "2×"])
         self.speed.setObjectName("VideoSpeed")
@@ -196,6 +230,12 @@ class VideoTransportBar(QWidget):
 
         self._duration_ms = 0
         self._scrubbing = False
+
+        # Initial render of every glyph using the active theme — the
+        # changeEvent hook below re-tints on later theme swaps.
+        self._refresh_icons()
+
+    # ── public state pushes ───────────────────────────────────────────
 
     def set_position(self, pos_ms: int, duration_ms: int) -> None:
         self._duration_ms = max(0, int(duration_ms))
@@ -223,6 +263,8 @@ class VideoTransportBar(QWidget):
             .replace("{e}", str(msg))
         )
 
+    # ── scrubber + jump handlers ──────────────────────────────────────
+
     def _on_scrubber_moved(self, _v: int) -> None:
         self._scrubbing = True
 
@@ -242,6 +284,8 @@ class VideoTransportBar(QWidget):
         # behaviour is to wait until duration arrives.
         if self._duration_ms > 0:
             self.seek_requested.emit(self._duration_ms)
+
+    # ── volume / mute ─────────────────────────────────────────────────
 
     def _on_volume_changed(self, value: int) -> None:
         """Forward the slider's value AND keep the mute icon honest.
@@ -263,17 +307,40 @@ class VideoTransportBar(QWidget):
             self.volume.setValue(
                 self._last_volume if self._last_volume > 0 else 80)
 
+    # ── theme-aware icon refresh ──────────────────────────────────────
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            # Re-tint every line-icon glyph for the new theme — the
+            # cached pixmap is keyed on (path, size, colour) so a
+            # theme swap keys to a new entry; calling _refresh_icons
+            # just re-fetches with the new palette token.
+            self._refresh_icons()
+
+    def _refresh_icons(self) -> None:
+        mode = _theme_mode()
+        ink = _ink(mode)
+        # Jump-to-start / jump-to-end — full ink. They're active
+        # controls; the disabled state's QSS handles dimming.
+        self.prev_frame.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_TO_START, _SIDE_ICON_PX, ink)))
+        self.next_frame.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_TO_END, _SIDE_ICON_PX, ink)))
+        # Play / pause + mute follow their own state-aware refreshers.
+        if hasattr(self.play_btn, "_refresh_icon"):
+            self.play_btn._refresh_icon()              # noqa: SLF001
+        self._refresh_mute_icon()
+
     def _refresh_mute_icon(self) -> None:
-        from PyQt6.QtCore import QSize
-        from PyQt6.QtGui import QIcon
         muted = self.volume.value() == 0
         glyph = GLYPH_VOLUME_MUTED if muted else GLYPH_VOLUME
-        # Tint to the muted ink-soft tone when off, full ink when on —
-        # the icon reads at a glance. The bg + hover/pressed/disabled
-        # affordances live on #VideoMuteToggle in the theme QSS.
-        colour = "#8b94a7" if muted else "#eef1f7"
-        self.mute_btn.setIcon(QIcon(tinted_svg_pixmap(glyph, 18, colour)))
-        self.mute_btn.setIconSize(QSize(18, 18))
+        mode = _theme_mode()
+        # ink_soft when off (the magnifier-style "neutral inactive"
+        # tone), full ink when on so it reads from across the strip.
+        colour = _ink_soft(mode) if muted else _ink(mode)
+        self.mute_btn.setIcon(QIcon(
+            tinted_svg_pixmap(glyph, _MUTE_ICON_PX, colour)))
         # Expose the muted state to the theme QSS via a dynamic property
         # so the rule can paint a different border accent if it wants.
         self.mute_btn.setProperty("muted", muted)

@@ -24,9 +24,14 @@ from mira.ui.base.surface import (
 
 
 def test_transport_button_default_shape(qapp):
+    """Nelson 2026-06-15 line-icon sweep: the play / pause Unicode glyph
+    pair retires. The button is icon-only — GLYPH_PLAY / GLYPH_PAUSE
+    from the SVG family, tinted to the active theme's ink. No text."""
     b = transport_button()
-    assert b.text() == "▶"
+    assert b.text() == ""
     assert b.objectName() == "TransportButton"
+    # Icon present (it's set in the factory's _refresh_icon).
+    assert not b.icon().isNull()
     # Fixed width — the whole point of the factory. The exact value
     # is the factory's choice; just assert it isn't zero / dynamic.
     assert b.minimumWidth() == b.maximumWidth() > 0
@@ -39,15 +44,21 @@ def test_transport_button_tooltip_threads_through(qapp):
     assert b.toolTip() == "Play / pause  (Space)"
 
 
-def test_set_transport_playing_swaps_glyph_width_unchanged(qapp):
+def test_set_transport_playing_flips_state_width_unchanged(qapp):
+    """``set_transport_playing`` flips the button's playing state; the
+    icon swap is the only visible change, the width stays pinned."""
     b = transport_button()
     w_play = b.sizeHint().width()
+    assert hasattr(b, "is_playing")
+    assert b.is_playing() is False
     set_transport_playing(b, True)
-    assert b.text() == "⏸"
+    assert b.is_playing() is True
     assert b.sizeHint().width() == w_play     # FIXED width — no dance
     set_transport_playing(b, False)
-    assert b.text() == "▶"
+    assert b.is_playing() is False
     assert b.sizeHint().width() == w_play
+    # Still no text — the icon does the work.
+    assert b.text() == ""
 
 
 # ── per-surface ──────────────────────────────────────────────────────
@@ -73,6 +84,7 @@ def test_unified_picker_video_transport_is_canonical(qapp):
     assert b.objectName() == "TransportButton"
     w_before = b.sizeHint().width()
     set_transport_playing(b, True)
+    assert b.is_playing() is True
     assert b.sizeHint().width() == w_before
     # The misrouted Primary role is GONE under the bar.
     misrouted = [x for x in bar.findChildren(QPushButton)

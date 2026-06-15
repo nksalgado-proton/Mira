@@ -449,42 +449,97 @@ def _btn(text: str, *, object_name: str, checkable: bool = False) -> QPushButton
     return b
 
 
-_PLAY_GLYPH = "▶"
-_PAUSE_GLYPH = "⏸"
+#: The line-icon family's render size for transport-bar icons —
+#: matches the existing 16 px search/eye render the catalog uses.
+_TRANSPORT_ICON_PX = 16
+
+
+class _TransportButton(QPushButton):
+    """The play/pause transport button — icon-only, theme-aware.
+
+    Carries its own playing state so :func:`set_transport_playing`
+    can swap the glyph without sending the button through any text
+    pipeline (Nelson 2026-06-15 line-icon sweep: no Unicode glyphs
+    anywhere). Overrides ``changeEvent`` so a ``QEvent.PaletteChange``
+    (fired on every widget when :func:`mira.ui.theme.apply_theme`
+    swaps modes) re-renders the icon at the new theme's ``ink`` tone.
+    """
+
+    def __init__(self, tooltip: str = "") -> None:
+        super().__init__()
+        self.setObjectName("TransportButton")
+        self.setCheckable(False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # Wide enough for either glyph + a comfortable hit target; the
+        # exact value was eyeballed against the Picker and workshop
+        # transports. setFixedWidth means an icon swap can never push
+        # neighbouring buttons (and can never shrink in a tight row).
+        self.setFixedWidth(40)
+        from PyQt6.QtCore import QSize
+        self.setIconSize(QSize(_TRANSPORT_ICON_PX, _TRANSPORT_ICON_PX))
+        if tooltip:
+            self.setToolTip(tooltip)
+        self._playing = False
+        self._refresh_icon()
+
+    def is_playing(self) -> bool:
+        return self._playing
+
+    def set_playing(self, playing: bool) -> None:
+        playing = bool(playing)
+        if self._playing == playing:
+            return
+        self._playing = playing
+        self._refresh_icon()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._refresh_icon()
+
+    def _refresh_icon(self) -> None:
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QColor, QIcon
+        from PyQt6.QtWidgets import QApplication
+        from mira.ui.design.icons import (
+            GLYPH_PAUSE, GLYPH_PLAY, tinted_svg_pixmap,
+        )
+        from mira.ui.palette import PALETTE
+        app = QApplication.instance()
+        mode = (app.property("theme") if app else None) or "dark"
+        colour = QColor(PALETTE[mode]["ink"])
+        glyph = GLYPH_PAUSE if self._playing else GLYPH_PLAY
+        pm = tinted_svg_pixmap(glyph, _TRANSPORT_ICON_PX, colour)
+        self.setIcon(QIcon(pm))
+        self.setIconSize(QSize(_TRANSPORT_ICON_PX, _TRANSPORT_ICON_PX))
 
 
 def transport_button(tooltip: str = "") -> QPushButton:
     """The ONE Play/Pause transport button used by every video
     surface (Nelson 2026-06-12 UI round).
 
-    Two bugs the surfaces all shared and this factory closes:
+    Returns the line-icon-rendering :class:`_TransportButton` — a
+    plain ``#TransportButton``-role chrome control whose play/pause
+    icon comes from the SVG family (``GLYPH_PLAY`` / ``GLYPH_PAUSE``),
+    tinted to the active theme's ``ink`` token via
+    :func:`tinted_svg_pixmap` and re-tinted on ``QEvent.PaletteChange``
+    so theme toggles stay correct without per-widget refresh wiring.
 
-    1. **Non-house colour.** Some surfaces wore the accent
-       ``#Primary`` role on Play (always coloured) or the
-       ``#FeatureToggle`` role (coloured when checked) — both painted
-       the transport as if it were a CTA. The transport is a chrome
-       control; it gets the plain button look.
-    2. **The width-dance.** Toggling the LABEL ``▶ Play`` ⇄
-       ``⏸ Pause`` (Pause is wider) made every sibling on the row
-       jump on each tick. Icon-only ▶ / ⏸ pair on a fixed width
-       eliminates the dance — the symbols carry the meaning, the
-       tooltip carries the binding (e.g. ``"Play / pause  (Space)"``).
-    """
-    b = _btn(_PLAY_GLYPH, object_name="TransportButton")
-    # Wide enough for either glyph + a comfortable hit target; the
-    # exact value was eyeballed against the Picker and workshop
-    # transports. setFixedWidth means a label swap can never push
-    # neighbouring buttons (and can never shrink in a tight row).
-    b.setFixedWidth(40)
-    if tooltip:
-        b.setToolTip(tooltip)
-    return b
+    Why a class: ``set_transport_playing`` flips state through the
+    button's own ``set_playing`` so the icon swap rides one path; the
+    legacy ``▶ / ⏸`` Unicode glyph pair retires (Nelson 2026-06-15
+    line-icon sweep)."""
+    return _TransportButton(tooltip)
 
 
 def set_transport_playing(btn: QPushButton, playing: bool) -> None:
     """Flip a :func:`transport_button` between its two states. The
-    glyph is the only visible change — width stays pinned."""
-    btn.setText(_PAUSE_GLYPH if playing else _PLAY_GLYPH)
+    glyph is the only visible change — width stays pinned. Accepts a
+    plain ``QPushButton`` for legacy callers (no-op when the button
+    isn't the icon-rendering subclass)."""
+    if isinstance(btn, _TransportButton):
+        btn.set_playing(playing)
 
 
 def back_button(text: str = "Back") -> QPushButton:

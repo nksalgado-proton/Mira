@@ -394,10 +394,10 @@ def test_start_play_runs_the_sweep_from_the_cursor(qapp, gw, items):
     s.start_play()
     assert s._film_btn.isChecked()
     assert s._film_timer.isActive()
-    # Nelson 2026-06-12 Play/Pause polish — the transport is icon-only
-    # now (⏸ = playing, ▶ = stopped). The behaviour pin is unchanged;
-    # the assertion follows the new glyph.
-    assert s._film_btn.text() == "⏸"
+    # Nelson 2026-06-15 line-icon sweep — the transport is now an
+    # icon-only SVG (no text); the playing state is tracked on the
+    # _TransportButton subclass itself.
+    assert s._film_btn.is_playing() is True
 
 
 def test_film_step_skips_explicit_skips_but_plays_untouched(qapp, gw, items):
@@ -432,7 +432,7 @@ def test_film_stops_cleanly_at_the_end_no_wrap(qapp, gw, items):
     s._film_step()                               # past the last playable
     assert not s._film_timer.isActive()          # …stops, no wrap
     assert not s._film_btn.isChecked()
-    assert s._film_btn.text() == "▶"
+    assert s._film_btn.is_playing() is False
     assert s._index == N_PHOTOS - 1
 
 

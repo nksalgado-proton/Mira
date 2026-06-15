@@ -41,9 +41,10 @@ def main() -> int:
         if not p.exists():
             print(f"missing: {p}")
             return 2
+    theme = sys.argv[4] if len(sys.argv) >= 5 else "dark"
 
     app = QApplication.instance() or QApplication(sys.argv)
-    apply_theme(app, "dark")
+    apply_theme(app, theme)
 
     tmp = Path("_smoke_tmp_reveal")
     tmp.mkdir(exist_ok=True)
@@ -70,9 +71,9 @@ def main() -> int:
 
     step = [0]
     targets = [
-        ("_smoke_picker_portrait.png", 0),
-        ("_smoke_picker_landscape.png", 1),
-        ("_smoke_picker_video.png", 2),
+        (f"_smoke_picker_portrait_{theme}.png", 0),
+        (f"_smoke_picker_landscape_{theme}.png", 1),
+        (f"_smoke_picker_video_{theme}.png", 2),
     ]
 
     def _tick() -> None:

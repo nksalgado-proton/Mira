@@ -435,6 +435,62 @@ def test_mute_button_dynamic_property_reflects_state(page):
     assert bar.mute_btn.property("muted") is True
 
 
+def test_mute_button_icon_swaps_between_volume_glyphs(page):
+    """Nelson 2026-06-15 line-icon sweep: the mute toggle's icon must
+    swap between GLYPH_VOLUME and GLYPH_VOLUME_MUTED as the slider
+    crosses zero — and the pixmaps come from the shared
+    ``tinted_svg_pixmap`` cache (one recipe everywhere)."""
+    from PyQt6.QtGui import QColor
+    from mira.ui.design import (
+        GLYPH_VOLUME, GLYPH_VOLUME_MUTED, tinted_svg_pixmap,
+    )
+    from mira.ui.palette import PALETTE
+    bar = page._transport_bar
+    # Active (unmuted): icon == ink-tinted GLYPH_VOLUME.
+    bar.volume.setValue(60)
+    expected_active = tinted_svg_pixmap(
+        GLYPH_VOLUME, 18, QColor(PALETTE["dark"]["ink"]))
+    actual_active = bar.mute_btn.icon().pixmap(18, 18)
+    assert actual_active.cacheKey() == expected_active.cacheKey()
+    # Muted: icon == ink_soft-tinted GLYPH_VOLUME_MUTED.
+    bar.volume.setValue(0)
+    expected_muted = tinted_svg_pixmap(
+        GLYPH_VOLUME_MUTED, 18, QColor(PALETTE["dark"]["ink_soft"]))
+    actual_muted = bar.mute_btn.icon().pixmap(18, 18)
+    assert actual_muted.cacheKey() == expected_muted.cacheKey()
+
+
+def test_transport_icons_retint_on_palette_change(qapp, page):
+    """A QEvent.PaletteChange (fired by ``apply_theme`` on theme
+    toggle) re-renders every transport icon at the new ink token —
+    the "white emoji disappears on light" bug is dead, every icon
+    follows the theme."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QColor
+    from mira.ui.design import GLYPH_TO_START, tinted_svg_pixmap
+    from mira.ui.palette import PALETTE
+    bar = page._transport_bar
+    # Capture the dark-theme prev_frame icon.
+    dark_pm = bar.prev_frame.icon().pixmap(16, 16)
+    expected_dark = tinted_svg_pixmap(
+        GLYPH_TO_START, 16, QColor(PALETTE["dark"]["ink"]))
+    assert dark_pm.cacheKey() == expected_dark.cacheKey()
+    # Flip the app's theme property + send the PaletteChange — that's
+    # the path apply_theme triggers.
+    qapp.setProperty("theme", "light")
+    try:
+        qapp.sendEvent(bar, QEvent(QEvent.Type.PaletteChange))
+        light_pm = bar.prev_frame.icon().pixmap(16, 16)
+        expected_light = tinted_svg_pixmap(
+            GLYPH_TO_START, 16, QColor(PALETTE["light"]["ink"]))
+        assert light_pm.cacheKey() == expected_light.cacheKey()
+        # Different theme → different cache key from the dark one.
+        assert light_pm.cacheKey() != dark_pm.cacheKey()
+    finally:
+        qapp.setProperty("theme", "dark")
+        qapp.sendEvent(bar, QEvent(QEvent.Type.PaletteChange))
+
+
 def test_scrubber_click_jumps_the_position(qapp, page):
     """The legacy QSlider behaviour is page-step toward the click — the
     custom mousePressEvent overrides it to jump on click (a media

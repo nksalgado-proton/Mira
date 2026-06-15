@@ -139,6 +139,8 @@ GLYPH_CHECK = GLYPHS_DIR / "check.svg"
 GLYPH_CROSS = GLYPHS_DIR / "cross.svg"
 GLYPH_EVENT = GLYPHS_DIR / "event.svg"
 GLYPH_CUT = GLYPHS_DIR / "cut.svg"
+GLYPH_VOLUME = GLYPHS_DIR / "volume.svg"
+GLYPH_VOLUME_MUTED = GLYPHS_DIR / "volume_muted.svg"
 
 # Phase glyphs — drawn for Surface 01's open-card pipeline rows so the
 # mockup's `📥 / ⭐ / 🎨 / 📤` emojis become real line-icons (spec/65

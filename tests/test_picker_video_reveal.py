@@ -189,6 +189,55 @@ def test_frame_step_path_is_retired(page):
     assert not hasattr(page, "_frame_ms")
 
 
+def test_mute_button_is_a_real_button_not_a_label(page):
+    """Nelson 2026-06-15 — the 🔊 emoji label was inert AND ugly.
+    The replacement is a real QPushButton (role ``#VideoMuteToggle``)
+    with the line-icon SVG glyphs + the canonical clickable
+    affordances (cursor + hover/pressed/disabled in QSS)."""
+    from PyQt6.QtWidgets import QPushButton
+    btn = page._transport_bar.mute_btn
+    assert isinstance(btn, QPushButton)
+    assert btn.objectName() == "VideoMuteToggle"
+    assert btn.cursor().shape().name == "PointingHandCursor"
+
+
+def test_mute_button_toggles_volume_zero_and_restores(page):
+    """Click once → slider snaps to 0 (and the viewport's cached
+    volume follows). Click again → slider restores to the previous
+    non-zero value, viewport rebounds."""
+    bar = page._transport_bar
+    bar.volume.setValue(70)
+    assert page.viewport._video_volume == pytest.approx(0.70, abs=1e-3)
+    bar.mute_btn.click()
+    assert bar.volume.value() == 0
+    assert page.viewport._video_volume == pytest.approx(0.0, abs=1e-3)
+    bar.mute_btn.click()
+    assert bar.volume.value() == 70
+    assert page.viewport._video_volume == pytest.approx(0.70, abs=1e-3)
+
+
+def test_mute_button_default_restores_to_80_from_a_fresh_zero(page):
+    """If the slider starts at 0 (never been touched), clicking unmute
+    must still go somewhere sensible — 80 is the seed default the bar
+    was constructed with."""
+    bar = page._transport_bar
+    bar.volume.setValue(0)
+    assert bar.volume.value() == 0
+    bar.mute_btn.click()
+    # 80 is the seed; the slider should snap to it on unmute.
+    assert bar.volume.value() == 80
+
+
+def test_mute_button_dynamic_property_reflects_state(page):
+    """The dynamic ``muted`` property drives the QSS dimmed look —
+    pin that it flips with the volume."""
+    bar = page._transport_bar
+    bar.volume.setValue(60)
+    assert bar.mute_btn.property("muted") is False
+    bar.volume.setValue(0)
+    assert bar.mute_btn.property("muted") is True
+
+
 def test_scrubber_click_jumps_the_position(qapp, page):
     """The legacy QSlider behaviour is page-step toward the click — the
     custom mousePressEvent overrides it to jump on click (a media

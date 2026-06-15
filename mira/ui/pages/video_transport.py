@@ -25,6 +25,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSlider,
     QStyle,
     QStyleOptionSlider,
@@ -36,8 +37,11 @@ from mira.ui.base.surface import (
     transport_button,
 )
 from mira.ui.design import (
+    GLYPH_VOLUME,
+    GLYPH_VOLUME_MUTED,
     ghost_button,
     select,
+    tinted_svg_pixmap,
 )
 from mira.ui.i18n import tr
 
@@ -153,9 +157,19 @@ class VideoTransportBar(QWidget):
         self.scrubber.sliderReleased.connect(self._on_scrubber_released)
         h.addWidget(self.scrubber, 1)
 
-        vol_icon = QLabel("🔊")
-        vol_icon.setObjectName("VideoVolIcon")
-        h.addWidget(vol_icon)
+        # Mute toggle — a real QPushButton (not a label). Click flips
+        # between 0 and the last non-zero volume; the slider tracks the
+        # state so manually dragging to 0 reads as muted too. Icon
+        # swaps between #VideoMuteToggle's two SVG glyphs (line-icon
+        # family — spec/69 — no Segoe UI Emoji).
+        self.mute_btn = QPushButton()
+        self.mute_btn.setObjectName("VideoMuteToggle")
+        self.mute_btn.setFixedSize(34, 34)
+        self.mute_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mute_btn.setToolTip(tr("Mute / unmute"))
+        self.mute_btn.clicked.connect(self._on_mute_clicked)
+        h.addWidget(self.mute_btn)
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setObjectName("VideoVolume")
         self.volume.setRange(0, 100)
@@ -163,8 +177,14 @@ class VideoTransportBar(QWidget):
         self.volume.setFixedWidth(90)
         self.volume.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.volume.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.volume.valueChanged.connect(self.volume_changed.emit)
+        self.volume.valueChanged.connect(self._on_volume_changed)
         h.addWidget(self.volume)
+        # Remember the last non-zero volume so the mute toggle has
+        # somewhere to restore to. Seeded from the slider's initial
+        # value (80).
+        self._last_volume = self.volume.value()
+        # Paint the initial icon (un-muted because seed > 0).
+        self._refresh_mute_icon()
 
         self.speed = select(["0.25×", "0.5×", "1×", "1.5×", "2×"])
         self.speed.setObjectName("VideoSpeed")
@@ -222,3 +242,40 @@ class VideoTransportBar(QWidget):
         # behaviour is to wait until duration arrives.
         if self._duration_ms > 0:
             self.seek_requested.emit(self._duration_ms)
+
+    def _on_volume_changed(self, value: int) -> None:
+        """Forward the slider's value AND keep the mute icon honest.
+        Remembers the last non-zero value so the mute toggle has
+        somewhere to restore to."""
+        if value > 0:
+            self._last_volume = int(value)
+        self._refresh_mute_icon()
+        self.volume_changed.emit(value)
+
+    def _on_mute_clicked(self) -> None:
+        """Toggle between 0 and the last non-zero volume. ``_last_volume``
+        defaults to 80 so a fresh page that's never been touched still
+        has somewhere to restore to."""
+        if self.volume.value() > 0:
+            self._last_volume = self.volume.value()
+            self.volume.setValue(0)
+        else:
+            self.volume.setValue(
+                self._last_volume if self._last_volume > 0 else 80)
+
+    def _refresh_mute_icon(self) -> None:
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QIcon
+        muted = self.volume.value() == 0
+        glyph = GLYPH_VOLUME_MUTED if muted else GLYPH_VOLUME
+        # Tint to the muted ink-soft tone when off, full ink when on —
+        # the icon reads at a glance. The bg + hover/pressed/disabled
+        # affordances live on #VideoMuteToggle in the theme QSS.
+        colour = "#8b94a7" if muted else "#eef1f7"
+        self.mute_btn.setIcon(QIcon(tinted_svg_pixmap(glyph, 18, colour)))
+        self.mute_btn.setIconSize(QSize(18, 18))
+        # Expose the muted state to the theme QSS via a dynamic property
+        # so the rule can paint a different border accent if it wants.
+        self.mute_btn.setProperty("muted", muted)
+        self.mute_btn.style().unpolish(self.mute_btn)
+        self.mute_btn.style().polish(self.mute_btn)

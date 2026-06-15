@@ -2104,11 +2104,29 @@ QLabel#VideoTime {{
     padding: 0 8px;
 }}
 
-/* Volume-icon glyph, neutral muted tone. */
-QLabel#VideoVolIcon {{
-    color: {text_muted};
-    font-size: 14px;
-    padding: 0 2px;
+/* Mute toggle — real QPushButton in the transport strip. The base
+ * paints a subtle bordered chip; hover/pressed/disabled state pull
+ * from the accent + disabled tokens. The dynamic [muted] property
+ * dims the chip when the slider is at 0 so it's read at a glance. */
+QPushButton#VideoMuteToggle {{
+    background: transparent;
+    border: 1px solid {border_subtle};
+    border-radius: 8px;
+    padding: 0;
+}}
+QPushButton#VideoMuteToggle:hover {{
+    border-color: {hover_border};
+}}
+QPushButton#VideoMuteToggle:pressed {{
+    border-color: {pressed_border};
+    background-color: {pressed_bg};
+}}
+QPushButton#VideoMuteToggle:disabled {{
+    border-color: {disabled_bg};
+}}
+QPushButton#VideoMuteToggle[muted="true"] {{
+    border-color: {border_subtle};
+    background-color: {disabled_bg};
 }}
 
 /* Position scrubber — accent played portion, white-on-accent handle.

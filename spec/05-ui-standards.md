@@ -195,7 +195,9 @@ this is a discoverability aid):
 
 - **Video Picker (surface 11)** — `#VideoTransport` (the strip card under the
   stage), `#VideoScrubber` (position slider), `#VideoTime` (bold tabular time
-  readout), `#VideoVolume` + `#VideoVolIcon` (volume slider + icon),
+  readout), `#VideoVolume` (volume slider), `#VideoMuteToggle` (clickable mute
+  button with the line-icon family's `GLYPH_VOLUME` / `GLYPH_VOLUME_MUTED`
+  glyphs; carries a dynamic `[muted="true"]` selector for the dimmed state),
   `#VideoSpeed` (speed selector — extends the base `QComboBox`),
   `#VideoDurationChip` / `#VideoVisitedEye` / `#VideoExportedChip` /
   `#VideoBigPlay` (stage overlays riding the PhotoViewport). Every clickable

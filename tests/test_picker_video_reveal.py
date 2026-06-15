@@ -315,6 +315,43 @@ def test_video_widget_rect_falls_back_to_full_canvas_without_pixmap(
         vp.deleteLater()
 
 
+def test_native_video_size_overrides_a_mismatched_poster(qapp, monkeypatch):
+    """Nelson 2026-06-15 follow-up — the QVideoWidget had black stripes
+    inside the photo's letterbox rect when the previous item was a
+    portrait photo (held up by spec/63's "never blank the canvas" rule)
+    and the wide video armed before its own poster landed.
+
+    Fix: ``_on_video_frame`` captures the video's native size and
+    pins the widget to it, overriding the QLabel's pixmap rect (which
+    still carries the portrait poster's aspect)."""
+    from PyQt6.QtCore import QSize
+    from mira.ui.media.photo_viewport import PhotoViewport
+    vp = PhotoViewport()
+    try:
+        vp.resize(QSize(1200, 900))
+        vp.show()
+        # Stand-in for a portrait poster from a previous item.
+        _push_label_pixmap(vp, 90, 160, colour="darkred")
+        # Without a native size, the rect tracks the (portrait) label
+        # pixmap — height-pinned, narrow.
+        before = vp.video_widget_rect()
+        assert before.height() < 900                    # padded
+        assert before.width() < before.height()         # portrait shape
+        # Player arms; the first valid frame reports 16:9.
+        vp._video_armed = Path("c:/v.mp4")
+        vp._video_native_size = QSize(1920, 1080)
+        after = vp.video_widget_rect()
+        # Wide rect now — width-pinned, lower height; the portrait
+        # poster's geometry is gone.
+        assert after.width() > after.height()
+        pad = vp._MEDIA_INNER_PAD
+        assert after.width() == 1200 - 2 * pad
+        # 16:9 inside (1184, 884) constrained by width → 1184 × 666.
+        assert after.height() == 666
+    finally:
+        vp.deleteLater()
+
+
 def test_video_widget_geometry_resyncs_when_poster_lands_after_arming(
     qapp, monkeypatch,
 ):

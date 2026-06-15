@@ -795,6 +795,12 @@ class PhotoViewport(QWidget):
         self._video_live = False                    # poster flipped to frames
         self._video_playing = False                 # authoritative play state
         self._video_autoplay = True
+        # The video's NATIVE pixel size — captured from the first
+        # valid frame so the widget can be sized to the video's actual
+        # aspect (the poster the QLabel held might be the previous
+        # photo, whose aspect would put opaque KeepAspectRatio bars
+        # inside the widget — the "black stripes" Nelson hit).
+        self._video_native_size: Optional[QSize] = None
         # Cached audio / rate so the host can set them before the player
         # arms on the first video landing; applied in ``_ensure_player``.
         self._video_volume: float = 0.80
@@ -1117,6 +1123,10 @@ class PhotoViewport(QWidget):
         self._ensure_player()
         self._video_armed = Path(path)
         self._video_live = False
+        # New clip → new native size; the first valid frame will
+        # report it (and re-pin the widget geometry through
+        # ``_on_video_frame``).
+        self._video_native_size = None
         self._player.setSource(QUrl.fromLocalFile(str(path)))
         if self._video_autoplay:
             self._player.play()
@@ -1129,24 +1139,48 @@ class PhotoViewport(QWidget):
         self._video_armed = None
         self._video_live = False
         self._video_playing = False
+        self._video_native_size = None
         if self._video_widget is not None:
             self._video_widget.hide()
 
     def _on_video_frame(self, frame) -> None:
-        if self._video_live or self._video_armed is None:
+        if self._video_armed is None:
             return
-        if frame is not None and frame.isValid():
-            item = self.current_item()
-            if (item is not None and item.path is not None
-                    and Path(item.path) == self._video_armed):
-                self._video_live = True
-                # Size + show + raise. The widget sits ON TOP of the
-                # QLabel (which still paints the poster centered with
-                # the same aspect — so the seam is invisible) and the
-                # blurred backdrop shows in the bars around it.
-                self._sync_video_widget_geometry()
-                self._video_widget.show()
-                self._video_widget.raise_()
+        if frame is None or not frame.isValid():
+            return
+        # Capture the native size on the FIRST valid frame (and any
+        # subsequent change — rare, but safe). This is what makes
+        # ``video_widget_rect`` size the widget to the video's actual
+        # aspect instead of the poster's; without it, the widget can
+        # land at a portrait photo's rect with the wide video
+        # KeepAspectRatio-letterboxed inside in opaque native black.
+        try:
+            fs = frame.size()
+        except Exception:                                          # noqa: BLE001
+            fs = None
+        if (fs is not None and fs.isValid()
+                and fs.width() > 0 and fs.height() > 0):
+            if (self._video_native_size is None
+                    or self._video_native_size != fs):
+                self._video_native_size = QSize(fs)
+                if self._video_live:
+                    # Already live; just re-pin to the new size.
+                    self._sync_video_widget_geometry()
+                    self.update()                       # repaint the frame
+        if self._video_live:
+            return
+        item = self.current_item()
+        if (item is not None and item.path is not None
+                and Path(item.path) == self._video_armed):
+            self._video_live = True
+            # Size + show + raise. The widget sits ON TOP of the
+            # QLabel (which still paints the poster centered with
+            # the same aspect — so the seam is invisible) and the
+            # blurred backdrop shows in the bars around it.
+            self._sync_video_widget_geometry()
+            self._video_widget.show()
+            self._video_widget.raise_()
+            self.update()                               # paint the frame
 
     def _sync_video_widget_geometry(self) -> None:
         """Pin the out-of-stack QVideoWidget to the media's letterbox
@@ -1163,31 +1197,54 @@ class PhotoViewport(QWidget):
         self._video_widget.setGeometry(rect)
 
     def video_widget_rect(self) -> QRect:
-        """The QVideoWidget's target rect: the QLabel's centered-pixmap
-        rect — i.e. wherever the poster (or, for an arming-still video,
-        the previous frame held up by spec/63's "never blank the
-        canvas" rule) is currently drawn. Public because a test pin
-        checks "video widget geometry == media rect, not full canvas"
-        — that's the canvas-bar guarantee.
+        """The QVideoWidget's target rect. Source of aspect, in order:
 
-        Falling back to the full canvas only when there is truly no
-        displayed pixmap — rare; the next poster lands within
-        milliseconds via the thumb cache and re-pins the geometry
-        through :meth:`_display` → :meth:`_sync_video_widget_geometry`.
+        1. ``_video_native_size`` — captured from the player's first
+           valid frame. This is the only source that matches the live
+           video; everything else risks an aspect mismatch that
+           triggers QVideoWidget's internal opaque KeepAspectRatio
+           bars ("the black stripes" Nelson 2026-06-15 hit when the
+           previous item was a portrait photo and the new wide video
+           armed before its own poster landed).
+        2. ``image_rect_in_photo_area`` — the QLabel's centered-pixmap
+           rect. Best we have BEFORE the first frame flows; correct
+           when the poster matches the video aspect (which it should,
+           when the cache has one).
+        3. Full canvas — the QLabel is empty too. Rare; the first
+           valid frame upgrades to (1) within milliseconds.
 
-        Why not item.pixmap? The viewport host (PickerPage) doesn't
-        supply a per-item pixmap for videos — it lets the viewport's
-        poster path resolve one through the PhotoCache. The label's
-        own pixmap is the authoritative "what the user sees" source."""
+        Inner pad is applied across all three branches so the media
+        keeps the ``_MEDIA_INNER_PAD`` margin on every side."""
+        if (self._video_native_size is not None
+                and self._video_native_size.width() > 0
+                and self._video_native_size.height() > 0):
+            return self._letterbox_in_canvas(self._video_native_size)
         rect = self.image_rect_in_photo_area()
         label_rect = self._label.rect()
         if rect.isEmpty() or rect == label_rect:
-            # No displayed pixmap or the pixmap fills the label —
-            # fall back to the full canvas (KeepAspectRatio inside the
-            # video widget letterboxes the player; the next poster
-            # arrival pins it tighter).
             return self.rect()
         return rect
+
+    def _letterbox_in_canvas(self, src: QSize) -> QRect:
+        """Letterbox ``src`` inside the canvas, honouring
+        ``_MEDIA_INNER_PAD``. Pure function — no widget state read,
+        no side effects."""
+        pad = self._MEDIA_INNER_PAD
+        avail_w = max(2, self.width() - 2 * pad)
+        avail_h = max(2, self.height() - 2 * pad)
+        if src.width() <= 0 or src.height() <= 0:
+            return QRect(pad, pad, avail_w, avail_h)
+        src_ratio = src.width() / src.height()
+        avail_ratio = avail_w / avail_h
+        if src_ratio > avail_ratio:
+            w = avail_w
+            h = max(1, int(round(avail_w / src_ratio)))
+        else:
+            h = avail_h
+            w = max(1, int(round(avail_h * src_ratio)))
+        x = pad + (avail_w - w) // 2
+        y = pad + (avail_h - h) // 2
+        return QRect(x, y, w, h)
 
     def _on_playback_state(self, state) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
@@ -1675,7 +1732,17 @@ class PhotoViewport(QWidget):
         # 2026-06-15 — "perceptible but not too thick"). Sits 1 px
         # outside the inset media rect so the QVideoWidget / QLabel
         # pixmap doesn't paint over it on the next frame.
-        media_rect = self.image_rect_in_photo_area()
+        #
+        # When a video is live, frame around the WIDGET's rect, not
+        # the QLabel's pixmap rect — they differ when the poster's
+        # aspect doesn't match the video's (Nelson 2026-06-15 follow-
+        # up: otherwise the frame ends up outside the QVideoWidget's
+        # internal black bars).
+        if (self._video_widget is not None
+                and not self._video_widget.isHidden()):
+            media_rect = self._video_widget.geometry()
+        else:
+            media_rect = self.image_rect_in_photo_area()
         if (not media_rect.isEmpty()
                 and media_rect != self._label.rect()):
             painter.setBrush(Qt.BrushStyle.NoBrush)

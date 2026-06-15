@@ -790,6 +790,35 @@ class EventGateway:
         )
         return self.store.query_raw(m.Lineage, sql)
 
+    def exported_files_all(self) -> List[m.Lineage]:
+        """Lenient twin of :meth:`exported_files`: every shipped
+        lineage row under ``Exported Media/``, in chronological
+        order — but WITHOUT the ``visible_item`` filter that strips
+        hidden-day sources.
+
+        Used by the Pool detail surface so the on-disk reality of
+        ``Exported Media/`` matches the file set the user sees here
+        (and the "Exported" watermark in the Export grid, which also
+        reads lineage directly via :meth:`exported_item_ids`). Cuts
+        / pool algebra keep using the strict :meth:`exported_files`
+        — those care about the visible universe.
+
+        Nelson 2026-06-15: "I open the exported pool and there is
+        nothing — but there are several items with the exported tag
+        in the Export grid". Diagnosed: ``exported_files`` was
+        dropping rows because the source items' day was hidden (or
+        the item / day didn't pass the ``visible_item`` view); the
+        watermark query never filtered those out, so the two views
+        diverged. The Pool now mirrors the watermark.
+        """
+        return self.store.query_raw(
+            m.Lineage,
+            "SELECT * FROM lineage "
+            "WHERE phase = 'edit' "
+            "AND export_relpath LIKE 'Exported Media/%' "
+            "ORDER BY COALESCE(exported_at, ''), export_relpath",
+        )
+
     def cuts(self) -> List[m.Cut]:
         """All user Cut definitions, oldest first (the list page's order).
         The built-in #exported is NOT here — it is :meth:`exported_files`."""

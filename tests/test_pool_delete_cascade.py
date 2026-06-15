@@ -1,6 +1,10 @@
 """Cascade-aware delete from the #exported pool (Nelson 2026-06-15
 task — explicit deletion of exported media from Share/Cuts).
 
+Also pins the lenient ``exported_files_all`` query the Pool uses so
+its set matches the Export grid's "Exported" watermark exactly even
+when items have a hidden day or no matching trip_day row.
+
 Pins the engine-side guarantees the PoolDetailPage relies on:
 
 * ``cuts_containing(export_relpath)`` returns every Cut whose
@@ -146,6 +150,59 @@ def gw(event_dir):
         now=_now, new_id=lambda: f"id-{next(counter)}")
     yield g
     g.close()
+
+
+# ── exported_files_all (lenient — matches Export grid watermark) ─────
+
+
+def test_exported_files_all_matches_watermark_when_day_is_hidden(
+        gw, event_dir):
+    """The Nelson 2026-06-15 bug: photos on a HIDDEN day still carry
+    the Exported watermark (because ``exported_item_ids`` doesn't
+    filter visible_item) but ``exported_files`` was dropping them
+    (visible_item JOIN failed). The lenient ``exported_files_all``
+    mirrors the watermark — every Exported Media/ row, regardless of
+    its source's visibility."""
+    # Hide the day the photos live on. (The clip's source segment has
+    # day_number=NULL so it passes the strict query either way; the
+    # divergence is on the photos.)
+    gw.store.conn.execute(
+        "UPDATE trip_day SET hidden = 1 WHERE day_number = 1")
+    # The strict query drops the photos (segment's NULL day still
+    # passes the visible_item OR clause).
+    strict_rels = {ln.export_relpath for ln in gw.exported_files()}
+    assert "Exported Media/Dia 1/p1.jpg" not in strict_rels
+    assert "Exported Media/Dia 1/p2.jpg" not in strict_rels
+    # But the watermark still shows the photos.
+    shipped_ids = gw.exported_item_ids()
+    assert shipped_ids == {"p1", "p2", "seg-1"}
+    # And the lenient query — the one the Pool uses — surfaces every
+    # row so the Pool surface matches what the watermark promised.
+    all_rels = {ln.export_relpath for ln in gw.exported_files_all()}
+    assert all_rels == {
+        "Exported Media/Dia 1/p1.jpg",
+        "Exported Media/Dia 1/p2.jpg",
+        "Exported Media/Dia 1/v1_clip1.mp4",
+    }
+
+
+def test_exported_files_all_is_chronological_and_only_edit_phase(gw):
+    """The lenient query honours phase='edit' + the Exported Media/
+    prefix and orders by ``exported_at`` (chronological show order).
+    A share-phase row never sneaks in."""
+    # Plant a share-phase row to prove it's excluded.
+    gw.record_lineage(m.Lineage(
+        export_relpath="Cuts/share-only.jpg", phase="share",
+        source_kind="item", source_item_id="p1",
+        exported_at="t0_early"))
+    rels = [ln.export_relpath for ln in gw.exported_files_all()]
+    assert "Cuts/share-only.jpg" not in rels
+    # exported_at: t1 < t2 < t3 in the fixture; chronology preserved.
+    assert rels == [
+        "Exported Media/Dia 1/p1.jpg",
+        "Exported Media/Dia 1/p2.jpg",
+        "Exported Media/Dia 1/v1_clip1.mp4",
+    ]
 
 
 # ── cuts_containing ───────────────────────────────────────────────────

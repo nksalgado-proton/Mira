@@ -185,7 +185,12 @@ class PoolDetailPage(QWidget):
     def _refresh(self) -> None:
         if self._eg is None or self._root is None:
             return
-        self._files = list(self._eg.exported_files())
+        # Use the lenient query so the pool's set matches the Export
+        # grid's "Exported" watermark exactly — both read lineage
+        # without the visible_item hidden-day filter (Nelson
+        # 2026-06-15 bug: pool empty while watermark showed several
+        # files). Cuts logic still uses the strict ``exported_files``.
+        self._files = list(self._eg.exported_files_all())
         # Drop stale undo entries whose file is no longer on the
         # roster (a fresh batch delete should not re-appear in Ctrl+Z).
         live = {f.export_relpath for f in self._files}

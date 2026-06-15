@@ -290,6 +290,72 @@ def test_unpack_adjustment_defaults_to_natural(qapp):
     assert aspect == "Original"
 
 
+def test_chrome_widgets_are_no_focus_so_keys_keep_firing(qapp):
+    """Nelson 2026-06-14 eyeball — ghost_button has StrongFocus by
+    default, so clicking Back / nav arrows / Full Screen / Full
+    Resolution would steal focus from the viewport and the locked-map
+    keys go silent. ``_install_keyboard_focus`` must walk every chrome
+    widget and clamp it to NoFocus."""
+    page = EditorPage()
+    for btn in (page._back_btn, page._prev_btn, page._next_btn,
+                page._fullres_btn, page._fullscreen_btn):
+        assert btn.focusPolicy() == Qt.FocusPolicy.NoFocus, (
+            f"{btn.text()!r} keeps focus on click — keys will stop firing")
+    # The viewport KEEPS its StrongFocus so it can host the §4 grammar.
+    assert page._viewport.focusPolicy() != Qt.FocusPolicy.NoFocus
+
+
+def test_bottom_bar_has_prev_and_next_arrows(qapp):
+    """Nelson 2026-06-14 — the bottom bar's prev/next nav arrows are
+    canonical chrome on every photo surface; without them the page
+    has no visible single-photo nav target. The buttons advance the
+    viewport's cursor (the same handler ← / → use)."""
+    page = EditorPage()
+    assert page._prev_btn is not None
+    assert page._next_btn is not None
+    # Wired to the same _on_prev / _on_next that the arrow keys hit.
+    assert page._prev_btn.receivers(page._prev_btn.clicked) >= 1
+    assert page._next_btn.receivers(page._next_btn.clicked) >= 1
+
+
+def test_fullscreen_hides_chrome_and_keeps_viewport(qapp):
+    """Nelson 2026-06-14 eyeball #1 — F11 must put the PHOTO on the
+    full screen, not the app. Toggle hides toolbar + tools area +
+    bottom nav row and zeros the layout margins so the viewport fills
+    the screen; a second toggle restores everything."""
+    page = EditorPage()
+    # Show + size so showFullScreen() has a window.
+    page.resize(800, 600)
+    page.show()
+    assert page._toolbar_widget.isVisible()
+    assert page._tools.isVisible()
+    assert page._bottom_widget.isVisible()
+    page._toggle_fullscreen()
+    assert page._fullscreen
+    assert not page._toolbar_widget.isVisible()
+    assert not page._tools.isVisible()
+    assert not page._bottom_widget.isVisible()
+    assert page._viewport.isVisible()
+    assert page._outer.contentsMargins().left() == 0
+    page._toggle_fullscreen()
+    assert not page._fullscreen
+    assert page._toolbar_widget.isVisible()
+    assert page._tools.isVisible()
+    assert page._bottom_widget.isVisible()
+    assert page._outer.contentsMargins().left() == 20
+    page.close()
+
+
+def test_tab_traversal_is_disabled(qapp):
+    """spec/63 §4 — Tab is transport (play/pause on clips, inert on
+    stills), never a focus walker. The page disables
+    focusNextPrevChild so Tab can never reach the viewport's host as a
+    focus tick."""
+    page = EditorPage()
+    assert page.focusNextPrevChild(True) is False
+    assert page.focusNextPrevChild(False) is False
+
+
 def test_unpack_adjustment_round_trips_saved_row(qapp):
     """A saved Adjustment row's style / look / filter / crop / angle /
     aspect all round-trip into the surface's load shape."""

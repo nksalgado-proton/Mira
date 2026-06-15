@@ -93,6 +93,7 @@ from mira.picked.status import (
 from mira.store import models as m
 from mira.ui.design import (
     ghost_button,
+    nav_arrow,
 )
 from mira.ui.edited.adjustment_surface import (
     AdjustmentSurface,
@@ -181,6 +182,14 @@ class EditorPage(QWidget):
         self._settle.timeout.connect(self._on_settle)
 
         self._build_ui()
+        # The legacy focus discipline (5d): every chrome widget except the
+        # viewport (and QLineEdits, which need ClickFocus to type into) is
+        # NoFocus, so a click on Back / Look pills / combos / arrows never
+        # steals focus from the viewport and the locked §4 keys keep
+        # firing. Without this the redesigned chrome's StrongFocus
+        # buttons swallowed every L / R / G / [ / ] press the moment the
+        # user clicked any control.
+        self._install_keyboard_focus()
         # The page's setFocus lands on the viewport — the §4 grammar's
         # home (the 5d focus-proxy pattern).
         self.setFocusProxy(self._viewport)
@@ -189,12 +198,14 @@ class EditorPage(QWidget):
     # ── UI assembly ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 16, 20, 16)
-        outer.setSpacing(10)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(20, 16, 20, 16)
+        self._outer.setSpacing(10)
 
         # ── Toolbar — Back · counter ──
-        toolbar = QHBoxLayout()
+        self._toolbar_widget = QWidget()
+        toolbar = QHBoxLayout(self._toolbar_widget)
+        toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(10)
         self._back_btn = ghost_button(tr("‹ Back"))
         self._back_btn.setToolTip(tr("Return to the day grid  (Esc)"))
@@ -206,7 +217,7 @@ class EditorPage(QWidget):
             "Position in the current day — item index of total."))
         toolbar.addWidget(self._counter)
         toolbar.addStretch(1)
-        outer.addLayout(toolbar)
+        self._outer.addWidget(self._toolbar_widget)
 
         # ── Tools area — the AdjustmentSurface tools widget. The spec/59
         # §2 top grid IS the redesigned controls panel; reparenting it
@@ -214,7 +225,7 @@ class EditorPage(QWidget):
         # Compare / Toggle Crop / Reset all live in its action row.
         self._tools = self._surface.tools_widget()
         self._tools.setParent(self)
-        outer.addWidget(self._tools)
+        self._outer.addWidget(self._tools)
 
         # ── Stage — the PhotoViewport (the one display engine). The
         # CropOverlay parents to its photo_area_widget() inside
@@ -223,14 +234,22 @@ class EditorPage(QWidget):
         self._viewport.setParent(self)
         self._viewport.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        outer.addWidget(self._viewport, 1)
+        self._outer.addWidget(self._viewport, 1)
 
-        # ── Bottom bar — Full Resolution F10 · Full Screen F11. The
-        # Filmstrip from the original redesign shell stays out of
-        # scope here (the Days Grid is the bucket-level overview);
-        # the per-bucket nav happens via ← / → on the viewport.
-        bottom = QHBoxLayout()
+        # ── Bottom bar — ◀ prev · spacer · Full Resolution F10 · Full
+        # Screen F11 · spacer · ▶ next. The bucket-level filmstrip
+        # belongs to the Days Grid (the upstream overview); this row
+        # keeps the per-bucket arrows handy so the user has a click
+        # path that matches ← / → and a single hand always knows where
+        # the chrome lives.
+        self._bottom_widget = QWidget()
+        bottom = QHBoxLayout(self._bottom_widget)
+        bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(10)
+        self._prev_btn = nav_arrow("left")
+        self._prev_btn.setToolTip(tr("Previous photo  (←)"))
+        self._prev_btn.clicked.connect(self._on_prev)
+        bottom.addWidget(self._prev_btn)
         bottom.addStretch(1)
         self._fullres_btn = ghost_button(tr("Full Resolution  F10"))
         self._fullres_btn.setToolTip(tr(
@@ -241,10 +260,59 @@ class EditorPage(QWidget):
         self._fullscreen_btn = ghost_button(tr("Full Screen  F11"))
         self._fullscreen_btn.setCheckable(True)
         self._fullscreen_btn.setToolTip(tr(
-            "Use the whole screen for editing  (F / F11)"))
+            "Fill the screen with the photo (chrome hides)  (F / F11)"))
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         bottom.addWidget(self._fullscreen_btn)
-        outer.addLayout(bottom)
+        bottom.addStretch(1)
+        self._next_btn = nav_arrow("right")
+        self._next_btn.setToolTip(tr("Next photo  (→)"))
+        self._next_btn.clicked.connect(self._on_next)
+        bottom.addWidget(self._next_btn)
+        self._outer.addWidget(self._bottom_widget)
+
+    # ── Focus discipline ───────────────────────────────────────────────
+
+    def _install_keyboard_focus(self) -> None:
+        """Walk every child widget and lock its focus policy: the
+        viewport keeps StrongFocus (the §4 grammar's home),
+        QLineEdits get ClickFocus (so the user can type), everything
+        else (buttons, combos, sliders, labels) gets NoFocus. Without
+        this discipline a click on the redesign-shell Back / nav arrow
+        / Full Screen / Full Resolution / Look pill steals focus from
+        the viewport and the locked-map keys go silent — the bug
+        Nelson hit on first eyeball (2026-06-14)."""
+        from PyQt6.QtWidgets import QLineEdit
+        for w in self.findChildren(QWidget):
+            if w is self._viewport:
+                continue
+            if isinstance(w, QLineEdit):
+                w.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+            else:
+                w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def focusNextPrevChild(self, nxt: bool) -> bool:  # noqa: N802
+        """Disable Tab focus traversal — Tab is the §4 transport key
+        (inert on stills, play/pause on clips), never a focus walker."""
+        return False
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Each time the page becomes visible, route focus to the
+        viewport (via the proxy) so the locked map fires immediately —
+        no click required."""
+        super().showEvent(event)
+        self.setFocus()
+
+    # ── Prev / next handlers (chrome shortcuts; viewport also handles
+    # the keys itself, but these power the bottom arrows) ─────────────
+
+    def _on_prev(self) -> None:
+        if self._items and self._index > 0:
+            self._viewport.show_index(self._index - 1)
+
+    def _on_next(self) -> None:
+        if self._items and self._index < len(self._items) - 1:
+            self._viewport.show_index(self._index + 1)
 
     # ── Public entry points (Days Grid bridge — mirror PickerPage) ────
 
@@ -817,14 +885,25 @@ class EditorPage(QWidget):
     # ── Fullscreen ─────────────────────────────────────────────────────
 
     def _toggle_fullscreen(self) -> None:
+        """Photo-fullscreen, not app-fullscreen (Nelson 2026-06-14).
+        Window goes fullscreen AND the editor chrome (toolbar + tools
+        area + bottom nav row) hides + content margins drop to 0, so
+        the viewport (the photo) fills the entire screen edge to edge.
+        Exit restores everything. The ``fullscreen_changed`` signal
+        still drives MainWindow's menubar hide."""
         win = self.window()
         if win is None:
             return
         self._fullscreen = not self._fullscreen
         self._fullscreen_btn.setChecked(self._fullscreen)
+        chrome_visible = not self._fullscreen
+        for w in (self._toolbar_widget, self._tools, self._bottom_widget):
+            w.setVisible(chrome_visible)
         if self._fullscreen:
+            self._outer.setContentsMargins(0, 0, 0, 0)
             win.showFullScreen()
         else:
+            self._outer.setContentsMargins(20, 16, 20, 16)
             win.showNormal()
         self.fullscreen_changed.emit(self._fullscreen)
         self._viewport.setFocus()

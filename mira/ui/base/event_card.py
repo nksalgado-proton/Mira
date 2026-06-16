@@ -150,6 +150,15 @@ class EventCardData:
     # Carousel. Empty list = no exports yet (carousel renders its placeholder).
     # The legacy EventCard ignores this field; only EventCardRedesign uses it.
     sample_pixmap_paths: list = field(default_factory=list)
+    # Spec/77 §4–§5 — the v2 EventTile donut grid needs these per-event
+    # aggregates regardless of open/closed state. Populated for EVERY
+    # event in _event_card_data.card_data (the legacy 'only closed
+    # carries them' rule was dropped when the donuts moved onto the
+    # open tile). All start at 0; a brand-new event with no captures
+    # reads as four track-only donuts (the "nothing yet" look).
+    decided_count: int = 0          # Pick — any explicit pick / skip decision
+    developed_count: int = 0        # Edit — keepers with a user adjustment row
+    days_with_captures: int = 0     # Collect — days the user actually shot on
 
 
 # ── The grid widget (rendering verbatim; data injected) ───────────

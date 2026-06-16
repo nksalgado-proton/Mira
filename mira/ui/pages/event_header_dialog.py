@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QDate, QSize, Qt
 from PyQt6.QtGui import (
     QColor,
     QCursor,
@@ -43,6 +43,7 @@ from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -405,7 +406,48 @@ class EventHeaderDialog(QDialog):
         # ── Section 2: LOGISTICS ────────────────────────────────────────
         v.addWidget(_section_header("Logistics"))
 
-        # 4. Duration / Unit
+        # 4. From / To dates (spec/77 §5 — required for Collect's
+        # denominator). Two QDateEdit widgets side-by-side with calendar
+        # popups; Save is gated until both are set + end ≥ start (the
+        # gate lives in :meth:`_refresh_save_enabled`).
+        row_dates = QHBoxLayout()
+        row_dates.setSpacing(14)
+        col_from = QVBoxLayout()
+        col_from.setSpacing(6)
+        col_from.addWidget(_micro("From", required=True))
+        self._from_edit = QDateEdit()
+        self._from_edit.setObjectName("DesignDate")
+        self._from_edit.setCalendarPopup(True)
+        self._from_edit.setDisplayFormat("yyyy-MM-dd")
+        # Default to "no value" — Save stays disabled until the user
+        # touches it. ``setSpecialValueText`` makes the minimum date
+        # render as an em-dash so the field reads as deliberately empty
+        # rather than locked on a year-2000 default.
+        self._from_edit.setMinimumDate(QDate(2000, 1, 1))
+        self._from_edit.setSpecialValueText(tr("—"))
+        self._from_edit.setDate(self._from_edit.minimumDate())
+        self._from_edit.setToolTip(tr("First day of the event."))
+        self._from_edit.dateChanged.connect(self._on_dates_changed)
+        col_from.addWidget(self._from_edit)
+        row_dates.addLayout(col_from, 1)
+
+        col_to = QVBoxLayout()
+        col_to.setSpacing(6)
+        col_to.addWidget(_micro("To", required=True))
+        self._to_edit = QDateEdit()
+        self._to_edit.setObjectName("DesignDate")
+        self._to_edit.setCalendarPopup(True)
+        self._to_edit.setDisplayFormat("yyyy-MM-dd")
+        self._to_edit.setMinimumDate(QDate(2000, 1, 1))
+        self._to_edit.setSpecialValueText(tr("—"))
+        self._to_edit.setDate(self._to_edit.minimumDate())
+        self._to_edit.setToolTip(tr("Last day of the event."))
+        self._to_edit.dateChanged.connect(self._on_dates_changed)
+        col_to.addWidget(self._to_edit)
+        row_dates.addLayout(col_to, 1)
+        v.addLayout(row_dates)
+
+        # 5. Duration / Unit
         row_dur = QHBoxLayout()
         row_dur.setSpacing(14)
         col_dur = QVBoxLayout()
@@ -616,7 +658,37 @@ class EventHeaderDialog(QDialog):
         subtype_ok = (
             bool(subtype_text) and subtype_text != tr("— select or type —")
         )
-        self._save_btn.setEnabled(name_ok and type_ok and subtype_ok)
+        # Spec/77 §5 — both dates required + end ≥ start. The em-dash
+        # placeholder leaves the field on its minimum date until the
+        # user opens the calendar, so "minimum" == "untouched".
+        from_set = self._from_edit.date() > self._from_edit.minimumDate()
+        to_set = self._to_edit.date() > self._to_edit.minimumDate()
+        dates_ok = from_set and to_set and (
+            self._to_edit.date() >= self._from_edit.date()
+        )
+        self._save_btn.setEnabled(
+            name_ok and type_ok and subtype_ok and dates_ok
+        )
+
+    def _on_dates_changed(self, _date: "QDate") -> None:
+        """Keep To ≥ From at all times — if the user picks an earlier
+        To, snap From back; if a later From, snap To forward. Then
+        re-evaluate the Save gate."""
+        if (
+            self._to_edit.date() > self._to_edit.minimumDate()
+            and self._from_edit.date() > self._from_edit.minimumDate()
+            and self._to_edit.date() < self._from_edit.date()
+        ):
+            sender = self.sender()
+            if sender is self._from_edit:
+                self._to_edit.blockSignals(True)
+                self._to_edit.setDate(self._from_edit.date())
+                self._to_edit.blockSignals(False)
+            else:
+                self._from_edit.blockSignals(True)
+                self._from_edit.setDate(self._to_edit.date())
+                self._from_edit.blockSignals(False)
+        self._refresh_save_enabled()
 
     # ── Existing-info pre-population ─────────────────────────────────
 
@@ -631,6 +703,24 @@ class EventHeaderDialog(QDialog):
             self._subtype_combo.setCurrentText(info["event_subtype"])
         if info.get("description"):
             self._desc_edit.setPlainText(info["description"])
+        # Spec/77 §5 — pre-populate the From/To dates from the event
+        # row when editing. Accepts either a date object or an ISO
+        # string (the create-from-past flow passes ISO; the
+        # edit-existing flow passes a Python date).
+        for key, edit in (
+            ("start_date", self._from_edit),
+            ("end_date", self._to_edit),
+        ):
+            value = info.get(key)
+            if value is None:
+                continue
+            qd = QDate()
+            if hasattr(value, "year") and hasattr(value, "month"):
+                qd = QDate(value.year, value.month, value.day)
+            else:
+                qd = QDate.fromString(str(value)[:10], "yyyy-MM-dd")
+            if qd.isValid():
+                edit.setDate(qd)
         unit = info.get("duration_unit")
         if unit:
             idx = self._duration_unit_combo.findData(unit)
@@ -674,6 +764,19 @@ class EventHeaderDialog(QDialog):
             opt for opt, chip in self._participant_chips.items()
             if chip.isChecked()
         ]
+        from_d = self._from_edit.date()
+        to_d = self._to_edit.date()
+        # Empty-on-minimum convention: the Save gate guarantees both
+        # are set by the time the user accepts, but ``header_info()``
+        # is callable any time so we still emit None when untouched.
+        start_iso = (
+            from_d.toString("yyyy-MM-dd")
+            if from_d > self._from_edit.minimumDate() else None
+        )
+        end_iso = (
+            to_d.toString("yyyy-MM-dd")
+            if to_d > self._to_edit.minimumDate() else None
+        )
         return {
             "name": self._name_edit.text().strip(),
             "event_type": (
@@ -682,6 +785,8 @@ class EventHeaderDialog(QDialog):
             ),
             "event_subtype": subtype_text,
             "description": self._desc_edit.toPlainText().strip(),
+            "start_date": start_iso,
+            "end_date": end_iso,
             "duration_value": duration_value or None,
             "duration_unit": duration_unit or None,
             "context": self._context_combo.currentData() or None,

@@ -434,6 +434,8 @@ class Gateway:
         event_type: Optional[str] = None,
         event_subtype: Optional[str] = None,
         description: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         duration_value: Optional[int] = None,
         duration_unit: Optional[str] = None,
         participants: Optional[List[str]] = None,
@@ -527,6 +529,15 @@ class Gateway:
             if description is not None:
                 updates.append("description = ?")
                 values.append(description)
+            # spec/77 §5 — start_date / end_date are now editable from
+            # the Event Header dialog. Both are ISO date strings;
+            # passing "" clears the column to NULL.
+            if start_date is not None:
+                updates.append("start_date = ?")
+                values.append(start_date if start_date else None)
+            if end_date is not None:
+                updates.append("end_date = ?")
+                values.append(end_date if end_date else None)
             if duration_value is not None:
                 updates.append("duration_value = ?")
                 # 0 / falsy clears (stored as NULL).

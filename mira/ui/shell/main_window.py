@@ -294,6 +294,12 @@ class MainWindow(QMainWindow):
         self.events_page.event_plan_requested.connect(self._open_event_plan_from_card)
         self.events_page.event_status_toggle_requested.connect(
             self._on_card_status_toggle_requested)
+        # spec/77 §6 — the v2 tile's ⋮ Delete entry routes here with
+        # the event id pre-selected so the existing
+        # :meth:`_on_delete_event` flow runs without needing a menu-bar
+        # round-trip.
+        self.events_page.event_delete_requested.connect(
+            self._on_card_delete_requested)
         self.events_page.classify_all_requested.connect(self._open_event_triage)
         # Redesign-new entry points (Surface 01):
         # - the PageHeader's primary "+ New Event" button routes to the
@@ -1464,11 +1470,19 @@ class MainWindow(QMainWindow):
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         sorted_rows = sorted(edited_rows, key=lambda r: r.date)
 
+        # spec/77 §5 — dialog dates win over the photo-inferred span.
+        # The dialog now requires From / To; we trust them when set
+        # (info-only creates always carry them, and edit-existing
+        # flows post the dialog's updated range). Falls back to the
+        # photo-inferred span only for the legacy plan-from-photos
+        # path where the user never opened the new dialog.
         start_date = (
-            sorted_rows[0].date.isoformat() if sorted_rows else None
+            info.get("start_date")
+            or (sorted_rows[0].date.isoformat() if sorted_rows else None)
         )
         end_date = (
-            sorted_rows[-1].date.isoformat() if sorted_rows else None
+            info.get("end_date")
+            or (sorted_rows[-1].date.isoformat() if sorted_rows else None)
         )
 
         event = _m.Event(
@@ -1855,6 +1869,14 @@ class MainWindow(QMainWindow):
         # Outcome == kept. Block navigation only on STORAGE_OFFLINE —
         # the dashboard wouldn't have any media to render.
         return check.state != OriginalsHealth.STORAGE_OFFLINE
+
+    def _on_card_delete_requested(self, event_id: str) -> None:
+        """spec/77 §6 — ⋮ menu Delete entry from a tile. Sets the
+        current event id so the existing :meth:`_on_delete_event` flow
+        (which reads ``self._current_event_id``) targets the right
+        event without needing the menu-bar trip."""
+        self._current_event_id = event_id
+        self._on_delete_event()
 
     def _on_card_status_toggle_requested(self, event_id: str) -> None:
         """Status-badge click on an event tile (spec/64 §2.3) → flip
@@ -4198,6 +4220,10 @@ class MainWindow(QMainWindow):
             "event_type": ev.event_type or "trip",
             "event_subtype": ev.event_subtype or "",
             "description": ev.description or "",
+            # spec/77 §5 — pre-populate the From / To dates so the user
+            # edits the existing range instead of having to retype it.
+            "start_date": ev.start_date,
+            "end_date": ev.end_date,
             "duration_value": ev.duration_value,
             "duration_unit": ev.duration_unit,
             "participants": participants,
@@ -4220,6 +4246,10 @@ class MainWindow(QMainWindow):
                 event_type=edited.get("event_type"),
                 event_subtype=edited.get("event_subtype") or "",
                 description=edited.get("description") or "",
+                # spec/77 §5 — persist the mandatory date range so the
+                # next refresh reads the same span the user just set.
+                start_date=edited.get("start_date") or "",
+                end_date=edited.get("end_date") or "",
                 duration_value=edited.get("duration_value") or 0,
                 duration_unit=edited.get("duration_unit") or "",
                 participants=edited.get("participants") or [],

@@ -127,12 +127,32 @@ def _sample_pixmap_paths(eg, collected) -> list:
         return []
 
 
-def _populate_closed_body_data(
+def _populate_body_data(
     gateway: "Gateway", eg, base: "EventCardData",
 ) -> None:
-    """Fill in the closed-tile body data: stat counts, classification
-    distribution, and the sample photo paths feeding the Surface 01
-    PhotoCycler (spec/75 §6)."""
+    """Fill in the per-event aggregates the v2 EventTile (spec/77) needs
+    on **every** card — open and closed. The open tile reads
+    ``collected/picked/decided/developed/exported`` for its 2×2 donut
+    grid; the closed tile reads the same plus
+    ``sample_pixmap_paths`` for its PhotoCycler.
+
+    Counts come from the gateway's existing aggregate seams so the tile
+    and the Phases page agree:
+
+    * ``collected_count``  — every captured photo (``items(kind="photo")``).
+    * ``picked_count``     — keepers (``phase_state.state='picked'`` on
+                             ``phase='pick'``).
+    * ``decided_count``    — any explicit pick decision (picked OR
+                             skipped OR compare).
+    * ``developed_count``  — real adjustment rows. Spec/77 §7 #1: the
+                             current pipeline doesn't pre-create
+                             baseline rows, so this number genuinely
+                             counts user-developed photos.
+    * ``exported_count``   — shipped lineage rows
+                             (``adjustment.edit_exported = 1``).
+    * ``days_with_captures`` — distinct day_numbers with any captured
+                             items (Collect numerator, spec/77 §4).
+    """
     try:
         collected = eg.items(kind="photo")
         base.collected_count = len(collected)
@@ -140,26 +160,37 @@ def _populate_closed_body_data(
         log.exception("collected count failed for %s", base.event_id)
         collected = []
     try:
-        base.picked_count = len(
-            eg.items(kind="photo", phase="pick", state="picked")
-        )
+        base.picked_count = eg.phase_picked_count("pick")
     except Exception:                                          # noqa: BLE001
         log.exception("picked count failed for %s", base.event_id)
     try:
-        base.edited_count = len(eg.adjustments())
+        base.decided_count = eg.phase_decided_count("pick")
     except Exception:                                          # noqa: BLE001
-        log.exception("edited count failed for %s", base.event_id)
-        base.edited_count = 0
+        log.exception("decided count failed for %s", base.event_id)
+    try:
+        base.developed_count = len(eg.adjustments())
+        # Legacy alias — the closed-tile stat grid (still referenced by
+        # any external preview that builds an EventCardData by hand)
+        # reads ``edited_count``. Keep it in lock-step.
+        base.edited_count = base.developed_count
+    except Exception:                                          # noqa: BLE001
+        log.exception("developed count failed for %s", base.event_id)
     try:
         base.exported_count = len(eg.exported_item_ids())
     except Exception:                                          # noqa: BLE001
         log.exception("exported count failed for %s", base.event_id)
         base.exported_count = 0
 
-    # Sample photo paths feeding the closed-tile PhotoCycler (spec/75
-    # §6.2). Exported keepers first, capped at 12; if that's empty (no
-    # finals yet) we fall back to picked photos, then to any capture.
-    # The cycler shuffles the list on its own, so we don't shuffle here.
+    try:
+        day_tree = eg.day_tree()
+        base.days_with_captures = sum(
+            1 for d in day_tree if d.get("total", 0) > 0
+        )
+    except Exception:                                          # noqa: BLE001
+        log.exception("days_with_captures failed for %s", base.event_id)
+
+    # PhotoCycler source list (spec/75 §6.2 — Exported → Picked → any
+    # capture). Closed tiles read this; open tiles ignore it.
     base.sample_pixmap_paths = _sample_pixmap_paths(eg, collected)
 
     counts: Counter = Counter()
@@ -168,6 +199,15 @@ def _populate_closed_body_data(
         if cls:
             counts[cls] += 1
     base.classification_counts = dict(counts)
+
+
+def _populate_closed_body_data(
+    gateway: "Gateway", eg, base: "EventCardData",
+) -> None:
+    """Backwards-compatible alias — the spec/77 rework folded the
+    open + closed populators into a single seam (the donuts need the
+    same numbers on both tiles)."""
+    _populate_body_data(gateway, eg, base)
 
 
 def card_data(gateway: Gateway, row: Dict[str, Any]) -> EventCardData:
@@ -204,13 +244,27 @@ def card_data(gateway: Gateway, row: Dict[str, Any]) -> EventCardData:
         return base
     try:
         trip_days = eg.trip_days()
-        base.total_days = len(trip_days)
+        # spec/77 §5 — total_days comes from the event header's date
+        # span (start_date..end_date inclusive), NOT from the count of
+        # days that have photos. Without this change Collect always
+        # reads 100% the moment any day has captures, because the
+        # denominator was the count of populated days. The span gives
+        # Collect a real "% of the planned event you've actually shot
+        # on" metric. Falls back to ``len(trip_days)`` only when the
+        # event row has no dates yet (pre-spec/77 events).
+        if base.start_date and base.end_date and base.end_date >= base.start_date:
+            base.total_days = (base.end_date - base.start_date).days + 1
+        else:
+            base.total_days = len(trip_days)
         base.tz_display = _tz_display(trip_days)
         base.status_by_phase = _status_by_phase(
             eg, trip_days, eg.day_tree()
         )
-        if base.is_closed:
-            _populate_closed_body_data(gateway, eg, base)
+        # Spec/77 §4 — populate the donut numerators on EVERY event,
+        # not just closed ones (the open tile's 2×2 donut grid needs
+        # them). Closed tiles continue to read the sample-pixmap-paths
+        # piece for the PhotoCycler.
+        _populate_body_data(gateway, eg, base)
     except Exception:
         log.exception(
             "could not load detail for event %r (%s) — rendering bare card",

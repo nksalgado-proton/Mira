@@ -75,6 +75,10 @@ class EventsPage(QWidget):
     event_info_requested = pyqtSignal(str)
     event_plan_requested = pyqtSignal(str)
     event_status_toggle_requested = pyqtSignal(str)
+    # spec/77 §6 — the v2 tile's ⋮ menu emits a Delete entry per-tile;
+    # the host wires this signal to the existing delete-event flow with
+    # the event id pre-selected (no menu-bar "Delete event" trip needed).
+    event_delete_requested = pyqtSignal(str)
     # Stub for parity with the legacy DashboardPage so MainWindow's .connect()
     # lines work post-swap. The legacy 'Unclassified (N) [Classify all…]'
     # section header is dropped from Surface 01; a future commit re-surfaces
@@ -468,6 +472,7 @@ class EventsPage(QWidget):
             tile.title_clicked.connect(self.event_info_requested.emit)
             tile.plan_requested.connect(self.event_plan_requested.emit)
             tile.status_toggled.connect(self.event_status_toggle_requested.emit)
+            tile.delete_requested.connect(self.event_delete_requested.emit)
             self._cards.addWidget(tile)
 
     def _sample_pixmaps_for(self, cd: EventCardData) -> list:

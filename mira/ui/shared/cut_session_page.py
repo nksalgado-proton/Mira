@@ -40,24 +40,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from mira.picked.model import CullCell
-from mira.picked.status import CellColor
 from mira.shared.cut_session import CutSession, SessionFile
-from mira.ui.base.day_grid_cell import CellRenderData
-from mira.ui.base.day_grid_view import MAX_CELL_SIZE, DayGridView
 from mira.ui.base.shortcuts import show_shortcuts
 from mira.ui.base.surface import back_button, help_button
+from mira.ui.design import ThumbGrid, ThumbGridItem
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
 
 log = logging.getLogger(__name__)
 
-#: Grid thumbs decode at the grid's max cell side, so a slider-resize
-#: never re-decodes (the Pick page's trade) — but ASYNC, through the
+#: Grid thumbs decode at the grid's cell size, so resizing never
+#: re-decodes (the Pick page's trade) — but ASYNC, through the
 #: cache's scaled tier at priority 1 (spec/63 slice 2: the old
 #: 4-per-20 ms UI-thread timer crammed ~96 ms of decode into every
 #: 20 ms tick — the grid jammed exactly while the user moused over it).
-_GRID_THUMB_TARGET = QSize(MAX_CELL_SIZE, MAX_CELL_SIZE)
+_CELL_PX = 220
+_GRID_THUMB_TARGET = QSize(_CELL_PX, _CELL_PX)
+_CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 
 
 def _fmt_mmss(seconds: float) -> str:
@@ -380,7 +379,6 @@ class CutSessionPage(QWidget):
         self._groups = session.days()
         self._day_labels = self._load_day_labels()
         self._open_group: int = -1
-        self._cells: List[CullCell] = []
         self._thumbs: Dict[str, QPixmap] = {}
         self._index_by_abs: Dict[Path, int] = {}
         self._day_items: List[ViewportItem] = []
@@ -445,11 +443,31 @@ class CutSessionPage(QWidget):
         days_scroll.setWidgetResizable(True)
         days_scroll.setWidget(self._days)
         self._stack.addWidget(days_scroll)                    # 0
-        self._grid = DayGridView()
-        self._grid.back_requested.connect(self._back_to_days)
+        # The grid: border-zone click toggles Pick/Skip, center-zone
+        # click opens the single view (spec/61 §2 step 6 grammar).
+        grid_host = QWidget()
+        grid_host_v = QVBoxLayout(grid_host)
+        grid_host_v.setContentsMargins(0, 0, 0, 0)
+        grid_host_v.setSpacing(6)
+        grid_chrome = QHBoxLayout()
+        grid_chrome.setContentsMargins(12, 8, 12, 0)
+        grid_chrome.setSpacing(12)
+        self._grid_back_btn = back_button()
+        self._grid_back_btn.setToolTip(tr(
+            "Back to the days list. (Esc)"))
+        self._grid_back_btn.clicked.connect(self._back_to_days)
+        grid_chrome.addWidget(self._grid_back_btn)
+        self._grid_header = QLabel("")
+        self._grid_header.setObjectName("DayGridHeader")
+        grid_chrome.addWidget(self._grid_header, stretch=1)
+        grid_host_v.addLayout(grid_chrome)
+        self._grid = ThumbGrid(
+            cell_size=_CELL_SIZE, two_zone_clicks=True)
         self._grid.cell_activated.connect(self._open_single)
         self._grid.cell_border_clicked.connect(self._toggle_cell)
-        self._stack.addWidget(self._grid)                     # 1
+        self._grid.back_requested.connect(self._back_to_days)
+        grid_host_v.addWidget(self._grid, stretch=1)
+        self._stack.addWidget(grid_host)                       # 1
         self._single = _SingleView()
         self._single.back_requested.connect(self._back_to_grid)
         self._single.state_requested.connect(self._set_relpath_state)
@@ -486,13 +504,15 @@ class CutSessionPage(QWidget):
             return self._groups[self._open_group][1]
         return []
 
-    def _cell_for(self, f: SessionFile) -> CullCell:
-        return CullCell(
-            end_time=f.capture_time or "",
-            color=(CellColor.KEPT if self._session.is_picked(f.export_relpath)
-                   else CellColor.DISCARDED),
-            item_id=f.export_relpath,        # the host's index key; never a DB id
-            item_kind=f.kind,
+    def _grid_item_for(self, f: SessionFile) -> ThumbGridItem:
+        """Build a :class:`ThumbGridItem` for one session file. The
+        ledger picked-state drives the locked §5a state token (picked /
+        skipped) so the 3px border colour reads the binary decision."""
+        state = "picked" if self._session.is_picked(f.export_relpath) else "skipped"
+        return ThumbGridItem(
+            pixmap=self._thumbs.get(f.export_relpath),
+            state=state,
+            payload=f.export_relpath,
         )
 
     # ── days level ───────────────────────────────────────────────────
@@ -515,11 +535,9 @@ class CutSessionPage(QWidget):
         extra = self._day_labels.get(day or -1, "")
         if extra:
             header += f" · {extra}"
-        self._cells = [self._cell_for(f) for f in files]
-        datas = [CellRenderData(cell=c, thumbnail=self._thumbs.get(c.item_id))
-                 for c in self._cells]
-        self._grid.set_header(header)
-        self._grid.set_cells(datas)
+        items = [self._grid_item_for(f) for f in files]
+        self._grid_header.setText(header)
+        self._grid.set_items(items)
         self._stack.setCurrentIndex(1)
         self._index_by_abs = {
             self._root / f.export_relpath: i for i, f in enumerate(files)}
@@ -555,10 +573,7 @@ class CutSessionPage(QWidget):
             return
         relpath = files[index].export_relpath
         self._thumbs[relpath] = hit[0]
-        if 0 <= index < len(self._cells):
-            self._grid.update_cell(
-                index, CellRenderData(cell=self._cells[index],
-                                      thumbnail=hit[0]))
+        self._grid.set_pixmap(index, hit[0])
 
     def _toggle_cell(self, index: int) -> None:
         files = self._files_of_open_group()
@@ -573,10 +588,7 @@ class CutSessionPage(QWidget):
         files = self._files_of_open_group()
         if not (0 <= index < len(files)):
             return
-        self._cells[index] = self._cell_for(files[index])
-        self._grid.update_cell(index, CellRenderData(
-            cell=self._cells[index],
-            thumbnail=self._thumbs.get(files[index].export_relpath)))
+        self._grid.update_item(index, self._grid_item_for(files[index]))
 
     def _back_to_grid(self) -> None:
         # Repaint every cell the single-view session decided on — not

@@ -3,10 +3,10 @@ file, with multi-select + Delete affordance (spec/61 §1.4).
 
 Reused machinery:
 
-* :class:`~mira.ui.base.day_grid_view.DayGridView` — same flat
-  show-order grid the Cut detail uses; the pool is a "live-query"
-  pseudo-Cut whose membership is everything under
-  ``Exported Media/`` (spec/61 §1.1).
+* :class:`~mira.ui.design.ThumbGrid` — the shared flat show-order
+  grid the Cut detail uses; the pool is a "live-query" pseudo-Cut
+  whose membership is everything under ``Exported Media/`` (spec/61
+  §1.1).
 * :meth:`~mira.gateway.event_gateway.EventGateway.
   delete_exported_file_by_relpath` — drops one lineage row + its
   on-disk file; ``cut_member.export_relpath`` FK CASCADE handles
@@ -53,17 +53,21 @@ from PyQt6.QtWidgets import (
 )
 
 from core.video_discovery import VIDEO_EXTENSIONS
-from mira.picked.model import CullCell
-from mira.picked.status import CellColor
 from mira.store import models as m
-from mira.ui.base.day_grid_cell import CellRenderData
-from mira.ui.base.day_grid_view import MAX_CELL_SIZE, DayGridView
-from mira.ui.design import danger_ghost_button, ghost_button
+from mira.ui.base.surface import back_button
+from mira.ui.design import (
+    ThumbGrid,
+    ThumbGridItem,
+    danger_ghost_button,
+    ghost_button,
+)
 from mira.ui.i18n import tr
 
 log = logging.getLogger(__name__)
 
-_GRID_THUMB_TARGET = QSize(MAX_CELL_SIZE, MAX_CELL_SIZE)
+_CELL_PX = 220
+_GRID_THUMB_TARGET = QSize(_CELL_PX, _CELL_PX)
+_CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 
 #: Cap on the Ctrl+Z stack — same bound the Days-Grid uses. Each
 #: entry holds the deleted file's bytes in memory, so ~16 × ~5 MB
@@ -87,8 +91,8 @@ class PoolUnexportSnapshot:
 
 def _kind_for(relpath: str) -> str:
     """``"video"`` when the relpath ends in a known video extension;
-    ``"photo"`` otherwise. The display model in DayGridView uses
-    this to pick the right thumb-decode path."""
+    ``"photo"`` otherwise. Kept on the legacy contract for callers
+    that snapshot the deletion set with kind info."""
     if Path(relpath).suffix.lower() in VIDEO_EXTENSIONS:
         return "video"
     return "photo"
@@ -140,15 +144,25 @@ class PoolDetailPage(QWidget):
         head.addWidget(self._clear_btn)
         outer.addLayout(head)
 
+        # ── Grid chrome (Back + header) ──────────────────────────────
+        chrome = QHBoxLayout()
+        chrome.setContentsMargins(12, 4, 12, 8)
+        chrome.setSpacing(12)
+        self._back_btn = back_button()
+        self._back_btn.setToolTip(tr("Back to the Cuts list. (Esc)"))
+        self._back_btn.clicked.connect(self.back_requested.emit)
+        chrome.addWidget(self._back_btn)
+        self._header_lbl = QLabel(tr("#exported — the pool"))
+        self._header_lbl.setObjectName("DayGridHeader")
+        chrome.addWidget(self._header_lbl, stretch=1)
+        outer.addLayout(chrome)
+
         # The grid — Cut-detail's renderer, but the user's interaction
-        # is purely "click to mark for deletion".
-        self._grid = DayGridView(
-            show_play_button=False,
-            show_export_all_button=False,
-            cell_photo_canvas="blurred",
-        )
-        self._grid.back_requested.connect(self.back_requested.emit)
+        # is purely "click to mark for deletion". Single-zone clicks
+        # toggle the deletion mark on the clicked cell.
+        self._grid = ThumbGrid(cell_size=_CELL_SIZE)
         self._grid.cell_activated.connect(self._on_cell_activated)
+        self._grid.back_requested.connect(self.back_requested.emit)
         outer.addWidget(self._grid, stretch=1)
 
         # Keyboard: Del / Backspace = delete; Ctrl+Z = undo last
@@ -201,21 +215,16 @@ class PoolDetailPage(QWidget):
         self._update_chrome()
 
     def _rebuild_cells(self) -> None:
-        datas: List[CellRenderData] = []
+        items: List[ThumbGridItem] = []
         for f in self._files:
-            colour = (CellColor.DISCARDED
-                      if f.export_relpath in self._selected
-                      else CellColor.UNTOUCHED)
-            cell = CullCell(
-                end_time=f.exported_at or "",
-                color=colour,
-                item_id=f.export_relpath,
-                item_kind=_kind_for(f.export_relpath),
-            )
-            thumb = self._thumbs.get(f.export_relpath)
-            datas.append(CellRenderData(cell=cell, thumbnail=thumb))
-        self._grid.set_header(tr("#exported — the pool"))
-        self._grid.set_cells(datas)
+            state = "skipped" if f.export_relpath in self._selected else None
+            items.append(ThumbGridItem(
+                pixmap=self._thumbs.get(f.export_relpath),
+                state=state,
+                payload=f.export_relpath,
+            ))
+        self._header_lbl.setText(tr("#exported — the pool"))
+        self._grid.set_items(items)
         self._request_missing_thumbs()
 
     def _request_missing_thumbs(self) -> None:
@@ -245,14 +254,7 @@ class PoolDetailPage(QWidget):
                        if f.export_relpath == rel)
         except StopIteration:
             return
-        colour = (CellColor.DISCARDED if rel in self._selected
-                  else CellColor.UNTOUCHED)
-        cell = CullCell(
-            end_time=self._files[idx].exported_at or "",
-            color=colour, item_id=rel,
-            item_kind=_kind_for(rel))
-        self._grid.update_cell(
-            idx, CellRenderData(cell=cell, thumbnail=hit[0]))
+        self._grid.set_pixmap(idx, hit[0])
 
     # ── selection ─────────────────────────────────────────────────────
 
@@ -269,16 +271,15 @@ class PoolDetailPage(QWidget):
             self._selected.discard(rel)
         else:
             self._selected.add(rel)
-        # Repaint just this cell with the new border colour.
-        colour = (CellColor.DISCARDED if rel in self._selected
-                  else CellColor.UNTOUCHED)
-        cell = CullCell(
-            end_time=self._files[index].exported_at or "",
-            color=colour, item_id=rel,
-            item_kind=_kind_for(rel))
-        self._grid.update_cell(
-            index, CellRenderData(
-                cell=cell, thumbnail=self._thumbs.get(rel)))
+        # Repaint just this cell with the new border colour. The locked
+        # §5a "skipped" state token renders the red 3px border that
+        # signals "marked for deletion".
+        state = "skipped" if rel in self._selected else None
+        self._grid.update_item(index, ThumbGridItem(
+            pixmap=self._thumbs.get(rel),
+            state=state,
+            payload=rel,
+        ))
         self._update_chrome()
 
     def _clear_selection(self) -> None:

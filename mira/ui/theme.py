@@ -70,10 +70,10 @@ def resolve_theme_colors(
     QSS templates expect, so a single ``.format_map`` call against this dict
     fills every ``{token}`` in either template family.
 
-    ``palette_name`` is accepted for backwards compatibility (callers in
-    ``mira.ui.picked.list_button`` and ``mira.ui.picked.pick_stats_chart``
-    still pass ``"Mira"``); the value is ignored — there is one palette now,
-    held in :mod:`mira.ui.palette`. Switch via ``mode`` only.
+    ``palette_name`` is accepted for backwards compatibility (legacy
+    Picker chrome callers still pass ``"Mira"``); the value is ignored —
+    there is one palette now, held in :mod:`mira.ui.palette`. Switch via
+    ``mode`` only.
     """
     if mode not in ("light", "dark"):
         raise ValueError(f"unknown mode: {mode!r}")

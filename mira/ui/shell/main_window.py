@@ -2443,7 +2443,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QDialog, QMessageBox
 
         from mira.store import models as m
-        from mira.ui.picked.camera_clock_dialog import CameraClockDialog
+        from mira.ui.pages.camera_clock_dialog import CameraClockDialog
 
         if self._current_event_id is None:
             return

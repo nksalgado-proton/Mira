@@ -134,11 +134,10 @@ _SLICE_B_FILES = {
     # page is gone; its workshop coverage moves onto EditorPage.)
     "test_pick_phase_sync",
     "test_pick_clip_index",
-    # test_pick_top_bar rewrote 2026-06-13 against the post-classification-strip
-    # PickTopBar contract (Pick All / Skip All, no style_*, no export_*, no
-    # GenreReadout / ReclassifyButton roles) — live again, no longer deferred.
+    # (test_pick_top_bar + test_pick_stats_chart retired with the
+    # PickTopBar / PickStatsChart widget retirement — the legacy Picker
+    # chrome is gone; their successor widgets carry their own tests.)
     "test_pick_surface",
-    "test_pick_stats_chart",
     "test_pick_stats",
     "test_pick_state",
     "test_pick_navigator",

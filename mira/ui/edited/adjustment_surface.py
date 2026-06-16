@@ -77,7 +77,7 @@ from core.photo_render import (
     extract_rotated_crop,
 )
 from mira.ui.base.aspect_ratio_combo import AspectRatioCombo
-from mira.ui.picked.crop_overlay import CropOverlay
+from mira.ui.edited.crop_overlay import CropOverlay
 from mira.ui.i18n import tr
 from mira.ui.edited.look_grid import (
     LookGridDialog,

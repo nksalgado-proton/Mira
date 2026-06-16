@@ -13,7 +13,7 @@ import math
 from PyQt6.QtCore import QEvent, QPointF, QRect, Qt
 from PyQt6.QtGui import QMouseEvent
 
-from mira.ui.picked.crop_overlay import (
+from mira.ui.edited.crop_overlay import (
     CropOverlay,
     _DragMode,
     _ROTATE_STEM_PX,

@@ -79,6 +79,11 @@ from mira.ui.design.inputs import line_input, search_field, select
 from mira.ui.design.media_nav import Filmstrip, nav_arrow
 from mira.ui.design.progress import StageProgress
 from mira.ui.design.stable_stage import StableMediaStage
+from mira.ui.design.thumb_grid import (
+    DEFAULT_CELL_SIZE as THUMB_GRID_DEFAULT_CELL_SIZE,
+    ThumbGrid,
+    ThumbGridItem,
+)
 from mira.ui.design.thumbs import Thumb
 from mira.ui.design.title_bar import TitleBar
 from mira.ui.design.toolbar import toolbar_row
@@ -119,7 +124,10 @@ __all__ = [
     "StatTile",
     "SurfaceIdentityHeader",
     "ThemeToggle",
+    "THUMB_GRID_DEFAULT_CELL_SIZE",
     "Thumb",
+    "ThumbGrid",
+    "ThumbGridItem",
     "TitleBar",
     "chip_closed",
     "chip_done",

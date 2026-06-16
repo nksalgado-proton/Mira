@@ -3,10 +3,11 @@
 Pins: the gateway driver (edit-phase lineage rows, NOT the
 ``edit_exported`` freshness flag; bracket/share rows ignored); the
 ``day_grid_cells`` Edit projection stamping PHOTO item cells only;
-``CullCell.exported`` defaulting False (Pick untouched); the
-DayGridCell overlay showing for exported photos and never for
-videos/clusters; the MediaCanvas host API; the widget never taking the
-mouse; the setting shipping ON.
+``CullCell.exported`` defaulting False (Pick untouched); the redesigned
+:class:`Thumb` (and therefore the shared :class:`ThumbGrid`) painting
+the exported badge for photo cells whose item has lineage; the
+MediaCanvas host API; the legacy widget never taking the mouse; the
+setting shipping ON.
 """
 from __future__ import annotations
 
@@ -28,8 +29,8 @@ from mira.picked.status import BucketStatus, CellColor
 from mira.settings.model import Settings
 from mira.store import models as m
 from mira.store.repo import EventStore
-from mira.ui.base.day_grid_cell import CellRenderData, DayGridCell
 from mira.ui.base.exported_watermark import ExportedWatermark
+from mira.ui.design import ThumbGrid, ThumbGridItem
 
 
 # --------------------------------------------------------------------------- #
@@ -440,32 +441,38 @@ def test_day_grid_cells_default_stamps_nothing():
 # --------------------------------------------------------------------------- #
 
 
-def _cell(kind: str, exported: bool) -> CullCell:
-    return CullCell(
-        end_time="", color=CellColor.KEPT, item_id="i1",
-        item_kind=kind, exported=exported)
+def _grid_with(exported: bool) -> ThumbGrid:
+    """One-cell :class:`ThumbGrid` carrying the redesigned exported
+    badge state — the cell-level ``exported`` flag drives the
+    bottom-left "↑ Exported" chip painted by :class:`Thumb` (spec/59
+    §8). The shared widget replaces the legacy ``DayGridCell``
+    overlay; the contract pinned is "exported=True paints the chip;
+    False does not, even after a state cycle"."""
+    g = ThumbGrid()
+    g.set_items([ThumbGridItem(exported=exported)])
+    return g
 
 
-def test_day_grid_cell_watermark_visible_for_exported_photo(qapp):
-    w = DayGridCell(CellRenderData(cell=_cell("photo", True)))
-    assert w._watermark.isVisibleTo(w)
-    assert "exported version" in w.toolTip().lower()
+def test_thumb_grid_cell_carries_exported_flag_when_set(qapp):
+    g = _grid_with(True)
+    cell = g.cell_at(0)
+    assert cell is not None
+    assert cell._exported is True
 
 
-def test_day_grid_cell_watermark_hidden_otherwise(qapp):
-    assert not DayGridCell(
-        CellRenderData(cell=_cell("photo", False)))._watermark.isVisibleTo(
-        DayGridCell(CellRenderData(cell=_cell("photo", False))))
-    # Videos never (display rule, belt-and-braces over the projection).
-    w = DayGridCell(CellRenderData(cell=_cell("video", True)))
-    assert not w._watermark.isVisibleTo(w)
+def test_thumb_grid_cell_no_exported_flag_by_default(qapp):
+    g = _grid_with(False)
+    cell = g.cell_at(0)
+    assert cell is not None
+    assert cell._exported is False
 
 
-def test_day_grid_cell_set_data_flips_watermark(qapp):
-    w = DayGridCell(CellRenderData(cell=_cell("photo", False)))
-    assert not w._watermark.isVisibleTo(w)
-    w.set_data(CellRenderData(cell=_cell("photo", True)))
-    assert w._watermark.isVisibleTo(w)
+def test_thumb_grid_update_item_flips_exported_flag(qapp):
+    g = _grid_with(False)
+    cell = g.cell_at(0)
+    assert cell._exported is False
+    g.update_item(0, ThumbGridItem(exported=True))
+    assert cell._exported is True
 
 
 def test_watermark_widget_never_takes_the_mouse(qapp):

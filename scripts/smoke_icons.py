@@ -72,9 +72,6 @@ def _build_smoke(mode: str) -> QWidget:
         tinted_svg_pixmap,
     )
     from mira.ui.palette import PALETTE
-    from mira.picked.model import CullCell
-    from mira.picked.status import CellColor
-    from mira.ui.base.day_grid_cell import CellRenderData, DayGridCell
     from mira.ui.pages._cross_event_band import CrossEventCutsBand
 
     app = QApplication.instance()
@@ -142,19 +139,18 @@ def _build_smoke(mode: str) -> QWidget:
     eye.move(310, 12)
     v.addWidget(eye_host)
 
-    # ── Row 3: the day-grid visited tick on a thumbnail ─────────────
-    row3_label = QLabel("Day-grid visited tick (small + large cell):")
+    # ── Row 3: visited-tick + state border on Thumb (the redesigned
+    # cell that replaced DayGridCell — same painted contract). ───────
+    from PyQt6.QtCore import QSize
+    row3_label = QLabel("Thumb visited eye + 3px state border (small + large):")
     v.addWidget(row3_label)
     row3 = QHBoxLayout(); row3.setSpacing(20)
-    visited = CullCell(
-        end_time="2026-04-01T08:00:00",
-        color=CellColor.KEPT, item_id="p1", item_kind="photo",
-        visited=True,
-    )
     small_thumb = _real_photo_pixmap(80, 80, "")
-    small_cell = DayGridCell(CellRenderData(visited, small_thumb), size=80)
+    small_cell = Thumb(
+        small_thumb, state="picked", visited=True, size=QSize(80, 80))
     big_thumb = _real_photo_pixmap(220, 220, "")
-    big_cell = DayGridCell(CellRenderData(visited, big_thumb), size=220)
+    big_cell = Thumb(
+        big_thumb, state="picked", visited=True, size=QSize(220, 220))
     row3.addWidget(small_cell)
     row3.addWidget(big_cell)
     row3.addStretch()

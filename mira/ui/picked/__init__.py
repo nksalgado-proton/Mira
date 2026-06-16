@@ -1,6 +1,8 @@
-"""The reassembled Cull UI surface (spec/11 §6 step 3+).
+"""Picker package — residual surfaces from the spec/11 reassembly.
 
-Bound to the headless cull model (`mira.picked`) and the gateway only — never a
-journal or the filesystem (charter §5.2). The navigator renders the precomputed
-Day → Bucket resume map; downstream the photo/video surfaces slot in behind it.
+After the spec/63 PhotoViewport rewrite + the PickerPage absorption
+(spec/70 Phase 3), the live Picker chrome moved to :mod:`mira.ui.pages`
+and the Editor's crop overlay to :mod:`mira.ui.edited`. What remains
+here is :mod:`~mira.ui.picked.placeholder` — the kind-aware Day-Grid
+thumbnail placeholder shared across surfaces.
 """

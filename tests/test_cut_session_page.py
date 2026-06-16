@@ -12,7 +12,6 @@ import itertools
 import pytest
 
 from mira.gateway.event_gateway import EventGateway
-from mira.picked.status import CellColor
 from mira.shared.cut_session import CutSession
 from mira.store.repo import EventStore
 from mira.ui.shared.cut_session_page import CutSessionPage
@@ -54,7 +53,8 @@ def test_start_lands_on_the_first_day_grid(qapp, gw, tmp_path):
     the first day's grid opens immediately; days panel is one Back away."""
     page = _page(gw, tmp_path)
     assert page._stack.currentIndex() == 1
-    assert page._cells and page._cells[0].item_id == "Exported Media/e2.jpg"
+    payloads = [it.payload for it in page._grid.items()]
+    assert payloads and payloads[0] == "Exported Media/e2.jpg"
     page._back_to_days()
     assert page._stack.currentIndex() == 0
 
@@ -68,11 +68,13 @@ def test_open_day_builds_file_cells_with_session_colors(qapp, gw, tmp_path):
     page = _page(gw, tmp_path)                  # default all-skipped
     page._open_day(1)                           # day 2: e3a, e3b, v1
     assert page._stack.currentIndex() == 1
-    assert [c.item_id for c in page._cells] == [
+    items = page._grid.items()
+    assert [it.payload for it in items] == [
         "Exported Media/e3a.jpg", "Exported Media/e3b.jpg", "Exported Media/v1.mp4"]
-    assert all(c.color is CellColor.DISCARDED for c in page._cells)
-    assert page._cells[2].item_kind == "video"
-    assert "Day 2" in page._grid.header_text()
+    # All-skipped default → every cell wears the locked "skipped"
+    # state token (red 3px border).
+    assert all(it.state == "skipped" for it in items)
+    assert "Day 2" in page._grid_header.text()
 
 
 def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):
@@ -81,7 +83,7 @@ def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):
     assert "0 picked" in page._budget._label.text()
     page._toggle_cell(0)                        # e3a → picked
     assert page._session.is_picked("Exported Media/e3a.jpg")
-    assert page._cells[0].color is CellColor.KEPT
+    assert page._grid.items()[0].state == "picked"
     assert "1 picked" in page._budget._label.text()
     # (1 photo + 1 separator) × 6 s = 12 s of the 40 s target → green
     assert page._budget.property("zone") == "green"
@@ -177,15 +179,15 @@ def test_touched_decisions_repaint_their_cells_on_back(qapp, gw, tmp_path):
     cells on Back — ALL of them, not just the last (the Day-Grid
     touched-set rule)."""
     page = _page(gw, tmp_path)
-    page._open_day(1)                           # all skipped → DISCARDED
+    page._open_day(1)                           # all skipped
     page._open_single(0)
     page._set_relpath_state("Exported Media/e3a.jpg", True)
     page._single._viewport._go(+1)
     page._set_relpath_state("Exported Media/e3b.jpg", True)
-    assert page._cells[0].color is CellColor.DISCARDED   # not yet repainted
+    assert page._grid.items()[0].state == "skipped"  # not yet repainted
     page._back_to_grid()
-    assert page._cells[0].color is CellColor.KEPT
-    assert page._cells[1].color is CellColor.KEPT
+    assert page._grid.items()[0].state == "picked"
+    assert page._grid.items()[1].state == "picked"
     assert page._touched == set()
 
 
@@ -193,9 +195,9 @@ def test_undo_reverts_and_repaints(qapp, gw, tmp_path):
     page = _page(gw, tmp_path)
     page._open_day(1)
     page._toggle_cell(0)
-    assert page._cells[0].color is CellColor.KEPT
+    assert page._grid.items()[0].state == "picked"
     page._on_undo()
-    assert page._cells[0].color is CellColor.DISCARDED
+    assert page._grid.items()[0].state == "skipped"
     assert not page._session.is_picked("Exported Media/e3a.jpg")
 
 

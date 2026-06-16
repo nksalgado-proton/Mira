@@ -13,7 +13,6 @@ import itertools
 import pytest
 
 from mira.gateway.event_gateway import EventGateway
-from mira.picked.status import CellColor
 from mira.store.repo import EventStore
 from mira.ui.shared.cut_detail_page import CutDetailPage
 from mira.ui.shared.separator_card import (
@@ -94,15 +93,21 @@ def test_entries_interleave_opener_and_separators(qapp, gw, tmp_path):
         "Exported Media/e3a.jpg", "Exported Media/v1.mp4",   # day 2
     ])
     kinds = [k for k, _ in page._entries]
-    ids = [c.item_id for c in page._cells]
+    payloads = [it.payload for it in page._grid.items()]
     assert kinds == ["opener", "sep", "file", "sep", "file", "file"]
-    assert ids[0] == "opener" and ids[1] == "sep:1" and ids[3] == "sep:2"
-    assert ids[2] == "Exported Media/e1.jpg"
-    # nothing is being decided here — every ring is neutral
-    assert all(c.color is CellColor.UNTOUCHED for c in page._cells)
-    # the opener + separator tiles carry their rendered cards already
-    assert page._grid._all_cell_data[0].thumbnail is not None
-    assert page._grid._all_cell_data[1].thumbnail is not None
+    # The grid carries the (kind, payload) tuples in show order; the
+    # opener + day separators sit at indices 0/1/3 (day-boundary tiles).
+    assert payloads[0] == ("opener", None)
+    assert payloads[1] == ("sep", 1)
+    assert payloads[3] == ("sep", 2)
+    assert payloads[2] == ("file", "Exported Media/e1.jpg")
+    # Nothing is being decided here — every cell carries the neutral
+    # ring (no state token assigned).
+    assert all(it.state is None for it in page._grid.items())
+    # The opener + separator tiles carry their rendered cards already
+    # (synchronous render at show_cut() time).
+    assert page._grid.items()[0].pixmap is not None
+    assert page._grid.items()[1].pixmap is not None
     assert "#short_version" in page._tag_lbl.text()
 
 
@@ -140,12 +145,14 @@ def test_single_view_opens_cards_and_steps_in_show_order(qapp, gw, tmp_path):
 
 
 def test_play_button_visible_on_the_detail_grid(qapp, gw, tmp_path):
-    """Nelson eyeball 2026-06-12 ("could not play"): DayGridView ships
-    the ▶ Play button HIDDEN until the host gates it on — this surface
-    always plays."""
+    """Nelson eyeball 2026-06-12 ("could not play"): the Play/Export
+    chrome on the cut-detail surface stays HIDDEN by default and
+    appears when the host passes ``show_play=True`` / ``show_export=
+    True`` to the page constructor."""
     page = CutDetailPage(show_play=True, show_export=True)
-    assert page._grid._play_btn.isVisibleTo(page._grid)
-    assert "rehearsal" in page._grid._play_btn.toolTip()
+    assert page._play_btn.isVisibleTo(page)
+    assert "rehearsal" in page._play_btn.toolTip()
+    assert page._export_btn.isVisibleTo(page)
 
 
 def test_adjust_emits_cut_id(qapp, gw, tmp_path):

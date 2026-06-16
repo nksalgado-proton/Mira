@@ -92,23 +92,6 @@ def test_unified_picker_video_transport_is_canonical(qapp):
     assert misrouted == []
 
 
-def test_pick_photo_surface_film_transport_is_canonical(qapp):
-    """pick_photo_surface's slideshow ▶ used to wear FeatureToggle —
-    accent-coloured when checked. Now plain TransportButton; the
-    checkable BEHAVIOUR (`isChecked()` drives the play state) is
-    preserved."""
-    from mira.ui.picked.pick_photo_surface import PickPhotoSurface
-    surf = PickPhotoSurface()
-    b = surf._film_btn
-    assert b.objectName() == "TransportButton"
-    assert b.isCheckable() is True           # behaviour preserved
-    w_before = b.sizeHint().width()
-    set_transport_playing(b, True)
-    assert b.sizeHint().width() == w_before
-    set_transport_playing(b, False)
-    assert b.sizeHint().width() == w_before
-
-
 def test_quick_sweep_page_transport_is_canonical(qapp):
     from mira.ui.pages.quick_sweep_page import QuickSweepPage
     page = QuickSweepPage()

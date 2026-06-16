@@ -18,21 +18,6 @@ def _help_buttons(w: QWidget) -> list[QPushButton]:
             if b.objectName() == "HelpButton"]
 
 
-def test_pick_top_bar_help_button_role_is_correct(qapp):
-    """The earlier hand-built help button on PickTopBar wore the
-    #ReclassifyButton role (a misrouted borrow). Nelson 2026-06-12
-    flipped it to the canonical #HelpButton."""
-    from mira.ui.picked.pick_top_bar import PickTopBar
-    bar = PickTopBar()
-    assert bar.help_button.objectName() == "HelpButton"
-    # No widget under the bar still wears the misrouted role for
-    # the help control.
-    misrouted = [b for b in bar.findChildren(QPushButton)
-                 if b is bar.help_button
-                 and b.objectName() == "ReclassifyButton"]
-    assert misrouted == []
-
-
 def test_quick_sweep_page_has_help_button_in_viewer_top_bar(qapp):
     """Quick Sweep's viewer chrome gains a "?" — F1 and ? keys also
     open the dialog (covered by the keyPressEvent below)."""

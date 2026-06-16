@@ -91,7 +91,7 @@ def test_promoted_settings_have_expected_defaults():
     assert s.jpeg_export_quality == 95              # core/process_render.JPEG_OUTPUT_QUALITY
     assert s.video_clip_crf == 20                   # core/video_export_run._CLIP_CRF
     assert s.focus_peaking_opacity == 0.7           # core/focus_peaking.PEAKING_OPACITY_DEFAULT
-    assert s.default_day_grid_cell_size == 140      # day_grid_view.DEFAULT_CELL_SIZE
+    assert s.default_day_grid_cell_size == 140      # legacy DayGridView default (preserved)
     assert s.log_rotate_keep_days == 14             # core/logging_setup.LOG_ROTATE_KEEP_DAYS
 
 
@@ -111,62 +111,10 @@ def test_font_scale_applies_to_app_font(qapp, monkeypatch):
     assert qapp.font().pointSizeF() == pytest.approx(float(baseline))
 
 
-def test_day_grid_view_reads_default_cell_size_from_settings(qapp, monkeypatch):
-    """DayGridView with ``cell_size=None`` (the new default) reads
-    the user-tunable ``default_day_grid_cell_size`` Setting."""
-    from mira.ui.base.day_grid_view import DayGridView
-
-    class _StubRepo:
-        def load(self):
-            return Settings(default_day_grid_cell_size=200)
-
-    monkeypatch.setattr(
-        "mira.settings.repo.SettingsRepo", lambda: _StubRepo())
-
-    v = DayGridView()
-    try:
-        assert v._cell_size == 200
-    finally:
-        v.deleteLater()
-
-
-def test_day_grid_view_explicit_cell_size_still_overrides(qapp):
-    """A test (or call site) passing ``cell_size=N`` still wins over
-    the Setting — preserves existing test ergonomics."""
-    from mira.ui.base.day_grid_view import DayGridView
-    v = DayGridView(cell_size=120)
-    try:
-        assert v._cell_size == 120
-    finally:
-        v.deleteLater()
-
-
-def test_day_grid_view_clamps_setting_to_valid_band(qapp, monkeypatch):
-    """A nonsense saved value gets clamped to the MIN/MAX band."""
-    from mira.ui.base.day_grid_view import (
-        DayGridView, MIN_CELL_SIZE, MAX_CELL_SIZE,
-    )
-
-    class _StubTooBig:
-        def load(self):
-            return Settings(default_day_grid_cell_size=9999)
-
-    class _StubTooSmall:
-        def load(self):
-            return Settings(default_day_grid_cell_size=1)
-
-    monkeypatch.setattr(
-        "mira.settings.repo.SettingsRepo", lambda: _StubTooBig())
-    v_big = DayGridView()
-    try:
-        assert v_big._cell_size == MAX_CELL_SIZE
-    finally:
-        v_big.deleteLater()
-
-    monkeypatch.setattr(
-        "mira.settings.repo.SettingsRepo", lambda: _StubTooSmall())
-    v_small = DayGridView()
-    try:
-        assert v_small._cell_size == MIN_CELL_SIZE
-    finally:
-        v_small.deleteLater()
+# DayGridView retired with the Brief-B ThumbGrid migration; its
+# ``default_day_grid_cell_size`` Setting reader tests are gone with
+# the widget. The Setting itself is still exposed through the
+# Settings dialog (preserved for users who configured a value); the
+# day-grid surfaces now use the redesigned :class:`Thumb`'s fixed
+# tile size, so the slider/Setting no longer drives a live widget
+# but the field stays a no-op for migration compatibility.

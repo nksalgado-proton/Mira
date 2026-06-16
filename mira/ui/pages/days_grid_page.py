@@ -84,11 +84,12 @@ from mira.picked.status import (
     cluster_color,
     default_state_for,
 )
-from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
     StageProgress,
     SurfaceIdentityHeader,
     Thumb,
+    ThumbGrid,
+    ThumbGridItem,
     confirm,
     danger_ghost_button,
     ghost_button,
@@ -379,8 +380,9 @@ class DaysGridPage(QWidget):
 
         # Per-cell focus tracking — the locked P/X/Space/C keys act on
         # the Thumb the user last clicked (Qt focus follows). The
-        # index also drives "skip the cluster placeholder" decisions.
-        self._thumb_widgets: list[Thumb] = []
+        # ``_thumb_widgets`` property below proxies to the live
+        # :class:`ThumbGrid` cells (the chunked build adds more after
+        # the first batch lands).
 
         # On-disk thumbnail loader (port of the PickPage cadence —
         # chunked, off-the-UI-thread, never freezes the grid).
@@ -486,20 +488,19 @@ class DaysGridPage(QWidget):
         outer.addLayout(legend)
 
         # ── Scrolling grid ──
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
+        # state border + blurred-fill canvas are the same paint as the
+        # Cuts surfaces. Single-zone clicks bubble through
+        # ``cell_activated`` → :meth:`_on_thumb_activated` which routes
+        # by item kind (cluster cover, photo/video, Export-mode toggle).
+        self._grid = ThumbGrid(
+            cell_size=_TILE_SIZE,
+            two_zone_clicks=False,
+            flow_spacing=18,
+            flow_margin=0,
         )
-        grid_host = QWidget()
-        self._flow = FlowLayout(grid_host, spacing=18)
-        self._flow.setContentsMargins(0, 0, 0, 0)
-        self._scroll.setWidget(grid_host)
-        self._scroll.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        outer.addWidget(self._scroll, 1)
+        self._grid.cell_activated.connect(self._on_grid_cell_activated)
+        outer.addWidget(self._grid, 1)
 
     # ── Public API (gateway path) ──────────────────────────────────────
 
@@ -1148,6 +1149,16 @@ class DaysGridPage(QWidget):
             self._update_counts()
             self._refresh()
 
+    # ── Cell access (the live grid cells, post-chunk-built) ───────────
+
+    @property
+    def _thumb_widgets(self) -> list[Thumb]:
+        """The :class:`Thumb` widgets currently in the grid. Backed by
+        :class:`ThumbGrid`'s chunked-construction cell list — readers
+        always see the up-to-date snapshot (later batches add cells
+        after :meth:`set_items` returns)."""
+        return list(self._grid.cells())
+
     # ── Counts (toolbar progress block) ────────────────────────────────
 
     def _update_counts(self) -> None:
@@ -1190,38 +1201,32 @@ class DaysGridPage(QWidget):
             else None
         )
 
-        # Clear current cells
-        while self._flow.count():
-            w = self._flow.itemAt(0).widget()
-            self._flow.removeWidget(w)
-            w.deleteLater()
-        self._thumb_widgets = []
-        # Stop any in-flight decode for old cells; populate fresh queue.
+        # Stop any in-flight decode for old cells before rebuilding.
         self._thumb_pending.clear()
 
-        # Populate new cells
-        for idx, item in enumerate(self._items):
-            t = Thumb(
-                item.pixmap,
+        # Build :class:`ThumbGridItem` payloads — every grid cell is a
+        # GridItem-keyed Thumb on the shared widget. ``focusable=True``
+        # so the locked §63 keys P/X/Space/C act on whichever Thumb the
+        # user last clicked or Tab-walked to.
+        grid_items: list[ThumbGridItem] = []
+        for item in self._items:
+            grid_items.append(ThumbGridItem(
+                pixmap=item.pixmap,
                 state=item.state,
-                size=_TILE_SIZE,
+                visited=item.visited,
+                exported=item.exported,
                 cluster_type=item.cluster_type,
                 cluster_count=item.cluster_count,
                 cluster_split=item.cluster_split,
-                visited=item.visited,
-                exported=item.exported,
                 stamp=item.stamp,
-            )
-            # Make the thumb keyboard-focusable so the locked §63 keys
-            # P/X/Space/C act on whichever Thumb the user last clicked
-            # (or Tab-walked to). The thumb doesn't handle the keys
-            # itself — they bubble to the page.
-            t.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            t.clicked.connect(
-                lambda iid=item.item_id, w=t: self._on_thumb_clicked(iid, w)
-            )
-            self._flow.addWidget(t)
-            self._thumb_widgets.append(t)
+                payload=item.item_id,
+                focusable=True,
+            ))
+        self._grid.set_items(grid_items)
+        # ``_thumb_widgets`` is a live view of the grid's Thumb cells
+        # (chunked construction means more cells appear after the first
+        # batch — the @property below proxies to the grid's current
+        # cells() snapshot so every reader sees the up-to-date list).
 
         # Re-prime the thumbnail loader. Cells that already have a
         # cached pixmap render it instantly; the rest queue up for a
@@ -1231,6 +1236,18 @@ class DaysGridPage(QWidget):
         self._enqueue_thumbnails()
 
     # ── Click routing ──────────────────────────────────────────────────
+
+    def _on_grid_cell_activated(self, index: int) -> None:
+        """The shared :class:`ThumbGrid` emits ``cell_activated(index)``.
+        Translate to the legacy ``(item_id, widget)`` signature the
+        page's routing speaks."""
+        if not (0 <= index < len(self._items)):
+            return
+        item_id = self._items[index].item_id
+        cell = self._grid.cell_at(index)
+        if cell is None:
+            return
+        self._on_thumb_clicked(item_id, cell)
 
     def _on_thumb_clicked(self, item_id: str, widget: Thumb) -> None:
         """A click on a Thumb.

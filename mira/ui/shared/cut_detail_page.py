@@ -7,13 +7,17 @@ Picker's day drill-down: a Cut is small, already decided, consumed as a
 whole. No decision borders either — nothing is being decided here, so
 every cell wears the neutral ring.
 
-Top bar (the DayGridView's own): Back · header ("#tag — N items ·
-M:SS") · size slider — plus Play all / Export all once the rehearsal
-and export slices wire their handlers (the construction flags stay off
-until then: no dead buttons). A slim row above carries Adjust (re-enter
-the picking session). Center-click opens the lightweight single view
-(read-only — arrows step the WHOLE show order, separator/opener cards
-included, rendered fresh at full size — Nelson eyeball 2026-06-12).
+Top bar: Back · header ("#tag — the show, in order") · Adjust · Play
+all / Export all (when the host wires them) · Help. A slim row above
+carries Adjust (re-enter the picking session). Center-click opens the
+lightweight single view (read-only — arrows step the WHOLE show order,
+separator/opener cards included, rendered fresh at full size — Nelson
+eyeball 2026-06-12).
+
+Built on :class:`mira.ui.design.ThumbGrid` (the shared scrolling
+thumb grid). The blurred-fill backdrop + 3px state border come from
+:class:`mira.ui.design.Thumb` painters — every Cut cell carries the
+same look without the legacy ``DayGridCell`` chrome.
 """
 from __future__ import annotations
 
@@ -33,13 +37,10 @@ from PyQt6.QtWidgets import (
 )
 
 from core import cut_budget, cut_names
-from mira.picked.model import CullCell
-from mira.picked.status import CellColor
 from mira.shared.cut_session import SessionFile, show_entries
-from mira.ui.base.day_grid_cell import CellRenderData
-from mira.ui.base.day_grid_view import MAX_CELL_SIZE, DayGridView
 from mira.ui.base.shortcuts import show_shortcuts
-from mira.ui.base.surface import help_button
+from mira.ui.base.surface import back_button, help_button
+from mira.ui.design import ThumbGrid, ThumbGridItem
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import ViewportItem
 from mira.ui.shared.cut_session_page import _SingleView, _fmt_mmss
@@ -52,10 +53,12 @@ from mira.ui.shared.separator_card import (
 
 log = logging.getLogger(__name__)
 
-#: Grid thumbs decode async at the grid's max cell side through the
-#: cache's scaled tier (spec/63 slice 2 — same cure as the session
-#: page: the old 4-per-20 ms UI-thread timer jammed the grid).
-_GRID_THUMB_TARGET = QSize(MAX_CELL_SIZE, MAX_CELL_SIZE)
+#: Grid thumbs decode async at the grid's cell size through the cache's
+#: scaled tier (spec/63 slice 2 — same cure as the session page: the
+#: old 4-per-20 ms UI-thread timer jammed the grid).
+_CELL_PX = 220
+_GRID_THUMB_TARGET = QSize(_CELL_PX, _CELL_PX)
+_CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 
 #: Full-size card height for the single view (the grid thumb would be
 #: blurry — cards render fresh, Nelson eyeball 2026-06-12).
@@ -82,7 +85,6 @@ class CutDetailPage(QWidget):
         self._cut_id: Optional[str] = None
         self._root: Optional[Path] = None
         self._entries: List[Tuple[str, object]] = []
-        self._cells: List[CullCell] = []
         self._thumbs: dict = {}
         self._items: List[ViewportItem] = []
         self._index_by_abs: Dict[Path, int] = {}
@@ -94,6 +96,7 @@ class CutDetailPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # ── Top bar (Adjust row) ─────────────────────────────────────
         head = QHBoxLayout()
         head.setContentsMargins(12, 8, 12, 4)
         self._tag_lbl = QLabel("")
@@ -116,31 +119,48 @@ class CutDetailPage(QWidget):
         head.addWidget(self._help_btn)
         outer.addLayout(head)
 
+        # ── Grid chrome (Back + header + Play/Export) ────────────────
+        chrome = QHBoxLayout()
+        chrome.setContentsMargins(12, 4, 12, 8)
+        chrome.setSpacing(12)
+        self._back_btn = back_button()
+        self._back_btn.setToolTip(tr("Back to the Cuts list. (Esc)"))
+        self._back_btn.clicked.connect(self.back_requested.emit)
+        chrome.addWidget(self._back_btn)
+        self._header_lbl = QLabel("")
+        self._header_lbl.setObjectName("DayGridHeader")
+        chrome.addWidget(self._header_lbl, stretch=1)
+        # Play / Export are opt-in via host flags. spec/61 §5.4 / §5.2 —
+        # the host wires the buttons when the corresponding handlers
+        # land; absent host wiring leaves them hidden so no dead control.
+        self._play_btn = QPushButton(tr("▶ Play"))
+        self._play_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._play_btn.setToolTip(tr(
+            "Play this Cut full-screen — the rehearsal: timed photos, "
+            "real clip lengths, separators, music."))
+        self._play_btn.clicked.connect(
+            lambda: self._cut_id and self.play_requested.emit(self._cut_id))
+        self._play_btn.setVisible(bool(show_play))
+        chrome.addWidget(self._play_btn)
+        self._export_btn = QPushButton(tr("📤 Export all"))
+        self._export_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._export_btn.setToolTip(tr(
+            "Export every processed photo in this Cut."))
+        self._export_btn.clicked.connect(
+            lambda: self._cut_id and self.export_requested.emit(self._cut_id))
+        self._export_btn.setVisible(bool(show_export))
+        chrome.addWidget(self._export_btn)
+        outer.addLayout(chrome)
+
+        # ── Stack: grid ↔ single view ────────────────────────────────
         self._stack = QStackedWidget()
         # spec/61 §5.1 — Cuts are post-pick, so the grid carries no
-        # decision-state border. The blurred-fill photo canvas + hairline
-        # frame replace the QSS QLabel inner so aspect-mismatched photos
-        # and 16:9 separator cards no longer letterbox against the cell.
-        self._grid = DayGridView(
-            show_play_button=show_play,
-            show_export_all_button=show_export,
-            cell_photo_canvas="blurred",
-        )
-        self._grid.back_requested.connect(self.back_requested.emit)
+        # decision-state border. The blurred-fill canvas + hairline
+        # frame are :class:`Thumb`'s native rendering so aspect-mismatched
+        # photos and 16:9 separator cards no longer letterbox.
+        self._grid = ThumbGrid(cell_size=_CELL_SIZE)
         self._grid.cell_activated.connect(self._open_single)
-        self._grid.play_requested.connect(
-            lambda: self._cut_id and self.play_requested.emit(self._cut_id))
-        self._grid.export_all_requested.connect(
-            lambda: self._cut_id and self.export_requested.emit(self._cut_id))
-        # The ▶ Play button ships hidden until the host gates it on
-        # (DayGridView's cluster-era contract) — this surface always
-        # plays (Nelson eyeball 2026-06-12: "could not play").
-        if show_play:
-            self._grid.set_play_button_visible(True)
-            self._grid.set_play_tooltip(tr(
-                "Play this Cut full-screen — the rehearsal: timed photos, "
-                "real clip lengths, separators, music."))
-        # No decisions on this surface — border clicks are ignored.
+        self._grid.back_requested.connect(self.back_requested.emit)
         self._stack.addWidget(self._grid)
         self._single = _SingleView(interactive=False)
         self._single.back_requested.connect(self._back_to_grid)
@@ -173,8 +193,7 @@ class CutDetailPage(QWidget):
         self._opener_lines = cut_opener_lines(
             cut, totals_for_opener, cut.photo_s)
 
-        self._cells = []
-        datas: List[CellRenderData] = []
+        grid_items: List[ThumbGridItem] = []
         self._thumbs = {}
         self._items = []
         self._index_by_abs = {}
@@ -183,16 +202,12 @@ class CutDetailPage(QWidget):
                 img = render_cut_opener_image(
                     tag_text=cut_names.display_tag(cut.tag),
                     lines=self._opener_lines,
-                    aspect=aspect, height=MAX_CELL_SIZE,
+                    aspect=aspect, height=_CELL_PX,
                     card_style=self._card_style, seed_key=cut.id)
                 pm = QPixmap.fromImage(img)
-                if pm.width() > MAX_CELL_SIZE:
-                    pm = pm.scaledToWidth(MAX_CELL_SIZE)
-                cell = CullCell(
-                    end_time="", color=CellColor.UNTOUCHED,
-                    item_id="opener", item_kind="photo")
-                self._cells.append(cell)
-                datas.append(CellRenderData(cell=cell, thumbnail=pm))
+                if pm.width() > _CELL_PX:
+                    pm = pm.scaledToWidth(_CELL_PX)
+                grid_items.append(ThumbGridItem(pixmap=pm, payload=("opener", None)))
                 full = render_cut_opener_image(
                     tag_text=cut_names.display_tag(cut.tag),
                     lines=self._opener_lines,
@@ -205,7 +220,7 @@ class CutDetailPage(QWidget):
                 day = payload
                 meta = day_meta.get(day)
                 pm = render_separator_pixmap(
-                    size=MAX_CELL_SIZE,
+                    size=_CELL_PX,
                     day_number=day,
                     date=getattr(meta, "date", None),
                     location=getattr(meta, "location", None),
@@ -213,11 +228,7 @@ class CutDetailPage(QWidget):
                     aspect=aspect,
                     card_style=self._card_style,
                     seed_key=f"{cut.id}:{day}")
-                cell = CullCell(
-                    end_time="", color=CellColor.UNTOUCHED,
-                    item_id=f"sep:{day}", item_kind="photo")
-                self._cells.append(cell)
-                datas.append(CellRenderData(cell=cell, thumbnail=pm))
+                grid_items.append(ThumbGridItem(pixmap=pm, payload=("sep", day)))
                 full = render_separator_image(
                     day_number=day,
                     date=getattr(meta, "date", None),
@@ -233,12 +244,8 @@ class CutDetailPage(QWidget):
                     pixmap=QPixmap.fromImage(full)))
             else:
                 f = payload
-                cell = CullCell(
-                    end_time=f.capture_time or "",
-                    color=CellColor.UNTOUCHED,
-                    item_id=f.export_relpath, item_kind=f.kind)
-                self._cells.append(cell)
-                datas.append(CellRenderData(cell=cell, thumbnail=None))
+                grid_items.append(ThumbGridItem(
+                    pixmap=None, payload=("file", f.export_relpath)))
                 abs_path = self._root / f.export_relpath
                 self._index_by_abs[abs_path] = len(self._items)
                 self._items.append(ViewportItem(
@@ -253,10 +260,10 @@ class CutDetailPage(QWidget):
         self._meta_lbl.setText(
             tr("{n} items · {len} projected").replace("{n}", str(n)).replace(
                 "{len}", _fmt_mmss(totals.seconds(cut.photo_s))))
-        self._grid.set_header(
+        self._header_lbl.setText(
             tr("{tag} — the show, in order").replace(
                 "{tag}", cut_names.display_tag(cut.tag)))
-        self._grid.set_cells(datas)
+        self._grid.set_items(grid_items)
         self._stack.setCurrentIndex(0)
         self._single.set_entries(self._items, 0)
         self._request_missing_thumbs()
@@ -285,10 +292,7 @@ class CutDetailPage(QWidget):
         if kind != "file":
             return
         self._thumbs[f.export_relpath] = hit[0]
-        if 0 <= index < len(self._cells):
-            self._grid.update_cell(
-                index, CellRenderData(cell=self._cells[index],
-                                      thumbnail=hit[0]))
+        self._grid.set_pixmap(index, hit[0])
 
     # ── single view (read-only) ──────────────────────────────────────
 

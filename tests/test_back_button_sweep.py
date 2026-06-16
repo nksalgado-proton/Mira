@@ -15,9 +15,6 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QPushButton, QWidget
 
-from mira.ui.base.day_grid_view import DayGridView
-from mira.ui.picked.pick_top_bar import PickTopBar
-
 
 def _all_pushbuttons(w: QWidget) -> list[QPushButton]:
     return w.findChildren(QPushButton)
@@ -26,22 +23,6 @@ def _all_pushbuttons(w: QWidget) -> list[QPushButton]:
 def _back_buttons(w: QWidget) -> list[QPushButton]:
     """Every BackButton-role widget under ``w``."""
     return [b for b in _all_pushbuttons(w) if b.objectName() == "BackButton"]
-
-
-def test_pick_top_bar_back_is_plain_back(qapp):
-    bar = PickTopBar()
-    assert bar.back_button.text() == "Back"
-    assert bar.back_button.objectName() == "BackButton"
-
-
-def test_day_grid_back_uses_plain_label(qapp):
-    view = DayGridView()
-    # The DayGridBackButton object name is kept for the surface QSS
-    # override slot; the label is the uniform plain "Back".
-    btns = [b for b in _all_pushbuttons(view)
-            if b.objectName() == "DayGridBackButton"]
-    assert len(btns) == 1
-    assert btns[0].text() == "Back"
 
 
 def test_bucket_navigator_quit_button_has_no_danger_role(qapp):

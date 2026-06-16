@@ -51,10 +51,10 @@ cleanly (the thing that kept breaking).
 - **Title row:** same shape — icon · name + meta · `⋮`.
 - **4:3 area:** the `PhotoCycler` (chrome-free ambient cycler from spec/75 §6 —
   shuffled auto-advance, blurred-fill, no arrows/dots) over the event's
-  **exported keepers**, with one thin translucent bottom strip carrying the
-  counts (`N exported · M shot`). The photo's **bottom corners are clipped to the
-  tile radius** (§7.2) so it lines up with the rounded border — nothing square
-  pokes out.
+  **exported keepers**. **NO text overlay — remove the `N exported · M shot`
+  counts strip entirely.** The photo fills the area and shines; nothing covers
+  it. The photo's **bottom corners are clipped to the tile radius** (§7.2) so it
+  lines up with the rounded border — nothing square pokes out.
 
 ---
 
@@ -103,11 +103,15 @@ glyph.
 `#ef4444`, amber `#fbbf24`, track = faint `line`. Only **Collect & Edit** use the
 faint track for their remainder; **Pick & Export** use **red** for theirs.
 
-**2×2 layout:** every donut cell is the **same size** with the **same internal
-spacing** (ring · fixed gap · `%`), the ring+`%` group centred — so the ring→`%`
-gap is identical for all four (the first build had the top row tighter than the
-bottom). Leave **bottom padding** in the 4:3 area so the lower `%`s never clip
-against the border.
+**2×2 layout — the `%` must hug its OWN ring:** every donut cell is the **same
+size**. In each cell, **top-anchor** the group: ring at the top, then a **tight
+fixed gap (~4px), then the `%` directly under it** — and **all remaining vertical
+space sits BELOW the `%`** (before the next row). Do **not** vertically centre the
+group: centring floated the `%` toward the middle of the cell, so the top row's
+`%` ended up closer to the bottom row's ring than to its own. With top-anchoring,
+every `%` sits ~4px under its ring and is clearly separated from the next row, so
+it unambiguously belongs to the ring above it. Same tight gap for all four. Leave
+**bottom padding** in the 4:3 area so the lowest `%`s never clip the border.
 
 ---
 
@@ -153,21 +157,25 @@ upscales the pixmap and every icon looks soft. **Fix at the source:** render at
 `size × devicePixelRatioF()`, then `pixmap.setDevicePixelRatio(dpr)` before
 returning. This sharpens every icon in the app.
 
-### 7.2 Rounded tile + clean border + matching photo corners
-A QSS `border + border-radius` on a `QFrame` leaves the corners aliased
-(worst in dark) — and the latest build went fully square, which is also wrong.
-Do it in paint:
-- Drop the QSS `border`. In the tile's `paintEvent`, `QPainter` with
-  `setRenderHint(Antialiasing)`, draw the rounded fill and a **1px rounded-rect
-  border** (`drawRoundedRect`, rect inset 0.5px) at `radius_xl`.
-- **Clip the tile's content** to that rounded rect so nothing square pokes out.
-- **Clip the closed `PhotoCycler` to match:** round its **bottom-left and
-  bottom-right** corners to `radius_xl` (top edge straight where it meets the
-  header) via a `QPainterPath` clip, so the photo's rounded bottom lines up with
-  the tile border.
-- The border must be **clearly visible in BOTH light and dark** — choose a
-  `card_border`/`line` value with real contrast against the fill, not the
-  faintest token.
+### 7.2 Tile border — use the QSS `#TileCard` border (this is why there is no border now)
+The current build set `QFrame#TileCard` to **`border: none`** (to make room for a
+hand-painted border) and **never added the paintEvent — so the tile has NO border
+at all.** Do **not** paint the border manually. Restore the simple, reliable QSS
+border that every other card in the app already uses, and delete any half-built
+border-paint code on the tile.
+- In `redesign.qss`: `QFrame#TileCard { background: {card}; border: 1px solid
+  {card_border}; border-radius: {radius_xl}px; }`, and set
+  `setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)` on the tile so the
+  role actually paints.
+- **`{card_border}` MUST be clearly visible against `{card}` in BOTH themes** —
+  a real, obvious border, not a hairline that disappears in dark. If the existing
+  `card_border` token is too faint, use a stronger one (≈ `line`/`border`
+  weight) for this role.
+- Rounded corners come from the QSS `border-radius`; `WA_StyledBackground` clips
+  the fill. Additionally **clip the closed `PhotoCycler`'s bottom-left/right
+  corners to `radius_xl`** (a `QPainterPath` round-rect clip on the bottom two
+  corners only) so the photo's rounded bottom lines up with the tile border and
+  nothing square pokes out.
 
 ---
 

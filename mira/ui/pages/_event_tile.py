@@ -225,25 +225,28 @@ class _PhaseDonut(QWidget):
         return f
 
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
-        # spec/77 §10.7 #5 — every donut cell uses the same layout:
-        # ring · fixed gap · % label, with the whole group centred
-        # vertically. Centring keeps the four cells reading identically
-        # regardless of which sits where in the 2×2 grid (previously
-        # the ring was top-anchored, so the bottom-row donuts read
-        # with more space between ring and %).
+        # spec/77 §4 — TOP-anchor the ring + tight gap + % group. The
+        # earlier "centre the group vertically" reading floated the
+        # ``%`` toward the middle of its cell, which put the top-row
+        # ``%`` closer to the bottom-row ring than to its own ring.
+        # Now: ring rides the top of the cell, ``%`` sits ~4px under
+        # it, all remaining vertical space falls BELOW the ``%`` (i.e.
+        # before the next row in the 2×2). Same recipe in every cell
+        # so the four read identically.
         pct_text = f"{self._percent}%"
         pct_font = self._pct_font()
         fm = QFontMetrics(pct_font)
         pct_h = fm.height()
 
+        # The ring is the smaller of (width minus inset) and an upper
+        # bound that leaves room for the gap + ``%`` line below it.
         avail_h = self.height() - pct_h - self._PCT_GAP - self._RING_INSET * 2
         side = min(
             self.width() - self._RING_INSET * 2, max(0, avail_h)
         )
         if side <= 0:
             return
-        group_h = side + self._PCT_GAP + pct_h
-        top = (self.height() - group_h) / 2.0
+        top = float(self._RING_INSET)
         rect = QRectF(
             (self.width() - side) / 2.0,
             top,
@@ -422,10 +425,14 @@ class EventTile(Card):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent, padded=False)
-        # spec/77 §10.3 — re-tag as #TileCard so the (border-less) QSS
-        # role lands; the tile's own paintEvent draws the antialiased
-        # rounded border on top of the QSS fill.
+        # spec/77 §7.2 — let QSS draw the tile's rounded fill + visible
+        # border by tagging as ``#TileCard`` and flipping
+        # ``WA_StyledBackground`` so the rule actually paints (without
+        # this, a QFrame doesn't render its QSS background reliably).
+        # No paintEvent override — the half-built paint-the-border path
+        # is the reason the v3 build shipped without a border at all.
         self.setObjectName("TileCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._data = data
         self._sample_pixmaps = list(sample_pixmaps or [])
         outer = QVBoxLayout(self)
@@ -564,18 +571,19 @@ class EventTile(Card):
     # ── closed content: PhotoCycler in the 4:3 area ──────────────
 
     def _build_closed_content(self) -> QWidget:
-        sub_bits: list[str] = []
-        if self._data.exported_count:
-            sub_bits.append(f"{self._data.exported_count} exported")
-        if self._data.collected_count:
-            sub_bits.append(f"{self._data.collected_count} shot")
+        # spec/77 §3 — the closed photo is **unobstructed**. No
+        # counts strip, no caption, no tag, no pill on top of the
+        # image: the photo fills the 4:3 area and shines. The
+        # exported/shot counts live elsewhere (event header, stats
+        # surfaces) — they don't belong on the cover.
+        #
         # The cycler sits below the title row so its top edge stays
         # square (meets the row at a straight line); the bottom corners
-        # match the tile's outer radius so the photo and the tile
-        # border share one continuous rounded edge (spec/77 §10.7 #3).
+        # match the tile's outer radius (spec/77 §7.2) so the photo and
+        # the tile border share one continuous rounded edge.
         return PhotoCycler(
             self._sample_pixmaps,
-            caption=" · ".join(sub_bits),
+            caption="",
             sub_caption="",
             tag_text="",
             pill_text="",
@@ -627,34 +635,3 @@ class EventTile(Card):
         catch their clicks first via Qt's child-first event flow."""
         super().mousePressEvent(evt)
         self.activated.emit(self._data.event_id)
-
-    def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
-        """Paint the rounded tile fill + border ourselves (spec/77
-        §10.3 / §10.7). Two reasons the QSS path can't do this:
-
-        1. ``background-color`` is NOT clipped to ``border-radius``
-           unless a border is also set — without the border we'd
-           painted out, the QSS background fill spreads to the four
-           corners as opaque squares poking through our rounded
-           outline.
-        2. Even with a border the corner stroke isn't antialiased; the
-           rounded edge breaks into stair-steps especially on HiDPI.
-
-        We bypass QSS for #TileCard's background (the rule is
-        ``background: transparent``) and own both the fill + the
-        outline in QPainter so the tile is one continuous rounded
-        card. The drop shadow effect on Card is unaffected — it reads
-        the widget's final rendered pixels, including this paint."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Card fill — clipped to the rounded outline so the corner
-        # area outside the rounded rect stays transparent.
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(_palette_color("card")))
-        painter.drawRoundedRect(r, TILE_RADIUS, TILE_RADIUS)
-        # 1-px AA border on top of the fill.
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(_palette_color("card_border")), 1.0))
-        painter.drawRoundedRect(r, TILE_RADIUS, TILE_RADIUS)
-        painter.end()

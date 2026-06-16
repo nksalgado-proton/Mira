@@ -2220,20 +2220,50 @@ class MainWindow(QMainWindow):
         log.info("Days Lists 'new pass' clicked (stub; not yet wired)")
 
     def _on_days_lists_pick_all_stub(self) -> None:
-        log.info("Days Lists 'pick all days' clicked (stub; not yet wired)")
+        self._apply_days_lists_bulk("picked")
 
     def _on_days_lists_skip_all_stub(self) -> None:
-        log.info("Days Lists 'skip all days' clicked (stub; not yet wired)")
+        self._apply_days_lists_bulk("skipped")
 
     def _on_days_lists_day_pick_all_stub(self, day_number: int) -> None:
-        log.info(
-            "Days Lists day %s 'pick all' clicked (stub; not yet wired)",
-            day_number)
+        self._apply_days_lists_bulk("picked", day_number=day_number)
 
     def _on_days_lists_day_skip_all_stub(self, day_number: int) -> None:
-        log.info(
-            "Days Lists day %s 'skip all' clicked (stub; not yet wired)",
-            day_number)
+        self._apply_days_lists_bulk("skipped", day_number=day_number)
+
+    def _apply_days_lists_bulk(
+        self, state: str, *, day_number: "Optional[int]" = None,
+    ) -> None:
+        """Bulk Pick/Skip from the Days Lists — set every CAPTURED item's
+        decision (event-wide, or one day) for the active phase, then refresh
+        the list. Pick/Skip are reversible per item; the event-wide sweep
+        confirms first. Pick phase writes the 'pick' ledger; Edit/Export
+        write 'edit' (the Export ship decision rides the edit phase_state)."""
+        event_id = self._current_event_id
+        if event_id is None:
+            return
+        phase = ("edit"
+                 if (self._edit_phase_active or self._export_phase_active)
+                 else "pick")
+        if day_number is None:
+            from PyQt6.QtWidgets import QMessageBox
+            verb = tr("Pick") if state == "picked" else tr("Skip")
+            if QMessageBox.question(
+                self, tr("{verb} all days?").replace("{verb}", verb),
+                tr("This marks every day in this event as {state}. You can "
+                   "still change individual items afterwards.")
+                .replace("{state}", state),
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        eg = self.gateway.open_event(event_id)
+        try:
+            items = (eg.items(provenance="captured", day=day_number)
+                     if day_number is not None
+                     else eg.items(provenance="captured"))
+            eg.set_items_phase_state([it.id for it in items], phase, state)
+        finally:
+            eg.close()
+        self._open_days_lists_for(event_id)
 
     def _on_delete_event(self) -> None:
         """Event menu "Delete event" → offer a choice (spec/14 §5D): remove from

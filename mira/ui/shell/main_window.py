@@ -683,6 +683,10 @@ class MainWindow(QMainWindow):
         self._add_menu_action(
             help_menu, tr("&Third-party tool guides…"),
             lambda: self._on_entry(ENTRY_HELPERS))
+        help_menu.addSeparator()
+        self._add_menu_action(
+            help_menu, tr("&About Mira…"), self._open_about,
+            tooltip=tr("Show app version and brand info."))
 
         # Apply the initial surface (no event open → events_list).
         self._refresh_menu_state()
@@ -847,6 +851,14 @@ class MainWindow(QMainWindow):
             tr("“{action}” is being reassembled next.").replace(
                 "{action}", action),
         )
+
+    def _open_about(self) -> None:
+        """Help → About Mira — show the brand lockup + version + tagline
+        (spec/74 §3). The dialog is the one surface that surfaces
+        ``MiraLogo(tagline=True)``; the title-bar logo is too small for the
+        tagline to be legible."""
+        from mira.ui.design.about_dialog import show_about
+        show_about(self)
 
     def _go_to_library(self) -> None:
         """App → Library (Ctrl+L) — return to the events list from any

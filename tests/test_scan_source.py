@@ -151,6 +151,25 @@ def test_untimestamped_photos_are_counted_not_grouped(stub_autofill):
     assert len(out.scan_rows) == 1
 
 
+def test_exif_less_photo_recovers_timestamp_from_filename(stub_autofill):
+    """spec/74 §0.1 — an EXIF-less photo whose filename carries a parseable
+    date (the WhatsApp / Drive / messenger renames that strip EXIF) groups
+    onto its true day instead of being dropped into ``untimestamped_count``.
+    The well-named photo gets a real day row; a date-less filename next to
+    it still routes to the untimestamped count."""
+    photos = [
+        PhotoExif(
+            path=Path("/scan/IMG_20180224_204237.jpg"), timestamp=None,
+        ),
+        PhotoExif(path=Path("/scan/violet.jpg"), timestamp=None),
+    ]
+    out = build_scan_result(photos, source_root=Path("/scan"))
+    assert out.total_photos == 2
+    assert out.untimestamped_count == 1
+    assert len(out.scan_rows) == 1
+    assert out.scan_rows[0].date == date(2018, 2, 24)
+
+
 # --------------------------------------------------------------------------- #
 # Phone vs camera detection in presence list
 # --------------------------------------------------------------------------- #

@@ -13,6 +13,14 @@ the per-surface punch list a follow-up "fidelity pass" should attack, and
 the technical-debt backlog that's parallel-but-separate from the visual
 work.
 
+> **Update 2026-06-16 — read spec/74 first.** Two of the
+> three "heavy UI" gaps (§3.8 crop drag handles; §2.3 / §3.8 Look-preset
+> previews) are confirmed already built — the punch list above was stale.
+> §0.1 ("Mira brand entirely absent") is now ~90% addressed: brand widgets
+> + title-bar logo + About-Mira dialog with the tagline all ship.
+> See [`spec/74-ui-fidelity-handoff.md`](74-ui-fidelity-handoff.md) for the
+> per-item handoff and verification record.
+
 **This punch list is partial.** When Nelson asked "did you write about all
 that was left behind?" — the honest answer was no, and a 60-second skim
 of just 3 of the 18 `MiraCrafter Redesign/*.html` mockup files surfaced
@@ -61,12 +69,19 @@ title-bar logo, no installer icon override (installer.iss still uses
 `assets\icons\app.ico`). The app currently has no visible identity. A
 fidelity pass should:
 
-- Extract the SVG mark from mira-logo.html (it's embedded inline; copy
-  the path data) into `assets/icons/mira-mark.svg`.
-- Build a `MiraLogo(QWidget)` design component that renders the wordmark
-  `M✦ıra` at any size (mark + wordmark side-by-side).
-- Drop it into MainWindow's title bar slot (see §0.2).
-- Use the tagline somewhere — splash, About, README, wizard welcome.
+- ~~Extract the SVG mark from mira-logo.html (it's embedded inline; copy
+  the path data) into `assets/icons/mira-mark.svg`.~~ **DONE** —
+  `assets/icons/mira-mark.svg` ships.
+- ~~Build a `MiraLogo(QWidget)` design component that renders the wordmark
+  `M✦ıra` at any size (mark + wordmark side-by-side).~~ **DONE** —
+  `mira/ui/design/brand.py` (`MiraMark` + `_Wordmark` + `MiraLogo`).
+- ~~Drop it into MainWindow's title bar slot (see §0.2).~~ **DONE** —
+  `mira/ui/design/title_bar.py` hosts `MiraLogo(tile_size=24)`.
+- ~~Use the tagline somewhere — splash, About, README, wizard welcome.~~
+  **DONE (spec/74 §3, 2026-06-16):** Help → About Mira surfaces
+  `MiraLogo(tile_size=48, tagline=True)` via
+  `mira/ui/design/about_dialog.py`. (Splash + wizard welcome remain
+  optional next-steps if Nelson wants more saturation.)
 - Replace `assets/icons/app.ico` with a generated icon from the new mark
   + bump the installer artifact.
 
@@ -485,9 +500,12 @@ route swap).
 Built: `mira/ui/pages/editor_page.py:EditorPage` + `EditorStage` (no
 route swap).
 
-- **Crop overlay is paint-only.** No drag handles, no aspect-lock
+- ~~**Crop overlay is paint-only.** No drag handles, no aspect-lock
   enforcement during user drag. Real editor needs draggable corner
-  handles + edge handles + aspect snap.
+  handles + edge handles + aspect snap.~~ **DONE (verified spec/74
+  §1, 2026-06-16):** `mira/ui/edited/crop_overlay.py` ships a fully
+  draggable rectangle with corner + edge handle hit radii, aspect lock
+  via `set_aspect_ratio()`, and a rotation handle.
 - **Look / Strength / Style / Filter all emit signals only.** The
   rendered pixmap doesn't change. Real wiring goes through
   `core.adjustment_pipeline` + `mira.ui.edited.adjustment_surface`.
@@ -497,9 +515,14 @@ route swap).
 - **Stage backdrop is the same blur as Picker.** Mockup hints at a
   stronger blur on Editor (the photo is the canvas, the backdrop is
   pure context).
-- **Look segmented preset previews.** Today text-only pills. Mockup
+- ~~**Look segmented preset previews.** Today text-only pills. Mockup
   has small icon preview of each preset (a tiny version of the photo
-  with the look applied).
+  with the look applied).~~ **DONE (verified spec/74 §2, 2026-06-16):**
+  the intent landed as the Look grid (`mira/ui/edited/look_grid.py`,
+  key **G**) — a 2×2 of *this* photo rendered through the real engine
+  under Original/Natural/Brighten/Deeper. The inline toolbar pills + L
+  / Shift+L cycle stay text-only by design; the grid is the richer
+  surface.
 
 ### §3.9 Surface 09 — Share / Cuts
 

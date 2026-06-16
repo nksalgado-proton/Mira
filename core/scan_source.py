@@ -30,13 +30,14 @@ calls :func:`scan_source` off-thread via
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 
 from core import autofill as _autofill
 from core import phone_detector
+from core.filename_timestamp import parse_timestamp_from_filename
 from core.fresh_source import camera_id_for as _camera_id_for_raw
 from core.ingest_pipeline import IngestPhotoJob
 from core.peek_select import PeekCandidate
@@ -213,6 +214,34 @@ def _is_video(p: "PhotoExif") -> bool:
     return float(getattr(p, "duration_seconds", 0.0) or 0.0) > 0.0
 
 
+def _recover_filename_timestamps(
+    photos: Sequence["PhotoExif"],
+) -> List["PhotoExif"]:
+    """Return ``photos`` with EXIF-less timestamps recovered from the
+    filename where possible. Photos that already carry a ``timestamp``
+    pass through untouched; for the rest, a parseable date in the name
+    (``IMG_20180224_204237.jpg``, ``IMG-20180224-WA0001.jpg``,
+    ``2018-02-24 20.42.37.jpg`` …) becomes the capture time. Names with
+    no recognisable date are left as ``timestamp=None`` so they still
+    count as untimestamped and route to the no-timestamp path. Never
+    falls back to mtime — that is the copy date, not the capture date.
+    """
+    out: List["PhotoExif"] = []
+    recovered = 0
+    for p in photos:
+        if p.timestamp is None:
+            parsed = parse_timestamp_from_filename(Path(p.path).name)
+            if parsed is not None:
+                p = replace(p, timestamp=parsed.dt)
+                recovered += 1
+        out.append(p)
+    if recovered:
+        log.info(
+            "scan_source: recovered capture time from filename for "
+            "%d EXIF-less photo(s)", recovered)
+    return out
+
+
 def build_scan_result(
     photos: Sequence["PhotoExif"],
     *,
@@ -234,7 +263,18 @@ def build_scan_result(
     A photo with an empty ``camera_id`` (no readable Make/Model)
     doesn't contribute a presence row but still shows up in the
     peek candidate list — the user can still preview it.
+
+    Capture time is recovered from the **filename** for photos whose
+    EXIF ``DateTimeOriginal`` was unreadable (EXIF-stripped phone
+    exports, WhatsApp / messenger renames, Drive exports). The file's
+    mtime is the *copy* date, not the capture date, so it is never used
+    for day routing — but a name like ``IMG_20180224_204237.jpg`` carries
+    the real date, and recovering it lets the photo group into its true
+    day instead of collapsing onto the import date or going undated.
+    Mirrors the SD-card ingest engine (``mira/ingest/engine.py``); the
+    recovery is pure (``core.filename_timestamp``, Qt-free).
     """
+    photos = _recover_filename_timestamps(photos)
     by_day: Dict[date, List["PhotoExif"]] = {}
     untimestamped = 0
     for p in photos:
@@ -525,6 +565,7 @@ def scan_source(
 
 
 def _empty_result() -> ScanResult:
+    """Empty scan — used for a missing/empty source path."""
     return ScanResult(
         scan_rows=[],
         candidates_by_date={},

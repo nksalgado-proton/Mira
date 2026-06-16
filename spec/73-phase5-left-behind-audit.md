@@ -6,6 +6,13 @@ code). Seeds the Phase 5 closeout (spec/70 §"Phase 5"). Surfaces 12 (in
 flight), 13 (folded into the 09 findings), Quick Sweep (not built) and the
 visual-fidelity-vs-mockup layer are NOT yet covered here.
 
+> **Update 2026-06-16 — read spec/74 first.** A follow-up audit
+> ([`spec/74-ui-fidelity-handoff.md`](74-ui-fidelity-handoff.md)) and the
+> intervening commits closed Tier-1 #2 (`2bdd50f`), Tier-1 #4 (`380e8c9`),
+> spec/65 §3.8 "crop drag handles," and the "Look preset previews" item.
+> The crossed-out entries below are the ones that have already landed —
+> the next audit starts from there, not from the 2026-06-13 punch list.
+
 Per-surface verdicts: **07 Picker** substantially done · **08 Editor** done on
 function, test holes · **09 Share/Cuts** shell migrated, deep Cut program has
 real gaps · **Export** shipped-quality, feature-complete · **05/06 Days
@@ -25,22 +32,27 @@ thin.
    gateway: inherit the parent video's `day_number` + offset `capture_time`
    (snapshot `at_ms`; segment start `in_ms`). *(Already briefed; still unbuilt.)*
 
-2. **New Cut dialog shows fabricated pool/match counts.** The redesigned dialog
+2. ~~**New Cut dialog shows fabricated pool/match counts.** The redesigned dialog
    multiplies static declared `PoolOption.count` values
    (`new_cut_dialog.py:624-633`) and never binds the real `pool_probe` /
    `totals_probe` callbacks — the "N of M match" count is cosmetic and style/media
-   filters don't change it (`new_cut_dialog_adapter.py:292-296`).
+   filters don't change it (`new_cut_dialog_adapter.py:292-296`).~~
+   **DONE (commit `2bdd50f`, 2026-06-15):** "New Cut dialog: live pool/totals
+   probes, CutDraft moves to mira.shared." Adapter now binds the real probes;
+   match count is live.
 
 3. **New Cut dialog: Load template… / Save as template… are dead controls.**
    Both buttons render (`new_cut_dialog.py:291,542`) but aren't wired; the
    adapter stubs them even though the host fully implements the template store
    and passes it in (`share_cuts_page.py:717-772`).
 
-4. **Days Lists bulk actions are log-only stubs.** "+ Start a new pass…",
+4. ~~**Days Lists bulk actions are log-only stubs.** "+ Start a new pass…",
    "✓ Pick all days", "✗ Skip all days" and per-row `day_pick_all` /
    `day_skip_all` all route to `_on_days_lists_*_stub` handlers that only
    `log.info(...)` (`main_window.py:2217-2233`). Buttons render and emit but do
-   nothing.
+   nothing.~~ **DONE (commit `380e8c9`, 2026-06-15):** "Days Lists: wire the
+   bulk Pick / Skip actions." The stubs are replaced; the buttons now apply
+   the decision across the selected scope.
 
 ## Tier 2 — Definition-of-Done blockers (legacy not retired)
 

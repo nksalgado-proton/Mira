@@ -234,6 +234,28 @@ def test_common_immediate_subdir_preserves_verbatim_name(tmp_path):
     assert common_immediate_subdir(photos, src) == "2024-07-12 Sintra hike"
 
 
+def test_common_immediate_subdir_skips_reserved_internal_folders(tmp_path):
+    """spec/74 §0.2 — Mira's own internal bucket folders (the
+    underscore-prefixed ``_cameras`` / ``_phones`` / ``_other`` /
+    ``_no_timestamp``, the legacy ``_outros`` / ``_celulares``, and the
+    phase folders like ``Original Media``) must never bleed into the day
+    description. When a captured tree is re-scanned, those names are an
+    implementation detail, not a user-meaningful label, so the day falls
+    back to ``Day N`` rather than surfacing ``"_outros"``."""
+    src = tmp_path / "Re-import"
+    src.mkdir()
+    for bucket in ("_phones", "_outros", "_no_timestamp", "Original Media"):
+        d = src / bucket / "Day"
+        d.mkdir(parents=True)
+        photos = [d / "P1.JPG"]
+        assert common_immediate_subdir(photos, src) is None, bucket
+    # A real user subdir is still preserved verbatim — the guard targets
+    # internal names only.
+    sintra = src / "Sintra hike"
+    sintra.mkdir()
+    assert common_immediate_subdir([sintra / "P1.JPG"], src) == "Sintra hike"
+
+
 # --------------------------------------------------------------------------- #
 # autofill_description_from_subdir — the PhotoExif-shaped wrapper
 # --------------------------------------------------------------------------- #

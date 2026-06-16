@@ -211,13 +211,17 @@ class EventHeaderDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("Event Header"))
         self.setModal(True)
         self.resize(720, 820)
         self._was_applied = False
         self._existing_name = (
             (existing_info or {}).get("name") or ""
         ).strip()
+        # Window title tracks the flow: "New Event" while creating, the
+        # neutral "Event Header" while editing an existing one.
+        self.setWindowTitle(
+            tr("Event Header") if self._existing_name else tr("New Event")
+        )
         # Optional secondary action surfaced in the footer when the
         # dialog opens for an existing event (the locate/relink entry
         # point per charter §7). Left None for the create flow.
@@ -277,17 +281,25 @@ class EventHeaderDialog(QDialog):
         )
         h.addWidget(tile)
 
-        # Title + optional event-name subtitle when editing an existing one
+        # Title + subtitle. The dialog serves two flows — creating a
+        # brand-new event (no name yet) and editing an existing one. Always
+        # render a two-line lockup so the title never sits alone next to the
+        # 32px tile (the create flow used to show a single lonely line). The
+        # subtitle carries the event name when editing, or a one-line guide
+        # when creating.
+        is_new = not self._existing_name
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(0)
-        title = QLabel(tr("Event Header"))
+        text_col.setSpacing(1)
+        title = QLabel(tr("New Event") if is_new else tr("Event Header"))
         title.setObjectName("CardTitle")
         text_col.addWidget(title)
-        if self._existing_name:
-            sub = QLabel(self._existing_name)
-            sub.setObjectName("Sub")
-            text_col.addWidget(sub)
+        sub = QLabel(
+            tr("Set up identity, logistics, and tags.")
+            if is_new else self._existing_name
+        )
+        sub.setObjectName("Sub")
+        text_col.addWidget(sub)
         h.addLayout(text_col)
         h.addStretch()
 

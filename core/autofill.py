@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence, Tuple
 
 from core import phone_detector
+from core.path_builder import RESERVED_DIR_NAMES
 
 if TYPE_CHECKING:
     from core.exif_reader import PhotoExif
@@ -228,7 +229,17 @@ def common_immediate_subdir(
             return None                                  # early exit on mixed
     if not has_any:
         return None
-    return seen.pop()
+    name = seen.pop()
+    # Never surface Mira's own internal bucket folders as a day
+    # description. An import whose source already carries a captured tree
+    # (``_cameras`` / ``_phones`` / ``_other`` / ``_no_timestamp``, the
+    # legacy ``_outros`` / ``_celulares``, or any phase folder like
+    # ``Original Media``) would otherwise leak a token such as "_outros"
+    # straight into the day title. A real user subdir never starts with
+    # "_", so this is a safe guard; the day falls back to "Day N".
+    if name.startswith("_") or name in RESERVED_DIR_NAMES:
+        return None
+    return name
 
 
 def autofill_description_from_subdir(

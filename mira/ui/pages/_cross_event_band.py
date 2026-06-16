@@ -20,7 +20,6 @@ from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -80,7 +79,12 @@ class CrossEventCutsBand(QFrame):
         super().__init__(parent)
         self.setObjectName("CrossEventBand")
         self._build_layout()
-        self._apply_shadow()
+        # No QGraphicsDropShadowEffect: Qt re-paints every child widget
+        # through the effect, which in dark mode swaps the children's
+        # transparent backgrounds for opaque black boxes (the "Cross-
+        # Event Cuts" title + subtitle came out on black blocks). The
+        # accent border + gradient on the band already mark it as the
+        # hero entry point — no shadow needed.
 
     def _build_layout(self) -> None:
         h = QHBoxLayout(self)
@@ -135,23 +139,6 @@ class CrossEventCutsBand(QFrame):
         btn = primary_button("Search")
         btn.clicked.connect(self._emit)
         h.addWidget(btn)
-
-    def _apply_shadow(self) -> None:
-        # Accent-glow drop shadow. Bumped from alpha 46 (.18) to ~92 (.36 in
-        # dark / .22 in light) — the original was tuned to the mockup's CSS
-        # `rgba(.18)` but Qt's QGraphicsDropShadowEffect renders a softer
-        # blur than CSS's box-shadow, so the same alpha reads about half as
-        # present on screen. The bump restores the "hero entry" weight
-        # without crossing into the heavy near-opaque drop the legacy used.
-        eff = QGraphicsDropShadowEffect(self)
-        eff.setBlurRadius(36)
-        eff.setOffset(0, 12)
-        app = QApplication.instance()
-        mode = (app.property("theme") if app else None) or "dark"
-        accent = QColor(PALETTE[mode]["accent"])
-        accent.setAlpha(92 if mode == "dark" else 56)
-        eff.setColor(accent)
-        self.setGraphicsEffect(eff)
 
     def _emit(self) -> None:
         text = self._search.input.text().strip()

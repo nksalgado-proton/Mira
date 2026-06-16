@@ -24,7 +24,7 @@ QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius
  * ``drawRoundedRect``) so the corner stroke is smooth in both
  * themes. The tile reserves a 2px contents-margin so children
  * never overlap the border. */
-QFrame#TileCard    { background: {card}; border: none; border-radius: {radius_xl}px; }
+QFrame#TileCard    { background: {card}; border: none; border-radius: 0px; }
 QFrame#Card2,
 QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
 

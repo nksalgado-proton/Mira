@@ -63,7 +63,7 @@ PALETTE: dict[str, dict[str, str]] = {
         # Light-theme companion to dark's #22d3ee — darker so the
         # Collect tokens (bar / stat tile / chip) stay legible on the
         # white card2 background.
-        "pink": "#e0468a", "blue": "#0891b2", "track": "#eceef4",
+        "pink": "#e0468a", "blue": "#0891b2", "track": "#d3d7df",
         "bg_glow": "#ffffff",
         "picked": "#16a34a", "skipped": "#dc2626", "compare": "#ea7317",
         "mixed": "#d4a017",

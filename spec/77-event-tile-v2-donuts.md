@@ -157,25 +157,36 @@ upscales the pixmap and every icon looks soft. **Fix at the source:** render at
 `size × devicePixelRatioF()`, then `pixmap.setDevicePixelRatio(dpr)` before
 returning. This sharpens every icon in the app.
 
-### 7.2 Tile border — use the QSS `#TileCard` border (this is why there is no border now)
-The current build set `QFrame#TileCard` to **`border: none`** (to make room for a
-hand-painted border) and **never added the paintEvent — so the tile has NO border
-at all.** Do **not** paint the border manually. Restore the simple, reliable QSS
-border that every other card in the app already uses, and delete any half-built
-border-paint code on the tile.
-- In `redesign.qss`: `QFrame#TileCard { background: {card}; border: 1px solid
-  {card_border}; border-radius: {radius_xl}px; }`, and set
-  `setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)` on the tile so the
-  role actually paints.
-- **`{card_border}` MUST be clearly visible against `{card}` in BOTH themes** —
-  a real, obvious border, not a hairline that disappears in dark. If the existing
-  `card_border` token is too faint, use a stronger one (≈ `line`/`border`
-  weight) for this role.
-- Rounded corners come from the QSS `border-radius`; `WA_StyledBackground` clips
-  the fill. Additionally **clip the closed `PhotoCycler`'s bottom-left/right
-  corners to `radius_xl`** (a `QPainterPath` round-rect clip on the bottom two
-  corners only) so the photo's rounded bottom lines up with the tile border and
-  nothing square pokes out.
+### 7.2 Tile border — PAINT it exactly like the days-grid `Thumb` (copy that code)
+QSS `border + border-radius` gaps at the rounded corners and vanishes in dark —
+that is what's wrong now. The days grid already solved this: its border is
+**painted, not QSS** (`mira/ui/design/thumbs.py`), and its corners are clean and
+clearly visible. **Copy that exact approach** into the event tile's `paintEvent`:
+
+```python
+painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+painter.setClipping(False)                 # so the stroke isn't cut at the edge
+painter.setBrush(Qt.BrushStyle.NoBrush)
+pen = QPen(QColor(card_border), 2)         # 2px neutral border (days grid uses 3
+pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)#  px for its state border — match that
+painter.setPen(pen)                        #  visibility; bump to 3 if Nelson wants)
+painter.drawRoundedRect(
+    rect.adjusted(1.0, 1.0, -1.0, -1.0), radius_xl - 1.0, radius_xl - 1.0)
+```
+
+- **Painted, not QSS.** Set `QFrame#TileCard` QSS to fill + radius only
+  (`background: {card}; border-radius: {radius_xl}px; border: none;`) with
+  `WA_StyledBackground` so the fill is rounded/clips; the `paintEvent` draws the
+  visible rounded border on top.
+- **`card_border` must be clearly visible in BOTH themes** — thick (2–3px) and
+  contrasty, like the days-grid border. No more hairline that disappears in dark.
+- `setContentsMargins(2, 2, 2, 2)` on the tile's layout so children never paint
+  over the border ring.
+- **Clip the closed `PhotoCycler`'s bottom-left/right corners to `radius_xl`**
+  (`QPainterPath` round-rect on the bottom two corners only) so the photo lines
+  up with the rounded border — nothing square pokes out.
+- Delete the dead "border: none, will paint later" state that left the tile with
+  no border at all.
 
 ---
 

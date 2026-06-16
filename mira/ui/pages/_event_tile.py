@@ -70,7 +70,7 @@ from mira.ui.design import (
 from mira.ui.palette import PALETTE, RADIUS
 
 
-TILE_RADIUS = float(RADIUS["xl"])    # spec/77 §10.7 — tiles are rounded
+TILE_RADIUS = 0.0    # Nelson 2026-06-16: square tiles + square photos
 
 
 _CATEGORY_ICONS_DIR = (
@@ -238,19 +238,25 @@ class _PhaseDonut(QWidget):
         fm = QFontMetrics(pct_font)
         pct_h = fm.height()
 
-        # The ring is the smaller of (width minus inset) and an upper
-        # bound that leaves room for the gap + ``%`` line below it.
-        avail_h = self.height() - pct_h - self._PCT_GAP - self._RING_INSET * 2
-        side = min(
-            self.width() - self._RING_INSET * 2, max(0, avail_h)
-        )
+        # Nelson 2026-06-16: the % sits to the LEFT of the ring (was
+        # below), so the 2×2 rows no longer cram the % against the next
+        # ring. Reserve a fixed left slot sized for "100%"; the ring is a
+        # square sized by the cell HEIGHT and whatever width remains. The
+        # [% · gap · ring] group is centred in the cell on both axes.
+        text_w = fm.horizontalAdvance("100%")
+        gap = self._PCT_GAP
+        ins = self._RING_INSET
+        avail_h = self.height() - ins * 2
+        avail_w = self.width() - ins * 2 - text_w - gap
+        side = max(0, int(min(avail_h, avail_w)))
         if side <= 0:
             return
-        top = float(self._RING_INSET)
+        group_w = text_w + gap + side
+        gx = (self.width() - group_w) / 2.0
         rect = QRectF(
-            (self.width() - side) / 2.0,
-            top,
-            side, side,
+            gx + text_w + gap,
+            (self.height() - side) / 2.0,
+            float(side), float(side),
         )
         ring_w = max(6, int(side * self._RING_THICKNESS_RATIO))
 
@@ -304,14 +310,13 @@ class _PhaseDonut(QWidget):
                 iy = int(rect.center().y() - icon_size / 2)
                 painter.drawPixmap(ix, iy, pm)
 
-        # Percent text — below the ring, centred horizontally. The
-        # baseline is anchored against the bottom of the centred group
-        # (spec/77 §10.7 #5) so every cell renders the same.
+        # Percent text — to the LEFT of the ring, right-aligned within
+        # its slot and vertically centred on the ring's centre.
         painter.setFont(pct_font)
         painter.setPen(QColor(_palette_color("ink", "#e4e8f5")))
-        text_w = fm.horizontalAdvance(pct_text)
-        tx = (self.width() - text_w) / 2.0
-        ty = top + side + self._PCT_GAP + fm.ascent()
+        adv = fm.horizontalAdvance(pct_text)
+        tx = gx + (text_w - adv)
+        ty = rect.center().y() + (fm.ascent() - fm.descent()) / 2.0
         painter.drawText(QPointF(tx, ty), pct_text)
         painter.end()
 
@@ -657,10 +662,10 @@ class EventTile(Card):
         painter.setClipping(False)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         border_pen = QPen(QColor(_palette_color("card_border")), 2.0)
-        border_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        border_pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(border_pen)
-        painter.drawRoundedRect(
-            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0),
-            TILE_RADIUS - 1.0, TILE_RADIUS - 1.0,
+        # Square tiles (Nelson 2026-06-16) — a plain rect, no rounding.
+        painter.drawRect(
+            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         )
         painter.end()

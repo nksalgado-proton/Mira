@@ -179,3 +179,50 @@ def test_pattern_label_set():
     p = parse_timestamp_from_filename("Photo 2025-05-03.jpg")
     assert p is not None
     assert p.pattern == "date_only_separated"
+
+
+# ── WhatsApp filename convention (spec/78 §B) ──────────────────
+
+
+def test_whatsapp_full_image():
+    """``WhatsApp Image YYYY-MM-DD at HH.MM.SS.jpeg`` — the WhatsApp
+    convention with ``at`` between date and time."""
+    p = parse_timestamp_from_filename(
+        "WhatsApp Image 2018-02-24 at 20.42.37.jpeg")
+    assert p is not None
+    assert p.dt == datetime(2018, 2, 24, 20, 42, 37)
+    assert p.time_is_default is False
+
+
+def test_whatsapp_dedupe_suffix():
+    """WhatsApp's ``(N)`` dedupe suffix after the time still parses."""
+    p = parse_timestamp_from_filename(
+        "WhatsApp Image 2018-02-24 at 20.42.37 (1).jpeg")
+    assert p is not None
+    assert p.dt == datetime(2018, 2, 24, 20, 42, 37)
+    assert p.time_is_default is False
+
+
+def test_whatsapp_date_only_falls_back_to_noon():
+    """``WhatsApp Image YYYY-MM-DD`` with no time → noon default via
+    the existing date-only fallback."""
+    p = parse_timestamp_from_filename("WhatsApp Image 2018-02-24.jpg")
+    assert p is not None
+    assert p.dt == datetime(2018, 2, 24, 12, 0, 0)
+    assert p.time_is_default is True
+
+
+def test_whatsapp_video_same_convention():
+    """``WhatsApp Video …`` uses the same ``DATE at TIME`` convention —
+    the generalisation should cover any prefix."""
+    p = parse_timestamp_from_filename(
+        "WhatsApp Video 2018-02-24 at 20.42.37.mp4")
+    assert p is not None
+    assert p.dt == datetime(2018, 2, 24, 20, 42, 37)
+
+
+def test_non_whatsapp_no_date_still_none():
+    """A non-WhatsApp filename with no recoverable date still returns
+    None — the WhatsApp generalisation must not lower the bar."""
+    assert parse_timestamp_from_filename(
+        "WhatsApp Image at the park.jpeg") is None

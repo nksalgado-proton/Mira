@@ -658,8 +658,9 @@ Event flow on real data and confirmed it works ("All that we have
 created in this session seems to have worked fine").
 
 **Slice 5 — phone-without-GPS per-location-group prompt (LANDED
-2026-06-13).** Replaces today's silent home-country / TZ autofill
-during Collect.
+2026-06-13; the per-stretch loop is SUPERSEDED by spec/78 §A —
+single ask for all no-GPS days, 2026-06-16).** Replaces today's
+silent home-country / TZ autofill during Collect.
 
 - `mira/ui/pages/phone_gps_stretch_dialog.py` NEW — the prompt
   dialog. Shows the date range covered ("Days 3–5 …"), one Country

@@ -56,11 +56,14 @@ _MAX_YEAR = 2099
 # Format A — separated date + time:
 #   2025-05-03_17-31-43   2025-05-03 17.31.43   2025-05-03T17:31:43
 #   2025/05/03 17:31:43   2025_05_03_17_31_43
-# Separator between date and time: " ", "_", "-", "T" (ISO 8601).
+#   WhatsApp Image 2018-02-24 at 20.42.37   (WhatsApp / screenshot convention,
+#   spec/78 §B — also covers WhatsApp Video and any other tool that writes
+#   "DATE at TIME" between the two halves).
+# Separator between date and time: " ", "_", "-", "T", or " at ".
 # Separator within time: "-", ".", ":", "_".
 _RE_FULL_SEPARATED = re.compile(
     r"(?P<y>\d{4})[-_/](?P<m>\d{2})[-_/](?P<d>\d{2})"
-    r"[ T_-]"
+    r"(?:[ T_-]| at )"
     r"(?P<H>\d{2})[-:._](?P<M>\d{2})[-:._](?P<S>\d{2})"
 )
 

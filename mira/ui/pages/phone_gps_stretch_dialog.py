@@ -1,19 +1,21 @@
-"""``PhoneGpsStretchDialog`` — the per-location-group prompt (spec/64 §4.4).
+"""``PhoneGpsStretchDialog`` — the no-GPS-days prompt (spec/78 §A,
+revising the spec/64 §4.4 per-stretch loop).
 
 Replaces today's silent home-country / TZ autofill for days where the
-phone didn't supply usable location info. Fires once per **stretch** of
-consecutive GPS-less days during Collect (after the scan, before the
-Days Table dialog).
+phone didn't supply usable location info. Fires **once** during Collect
+(after the scan, before the Days Table dialog) with every no-GPS day
+listed in one shot — not one prompt per consecutive stretch, which got
+unbearable on grab-bag past-photos imports whose days are scattered.
 
 UX shape:
 
-* Lists the date range covered ("Days 3–5 (2026-09-03 to 2026-09-05) —
-  no phone GPS").
-* One Country dropdown + one TZ picker that apply to every day in the
-  stretch.
+* States the count of no-GPS days and lists their dates so the user
+  knows what the choice covers.
+* One Country dropdown + one TZ picker that apply to **every** listed
+  day.
 * Pre-filled with the user's home country / TZ as suggestions when
   available — the user confirms or overrides.
-* Apply = use these values for the stretch. Skip = leave the rows
+* Apply = use these values for every no-GPS day. Skip = leave them
   blank so the user can fill via the Days Table dialog later.
 """
 from __future__ import annotations
@@ -45,8 +47,8 @@ log = logging.getLogger(__name__)
 
 
 class PhoneGpsStretchDialog(QDialog):
-    """One stretch of consecutive phone-GPS-less days; the user picks
-    country + TZ once and the values apply across the whole stretch.
+    """Every no-GPS day in one prompt; the user picks country + TZ
+    once and the values apply across every listed day (spec/78 §A).
 
     Returns:
     * Apply → :meth:`result_values` returns ``(country_code, tz_minutes)``
@@ -54,7 +56,7 @@ class PhoneGpsStretchDialog(QDialog):
       explicitly cleared the picker (the Days Table dialog handles
       partial entries later).
     * Skip / Cancel → :meth:`was_applied` returns ``False``; the caller
-      leaves the stretch's rows blank.
+      leaves the no-GPS rows blank.
     """
 
     def __init__(
@@ -66,7 +68,7 @@ class PhoneGpsStretchDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("No phone GPS for these days"))
+        self.setWindowTitle(tr("Days without location data"))
         self.setModal(True)
         self.resize(540, 360)
 
@@ -77,25 +79,22 @@ class PhoneGpsStretchDialog(QDialog):
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(12)
 
-        # Header — date range summary.
-        first = self._dates[0]
-        last = self._dates[-1]
+        # Header — count of no-GPS days (spec/78 §A). Days can be
+        # non-consecutive (grab-bag past-photos imports), so a count is
+        # honest where a "from-to" range would mislead.
         count = len(self._dates)
         if count == 1:
             heading_text = tr(
-                "{date} has no phone GPS data — pick the country and "
-                "time zone to use for this day."
-            ).replace("{date}", first.isoformat())
+                "{date} has no location data — set a default country "
+                "and time zone for it. You can fine-tune it later in "
+                "the Event Days Table."
+            ).replace("{date}", self._dates[0].isoformat())
         else:
             heading_text = tr(
-                "Days {first} to {last} ({count} days) have no phone GPS "
-                "data — pick the country and time zone to use for all of "
-                "them. You can fine-tune any single day later in the "
-                "Event Days Table."
-            ) \
-                .replace("{first}", first.isoformat()) \
-                .replace("{last}", last.isoformat()) \
-                .replace("{count}", str(count))
+                "{count} day(s) have no location data. Set a default "
+                "country and time zone for them — you can fix individual "
+                "days afterwards in the Event Days Table."
+            ).replace("{count}", str(count))
         heading = QLabel(heading_text)
         heading.setObjectName("PageHint")
         heading.setWordWrap(True)

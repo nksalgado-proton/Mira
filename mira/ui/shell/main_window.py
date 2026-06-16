@@ -1270,11 +1270,12 @@ class MainWindow(QMainWindow):
             return                                          # roll back
         info = header_dlg.header_info()
 
-        # spec/64 §4.4 — the per-location-group prompt for consecutive
-        # phone-GPS-less days. Fills the rows whose phone didn't supply
-        # country / TZ; days the user Skips stay blank for fine-tuning
-        # via the Days Table dialog below.
-        self._prompt_phone_gps_stretches(
+        # spec/78 §A — ask once for the no-GPS days' Country / TZ and
+        # apply it to all of them. Replaces the per-stretch loop
+        # (spec/64 §4.4) which became one-prompt-per-gap on grab-bag
+        # past-photos imports. Days the user Skips stay blank; the Days
+        # Table dialog below lets them fine-tune any individual day.
+        self._prompt_for_no_gps_days(
             scan.scan_rows,
             home_country=home_country,
             home_tz_minutes=home_tz_minutes,
@@ -2709,11 +2710,11 @@ class MainWindow(QMainWindow):
             existing_days=existing_days, merged_rows=merged_rows,
         )
 
-        # spec/64 §4.4 — per-location-group prompt for consecutive days
-        # in the merged set where neither phone GPS nor an existing
-        # trip_day supplies country / TZ. Days the user Skips stay
-        # blank; the Days Table dialog below lets them fine-tune.
-        self._prompt_phone_gps_stretches(
+        # spec/78 §A — single ask for all merged rows missing country
+        # OR TZ (whether the gap came from phone-less days or
+        # existing trip_days without that info). Days the user Skips
+        # stay blank; the Days Table dialog below lets them fine-tune.
+        self._prompt_for_no_gps_days(
             merged_rows,
             home_country=home_country,
             home_tz_minutes=home_tz_minutes,
@@ -4321,56 +4322,51 @@ class MainWindow(QMainWindow):
                 and hasattr(self, "phases_page")):
             self.phases_page.set_event(event_id)
 
-    def _prompt_phone_gps_stretches(
+    def _prompt_for_no_gps_days(
         self, rows, *, home_country: Optional[str],
         home_tz_minutes: Optional[int],
     ) -> None:
-        """spec/64 §4.4 — for each consecutive stretch of rows missing
-        country OR TZ (the phone didn't supply usable location info),
-        prompt the user once with the home defaults as suggestions and
-        apply their answer across the stretch. Rows the user Skips stay
-        blank for the Days Table dialog to handle.
+        """spec/78 §A — when ANY day lacks GPS (no country OR no TZ),
+        ask **once** for a default Country / time zone and apply it to
+        every no-GPS day. GPS-bearing days are untouched. The user
+        corrects individual days afterwards in the Event Days Table.
+
+        Supersedes the per-stretch loop (spec/64 §4.4): non-consecutive
+        days (the common case in a grab-bag past-photos import) would
+        otherwise produce one prompt per gap, asking over and over.
 
         Mutates ``rows`` in place — the row list is the same object the
         caller hands to the Days Table dialog next."""
-        stretches = self._collect_phone_gps_stretches(rows)
-        if not stretches:
+        blanks = self._collect_no_gps_rows(rows)
+        if not blanks:
             return
         from mira.ui.pages.phone_gps_stretch_dialog import (
             PhoneGpsStretchDialog,
         )
-        for stretch in stretches:
-            dlg = self._exec_phone_gps_stretch_dialog(PhoneGpsStretchDialog(
-                dates=[r.date for r in stretch],
-                initial_country=home_country,
-                initial_tz_minutes=home_tz_minutes,
-                parent=self,
-            ))
-            if not dlg:
-                continue                                        # Skip
-            country, tz_minutes = dlg.result_values()
-            for r in stretch:
-                if country:
-                    r.country_code = country
-                if tz_minutes is not None:
-                    r.tz_minutes = tz_minutes
+        dlg = self._exec_phone_gps_stretch_dialog(PhoneGpsStretchDialog(
+            dates=[r.date for r in blanks],
+            initial_country=home_country,
+            initial_tz_minutes=home_tz_minutes,
+            parent=self,
+        ))
+        if not dlg:
+            return                                              # Skip
+        country, tz_minutes = dlg.result_values()
+        for r in blanks:
+            if country:
+                r.country_code = country
+            if tz_minutes is not None:
+                r.tz_minutes = tz_minutes
 
     @staticmethod
-    def _collect_phone_gps_stretches(rows):
-        """Walk ``rows`` and return a list of consecutive-row runs where
-        country OR TZ is blank. Pure logic — no Qt, no I/O."""
-        stretches = []
-        current = []
-        for r in rows:
-            blank = (not (r.country_code or "").strip()) or (r.tz_minutes is None)
-            if blank:
-                current.append(r)
-            elif current:
-                stretches.append(current)
-                current = []
-        if current:
-            stretches.append(current)
-        return stretches
+    def _collect_no_gps_rows(rows):
+        """Walk ``rows`` and return a flat list of those missing country
+        OR TZ (spec/78 §A — non-consecutive days collected together so
+        the caller can ask once for them all). Pure logic, no Qt."""
+        return [
+            r for r in rows
+            if (not (r.country_code or "").strip()) or (r.tz_minutes is None)
+        ]
 
     @staticmethod
     def _exec_phone_gps_stretch_dialog(dlg):

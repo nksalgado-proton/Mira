@@ -32,9 +32,13 @@ from mira.ui.base.event_card import EventCardData
 from mira.ui.design.photo_cycler import PhotoCycler
 from mira.ui.pages._event_tile import (
     EventTile,
+    TILE_DEFAULT_WIDTH,
+    TILE_MAX_WIDTH,
+    TILE_MIN_WIDTH,
     TILE_PREFERRED_WIDTH,
     TITLE_ROW_HEIGHT,
     _PhaseDonut,
+    total_tile_height,
 )
 
 
@@ -223,3 +227,80 @@ def test_header_dialog_save_disabled_until_dates_set(qapp):
     info = dlg.header_info()
     assert info["start_date"] == "2026-05-01"
     assert info["end_date"] == "2026-05-07"
+
+
+# ──────────────────────────────────────────────────────────────────
+# §10.1 — status badge dropped, name has the full header width
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_open_tile_has_no_status_pill(qapp):
+    """spec/77 §10.1 — the green Open / pink Closed pill is gone from
+    every title row. The body (donuts ↔ photo) speaks the status."""
+    open_tile = EventTile(_open_card())
+    # Walk descendants — no QLabel objectName should match ChipOpen /
+    # ChipClosed (the roles the old pill used).
+    from PyQt6.QtWidgets import QLabel
+    for w in open_tile.findChildren(QLabel):
+        assert w.objectName() not in ("ChipOpen", "ChipClosed"), (
+            "found a status pill that spec/77 §10.1 retired"
+        )
+    closed = EventCardData(
+        event_id="ec", name="Closed", start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 5), is_closed=True, total_days=5,
+    )
+    closed_tile = EventTile(closed)
+    for w in closed_tile.findChildren(QLabel):
+        assert w.objectName() not in ("ChipOpen", "ChipClosed")
+
+
+# ──────────────────────────────────────────────────────────────────
+# §10.5 — tile size slider scales the tile and persists
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_tile_width_param_scales_total_height(qapp):
+    """spec/77 §10.5 — the slider hands a width down; height tracks
+    via ``total_tile_height``."""
+    for width in (TILE_MIN_WIDTH, TILE_DEFAULT_WIDTH, TILE_MAX_WIDTH):
+        tile = EventTile(_open_card(), tile_width=width)
+        assert tile.width() == width
+        assert tile.height() == total_tile_height(width)
+
+
+def test_tile_width_clamped_to_legible_band(qapp):
+    """A caller passing a width outside [TILE_MIN_WIDTH, TILE_MAX_WIDTH]
+    is clamped — the band exists because text size is constant and
+    the % / name stops reading past the bounds."""
+    tile_too_small = EventTile(_open_card(), tile_width=50)
+    assert tile_too_small.width() == TILE_MIN_WIDTH
+    tile_too_big = EventTile(_open_card(), tile_width=900)
+    assert tile_too_big.width() == TILE_MAX_WIDTH
+
+
+def test_size_slider_persists_to_settings(qapp, tmp_path):
+    """Drag the slider → the new value is written to
+    ``events_grid_tile_size`` so the choice survives a restart."""
+    from mira.gateway import EventsIndex, Gateway
+    from mira.settings.repo import SettingsRepo
+    from mira.ui.pages.events_page import EventsPage
+
+    settings = SettingsRepo(tmp_path / "settings.json")
+    index = EventsIndex(tmp_path / "events_index.json")
+    gw = Gateway(settings=settings, index=index, now=_now)
+    gw.set_photos_base_path(str(tmp_path / "lib"))
+
+    page = EventsPage(gw)
+    assert page._tile_width == TILE_DEFAULT_WIDTH
+
+    target = TILE_DEFAULT_WIDTH + 32
+    page._size_slider.setValue(target)
+    assert page._tile_width == target
+
+    # Settings file written through.
+    loaded = settings.load()
+    assert loaded.events_grid_tile_size == target
+
+    # A fresh EventsPage reads the persisted value as its default.
+    page2 = EventsPage(gw)
+    assert page2._tile_width == target

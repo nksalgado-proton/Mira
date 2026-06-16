@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -59,7 +60,12 @@ from mira.ui.design import (
 )
 from mira.ui.pages._cross_event_band import CrossEventCutsBand
 from mira.ui.pages._event_card_data import card_data as _card_data
-from mira.ui.pages._event_tile import EventTile
+from mira.ui.pages._event_tile import (
+    EventTile,
+    TILE_DEFAULT_WIDTH,
+    TILE_MAX_WIDTH,
+    TILE_MIN_WIDTH,
+)
 
 log = logging.getLogger(__name__)
 
@@ -94,8 +100,24 @@ class EventsPage(QWidget):
         super().__init__(parent)
         self.gateway = gateway
         self._card_data_by_id: Dict[str, EventCardData] = {}
+        # spec/77 §10.5 — the tile-size slider's initial value comes from
+        # the persisted ``events_grid_tile_size`` setting, so the user's
+        # preferred scale carries across launches. Default + clamp guard
+        # against a manually-edited setting outside the legible band.
+        self._tile_width = self._load_tile_width_setting()
         self._build_ui()
         self.refresh()
+
+    def _load_tile_width_setting(self) -> int:
+        if self.gateway is None:
+            return TILE_DEFAULT_WIDTH
+        try:
+            stored = int(
+                self.gateway.settings.load().events_grid_tile_size
+            )
+        except Exception:                                       # noqa: BLE001
+            return TILE_DEFAULT_WIDTH
+        return max(TILE_MIN_WIDTH, min(TILE_MAX_WIDTH, stored))
 
     # ── layout ──────────────────────────────────────────────────────────
 
@@ -210,6 +232,25 @@ class EventsPage(QWidget):
         self._clear_btn.setVisible(False)
         h.addWidget(self._clear_btn)
 
+        # Grid-size slider (spec/77 §10.5) — scales the tile while
+        # header text stays constant, so the user can scan many events
+        # at once or zoom into the photos. Persisted live to
+        # ``events_grid_tile_size`` so the choice survives a restart.
+        # Step set to 4 px so each notch is a small but visible jump.
+        self._size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._size_slider.setObjectName("TileSizeSlider")
+        self._size_slider.setRange(TILE_MIN_WIDTH, TILE_MAX_WIDTH)
+        self._size_slider.setSingleStep(4)
+        self._size_slider.setPageStep(16)
+        self._size_slider.setValue(self._tile_width)
+        self._size_slider.setFixedWidth(120)
+        self._size_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._size_slider.setToolTip(
+            f"Tile size ({TILE_MIN_WIDTH}–{TILE_MAX_WIDTH} px)"
+        )
+        self._size_slider.valueChanged.connect(self._on_tile_size_changed)
+        h.addWidget(self._size_slider)
+
         new_btn = primary_button("+ New Event")
         new_btn.clicked.connect(self.new_event_requested.emit)
         h.addWidget(new_btn)
@@ -319,6 +360,32 @@ class EventsPage(QWidget):
         # Sort doesn't count: changing sort doesn't hide any event, so
         # the safety-net wording "filtered" never applies to it.
         return n
+
+    def _on_tile_size_changed(self, value: int) -> None:
+        """Slider drag → update the cached width, rebuild the visible
+        tiles at the new size, and persist the choice so it survives a
+        restart. Snap to the legible bounds defensively (the slider
+        widget already enforces them, but a future caller could call
+        this directly)."""
+        clamped = max(TILE_MIN_WIDTH, min(TILE_MAX_WIDTH, int(value)))
+        if clamped == self._tile_width:
+            return
+        self._tile_width = clamped
+        if self.gateway is not None:
+            try:
+                self.gateway.settings.update(
+                    events_grid_tile_size=clamped
+                )
+            except Exception:                                   # noqa: BLE001
+                log.exception(
+                    "could not persist events_grid_tile_size"
+                )
+        # Re-render the currently-visible cards at the new width. We
+        # could call ``setFixedSize`` on each tile in place, but the
+        # rebuild path is simple and the events grid is small enough
+        # (low double digits at the typical desktop window) that the
+        # cost is not measurable.
+        self._apply_filter()
 
     def _refresh_filter_button(self) -> None:
         n = self._filter_active_count()
@@ -467,7 +534,9 @@ class EventsPage(QWidget):
         self._scroll.setVisible(bool(cards))
         for cd in cards:
             sample = self._sample_pixmaps_for(cd)
-            tile = EventTile(cd, sample_pixmaps=sample)
+            tile = EventTile(
+                cd, sample_pixmaps=sample, tile_width=self._tile_width,
+            )
             tile.activated.connect(self.event_activated.emit)
             tile.title_clicked.connect(self.event_info_requested.emit)
             tile.plan_requested.connect(self.event_plan_requested.emit)

@@ -162,3 +162,60 @@ later option, out of scope here.
 4. Pick/Export show green/red/faint; Collect/Edit show amber→green.
 5. ⋮ menu Close/Reopen works; export-less close is recoverable.
 6. Capture a screenshot of the events grid (a few open + a closed) for Nelson.
+
+---
+
+## §10. Revision 2026-06-16 (post-build review with Nelson)
+
+The first build (Pictures 22/23) was close, but Nelson flagged five things.
+**These corrections govern over the descriptions above where they conflict.**
+
+### §10.1 Kill the status badge entirely
+Remove the green "Open" / pink "Closed" pill from the title row. The tile's body
+already says it — **donuts = open, photo = closed** — so the badge is redundant,
+and dropping it gives the **name the full header width** (it was the main cause
+of the name truncating in every tile). Title row is now just: icon · name + meta
+(name takes all remaining width) · `⋮`.
+
+### §10.2 Make the ⋮ menu clearly accessible
+The `⋮` must be a **solid, clearly visible control pinned top-right** of the tile
+(not faint). Give it a hover background + pointing-hand cursor. On the closed
+(photo) tile it sits over the photo top-right with enough contrast to read on any
+image (translucent dark chip behind it). It is the only affordance in the title
+row now that the badge is gone.
+
+### §10.3 Stronger tile border
+The tile border was nearly invisible in dark mode. Use a **more visible border
+role** (≈ `line`/`border-secondary` weight, not the faintest tertiary), present
+and legible in **both** themes. The tile must read as a distinct card.
+
+### §10.4 Donuts: icon centred, % below, crisp SVG
+- Put **only the phase icon in the centre** of each ring (bigger), and move the
+  **`%` to just below the ring** — do not stack icon + % in the centre (it made
+  both look small and low-res).
+- Draw the phase icons from the project's **crisp SVG icon family** (the same
+  source the rest of the app uses), sized to the ring — not a low-res/raster or
+  font glyph. Icons that read clearly at the centre size: Collect, Pick, Edit,
+  Export (use the established phase glyphs; don't invent new low-fidelity ones).
+
+### §10.5 Grid size slider (new — mirrors the days grid)
+Add a **live size slider** to the events toolbar (next to Filters) that scales
+the **tile** — the 4:3 area and donuts grow/shrink with it — while **header text
+size stays constant** so names/labels stay legible at every size. Smaller =
+more events per row (scan many at once, important for a library of decades of
+events); larger = bigger photos/donuts.
+
+- Reuse the existing variable-cell-size mechanism (`ThumbGrid.set_cell_size` /
+  `DEFAULT_CELL_SIZE` pattern) and **persist the choice** like
+  `default_day_grid_cell_size` (a new `events_grid_tile_size` setting in
+  `mira/settings/model.py`), so it sticks across sessions.
+- **Bounded range:** because text size is held constant, set a **minimum** tile
+  width where the name + donut `%`s still fit (don't let the slider shrink past
+  legibility) and a sensible **maximum**. The `FlowLayout` reflows columns as the
+  size changes.
+- Default sits at the comfortable size from the approved mock (~248px wide).
+
+### §10.6 Approved reference
+The corrected look was approved against the 2026-06-16 mock: no badge, solid
+top-right `⋮`, visible border, donuts with centred icon + `%` beneath. Build to
+that.

@@ -65,8 +65,6 @@ from mira.ui.design import (
     Card,
     PHASE_GLYPH,
     PhotoCycler,
-    chip_closed,
-    chip_open,
     tinted_svg_pixmap,
 )
 from mira.ui.palette import PALETTE
@@ -76,17 +74,24 @@ _CATEGORY_ICONS_DIR = (
     Path(__file__).resolve().parents[3] / "assets" / "icons" / "categories"
 )
 
-# spec/77 §1 — the tile is a fixed title row on top of a 4:3 content area.
-# 244 px is the floor where a landscape exported photo reads contained
-# over its blurred backdrop AND a 2×2 donut grid stays legible. The grid
-# host's FlowLayout packs 3 tiles per row at the typical desktop width
-# (~768 px usable inside the toolbar margins).
-TILE_PREFERRED_WIDTH = 244
-TILE_MIN_WIDTH = 220
+# spec/77 §1 + §10.5 — the tile is a fixed title row on top of a 4:3
+# content area; the slider in the events toolbar scales the tile width
+# live. Header text stays the same size at every width (§10.5), so the
+# title row height is a constant — only the 4:3 area + donuts grow.
+TILE_DEFAULT_WIDTH = 248       # the approved-mock comfortable size
+TILE_MIN_WIDTH = 196           # narrow enough the slider is useful…
+TILE_MAX_WIDTH = 400           # …without shrinking past donut % legibility
+TILE_PREFERRED_WIDTH = TILE_DEFAULT_WIDTH    # legacy alias kept stable
 TITLE_ROW_HEIGHT = 54
 
 
 _PHASES = ("collect", "pick", "edit", "export")
+
+
+def total_tile_height(tile_width: int) -> int:
+    """The full tile height for a given tile width — the title row is a
+    constant; the content area is a 4:3 box below it."""
+    return TITLE_ROW_HEIGHT + int(tile_width * 3 / 4)
 
 
 def _palette_mode() -> str:
@@ -178,23 +183,22 @@ class _CategoryIcon(QFrame):
 
 
 class _PhaseDonut(QWidget):
-    """One phase's donut + centre icon + percent label (spec/77 §4).
+    """One phase's donut, with the **phase icon centred inside the ring
+    (only)** and the **percentage rendered just below the ring** —
+    spec/77 §10.4 supersedes the prior icon+% stacked-in-centre layout
+    (it made both feel small and low-res). Painted as one widget so a
+    grid of 4 cells stays light; the crisp SVG phase glyphs come from
+    ``PHASE_GLYPH`` (the same family the rest of the app uses).
 
-    Painted as one widget — track ring beneath, coloured arcs over it,
-    phase icon stamped on the upper half of the ring's hole, percentage
-    text just below. Composed in code (not as a child layout) so the
-    icon + text always centre on the ring rather than the widget bounds,
-    and the 4 donut cells in the 2×2 grid stay visually identical
-    regardless of which has progress text vs. icon-only.
-
-    ``slices`` is a list of (value, color_token) tuples — the values are
-    proportional weights filling one full ring; the colors resolve from
-    the live palette so theme toggles re-paint without a rebuild.
-    Use ``("track", remaining)`` for the faint remainder slice.
+    ``slices`` is a list of (value, color_token) tuples — proportional
+    weights filling one full ring; colors resolve from the live palette
+    so theme toggles re-paint without a rebuild. Use
+    ``("track", remaining)`` for the faint remainder slice.
     """
 
-    _RING_THICKNESS_RATIO = 0.13
-    _RING_INSET = 4
+    _RING_THICKNESS_RATIO = 0.11
+    _RING_INSET = 3
+    _PCT_GAP = 4
 
     def __init__(
         self,
@@ -212,15 +216,31 @@ class _PhaseDonut(QWidget):
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self.setMinimumSize(QSize(80, 80))
+        # Ring + a one-line % label below it. 78 px is the floor where
+        # the smallest scale-down still keeps the % legible.
+        self.setMinimumSize(QSize(78, 92))
+
+    def _pct_font(self) -> QFont:
+        f = QFont(self.font())
+        f.setPixelSize(12)
+        f.setWeight(QFont.Weight.Bold)
+        return f
 
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
-        side = min(self.width(), self.height()) - self._RING_INSET * 2
+        # Reserve the bottom strip for the % label; the ring fills the
+        # rest, centred horizontally so the four donut cells line up.
+        pct_text = f"{self._percent}%"
+        pct_font = self._pct_font()
+        fm = QFontMetrics(pct_font)
+        pct_h = fm.height()
+
+        ring_area_h = self.height() - pct_h - self._PCT_GAP
+        side = min(self.width(), ring_area_h) - self._RING_INSET * 2
         if side <= 0:
             return
         rect = QRectF(
             (self.width() - side) / 2,
-            (self.height() - side) / 2,
+            (ring_area_h - side) / 2,
             side, side,
         )
         ring_w = max(6, int(side * self._RING_THICKNESS_RATIO))
@@ -241,9 +261,9 @@ class _PhaseDonut(QWidget):
         painter.drawArc(arc_rect, 0, 360 * 16)
 
         # Slices — clockwise from 12 o'clock, FlatCap so adjacent arcs
-        # butt cleanly. "track" slices skip drawing (the underlying track
-        # already paints) but still advance the cursor so the faint
-        # remainder occupies its true share of the ring.
+        # butt cleanly. "track" slices skip drawing (the underlying
+        # track already paints) but still advance the cursor so the
+        # faint remainder occupies its true share of the ring.
         total = sum(max(0.0, v) for v, _ in self._slices) or 1.0
         start_angle = 90 * 16
         for value, token in self._slices:
@@ -257,30 +277,28 @@ class _PhaseDonut(QWidget):
                 painter.drawArc(arc_rect, start_angle, span)
             start_angle += span
 
-        # Phase icon — small line-icon centred in the upper half of the
-        # ring's hole; tinted ink so it reads against any of the slice
-        # colours behind it.
-        icon_size = max(14, int(side * 0.22))
+        # Phase icon — centred inside the ring's hole at ~58 % of the
+        # hole's diameter. Drawn from the crisp ``PHASE_GLYPH`` SVG
+        # family via ``tinted_svg_pixmap`` (cached per (path, size,
+        # color)), so the line-icon stays sharp at any scale.
+        hole = side - ring_w * 2
+        icon_size = max(16, int(hole * 0.58))
         if self._icon_path is not None and self._icon_path.exists():
             ink = QColor(_palette_color("ink", "#e4e8f5"))
             pm = tinted_svg_pixmap(self._icon_path, icon_size, ink)
             if not pm.isNull():
                 ix = int(rect.center().x() - pm.width() / 2)
-                iy = int(rect.center().y() - pm.height() * 0.85)
+                iy = int(rect.center().y() - pm.height() / 2)
                 painter.drawPixmap(ix, iy, pm)
 
-        # Percent text — sized to fit the lower half of the ring hole.
-        pct_text = f"{self._percent}%"
-        pct_font = QFont(self.font())
-        pct_font.setPixelSize(max(10, int(side * 0.16)))
-        pct_font.setWeight(QFont.Weight.Bold)
+        # Percent text — below the ring, centred horizontally. The font
+        # size is fixed so labels stay legible at every slider step
+        # (spec/77 §10.5 — header text constant as the tile scales).
         painter.setFont(pct_font)
         painter.setPen(QColor(_palette_color("ink", "#e4e8f5")))
-        fm = QFontMetrics(pct_font)
         text_w = fm.horizontalAdvance(pct_text)
-        text_h = fm.height()
-        tx = rect.center().x() - text_w / 2
-        ty = rect.center().y() + text_h * 0.62
+        tx = (self.width() - text_w) / 2
+        ty = ring_area_h + self._PCT_GAP + fm.ascent()
         painter.drawText(QPointF(tx, ty), pct_text)
         painter.end()
 
@@ -384,11 +402,21 @@ class EventTile(Card):
         data: EventCardData,
         *,
         sample_pixmaps: Optional[List[QPixmap]] = None,
+        tile_width: int = TILE_DEFAULT_WIDTH,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent, padded=False)
+        # spec/77 §10.3 — re-tag as #TileCard so the stronger border
+        # role lands. Card's drop-shadow effect is already set up.
+        self.setObjectName("TileCard")
         self._data = data
         self._sample_pixmaps = list(sample_pixmaps or [])
+        # spec/77 §10.5 — the toolbar slider hands a width down to each
+        # tile. The 4:3 content area scales with this; the title row's
+        # height stays constant (header text size is constant by spec).
+        self._tile_width = max(
+            TILE_MIN_WIDTH, min(TILE_MAX_WIDTH, int(tile_width))
+        )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -397,20 +425,17 @@ class EventTile(Card):
             outer.addWidget(self._build_closed_content(), 1)
         else:
             outer.addWidget(self._build_open_content(), 1)
-        # Fixed shape: title row + 4:3 content; the height is locked off
-        # the preferred width so the grid reads as a uniform field.
-        h = TITLE_ROW_HEIGHT + int(TILE_PREFERRED_WIDTH * 3 / 4)
-        self.setFixedHeight(h)
-        self.setMinimumWidth(TILE_MIN_WIDTH)
+        self.setFixedSize(QSize(
+            self._tile_width, total_tile_height(self._tile_width)
+        ))
         self.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(
-            TILE_PREFERRED_WIDTH,
-            TITLE_ROW_HEIGHT + int(TILE_PREFERRED_WIDTH * 3 / 4),
+            self._tile_width, total_tile_height(self._tile_width)
         )
 
     # ── title row ─────────────────────────────────────────────────
@@ -428,10 +453,11 @@ class EventTile(Card):
             dim=self._data.is_closed,
         ), 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # Name + meta lockup — two stacked lines, the name on its own
-        # so it stops competing for horizontal space with the pill / ⋮
-        # (the spec/75 row had name + tag + pill jostling in one row and
-        # truncated names in the common case — the Picture-21 bug).
+        # Name + meta lockup. Spec/77 §10.1 retired the status pill —
+        # the tile's body already says it (donuts = open, photo =
+        # closed) — and that move gives the name the full remaining
+        # header width, killing the truncation Nelson flagged on
+        # Picture 21/22/23.
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(1)
@@ -441,9 +467,9 @@ class EventTile(Card):
         title.mousePressEvent = (
             lambda _evt: self.title_clicked.emit(self._data.event_id)
         )
-        # Let the title share the row's stretch but never push the pill
-        # or ⋮ off the right edge — Qt elides automatically when the
-        # available width drops below the natural string width.
+        # Ignored horizontal sizePolicy = Qt elides only when the actual
+        # available width drops below the natural string width — so the
+        # name gets *all* the remaining header width before truncating.
         title.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
@@ -462,25 +488,17 @@ class EventTile(Card):
         text_col.addWidget(meta)
         h.addLayout(text_col, 1)
 
-        pill = (
-            chip_closed("✓ Closed") if self._data.is_closed
-            else chip_open("● Open")
-        )
-        pill.setCursor(Qt.CursorShape.PointingHandCursor)
-        pill.mousePressEvent = (
-            lambda _evt: self.status_toggled.emit(self._data.event_id)
-        )
-        h.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
-
+        # The ⋮ is now the only affordance in the title row (spec/77
+        # §10.2): a solid, clearly-visible top-right control with a
+        # standing background so it reads on any tile body — including
+        # a closed tile, where the title row sits directly above the
+        # photo. Styled via the `#TileMore` QSS role so light + dark
+        # share one rule.
         more = QPushButton("⋮")
         more.setObjectName("TileMore")
-        more.setFixedSize(24, 24)
+        more.setFixedSize(28, 28)
         more.setCursor(Qt.CursorShape.PointingHandCursor)
-        more.setStyleSheet(
-            "QPushButton#TileMore { background: transparent; border: none;"
-            " color: #8b94a7; font-size: 18px; font-weight: 700; }"
-            "QPushButton#TileMore:hover { color: #e4e8f5; }"
-        )
+        more.setToolTip("More actions")
         more.clicked.connect(self._open_more_menu)
         self._more_btn = more
         h.addWidget(more, 0, Qt.AlignmentFlag.AlignVCenter)

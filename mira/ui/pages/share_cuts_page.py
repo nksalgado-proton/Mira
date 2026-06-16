@@ -52,7 +52,6 @@ from mira.gateway import Gateway
 from mira.shared.cut_session import CutSession
 from mira.ui.design import (
     Card,
-    danger_ghost_button,
     ghost_button,
     primary_button,
     tag,
@@ -60,12 +59,11 @@ from mira.ui.design import (
 from mira.ui.i18n import tr
 from mira.ui.shared.cut_detail_page import CutDetailPage
 from mira.ui.shared.cut_session_page import CutSessionPage
-# spec/65 §3.13 / §5.1: the New Cut dialog routes through an adapter that
-# wraps the redesigned page. The legacy dialog at
-# ``mira.ui.shared.new_cut_dialog`` stays around for its tests and
-# provides the ``CutDraft`` dataclass the adapter still returns, so the
-# call sites here (``NewCutDialog(...).exec()`` + ``.draft()``) are the
-# same as the prior chassis used.
+# spec/65 §3.13 / §5.1: the New Cut dialog routes through an adapter
+# that wraps the redesigned page. ``CutDraft`` lives in
+# :mod:`mira.shared.cut_draft` (the dialog→session handoff shape); the
+# call sites here (``NewCutDialog(...).exec()`` + ``.draft()``) are
+# the same as the prior chassis used.
 from mira.ui.shared.new_cut_dialog_adapter import NewCutDialog
 
 log = logging.getLogger(__name__)

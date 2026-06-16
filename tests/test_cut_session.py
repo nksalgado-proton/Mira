@@ -11,10 +11,10 @@ import itertools
 import pytest
 
 from mira.gateway.event_gateway import EventGateway
+from mira.shared.cut_draft import CutDraft
 from mira.shared.cut_session import CutSession, session_files
 from mira.store import models as m
 from mira.store.repo import EventStore
-from mira.ui.shared.new_cut_dialog import CutDraft
 
 from tests.test_gateway_cuts import _doc, _now
 

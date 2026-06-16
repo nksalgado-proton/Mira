@@ -29,21 +29,26 @@ a dict the host hands to the Cut composer.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional, Sequence
 
-from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPainter
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -52,6 +57,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import cut_budget
 from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CUT,
@@ -60,9 +66,9 @@ from mira.ui.design import (
     pill_toggle,
     primary_button,
     select,
-    tag,
     tinted_svg_pixmap,
 )
+from mira.ui.i18n import tr
 from mira.ui.palette import PALETTE
 
 
@@ -119,10 +125,7 @@ def _micro(text: str) -> QLabel:
 
 def _divider() -> QFrame:
     d = QFrame()
-    line = PALETTE[_palette_mode()]["line"]
-    d.setStyleSheet(
-        f"background: {line}; max-height: 1px; min-height: 1px;"
-    )
+    d.setObjectName("DialogDivider")
     return d
 
 
@@ -149,47 +152,22 @@ class _PoolChip(QFrame):
         self._name = name
         self._count = count
         self.setMinimumHeight(30)
-        p = PALETTE[_palette_mode()]
         h = QHBoxLayout(self)
         h.setContentsMargins(10, 4, 6, 4)
         h.setSpacing(6)
         name_lbl = QLabel(name, self)
-        name_lbl.setStyleSheet(
-            f"color: {p['ink']}; font-size: 12px;"
-            " font-weight: 600; background: transparent; border: none;"
-        )
+        name_lbl.setObjectName("PoolChipName")
         h.addWidget(name_lbl)
         count_lbl = QLabel(f"({count})", self)
-        count_lbl.setStyleSheet(
-            f"color: {p['ink_faint']}; font-size: 12px;"
-            " background: transparent; border: none;"
-        )
+        count_lbl.setObjectName("PoolChipCount")
         h.addWidget(count_lbl)
-        minus = QPushButton("−", self)
-        minus.setFixedSize(22, 22)
-        minus.setCursor(Qt.CursorShape.PointingHandCursor)
-        minus.setStyleSheet(self._stepper_qss(p))
-        minus.clicked.connect(lambda: self.stepped.emit(-1))
-        plus = QPushButton("+", self)
-        plus.setFixedSize(22, 22)
-        plus.setCursor(Qt.CursorShape.PointingHandCursor)
-        plus.setStyleSheet(self._stepper_qss(p))
-        plus.clicked.connect(lambda: self.stepped.emit(+1))
-        h.addWidget(minus)
-        h.addWidget(plus)
-
-    @staticmethod
-    def _stepper_qss(p: dict) -> str:
-        return (
-            "QPushButton {"
-            f" background: transparent; color: {p['ink_soft']};"
-            f" border: 1px solid {p['line']}; border-radius: 11px;"
-            " padding: 0; font-size: 13px; font-weight: 700;"
-            "}"
-            "QPushButton:hover {"
-            f" border-color: {p['accent']}; color: {p['accent']};"
-            "}"
-        )
+        for label, delta in (("−", -1), ("+", +1)):
+            btn = QPushButton(label, self)
+            btn.setObjectName("PoolStepperBtn")
+            btn.setFixedSize(22, 22)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, d=delta: self.stepped.emit(d))
+            h.addWidget(btn)
 
 
 def _radio_group(
@@ -217,6 +195,13 @@ class NewCutDialog(QDialog):
         self,
         *,
         ctx: Optional[NewCutContext] = None,
+        pool_probe: Optional[Callable[[list], int]] = None,
+        totals_probe: Optional[
+            Callable[[list, list, str], cut_budget.ShowTotals]
+        ] = None,
+        templates: Sequence[object] = (),
+        template_saver: Optional[Callable[[str, dict], None]] = None,
+        separators_on: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -225,6 +210,18 @@ class NewCutDialog(QDialog):
         self.resize(660, 880)
         self._ctx = ctx or NewCutContext()
         self._was_applied = False
+        # Live probes — when the host wires resolve_pool / pool_show_totals
+        # the pool size and the match count come from the gateway on every
+        # change instead of being multiplied out of the (static) declared
+        # pool counts. When absent (smokes / standalone tests) the dialog
+        # falls back to the signed-mult arithmetic so it still draws
+        # something honest.
+        self._pool_probe = pool_probe
+        self._totals_probe = totals_probe
+        self._separators_on = bool(separators_on)
+        self._totals = cut_budget.ShowTotals()
+        self._templates = list(templates or [])
+        self._template_saver = template_saver
         # Seed _pool_counts BEFORE building the UI so the formula + chips
         # row paint correctly on the first paint pass. Edit-mode prefill
         # passes ``selected_pool_counts`` to express signed multipliers;
@@ -267,12 +264,9 @@ class NewCutDialog(QDialog):
         # the migration used. Theme-aware so the light theme picks up the
         # right accent_soft (#eceaff) instead of dark's #211f3a.
         tile = QLabel()
+        tile.setObjectName("CutHeaderTile")
         tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(
-            f"background: {p['accent_soft']}; color: {p['accent']};"
-            " border: none; border-radius: 9px;"
-        )
         tile.setPixmap(
             tinted_svg_pixmap(GLYPH_CUT, 18, QColor(p["accent"]))
         )
@@ -288,8 +282,19 @@ class NewCutDialog(QDialog):
             block.addWidget(sub)
         block.addStretch()
         h.addLayout(block, 1)
-        load = ghost_button("Load template…")
-        h.addWidget(load)
+        # Load template… — opens a popup menu of saved recipes, applies
+        # the chosen one into the dialog state (pool / styles / times /
+        # music / cards). Disabled when the host has no templates.
+        self._load_btn = ghost_button("Load template…")
+        self._load_btn.setEnabled(bool(self._templates))
+        self._load_btn.setToolTip(
+            tr("Pre-fill every field below from a saved template — the "
+               "pool re-evaluates against THIS event's Cuts.")
+            if self._templates else
+            tr("No saved templates yet — configure a Cut and use \"Save "
+               "as template…\" to create one."))
+        self._load_btn.clicked.connect(self._on_load_template)
+        h.addWidget(self._load_btn)
         # Close X — line-icon cross.svg in the 9px squircle (mockup
         # `.mh .x`). Same fix as Surfaces 02/04/etc: Unicode ✕ was
         # invisible in both themes.
@@ -301,15 +306,6 @@ class NewCutDialog(QDialog):
         ))
         close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.setStyleSheet(
-            "QPushButton#DialogClose {"
-            f" background: transparent;"
-            f" border: 1px solid {p['line']}; border-radius: 9px;"
-            "}"
-            "QPushButton#DialogClose:hover {"
-            f" border-color: {p['accent']};"
-            "}"
-        )
         close.clicked.connect(self.reject)
         h.addWidget(close)
         return host
@@ -364,13 +360,10 @@ class NewCutDialog(QDialog):
         # pill bg + border paint reliably (Qt's QSS cascade on nested
         # styled QFrame children dropped these bgs inside this
         # dialog's QScrollArea + QDialog).
-        p = PALETTE[_palette_mode()]
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
         add_label = QLabel("add:")
-        add_label.setStyleSheet(
-            f"color: {p['ink_soft']}; font-size: 12px; font-weight: 600;"
-        )
+        add_label.setObjectName("PoolAddLabel")
         add_row.addWidget(add_label)
         for pool in self._ctx.available_pools:
             chip = _PoolChip(pool.name, pool.count, self._pool_box)
@@ -384,10 +377,7 @@ class NewCutDialog(QDialog):
         # workaround would apply but a plain QLabel with inline color
         # paints fine since there's no bg/border to render.
         self._pool_summary = QLabel("pool: 0 files")
-        self._pool_summary.setStyleSheet(
-            f"color: {p['ink_soft']}; font-size: 13px; font-weight: 600;"
-            " background: transparent;"
-        )
+        self._pool_summary.setObjectName("PoolSummary")
         self._pool_layout.addWidget(self._pool_summary)
         v.addWidget(self._pool_box)
         self._refresh_selected_chips()
@@ -402,6 +392,7 @@ class NewCutDialog(QDialog):
         chips_row.setSpacing(6)
         for style in (self._ctx.styles or []):
             chip = pill_toggle(style, checked=(style in self._ctx.selected_styles))
+            chip.toggled.connect(lambda _c: self._refresh_pool_summary())
             self._style_chips[style] = chip
             chips_row.addWidget(chip)
         chips_row.addStretch()
@@ -418,18 +409,20 @@ class NewCutDialog(QDialog):
         self._photos_cb = QCheckBox("Photos")
         self._photos_cb.setObjectName("DaysTableCheck")
         self._photos_cb.setChecked(self._ctx.include_photos)
+        self._photos_cb.toggled.connect(lambda _c: self._refresh_pool_summary())
         media_col.addWidget(self._photos_cb)
         self._videos_cb = QCheckBox("Videos")
         self._videos_cb.setObjectName("DaysTableCheck")
         self._videos_cb.setChecked(self._ctx.include_videos)
+        self._videos_cb.toggled.connect(lambda _c: self._refresh_pool_summary())
         media_col.addWidget(self._videos_cb)
         row_sm.addLayout(style_col, 1)
         row_sm.addLayout(media_col, 1)
         v.addLayout(row_sm)
 
-        # Match count
+        # Match count — N of M match, green; empty pool reads faint.
         self._match_label = QLabel("0 of 0 match")
-        self._match_label.setStyleSheet("color: #34d399; font-weight: 700;")
+        self._match_label.setObjectName("MatchCount")
         v.addWidget(self._match_label)
 
         # Slide cards + Start as (two columns radio groups)
@@ -539,8 +532,14 @@ class NewCutDialog(QDialog):
         h = QHBoxLayout(host)
         h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
-        save_tpl = ghost_button("Save as template…")
-        h.addWidget(save_tpl)
+        # Save as template… — disabled until the host wires a saver.
+        self._save_tpl_btn = ghost_button("Save as template…")
+        self._save_tpl_btn.setEnabled(self._template_saver is not None)
+        self._save_tpl_btn.setToolTip(tr(
+            "Save these choices — pool, filters, default, times, music — "
+            "as a reusable recipe for any event."))
+        self._save_tpl_btn.clicked.connect(self._on_save_template)
+        h.addWidget(self._save_tpl_btn)
         h.addStretch()
         cancel = ghost_button("Cancel")
         cancel.clicked.connect(self.reject)
@@ -573,11 +572,6 @@ class NewCutDialog(QDialog):
             w = it.widget() if it else None
             if w is not None:
                 w.deleteLater()
-        p = PALETTE[_palette_mode()]
-        accent = p["accent"]
-        ink = p["ink"]
-        ink_soft = p["ink_soft"]
-        ink_faint = p["ink_faint"]
         # Stable order — available pools in declared order, then any
         # template-only pool the user dragged in.
         ordered = [pp.name for pp in self._ctx.available_pools
@@ -594,9 +588,7 @@ class NewCutDialog(QDialog):
         # formula."
         if not active:
             hint = QLabel("compose the pool below")
-            hint.setStyleSheet(
-                f"color: {ink_faint}; font-size: 12px; font-style: italic;"
-            )
+            hint.setObjectName("PoolFormulaHint")
             self._selected_chips_row.addWidget(hint)
         else:
             for i, (name, mult) in enumerate(active):
@@ -605,42 +597,113 @@ class NewCutDialog(QDialog):
                     pass  # implicit +
                 else:
                     op = QLabel(sign)
-                    op.setStyleSheet(
-                        f"color: {accent}; font-size: 15px; font-weight: 800;"
-                    )
+                    op.setObjectName("PoolFormulaOp")
                     self._selected_chips_row.addWidget(op)
                 token = QLabel(name)
-                token.setStyleSheet(
-                    f"color: {ink}; font-size: 14px; font-weight: 700;"
-                )
+                token.setObjectName("PoolFormulaTerm")
                 self._selected_chips_row.addWidget(token)
                 mult_lbl = QLabel(f"× {abs(mult)}")
-                mult_lbl.setStyleSheet(
-                    f"color: {ink_soft}; font-size: 12px; font-weight: 600;"
-                )
+                mult_lbl.setObjectName("PoolFormulaMult")
                 self._selected_chips_row.addWidget(mult_lbl)
         self._selected_chips_row.addStretch()
 
+    def _pool_expr(self) -> list:
+        """The signed-mult ``_pool_counts`` flattened into the
+        ``[(op, tag), ...]`` shape ``resolve_pool`` / ``pool_show_totals``
+        expect — one entry per unit of multiplier, ASCII operators
+        (the gateway raises ``ValueError`` on anything else)."""
+        out: list = []
+        for prefixed in self._pool_counts:
+            mult = int(self._pool_counts[prefixed])
+            if mult == 0:
+                continue
+            t = prefixed.lstrip("#")
+            op = "+" if mult > 0 else "-"
+            for _ in range(abs(mult)):
+                out.append((op, t))
+        return out
+
+    def _active_style_filter(self) -> list:
+        return [s for s, chip in self._style_chips.items() if chip.isChecked()]
+
+    def _active_type_filter(self) -> Optional[str]:
+        ph, vi = self._photos_cb.isChecked(), self._videos_cb.isChecked()
+        if ph and vi:
+            return "both"
+        if ph:
+            return "photo"
+        if vi:
+            return "video"
+        return None
+
     def _refresh_pool_summary(self) -> None:
+        expr = self._pool_expr()
+        # Pool size — the count of files the algebra resolves to, BEFORE
+        # filters. ``pool_probe`` gives the live gateway answer; without
+        # it we fall back to the signed-mult arithmetic so the dialog
+        # still draws an honest number in smokes / standalone tests.
+        if self._pool_probe is not None:
+            try:
+                pool_n = int(self._pool_probe([list(t) for t in expr]))
+            except Exception:                                  # noqa: BLE001
+                log.exception("pool_probe raised — falling back to mult")
+                pool_n = self._fallback_pool_count()
+        else:
+            pool_n = self._fallback_pool_count()
+        self._pool_summary.setText(f"pool: {pool_n} files")
+        # Match count — what's left AFTER the style + media-type filters.
+        tf = self._active_type_filter()
+        if tf is None:
+            self._totals = cut_budget.ShowTotals()
+            self._match_label.setText("pick photos, videos, or both")
+            self._match_label.setProperty("state", "empty")
+        elif self._totals_probe is not None:
+            try:
+                self._totals = self._totals_probe(
+                    [list(t) for t in expr],
+                    self._active_style_filter(), tf)
+            except Exception:                                  # noqa: BLE001
+                log.exception("totals_probe raised — empty totals")
+                self._totals = cut_budget.ShowTotals()
+            match_n = self._totals.photo_count + self._totals.video_count
+            self._match_label.setText(f"{match_n} of {pool_n} match")
+            self._match_label.setProperty(
+                "state", "" if match_n > 0 else "empty")
+        else:
+            # No totals_probe: best-effort = full pool counts as match.
+            self._totals = cut_budget.ShowTotals(photo_count=pool_n)
+            self._match_label.setText(f"{pool_n} of {pool_n} match")
+            self._match_label.setProperty(
+                "state", "" if pool_n > 0 else "empty")
+        # repolish so the state= property change actually re-applies the
+        # QSS rule (Qt doesn't repaint property changes by default).
+        self._match_label.style().unpolish(self._match_label)
+        self._match_label.style().polish(self._match_label)
+        self._refresh_start_enabled()
+
+    def _fallback_pool_count(self) -> int:
+        """Signed-mult arithmetic over the declared pool counts. Honest
+        only when the active pools are disjoint (the common case for
+        ``#exported`` alone); used when the host does not wire a probe."""
         total = 0
         for pool in self._ctx.available_pools:
             mult = self._pool_counts.get(pool.name, 0)
             total += pool.count * mult
-        total = max(0, total)
-        self._pool_summary.setText(f"pool: {total} files")
-        self._match_label.setText(
-            f"{total} of {total} match" if total > 0 else "0 of 0 match"
-        )
-        # The formula tokens now live inside _selected_chips_row — that
-        # row is rebuilt whenever _refresh_selected_chips runs (which
-        # _step_pool already calls), so no extra refresh is needed here.
-
+        return max(0, total)
 
     def _refresh_start_enabled(self) -> None:
         name_ok = bool(self._name_edit.text().strip()) if hasattr(self, "_name_edit") else False
         pool_ok = any(v > 0 for v in self._pool_counts.values())
+        match_ok = True
+        if hasattr(self, "_totals") and self._totals_probe is not None:
+            match_ok = (
+                self._totals.photo_count + self._totals.video_count > 0
+            )
+        type_ok = self._active_type_filter() is not None if hasattr(
+            self, "_photos_cb") else True
         if hasattr(self, "_start_btn"):
-            self._start_btn.setEnabled(name_ok and pool_ok)
+            self._start_btn.setEnabled(
+                name_ok and pool_ok and match_ok and type_ok)
 
     def _on_name_changed(self, t: str) -> None:
         cleaned = t.strip().lower().replace(" ", "_")
@@ -648,6 +711,111 @@ class NewCutDialog(QDialog):
             self._name_tag_hint.setText(f"#{cleaned}")
         else:
             self._name_tag_hint.setText("(tag will preview here)")
+
+    # ── templates ─────────────────────────────────────────────────────
+    # spec/61 §2: the recipe is replayable per event. The host owns the
+    # template store; the dialog only knows how to read a recipe object
+    # into its widgets and how to ask the host to persist one.
+
+    def _on_load_template(self) -> None:
+        if not self._templates:
+            return
+        menu = QMenu(self)
+        for t in self._templates:
+            menu.addAction(str(getattr(t, "name", "")),
+                           lambda t=t: self._apply_template(t))
+        menu.exec(self._load_btn.mapToGlobal(
+            self._load_btn.rect().bottomLeft()))
+
+    def _apply_template(self, t) -> None:
+        """Pre-fill EVERY field from the recipe (all still editable).
+        Unknown tags in the pool expression stay visible as chips — the
+        algebra treats them as empty contributions, honestly."""
+        name = str(getattr(t, "name", "") or "")
+        self._name_edit.setText(name)
+        try:
+            expr = [tuple(it) for it in
+                    json.loads(getattr(t, "pool_expr_json", "") or "[]")]
+        except (ValueError, TypeError):
+            expr = []
+        counts: dict[str, int] = {}
+        for op, tag in expr:
+            key = f"#{tag}" if not tag.startswith("#") else tag
+            counts[key] = counts.get(key, 0) + (1 if op == "+" else -1)
+        self._pool_counts = counts
+        self._refresh_selected_chips()
+        try:
+            styles = set(json.loads(
+                getattr(t, "style_filter_json", "") or "[]"))
+        except (ValueError, TypeError):
+            styles = set()
+        for s, chip in self._style_chips.items():
+            chip.setChecked(s in styles)
+        tf = getattr(t, "type_filter", "both") or "both"
+        self._photos_cb.setChecked(tf in ("both", "photo"))
+        self._videos_cb.setChecked(tf in ("both", "video"))
+        start_as = ("all_picked"
+                    if getattr(t, "default_state", "skipped") == "picked"
+                    else "all_skipped")
+        for b in self._start_group.buttons():
+            if b.property("_key") == start_as:
+                b.setChecked(True)
+                break
+        target_s = getattr(t, "target_s", None)
+        max_s = getattr(t, "max_s", None)
+        self._set_spin(0, max(1, int(round((target_s or 0) / 60))) or 1)
+        self._set_spin(1, max(1, int(round((max_s or 0) / 60))) or 1)
+        photo_s = getattr(t, "photo_s", None)
+        if photo_s is not None:
+            try:
+                self._set_spin(2, float(photo_s))
+            except (TypeError, ValueError):
+                pass
+        music_category = getattr(t, "music_category", None) or "(none)"
+        # The music dropdown's "(no music)" entry uses different wording
+        # across surfaces; accept either form so a template saved from
+        # this dialog round-trips against the adapter (which uses "(no
+        # music)" specifically) AND any older entries persisted as
+        # "(none)".
+        idx = self._music.findText(str(music_category))
+        if idx < 0 and music_category in ("(none)", None):
+            for cand in ("(no music)", "(none)"):
+                idx = self._music.findText(cand)
+                if idx >= 0:
+                    break
+        if idx >= 0:
+            self._music.setCurrentIndex(idx)
+        card = getattr(t, "card_style", "black") or "black"
+        slide_key = {
+            "black": "all_black", "single": "one_random", "multi": "per_day",
+        }.get(card, "all_black")
+        for b in self._slide_group.buttons():
+            if b.property("_key") == slide_key:
+                b.setChecked(True)
+                break
+        self._refresh_pool_summary()
+
+    def _set_spin(self, idx: int, value) -> None:
+        # Make sure the cached spin list is populated.
+        self._spin_value(0)
+        if idx < len(getattr(self, "_timing_spins", [])):
+            spin = self._timing_spins[idx]
+            if isinstance(spin, QDoubleSpinBox):
+                spin.setValue(float(value))
+            else:
+                spin.setValue(int(value))
+
+    def _on_save_template(self) -> None:
+        if self._template_saver is None:
+            return
+        default = self._name_edit.text().strip()
+        dlg = _TemplateNameDialog(default=default, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._template_saver(dlg.template_name(), self.cut_info())
+        except Exception:                                      # noqa: BLE001
+            log.exception("template_saver raised")
 
     def _on_start(self) -> None:
         self._was_applied = True
@@ -696,3 +864,47 @@ class NewCutDialog(QDialog):
 
     def was_applied(self) -> bool:
         return self._was_applied
+
+
+class _TemplateNameDialog(QDialog):
+    """Name the template — one titled field (the form grammar), free
+    text (a template name is a label, not a tag)."""
+
+    def __init__(self, *, default: str = "",
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("Save as template"))
+        self.setModal(True)
+        self.setMinimumWidth(380)
+        box = QVBoxLayout(self)
+        group = QGroupBox(tr("Template name"))
+        group.setObjectName("FormFieldGroup")
+        gbox = QVBoxLayout(group)
+        self._edit = QLineEdit(default)
+        self._edit.setToolTip(tr(
+            "How this recipe appears in the Load template… list."))
+        self._edit.textChanged.connect(self._refresh)
+        gbox.addWidget(self._edit)
+        box.addWidget(group)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Save"))
+            self._ok.setToolTip(tr("Save the recipe under this name."))
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel is not None:
+            cancel.setToolTip(tr("Don't save a template."))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box.addWidget(buttons)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if self._ok is not None:
+            self._ok.setEnabled(bool(self._edit.text().strip()))
+
+    def template_name(self) -> str:
+        return self._edit.text().strip()

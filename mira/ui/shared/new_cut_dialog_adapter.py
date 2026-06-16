@@ -10,24 +10,25 @@ This module gives the redesigned page that same call-site contract so
 ``cuts_shell.py`` can swap one import (and one import only) to land the
 new dialog live without:
 
-* touching the redesigned page (engines stay reusable),
 * touching the legacy module (tests stay green),
 * touching :class:`CutDraft` (the downstream
   ``CutSession.from_draft`` / ``for_cut_with_draft`` contract is unchanged).
 
-The translation work lives in two helpers:
+The translation work lives in three helpers:
 
 * :func:`_build_context` — legacy kwargs + an optional ``prefill`` → a
   :class:`mira.ui.pages.new_cut_dialog.NewCutContext`.
-* :meth:`NewCutDialog.draft` — the redesigned ``cut_info()`` dict back into
-  a :class:`CutDraft`, honoring ``pool_probe`` for the file count and the
-  legacy slug/sign-conversion shapes.
+* :func:`_draft_from_info` — the redesigned ``cut_info()`` dict back into
+  a :class:`CutDraft`. Reused by ``.draft()`` AND by the
+  template-save wrapper so the host's ``template_saver`` always
+  receives a :class:`CutDraft`-shaped object.
+* :meth:`NewCutDialog._make_template_saver` — wraps the host saver so
+  the redesigned dialog can fire it with its own ``(name, info_dict)``
+  signature.
 
-A few legacy features are stubbed for now (Load template…, Save as
-template…); they'll be filled in once the redesigned page grows its own
-template store-front. Until then the adapter just hides the buttons
-when there are no templates / no saver, matching the legacy's quiet
-empty state.
+The pool probe + totals probe are passed straight through to the
+redesigned dialog so the pool size and the match count read live off
+the gateway on every change (no more multiplied-out static counts).
 """
 from __future__ import annotations
 
@@ -38,12 +39,12 @@ from typing import Callable, Optional, Sequence, Tuple
 
 from PyQt6.QtWidgets import QDialog, QWidget
 
+from mira.shared.cut_draft import CutDraft
 from mira.ui.pages.new_cut_dialog import (
     NewCutContext,
     NewCutDialog as _RedesignedNewCutDialog,
     PoolOption,
 )
-from mira.ui.shared.new_cut_dialog import CutDraft
 
 log = logging.getLogger(__name__)
 
@@ -215,6 +216,44 @@ def _card_style_from_slide(slide_cards: str) -> str:
 # ── the adapter ─────────────────────────────────────────────────────────
 
 
+def _draft_from_info(info: dict) -> CutDraft:
+    """Translate the redesigned dialog's ``cut_info()`` payload into a
+    :class:`CutDraft`. Shared between ``.draft()`` and the
+    template-save wrapper so the host always receives the same
+    canonical shape."""
+    name = (info.get("name") or "").strip()
+    pool_expr = _pool_expr_from_counts(info.get("pool", {}))
+    target_min = int(info.get("target_minutes", 0) or 0)
+    max_min = int(info.get("max_minutes", 0) or 0)
+    per_photo = float(info.get("per_photo_seconds", 0.0) or 0.0)
+    music_choice = str(info.get("music", "(no music)"))
+    music_category: Optional[str]
+    if music_choice in ("(no music)", "(none)", ""):
+        music_category = None
+    else:
+        music_category = music_choice
+    return CutDraft(
+        name=name,
+        tag=_slug(name),
+        pool_expr=pool_expr,
+        style_filter=tuple(info.get("styles", ()) or ()),
+        type_filter=_type_filter_from(
+            bool(info.get("include_photos", True)),
+            bool(info.get("include_videos", True)),
+        ),
+        default_state=(
+            "picked" if info.get("start_as") == "all_picked"
+            else "skipped"
+        ),
+        target_s=(target_min * 60) if target_min > 0 else None,
+        max_s=(max_min * 60) if max_min > 0 else None,
+        photo_s=per_photo,
+        music_category=music_category,
+        card_style=_card_style_from_slide(
+            info.get("slide_cards", "all_black")),
+    )
+
+
 class NewCutDialog:
     """Drop-in adapter exposing the legacy ``NewCutDialog`` surface
     (``exec`` + ``draft``) over the redesigned page.
@@ -245,12 +284,10 @@ class NewCutDialog:
         parent: Optional[QWidget] = None,
     ) -> None:
         self._pool_probe = pool_probe
+        self._totals_probe = totals_probe
         self._music_categories = tuple(music_categories or ())
         self._separators_on = bool(separators_on)
         self._prefill = prefill
-        # Templates + template_saver are accepted but not yet surfaced in
-        # the redesigned page (TODO: spec/65 §3.13 template strip). Stub
-        # them so the adapter swallows the kwargs without complaint.
         self._templates = list(templates or [])
         self._template_saver = template_saver
 
@@ -278,50 +315,11 @@ class NewCutDialog:
 
     def draft(self) -> CutDraft:
         """Read the redesigned dialog's ``cut_info()`` and translate back
-        to :class:`CutDraft`. ``pool_probe`` is honored for the file
-        count when present; we don't need to surface the count on the
-        draft itself (the legacy doesn't either) but we ensure it can be
-        called without error so future surfaces relying on the probe
-        still wire."""
+        to :class:`CutDraft`."""
         if self._dlg is None:
             # Edge case — caller never exec'd; produce a sensible default.
             self._build()
-        info = self._dlg.cut_info()
-        pool_expr = _pool_expr_from_counts(info.get("pool", {}))
-        name = info.get("name", "").strip()
-        if self._pool_probe is not None and pool_expr:
-            try:
-                self._pool_probe([list(t) for t in pool_expr])
-            except Exception:                                      # noqa: BLE001
-                log.exception("pool_probe raised — ignoring (count unused)")
-        target_min = int(info.get("target_minutes", 0) or 0)
-        max_min = int(info.get("max_minutes", 0) or 0)
-        per_photo = float(info.get("per_photo_seconds", 0.0) or 0.0)
-        music_choice = str(info.get("music", "(no music)"))
-        if music_choice == "(no music)":
-            music_category: Optional[str] = None
-        else:
-            music_category = music_choice
-        return CutDraft(
-            name=name,
-            tag=_slug(name),
-            pool_expr=pool_expr,
-            style_filter=tuple(info.get("styles", ()) or ()),
-            type_filter=_type_filter_from(
-                bool(info.get("include_photos", True)),
-                bool(info.get("include_videos", True)),
-            ),
-            default_state=(
-                "picked" if info.get("start_as") == "all_picked"
-                else "skipped"
-            ),
-            target_s=(target_min * 60) if target_min > 0 else None,
-            max_s=(max_min * 60) if max_min > 0 else None,
-            photo_s=per_photo,
-            music_category=music_category,
-            card_style=_card_style_from_slide(
-                info.get("slide_cards", "all_black")),
-        )
+        return _draft_from_info(self._dlg.cut_info())
 
     # ── construction ──────────────────────────────────────────────────
 
@@ -331,9 +329,35 @@ class NewCutDialog:
         # The redesigned dialog reads every prefill field off ``ctx`` in
         # its own ``__init__`` — no post-build mutation needed (post-
         # build chip rewrites broke the add-row chips' paint pass).
-        self._dlg = _RedesignedNewCutDialog(ctx=self._ctx, parent=self._parent)
+        # Probes + templates + the wrapped saver flow straight through:
+        # the dialog calls them live on every state change (probes) and
+        # on Save as template… / Load template… (templates).
+        self._dlg = _RedesignedNewCutDialog(
+            ctx=self._ctx,
+            pool_probe=self._pool_probe,
+            totals_probe=self._totals_probe,
+            templates=self._templates,
+            template_saver=self._make_template_saver(),
+            separators_on=self._separators_on,
+            parent=self._parent,
+        )
         if self._heading_text:
             self._dlg.setWindowTitle(self._heading_text)
+
+    def _make_template_saver(self):
+        """Wrap the host saver so the dialog can fire it with its own
+        ``(name, info_dict)`` signature. The host expects a
+        :class:`CutDraft`, so translate before forwarding. Returns
+        ``None`` when there is no host saver — the dialog's Save button
+        stays disabled in that case."""
+        host = self._template_saver
+        if host is None:
+            return None
+
+        def _save(name: str, info: dict) -> None:
+            host(name, _draft_from_info(info))
+
+        return _save
 
 
 __all__ = ["NewCutDialog", "CutDraft"]

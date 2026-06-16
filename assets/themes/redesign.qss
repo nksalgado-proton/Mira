@@ -262,6 +262,39 @@ QFrame#PoolChipHost {
     border: 1px solid {line};
     border-radius: 14px;
 }
+QLabel#PoolChipName  { color: {ink};      font-size: 12px; font-weight: 600;
+                       background: transparent; border: none; }
+QLabel#PoolChipCount { color: {ink_faint};font-size: 12px;
+                       background: transparent; border: none; }
+QPushButton#PoolStepperBtn        { background: transparent; color: {ink_soft};
+                                    border: 1px solid {line}; border-radius: 11px;
+                                    padding: 0; font-size: 13px; font-weight: 700; }
+QPushButton#PoolStepperBtn:hover  { border-color: {accent}; color: {accent}; }
+
+/* New Cut dialog — header tile + close button + pool formula tokens +
+ * match / summary labels. All live in QSS so the dialog body has no
+ * inline setStyleSheet residue (charter §QSS + clickable affordances). */
+QLabel#CutHeaderTile             { background: {accent_soft}; color: {accent};
+                                   border: none; border-radius: 9px; }
+QPushButton#DialogClose          { background: transparent;
+                                   border: 1px solid {line}; border-radius: 9px; }
+QPushButton#DialogClose:hover    { border-color: {accent}; }
+QFrame#DialogDivider             { background: {line}; max-height: 1px; min-height: 1px;
+                                   border: none; }
+QLabel#PoolAddLabel              { color: {ink_soft}; font-size: 12px; font-weight: 600;
+                                   background: transparent; }
+QLabel#PoolSummary               { color: {ink_soft}; font-size: 13px; font-weight: 600;
+                                   background: transparent; }
+QLabel#PoolFormulaHint           { color: {ink_faint}; font-size: 12px;
+                                   font-style: italic; background: transparent; }
+QLabel#PoolFormulaOp             { color: {accent}; font-size: 15px; font-weight: 800;
+                                   background: transparent; }
+QLabel#PoolFormulaTerm           { color: {ink}; font-size: 14px; font-weight: 700;
+                                   background: transparent; }
+QLabel#PoolFormulaMult           { color: {ink_soft}; font-size: 12px; font-weight: 600;
+                                   background: transparent; }
+QLabel#MatchCount                { color: {green}; font-weight: 700; background: transparent; }
+QLabel#MatchCount[state="empty"] { color: {ink_faint}; }
 
 /* Custom days-table checkbox — bumped to the mockup's 20px tile + 6px
  * radius + accent fill on :checked. The check tick comes from the

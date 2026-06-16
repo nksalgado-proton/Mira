@@ -413,6 +413,45 @@ def test_whole_video_is_the_single_segment_no_special_case(event_gw):
     assert event_gw.phase_state(segs[0].item_id, "edit").state == "picked"
 
 
+def test_clips_and_snapshots_inherit_video_day_and_offset_time(event_gw):
+    """spec/56 / spec/61 — segment + snapshot items inherit the source video's
+    ``day_number`` and a ``capture_time_corrected`` offset by their START on
+    the timeline, so exported clips land in their day in chronological show
+    order in a Cut (not bunched under the undated separator). Re-stamps after
+    every marker op."""
+    event_gw.store.upsert(m.Item(
+        id="i-vid-ct", kind="video", created_at=FIXED_NOW, provenance="captured",
+        origin_relpath="00 - Captured/Day02/P9.MP4", sha256="e" * 64, byte_size=9,
+        materialized_at=FIXED_NOW, materialized_phase="ingest", camera_id="G9M2",
+        capture_time_raw="2026-04-02T10:00:00",
+        capture_time_corrected="2026-04-02T10:00:00",
+        day_number=2, duration_ms=60_000))
+
+    # Lazy birth: the single segment sits at the video's own day + time.
+    segs = event_gw.ensure_video_segments("i-vid-ct")
+    seg0 = event_gw.item(segs[0].item_id)
+    assert seg0.day_number == 2
+    assert seg0.capture_time_corrected == "2026-04-02T10:00:00"
+
+    # A marker splits it; the right half starts 20 s in → offset capture time.
+    event_gw.add_video_marker("i-vid-ct", 20_000)
+    s0, s1 = (event_gw.item(s.item_id)
+              for s in event_gw.video_segments("i-vid-ct"))
+    assert s0.day_number == 2 and s1.day_number == 2
+    assert s0.capture_time_corrected == "2026-04-02T10:00:00"
+    assert s1.capture_time_corrected == "2026-04-02T10:00:20"
+
+    # A snapshot at 5 s inherits the day + an exact offset time.
+    sid = event_gw.create_video_snapshot("i-vid-ct", 5_000, item_id="i-snap-ct")
+    snap = event_gw.item(sid)
+    assert snap.day_number == 2
+    assert snap.capture_time_corrected == "2026-04-02T10:00:05"
+
+    # None are undated → no collapse under the Cut's undated separator.
+    dated = {i.id for i in event_gw.items(day=2)}
+    assert {"i-vid-ct", segs[0].item_id, sid}.issubset(dated)
+
+
 def test_add_marker_splits_and_inherits(event_gw):
     """spec/56 locked rule: a marker inserted INSIDE a segment splits it; both
     halves inherit the parent's state + adjustments; later segments shift up

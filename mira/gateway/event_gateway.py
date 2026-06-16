@@ -1437,6 +1437,48 @@ class EventGateway:
             raise ValueError(f"{video_item_id} is not a source video")
         return video
 
+    @staticmethod
+    def _iso_plus_ms(iso: "Optional[str]", ms: int) -> "Optional[str]":
+        """Offset an ISO timestamp by ``ms`` milliseconds. None-safe; on a
+        parse failure returns the input unchanged (never crashes a write)."""
+        if not iso:
+            return None
+        try:
+            from datetime import datetime, timedelta
+            return (datetime.fromisoformat(iso)
+                    + timedelta(milliseconds=int(ms))).isoformat()
+        except Exception:                                      # noqa: BLE001
+            return iso
+
+    def _restamp_segment_times(self, video_item_id: str) -> None:
+        """spec/56 / spec/61 — give every segment item the source video's
+        ``day_number`` + a ``capture_time_corrected`` offset by the segment's
+        START on the timeline, so exported clips land in their day in
+        chronological show order in a Cut (not bunched under the undated
+        separator). Re-runs after every marker op because segment starts are
+        marker-derived. An undated source video leaves its clips undated too
+        (correct). Caller holds the transaction."""
+        video = self.item(video_item_id)
+        if video is None:
+            return
+        day = video.day_number
+        base = video.capture_time_corrected
+        try:
+            bounds = (derive_segment_bounds(
+                [mk.at_ms for mk in self.video_markers(video_item_id)],
+                int(video.duration_ms)) if video.duration_ms else [])
+        except Exception:                                      # noqa: BLE001
+            bounds = []
+        for seg in self.video_segments(video_item_id):
+            in_ms = (bounds[seg.seg_index][0]
+                     if 0 <= seg.seg_index < len(bounds) else 0)
+            item = self.item(seg.item_id)
+            if item is None:
+                continue
+            self.store.upsert(replace(
+                item, day_number=day,
+                capture_time_corrected=self._iso_plus_ms(base, in_ms)))
+
     def _ensure_segments_in_txn(
         self, video_item_id: str, now: str, default_state: str = "skipped",
     ):
@@ -1491,6 +1533,7 @@ class EventGateway:
             segs, created = self._ensure_segments_in_txn(
                 video_item_id, self._now(), default_state)
             if created:
+                self._restamp_segment_times(video_item_id)
                 self._touch()
         return segs
 
@@ -1547,6 +1590,7 @@ class EventGateway:
                 id=marker_id, video_item_id=video_item_id,
                 at_ms=at_ms, created_at=now,
             ))
+            self._restamp_segment_times(video_item_id)
             self._touch()
         return marker_id
 
@@ -1581,6 +1625,7 @@ class EventGateway:
             conn.execute(
                 "UPDATE video_marker SET at_ms = ? WHERE id = ?",
                 (new_at_ms, marker_id))
+            self._restamp_segment_times(mk.video_item_id)
             self._touch()
 
     def delete_video_marker(self, marker_id: str) -> None:
@@ -1614,6 +1659,7 @@ class EventGateway:
                         "UPDATE video_segment SET seg_index = ? WHERE item_id = ?",
                         (seg.seg_index - 1, seg.item_id))
             conn.execute("DELETE FROM video_marker WHERE id = ?", (marker_id,))
+            self._restamp_segment_times(mk.video_item_id)
             self._touch()
 
     def create_video_snapshot(
@@ -1639,6 +1685,9 @@ class EventGateway:
             self.store.upsert(m.Item(
                 id=new_id, kind="photo", provenance="snapshot",
                 parent_item_id=video_item_id, created_at=now,
+                day_number=video.day_number,
+                capture_time_corrected=self._iso_plus_ms(
+                    video.capture_time_corrected, at_ms),
                 classification=video.classification,
                 classification_source=video.classification_source,
                 classification_rules_version=video.classification_rules_version,

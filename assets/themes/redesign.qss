@@ -34,6 +34,12 @@ QPushButton#Ghost           { background: transparent; color: {ink}; border: 1px
                               border-radius: {radius_md}px; padding: 8px 14px; font-weight: 600; }
 QPushButton#Ghost:hover     { background: {card2}; border-color: {accent}; }
 QPushButton#Ghost:pressed   { background: {card2}; }
+/* Active-filter affordance (spec/75 §3.2) — when a Filters button has a
+ * non-default selection it sets the dynamic property `active="true"` and
+ * this rule lights the border + label in accent so the filtered state is
+ * unmistakable. Same property hook other ghost-style toggles can use. */
+QPushButton#Ghost[active="true"]        { border-color: {accent}; color: {accent}; }
+QPushButton#Ghost[active="true"]:hover  { background: {accent_soft}; }
 QPushButton#Primary         { background: {accent}; color: #ffffff; border: none;
                               border-radius: {radius_md}px; padding: 11px 18px; font-weight: 700; }
 QPushButton#Primary:hover   { background: {accent}; }

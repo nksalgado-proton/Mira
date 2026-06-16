@@ -72,12 +72,67 @@ def _status_by_phase(eg, trip_days, day_tree) -> Dict[str, Dict[int, str]]:
     return out
 
 
+_SAMPLE_PIXMAP_CAP = 12
+
+
+def _sample_pixmap_paths(eg, collected) -> list:
+    """Resolve the photo-cycler source list for the closed tile.
+
+    Order of preference (spec/75 §6.2):
+      1. Exported keepers — the ``Exported Media`` survivors.
+      2. Picked photos — the green decisions even if not yet exported.
+      3. Any capture — last-resort so a brand-new closed event with no
+         decisions yet still gets a photo cycler instead of the empty
+         placeholder.
+
+    Returns absolute :class:`Path` instances. Capped at
+    ``_SAMPLE_PIXMAP_CAP`` so the events list keeps a bounded memory
+    footprint as closed events accumulate.
+    """
+    if eg.event_root is None:
+        return []
+    try:
+        exported = [
+            eg.event_root / lin.export_relpath
+            for lin in eg.exported_files()[:_SAMPLE_PIXMAP_CAP]
+            if lin.export_relpath
+        ]
+    except Exception:                                          # noqa: BLE001
+        log.exception("exported_files() failed for sample paths")
+        exported = []
+    if exported:
+        return exported
+    try:
+        picked_items = eg.items(
+            kind="photo", phase="pick", state="picked"
+        )[:_SAMPLE_PIXMAP_CAP]
+        picked_paths = [
+            eg.event_root / it.relpath
+            for it in picked_items
+            if getattr(it, "relpath", None)
+        ]
+    except Exception:                                          # noqa: BLE001
+        log.exception("picked-fallback failed for sample paths")
+        picked_paths = []
+    if picked_paths:
+        return picked_paths
+    try:
+        return [
+            eg.event_root / it.relpath
+            for it in (collected or [])[:_SAMPLE_PIXMAP_CAP]
+            if getattr(it, "relpath", None)
+        ]
+    except Exception:                                          # noqa: BLE001
+        log.exception("any-capture fallback failed for sample paths")
+        return []
+
+
 def _populate_closed_body_data(
     gateway: "Gateway", eg, base: "EventCardData",
 ) -> None:
     """Fill in the closed-tile body data: stat counts, classification
-    distribution, and the sample exported-file paths feeding the Surface 01
-    Carousel."""
+    distribution, and the sample photo paths feeding the Surface 01
+    PhotoCycler (spec/75 §6)."""
     try:
         collected = eg.items(kind="photo")
         base.collected_count = len(collected)
@@ -101,19 +156,11 @@ def _populate_closed_body_data(
         log.exception("exported count failed for %s", base.event_id)
         base.exported_count = 0
 
-    # Sample exported-file absolute paths for the Carousel (Surface 01).
-    # First 5 from chronologically-ordered exported_files(); skips when
-    # event_root is unresolvable (bare-card fallback).
-    try:
-        if eg.event_root is not None:
-            base.sample_pixmap_paths = [
-                eg.event_root / lin.export_relpath
-                for lin in eg.exported_files()[:5]
-                if lin.export_relpath
-            ]
-    except Exception:                                          # noqa: BLE001
-        log.exception("sample_pixmap_paths failed for %s", base.event_id)
-        base.sample_pixmap_paths = []
+    # Sample photo paths feeding the closed-tile PhotoCycler (spec/75
+    # §6.2). Exported keepers first, capped at 12; if that's empty (no
+    # finals yet) we fall back to picked photos, then to any capture.
+    # The cycler shuffles the list on its own, so we don't shuffle here.
+    base.sample_pixmap_paths = _sample_pixmap_paths(eg, collected)
 
     counts: Counter = Counter()
     for it in collected:

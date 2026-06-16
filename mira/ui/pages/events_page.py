@@ -6,13 +6,14 @@ system catalog (mira.ui.design); data layer is the unchanged ``Gateway`` —
 same ``list_events`` / ``events_index_filtered`` / per-event ``EventCardData``
 contract.
 
-Top-to-bottom composition (design-system §Surface 01):
+Top-to-bottom composition (spec/75):
     TitleBar (host-owned)
-    PageHeader   — "Events" + count sub-line + primary "+ New Event"
-    CrossEventCutsBand   — accent-bordered entry (NEW; stub until backend)
-    FilterRow    — SearchField + Status / Type / Year / Sort selects
-                   (filters the events list only, NOT cross-event search)
-    Events list  — vertical stack of EventCardRedesign tiles (open + closed)
+    CrossEventCutsBand   — leads the screen; the app-level search door
+    Toolbar              — "Events" title + 3 stat chips + per-list
+                           search + Filters popover + + New event
+    Tile grid            — FlowLayout of uniform fixed-height EventTile
+                           instances (open + closed), 3 columns × 3-4
+                           rows visible at typical desktop width
 
 Signals preserve the legacy DashboardPage shape so MainWindow routing doesn't
 change:
@@ -32,26 +33,33 @@ from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from mira.gateway import Gateway
 from mira.ui.base.event_card import EventCardData
+from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
-    PageHeader,
-    StatTile,
+    chip_closed,
+    chip_idle,
+    chip_open,
+    ghost_button,
     primary_button,
     search_field,
     select,
 )
 from mira.ui.pages._cross_event_band import CrossEventCutsBand
 from mira.ui.pages._event_card_data import card_data as _card_data
-from mira.ui.pages._event_card_redesign import EventCardRedesign
+from mira.ui.pages._event_tile import EventTile
 
 log = logging.getLogger(__name__)
 
@@ -88,67 +96,27 @@ class EventsPage(QWidget):
     # ── layout ──────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
+        """Surface 01 chrome (spec/75 §2): cross-event search first,
+        then a one-line toolbar (title · stat chips · filter search ·
+        Filters popover · + New event), then the uniform tile grid."""
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 24, 32, 24)
-        outer.setSpacing(16)
+        outer.setContentsMargins(32, 18, 32, 18)
+        outer.setSpacing(12)
 
-        # Header — title + count + primary New Event
-        new_btn = primary_button("+ New Event")
-        new_btn.clicked.connect(self.new_event_requested.emit)
-        self._header = PageHeader("Events", "Loading…", action=new_btn)
-        outer.addWidget(self._header)
-
-        # Aggregate at-a-glance stat band — 3 quiet StatTile chips that
-        # frame the events list as a dashboard view (spec/65 §2.4 / §3.1
-        # "the dashboard wants this synthesis"). Sits between the header
-        # and the CEC: the CEC's accent border + glow still dominate, and
-        # the tiles are deliberately card2 (no accent shadow) so they
-        # recede into the page chrome. setEventsForPreview / refresh
-        # repopulate the values in _apply_filter.
-        self._stat_row = QHBoxLayout()
-        self._stat_row.setSpacing(10)
-        self._stat_open = StatTile("Open", "0", value_color="#34d399")
-        self._stat_closed = StatTile("Closed", "0", value_color="#ff5da2")
-        self._stat_days = StatTile("Days", "0", value_color="#7c6cff")
-        for w in (self._stat_open, self._stat_closed, self._stat_days):
-            w.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-            self._stat_row.addWidget(w, 1)
-        outer.addLayout(self._stat_row)
-
-        # Cross-Event Cuts entry
+        # 1. Cross-Event Cuts band — the very first element on the screen
+        # (Nelson 2026-06-16 / spec/75 §2). Reads as the app-level
+        # entry point; per-events search/filter sit BELOW it.
         self._cross_band = CrossEventCutsBand()
         self._cross_band.submitted.connect(self.cross_event_query.emit)
         outer.addWidget(self._cross_band)
 
-        # Filters row
-        filters = QHBoxLayout()
-        filters.setSpacing(10)
-        self._filter_search = search_field("Filter events…")
-        self._filter_search.input.textChanged.connect(self._apply_filter)
-        filters.addWidget(self._filter_search, 3)
-        self._status_sel = select(["All status", "Open", "Closed"])
-        self._status_sel.currentIndexChanged.connect(self._apply_filter)
-        filters.addWidget(self._status_sel, 1)
-        self._type_sel = select(
-            ["All types", "Trip", "Session", "Wildlife", "Mountains", "Urban"]
-        )
-        self._type_sel.currentIndexChanged.connect(self._apply_filter)
-        filters.addWidget(self._type_sel, 1)
-        self._year_sel = select(
-            ["Any year", "2026", "2025", "2024", "2023"]
-        )
-        self._year_sel.currentIndexChanged.connect(self._apply_filter)
-        filters.addWidget(self._year_sel, 1)
-        self._sort_sel = select(
-            ["Newest first", "Oldest first", "Name (A→Z)", "Days (most→least)"]
-        )
-        self._sort_sel.currentIndexChanged.connect(self._apply_filter)
-        filters.addWidget(self._sort_sel, 1)
-        outer.addLayout(filters)
+        # 2. One-line toolbar — title, three compact stat chips, the
+        # per-list search field, the Filters popover button, and the
+        # primary "+ New event". Replaces the tall PageHeader + the
+        # always-visible 4-combo filter row from the prior layout.
+        outer.addWidget(self._build_toolbar())
 
-        # Empty state
+        # 3. Empty state — hidden when the grid has any tiles.
         self._empty = QLabel(
             "No events yet. Use Event → New event to make one."
         )
@@ -157,7 +125,11 @@ class EventsPage(QWidget):
         self._empty.setWordWrap(True)
         outer.addWidget(self._empty)
 
-        # Scrolling card list
+        # 4. Scrolling uniform tile grid (spec/75 §4). FlowLayout reflows
+        # by width: tiles keep an identical fixed size and wrap into as
+        # many columns as the viewport allows. The minimum-width-of-
+        # widest-child invariant of FlowLayout means a single tile is the
+        # only horizontal floor — the page never refuses to narrow.
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -165,15 +137,195 @@ class EventsPage(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         host = QWidget()
-        self._cards = QVBoxLayout(host)
-        self._cards.setContentsMargins(0, 0, 0, 0)
-        self._cards.setSpacing(14)
-        self._cards.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._cards = FlowLayout(host, margin=0, spacing=14)
         self._scroll.setWidget(host)
         self._scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         outer.addWidget(self._scroll, 1)
+
+    # ── toolbar / filters ──────────────────────────────────────────────
+
+    def _build_toolbar(self) -> QWidget:
+        bar = QWidget()
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+
+        title = QLabel("Events")
+        title.setStyleSheet("font-size: 22px; font-weight: 800;")
+        h.addWidget(title)
+
+        # Three small stat pills — open / closed / total days. The chip
+        # factories already match the spec/66 phase identity (open green,
+        # closed pink, days neutral). Live-updated in ``_apply_filter``.
+        self._stat_open = chip_open("0 open")
+        self._stat_closed = chip_closed("0 closed")
+        self._stat_days = chip_idle("0 days")
+        for chip in (self._stat_open, self._stat_closed, self._stat_days):
+            h.addWidget(chip)
+
+        h.addStretch(1)
+
+        # "showing N of M" label — only visible when a filter trims the
+        # list, so the user is never stranded on a hidden subset (spec/75
+        # §3.2, also the original fix #1 root cause).
+        self._showing_label = QLabel("")
+        self._showing_label.setObjectName("Faint")
+        self._showing_label.setStyleSheet("font-size: 12px;")
+        self._showing_label.setVisible(False)
+        h.addWidget(self._showing_label)
+
+        # Per-list search field — distinct from the cross-event band
+        # above it. Kept inline (rather than tucked into the popover) so
+        # the most-frequent filter — type-to-find — stays one click away.
+        self._filter_search = search_field("Filter events…")
+        self._filter_search.setMaximumWidth(220)
+        self._filter_search.input.textChanged.connect(self._apply_filter)
+        h.addWidget(self._filter_search)
+
+        # Filters button — popover holding Status / Type / Year / Sort.
+        # The button text becomes "Filters · N" when any filter is off
+        # its default; the QSS `[active="true"]` hook adds the accent
+        # border in both themes.
+        self._filter_btn = ghost_button("Filters")
+        self._filter_btn.setObjectName("Ghost")
+        self._filter_btn.setProperty("active", False)
+        self._filter_btn.clicked.connect(self._open_filter_popover)
+        h.addWidget(self._filter_btn)
+
+        # Clear button — small "× clear" affordance pinned next to the
+        # Filters button, only visible when any filter is off default.
+        self._clear_btn = QPushButton("× Clear")
+        self._clear_btn.setObjectName("Ghost")
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.setStyleSheet(
+            "QPushButton#Ghost { padding: 8px 10px; }"
+        )
+        self._clear_btn.clicked.connect(self._on_clear_filters)
+        self._clear_btn.setVisible(False)
+        h.addWidget(self._clear_btn)
+
+        new_btn = primary_button("+ New Event")
+        new_btn.clicked.connect(self.new_event_requested.emit)
+        h.addWidget(new_btn)
+
+        # Build the popover-backing selects up front — they live inside
+        # the QMenu shown from ``_open_filter_popover`` and the host reads
+        # their currentIndex in ``_apply_filter``. Keeping them as attrs
+        # rather than rebuilding on every popover open lets the active
+        # state + count survive between presses.
+        self._status_sel = select(["All status", "Open", "Closed"])
+        self._status_sel.currentIndexChanged.connect(self._apply_filter)
+        self._type_sel = select(
+            ["All types", "Trip", "Session", "Wildlife", "Mountains", "Urban"]
+        )
+        self._type_sel.currentIndexChanged.connect(self._apply_filter)
+        self._year_sel = select(
+            ["Any year", "2026", "2025", "2024", "2023"]
+        )
+        self._year_sel.currentIndexChanged.connect(self._apply_filter)
+        self._sort_sel = select(
+            ["Newest first", "Oldest first", "Name (A→Z)", "Days (most→least)"]
+        )
+        self._sort_sel.currentIndexChanged.connect(self._apply_filter)
+
+        # Build the popover once. Reusing a single QMenu (instead of
+        # rebuilding on every open) keeps the combo widgets reparented to
+        # one stable host — re-parenting on every press caused fragile
+        # state where the combos' popups would close abruptly the second
+        # time the popover opened.
+        self._filter_menu = self._build_filter_menu()
+
+        return bar
+
+    def _build_filter_menu(self) -> QMenu:
+        """Build the filter popover once. The combos live on a single
+        host frame attached to a ``QWidgetAction`` so the menu inherits
+        Esc-to-close + click-outside-to-close from Qt for free."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background: transparent; border: none; }"
+        )
+
+        host = QFrame()
+        host.setObjectName("Card")
+        v = QVBoxLayout(host)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+
+        for label, combo in (
+            ("Status", self._status_sel),
+            ("Type", self._type_sel),
+            ("Year", self._year_sel),
+            ("Sort", self._sort_sel),
+        ):
+            lab = QLabel(label)
+            lab.setObjectName("Micro")
+            v.addWidget(lab)
+            v.addWidget(combo)
+
+        # Clear-from-inside affordance — duplicates the toolbar Clear so
+        # the user can drop everything without first closing the popover.
+        clear_inside = QPushButton("Clear filters")
+        clear_inside.setObjectName("Ghost")
+        clear_inside.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_inside.clicked.connect(self._on_clear_filters)
+        clear_inside.clicked.connect(menu.close)
+        v.addWidget(clear_inside)
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(host)
+        menu.addAction(action)
+        return menu
+
+    def _open_filter_popover(self) -> None:
+        """Pop the pre-built Filters menu beneath the button."""
+        self._filter_menu.exec(
+            self._filter_btn.mapToGlobal(
+                self._filter_btn.rect().bottomLeft()
+            )
+        )
+
+    def _on_clear_filters(self) -> None:
+        """Reset every dropdown to its default index + clear the search.
+        The dropdowns' currentIndexChanged signals fire ``_apply_filter``
+        which then refreshes the count + active state in one pass."""
+        for combo in (
+            self._status_sel, self._type_sel,
+            self._year_sel, self._sort_sel,
+        ):
+            combo.setCurrentIndex(0)
+        self._filter_search.input.clear()
+
+    def _filter_active_count(self) -> int:
+        """How many filters are off their default. Drives the Filters
+        button label, the active QSS hook, and the Clear button's
+        visibility. The text-search counts as one filter when non-empty
+        even though it lives inline."""
+        n = 0
+        if self._status_sel.currentIndex() != 0:
+            n += 1
+        if self._type_sel.currentIndex() != 0:
+            n += 1
+        if self._year_sel.currentIndex() != 0:
+            n += 1
+        if self._filter_search.input.text().strip():
+            n += 1
+        # Sort doesn't count: changing sort doesn't hide any event, so
+        # the safety-net wording "filtered" never applies to it.
+        return n
+
+    def _refresh_filter_button(self) -> None:
+        n = self._filter_active_count()
+        active = n > 0
+        self._filter_btn.setText(f"Filters · {n}" if active else "Filters")
+        self._filter_btn.setProperty("active", active)
+        # Qt only re-resolves QSS state on a style refresh — without
+        # this, the property change doesn't repaint the border.
+        self._filter_btn.style().unpolish(self._filter_btn)
+        self._filter_btn.style().polish(self._filter_btn)
+        self._clear_btn.setVisible(active)
 
     # ── data ────────────────────────────────────────────────────────────
 
@@ -220,16 +372,15 @@ class EventsPage(QWidget):
     def _apply_filter(self) -> None:
         if not self._card_data_by_id:
             # No events loaded (cold start with empty library, or
-            # gateway list_events failed). Replace the constructor's
-            # "Loading…" subtitle so the user doesn't get stranded on
-            # an indeterminate state — the empty grid below already
-            # shows the "no events yet" hint.
-            sub = self._header.findChild(QLabel, "Sub")
-            if sub is not None:
-                sub.setText("0 events")
-            self._update_stat_tile(self._stat_open, "0")
-            self._update_stat_tile(self._stat_closed, "0")
-            self._update_stat_tile(self._stat_days, "0")
+            # gateway list_events failed). The empty grid below already
+            # shows the "no events yet" hint; reset the toolbar chips
+            # to their zero state so the surface reads as deliberately
+            # empty rather than mid-load.
+            self._stat_open.setText("0 open")
+            self._stat_closed.setText("0 closed")
+            self._stat_days.setText("0 days")
+            self._showing_label.setVisible(False)
+            self._refresh_filter_button()
             self._render([])
             return
         query = self._filter_search.input.text().strip().lower()
@@ -276,35 +427,31 @@ class EventsPage(QWidget):
             filtered.sort(key=lambda c: (c.name or "").lower())
         elif sort_idx == 3:
             filtered.sort(key=lambda c: c.total_days, reverse=True)
-        # Header sub-line
+        # Toolbar chips — totals across ALL events (not the filtered
+        # subset). The "showing N of M" label carries the filtered-subset
+        # truth, so the chips stay stable as the user toggles filters.
         total = len(self._card_data_by_id)
         open_n = sum(1 for c in self._card_data_by_id.values() if not c.is_closed)
         closed_n = total - open_n
         days_n = sum(
             c.total_days or 0 for c in self._card_data_by_id.values()
         )
-        sub = self._header.findChild(QLabel, "Sub")
-        if sub is not None:
-            sub.setText(
-                f"{total} event{'s' if total != 1 else ''} · "
-                f"{open_n} open · {closed_n} closed"
-            )
-        # Push the at-a-glance trio. Static labels under a StatTile pick up
-        # the bigger value glyph live; the value labels are the second child
-        # in each tile (the Micro label is first).
-        self._update_stat_tile(self._stat_open, str(open_n))
-        self._update_stat_tile(self._stat_closed, str(closed_n))
-        self._update_stat_tile(self._stat_days, str(days_n))
-        self._render(filtered)
+        self._stat_open.setText(f"{open_n} open")
+        self._stat_closed.setText(f"{closed_n} closed")
+        self._stat_days.setText(f"{days_n} days")
 
-    @staticmethod
-    def _update_stat_tile(tile: "StatTile", value: str) -> None:
-        """StatTile's value label is the 2nd QLabel descendant (Micro label
-        is first). Live updates avoid rebuilding the widget every refresh."""
-        labels = tile.findChildren(QLabel)
-        # labels: [Micro 'label', StatValue, optional Sub suffix]
-        if len(labels) >= 2:
-            labels[1].setText(value)
+        # "showing N of M" — visible only when the filtered subset is
+        # smaller than the full set. Together with the active Filters
+        # button, this is the safety net that closes the original bug #1
+        # (the user stranded on a hidden list with no indication).
+        shown_n = len(filtered)
+        if shown_n < total:
+            self._showing_label.setText(f"showing {shown_n} of {total}")
+            self._showing_label.setVisible(True)
+        else:
+            self._showing_label.setVisible(False)
+        self._refresh_filter_button()
+        self._render(filtered)
 
     def _render(self, cards: List[EventCardData]) -> None:
         while self._cards.count():
@@ -316,7 +463,7 @@ class EventsPage(QWidget):
         self._scroll.setVisible(bool(cards))
         for cd in cards:
             sample = self._sample_pixmaps_for(cd)
-            tile = EventCardRedesign(cd, sample_pixmaps=sample)
+            tile = EventTile(cd, sample_pixmaps=sample)
             tile.activated.connect(self.event_activated.emit)
             tile.title_clicked.connect(self.event_info_requested.emit)
             tile.plan_requested.connect(self.event_plan_requested.emit)

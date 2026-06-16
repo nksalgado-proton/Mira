@@ -77,6 +77,7 @@ from mira.ui.design.icons import (
 )
 from mira.ui.design.inputs import line_input, search_field, select
 from mira.ui.design.media_nav import Filmstrip, nav_arrow
+from mira.ui.design.photo_cycler import PhotoCycler
 from mira.ui.design.progress import StageProgress
 from mira.ui.design.stable_stage import StableMediaStage
 from mira.ui.design.thumb_grid import (
@@ -118,6 +119,7 @@ __all__ = [
     "MiraLogo",
     "MiraMark",
     "PageHeader",
+    "PhotoCycler",
     "ProgressDialog",
     "StableMediaStage",
     "StageProgress",

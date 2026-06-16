@@ -12,7 +12,7 @@ so placeholders render correctly across both modes without per-widget QSS.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtGui import QColor, QFocusEvent, QMouseEvent, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -48,9 +48,70 @@ def line_input(
     return e
 
 
+class _DesignSelect(QComboBox):
+    """Themed QComboBox that ignores the mouse wheel unless the user has
+    actually engaged the combo (spec/75 §3.3).
+
+    Root cause of the original bug #1 (filter dropdown silently changing
+    on scroll): Qt's ``WheelFocus`` + window-activation churn can mark a
+    combo focused on mere hover, and the app-wide
+    ``mira.ui.base.wheel_guard`` then lets the wheel through because the
+    widget *is* focused. The Days Table's ``TZ`` and ``Country`` pickers
+    already work around this by tracking an explicit ``_user_engaged``
+    flag that flips on only on a real click / Tab / Backtab / Shortcut
+    focus (see ``mira/ui/base/tz_picker.py:187`` and
+    ``country_picker.py:104``). Promoting the same pattern to the
+    design-system ``select()`` factory fixes every dropdown built from
+    the catalog at once — the events filters and any future surface that
+    asks for a themed combo.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._user_engaged = False
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._user_engaged = True
+        super().mousePressEvent(event)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        # Real focus reasons that mean intent: keyboard traversal
+        # (Tab/Backtab) or a shortcut. Wheel-on-hover, MouseFocusReason,
+        # ActiveWindowFocusReason and OtherFocusReason all stay
+        # un-engaged so the wheel keeps falling through to the scroll
+        # area underneath.
+        if event.reason() in (
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+        ):
+            self._user_engaged = True
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        # The combo loses focus when the user clicks away OR when the
+        # popup opens (``PopupFocusReason``). Treating the popup as a
+        # disengagement would close the loop: pop opens → flag clears →
+        # scroll inside the popup ignored. Keep the flag set in that
+        # case so the popup itself behaves normally.
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self._user_engaged = False
+        super().focusOutEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if not self._user_engaged:
+            event.ignore()
+            return
+        super().wheelEvent(event)
+
+
 def select(items: list[str], parent: QWidget | None = None) -> QComboBox:
-    """Themed QComboBox. Caller adds items / signals."""
-    c = QComboBox(parent)
+    """Themed QComboBox that ignores the wheel unless engaged (spec/75
+    §3.3). Returns a :class:`_DesignSelect` — drop-in for ``QComboBox``;
+    callers continue to use ``addItems`` / ``currentIndexChanged`` etc.
+    without change."""
+    c = _DesignSelect(parent)
     c.setObjectName("DesignSelect")
     c.addItems(items)
     return c

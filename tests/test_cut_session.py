@@ -1,8 +1,9 @@
-"""spec/61 slice 5 (model half) — the Cut picking session ledger.
+"""spec/81 §4 / spec/61 §2 — the pin session ledger (DC → Cut).
 
 The SEPARATE ledger: decisions per exported FILE, in memory, phase_state
-never touched; nothing persists until commit. Runs over the same real
-event.db fixture as the cuts gateway tests.
+never touched; nothing persists until commit. The session sources its
+candidate set from a DC resolution. Runs over the same real event.db fixture
+as the cuts gateway tests.
 """
 from __future__ import annotations
 
@@ -11,21 +12,23 @@ import itertools
 import pytest
 
 from mira.gateway.event_gateway import EventGateway
-from mira.shared.cut_draft import CutDraft
+from mira.shared.cut_draft import CutDraft, PIN_KEEP_ALL, PIN_PICK_IN, PIN_WEED_OUT
 from mira.shared.cut_session import CutSession, session_files
 from mira.store import models as m
 from mira.store.repo import EventStore
 
 from tests.test_gateway_cuts import _doc, _now
 
-POOL = [("+", "exported"), ("-", "short_version")]   # e2, e3a, e3b, v1
+# #exported − the frozen short_version cut → e2, e3a, e3b, v1.
+EXPR = [["+", "exported"], ["-", {"kind": "cut", "tag": "short_version"}]]
 
 
 def _draft(**over) -> CutDraft:
     kw = dict(
         name="Pássaros 2026", tag="passaros_2026",
-        pool_expr=tuple(POOL), style_filter=(), type_filter="both",
-        default_state="skipped", target_s=600, max_s=720, photo_s=6.0,
+        expr=tuple(tuple(t) for t in EXPR),
+        styles=(), media_type="both",
+        pin_mode=PIN_PICK_IN, target_s=600, max_s=720, photo_s=6.0,
         music_category="happy",
     )
     kw.update(over)
@@ -43,12 +46,12 @@ def gw(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# session_files — the pool resolved to cells
+# session_files — the DC resolved to cells
 # --------------------------------------------------------------------------- #
 
 
 def test_session_files_join_source_facts(gw):
-    files = session_files(gw, POOL)
+    files = session_files(gw, EXPR)
     assert [f.export_relpath for f in files] == [
         "Exported Media/e2.jpg", "Exported Media/e3a.jpg",
         "Exported Media/e3b.jpg", "Exported Media/v1.mp4"]
@@ -63,20 +66,26 @@ def test_session_files_join_source_facts(gw):
 
 
 # --------------------------------------------------------------------------- #
-# The ledger — defaults, toggle, undo; phase_state untouched
+# The ledger — pin modes, toggle, undo; phase_state untouched
 # --------------------------------------------------------------------------- #
 
 
-def test_default_skipped_starts_empty(gw):
-    s = CutSession.from_draft(gw, _draft())
+def test_pick_in_starts_empty(gw):
+    s = CutSession.from_draft(gw, _draft())            # pick-in
     assert s.picked_count() == 0
     assert s.zone() == "green"          # nothing picked, under target
 
 
-def test_default_picked_starts_full(gw):
-    s = CutSession.from_draft(gw, _draft(default_state="picked"))
+def test_weed_out_starts_full(gw):
+    s = CutSession.from_draft(gw, _draft(pin_mode=PIN_WEED_OUT))
     assert s.picked_count() == 4
     assert [f.export_relpath for f in s.picked_files()][0] == "Exported Media/e2.jpg"
+
+
+def test_keep_all_starts_full_and_flags(gw):
+    s = CutSession.from_draft(gw, _draft(pin_mode=PIN_KEEP_ALL))
+    assert s.keep_all is True
+    assert s.picked_count() == 4        # pinned 1:1, everything in
 
 
 def test_toggle_and_undo(gw):
@@ -97,7 +106,7 @@ def test_toggle_and_undo(gw):
 def test_session_never_touches_phase_state(gw):
     before = gw.store.conn.execute(
         "SELECT COUNT(*) AS n FROM phase_state").fetchone()["n"]
-    s = CutSession.from_draft(gw, _draft(default_state="picked"))
+    s = CutSession.from_draft(gw, _draft(pin_mode=PIN_WEED_OUT))
     s.toggle("Exported Media/e2.jpg")
     s.commit(gw)
     after = gw.store.conn.execute(
@@ -142,18 +151,20 @@ def test_days_grouping_in_show_order(gw):
 
 
 # --------------------------------------------------------------------------- #
-# Commit — the one persistence moment
+# Commit — the one persistence moment (freeze the snapshot)
 # --------------------------------------------------------------------------- #
 
 
-def test_commit_creates_cut_with_membership(gw):
+def test_commit_creates_cut_with_membership_and_snapshot(gw):
     s = CutSession.from_draft(gw, _draft())
     s.set_state("Exported Media/e3b.jpg", True)
     s.set_state("Exported Media/v1.mp4", True)
     cut = s.commit(gw)
     assert cut.tag == "passaros_2026"
     assert cut.music_category == "happy" and cut.target_s == 600
-    assert gw.cut_pool_expr(cut) == [("+", "exported"), ("-", "short_version")]
+    # The Cut freezes the formula it pinned from (spec/81 §5).
+    assert gw.cut_expr_snapshot(cut) == [
+        ["+", "exported"], ["-", {"kind": "cut", "tag": "short_version"}]]
     rels = [ln.export_relpath for ln in gw.cut_member_files(cut.id)]
     assert rels == ["Exported Media/e3b.jpg", "Exported Media/v1.mp4"]
 
@@ -166,9 +177,26 @@ def test_abandoned_session_leaves_nothing(gw):
     assert [c.tag for c in gw.cuts()] == before
 
 
+def test_from_saved_dc_resolves_and_freezes(gw):
+    # A draft that names a SAVED DC (no inline expr) resolves through it.
+    dc = gw.create_dc("Birds",
+                      expr=[["+", "exported"],
+                            ["-", {"kind": "cut", "tag": "short_version"}]])
+    s = CutSession.from_draft(
+        gw, _draft(source_dc_id=dc.id, expr=(), pin_mode=PIN_WEED_OUT))
+    assert s.picked_count() == 4
+    cut = s.commit(gw)
+    assert gw.cut(cut.id).source_dc_id == dc.id
+    # editing the DC after pin does NOT change the frozen Cut (freeze invariant)
+    gw.update_dc(dc.id, expr=[["+", "exported"]])
+    rels = [ln.export_relpath for ln in gw.cut_member_files(cut.id)]
+    assert rels == ["Exported Media/e2.jpg", "Exported Media/e3a.jpg",
+                    "Exported Media/e3b.jpg", "Exported Media/v1.mp4"]
+
+
 def test_for_cut_with_draft_edits_settings_name_and_picks(gw):
-    """The dialog-first Adjust (Nelson round 3): a new recipe through
-    the dialog — rename + setting changes + membership in one commit."""
+    """The dialog-first Adjust: a new DC formula through the dialog —
+    rename + setting changes + membership in one commit."""
     first = CutSession.from_draft(gw, _draft())
     first.set_state("Exported Media/e2.jpg", True)
     cut = first.commit(gw)
@@ -176,12 +204,12 @@ def test_for_cut_with_draft_edits_settings_name_and_picks(gw):
     new_draft = _draft(
         name="Pássaros v2", tag="passaros_v2",
         target_s=300, card_style="multi",
-        pool_expr=(("+", "exported"),))        # pool widened
+        expr=(("+", "exported"),))             # formula widened
     again = CutSession.for_cut_with_draft(gw, cut, new_draft)
     assert again.cut_id == cut.id
     assert again.is_picked("Exported Media/e2.jpg")     # membership seeded
     assert any(f.export_relpath == "Exported Media/e1.jpg"
-               for f in again.files)                  # widened pool visible
+               for f in again.files)                  # widened formula visible
     again.set_state("Exported Media/v1.mp4", True)
     again.commit(gw)
 
@@ -212,5 +240,5 @@ def test_reenter_seeds_from_membership_and_updates(gw):
     assert refreshed.target_s == 300
     rels = [ln.export_relpath for ln in gw.cut_member_files(cut.id)]
     assert rels == ["Exported Media/e3a.jpg"]
-    # still exactly one cut — re-entry never duplicates
-    assert len(gw.cuts()) == 2                    # fixture's short_version + this one
+    # still exactly two cuts — re-entry never duplicates
+    assert len(gw.cuts()) == 2

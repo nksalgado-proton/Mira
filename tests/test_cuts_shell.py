@@ -235,6 +235,48 @@ def test_back_emits_closed(qapp, gw, tmp_path):
     assert got == [True]
 
 
+def test_save_as_dc_creates_a_dc_and_refreshes(qapp, gw, tmp_path):
+    """Spec/81 §2 polish (C.7): the New Cut dialog's "Save as DC…" button
+    fires the host's dc_saver with the current cut_info; the host calls
+    gateway.create_dc and refreshes the page so the DC appears in the
+    DCs tab."""
+    shell = _shell(gw)
+    # Confirm there are no user DCs yet (only the empty list).
+    assert shell.list_page._dcs == []                       # noqa: SLF001
+    # Simulate the dialog's save by calling _save_dc directly with a
+    # cut_info-shaped dict. Pool = +#exported -short_version, styles =
+    # ["macro"], photos only.
+    shell._save_dc("Best macros", {
+        "pool": {"#exported": 1, "#short_version": -1},
+        "styles": ["macro"],
+        "include_photos": True,
+        "include_videos": False,
+    })
+    # The gateway has the new DC.
+    tags = [dc.tag for dc in gw.dynamic_collections()]
+    assert "best_macros" in tags
+    # The page's DC tab snapshot now carries the new DC.
+    assert any(d.name == "best_macros" for d in shell.list_page._dcs)
+
+
+def test_back_button_works_after_creating_cut(qapp, gw, tmp_path):
+    """Regression (Nelson 2026-06-16): after a session commit returns to
+    the Cuts list, the header Back button must still fire ``closed``. The
+    QTabWidget I added in C.2 must not displace / hide / steal the button."""
+    shell = _shell(gw)
+    closed = []
+    shell.closed.connect(lambda: closed.append(True))
+    # Create a Cut via the session.
+    session = CutSession.from_draft(gw, _draft())
+    shell._start_session(session)
+    shell._session_page._session.set_state("Exported Media/e2.jpg", True)
+    shell._session_page._on_create()
+    assert shell._stack.currentWidget() is shell.list_page
+    # Click the header Back button — same path the user would take.
+    shell.list_page._back.click()                       # noqa: SLF001
+    assert closed == [True]
+
+
 # --------------------------------------------------------------------------- #
 # Rename dialog (the form grammar travels)
 # --------------------------------------------------------------------------- #

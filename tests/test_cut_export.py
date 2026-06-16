@@ -131,3 +131,113 @@ def test_no_music_category_no_audio_dir(gw, tmp_path):
     result = export_cut(gw, cut, event_root=tmp_path, separators_on=False)
     assert result.audio_files == 0
     assert not (result.folder / "audio").exists()
+
+
+# --------------------------------------------------------------------------- #
+# spec/81 §5 — target defaulting (no path on the Cut) + overlays (§3.1)
+# --------------------------------------------------------------------------- #
+
+from core import cut_overlay
+from mira.shared.cut_export import default_target
+
+
+def test_target_defaults_under_event_root_and_is_not_stored(gw, tmp_path):
+    cut = gw.cut("cut-s")
+    result = export_cut(gw, cut, event_root=tmp_path, separators_on=False)
+    assert result.folder == tmp_path / "Cuts" / "short_version"
+    assert default_target(tmp_path, "short_version") == tmp_path / "Cuts" / "short_version"
+    # no absolute target persisted on the Cut (charter invariant #2)
+    assert not hasattr(cut, "target_path")
+    cols = {f for f in type(cut).__dataclass_fields__}
+    assert "target" not in cols and "target_path" not in cols
+
+
+def test_explicit_target_parameter_overrides_default(gw, tmp_path):
+    cut = gw.cut("cut-s")
+    elsewhere = tmp_path / "Desktop" / "MyCut"
+    result = export_cut(gw, cut, event_root=tmp_path, target=elsewhere,
+                        separators_on=False)
+    assert result.folder == elsewhere
+    assert (elsewhere / "001_e1.jpg").exists()
+
+
+def test_embedded_overlay_writes_where_iptc_keeps_links(gw, tmp_path):
+    gw.update_cut_settings("cut-s", overlay_fields_json='["when", "where"]',
+                           overlay_mode="embedded")
+    gw.set_cut_members("cut-s", ["Exported Media/e1.jpg"])
+    cut = gw.cut("cut-s")
+    written = []
+
+    def prov(relpath):
+        return cut_overlay.FrameProvenance(when="2026", city="Arenal",
+                                           country="Costa Rica")
+
+    def iptc(path, tags):
+        written.append((path.name, tags))
+        return True
+
+    result = export_cut(
+        gw, cut, event_root=tmp_path, separators_on=False,
+        provenance_resolver=prov, iptc_writer=iptc)
+    # members stayed hardlinks (no burn-in copies), and where-IPTC was written
+    assert result.linked == 1 and result.copied == 0 and result.burned_in == 0
+    assert result.iptc_written == 1
+    assert written and written[0][1] == {
+        cut_overlay.IPTC_CITY: "Arenal",
+        cut_overlay.IPTC_COUNTRY: "Costa Rica"}
+
+
+def test_embedded_overlay_no_where_data_stays_pure_link(gw, tmp_path):
+    gw.update_cut_settings("cut-s", overlay_fields_json='["when"]',
+                           overlay_mode="embedded")
+    gw.set_cut_members("cut-s", ["Exported Media/e1.jpg"])
+    cut = gw.cut("cut-s")
+    calls = []
+    result = export_cut(
+        gw, cut, event_root=tmp_path, separators_on=False,
+        provenance_resolver=lambda r: cut_overlay.FrameProvenance(when="2026"),
+        iptc_writer=lambda p, t: calls.append(p) or True)
+    # 'where' not selected → no IPTC write, frame stays a pure link
+    assert result.iptc_written == 0 and calls == []
+    assert result.linked == 1
+
+
+def test_burn_in_overlay_emits_copies_not_links(gw, tmp_path):
+    gw.update_cut_settings("cut-s", overlay_fields_json='["where"]',
+                           overlay_mode="burn_in")
+    gw.set_cut_members("cut-s", ["Exported Media/e1.jpg", "Exported Media/e2.jpg"])
+    cut = gw.cut("cut-s")
+    rendered = []
+
+    def render(src, dst, fields, prov):
+        rendered.append(dst.name)
+        dst.write_bytes(b"BURNED:" + src.name.encode())
+
+    result = export_cut(
+        gw, cut, event_root=tmp_path, separators_on=False,
+        provenance_resolver=lambda r: cut_overlay.FrameProvenance(city="Arenal"),
+        overlay_renderer=render)
+    assert result.burned_in == 2 and result.linked == 0
+    assert result.copied == 2          # burned-in members are copies, not links
+    assert len(rendered) == 2
+    assert (result.folder / "001_e1.jpg").read_bytes().startswith(b"BURNED:")
+
+
+def test_overlays_cost_no_budget(gw, tmp_path):
+    """Overlays never add a slide / second — the export's photo+separator+clip
+    accounting is identical with overlays on vs off (spec/81 §3.1)."""
+    gw.update_cut_settings("cut-s", music_category="happy",
+                           overlay_fields_json='["where"]', overlay_mode="embedded")
+    gw.set_cut_members("cut-s", ["Exported Media/e1.jpg", "Exported Media/e3a.jpg"])
+    cut = gw.cut("cut-s")
+    # With overlays embedded, audio length back-solves from the SAME show
+    # composition as without overlays (2 photos + separators), so a 13 s track
+    # covers a (2 photos + 2 seps) × 6 s = 24 s show identically either way.
+    res = export_cut(
+        gw, cut, event_root=tmp_path, separators_on=True,
+        separator_writer=_sep_writer,
+        provenance_resolver=lambda r: cut_overlay.FrameProvenance(city="A"),
+        iptc_writer=lambda p, t: True,
+        audio_tracks=_tracks(tmp_path, 13, 13, 13), rng=random.Random(1))
+    # 24 s show → playlist sums to ≥ 24 s including the crossing file (13+13)
+    assert res.audio_files == 2

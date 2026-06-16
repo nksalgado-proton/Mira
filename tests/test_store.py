@@ -93,17 +93,25 @@ def _rich_document() -> m.EventDocument:
         crop_x=0.0, crop_y=0.0, crop_w=1.0, crop_h=1.0,
         crop_angle=1.5, rotation=90, aspect_label="3:2", edit_exported=True,
     ))
-    # cut + cut_member (spec/61) — membership is FILE-based: the member row
-    # references the exported final in doc.lineage (added further down), not
-    # the item. Tag is the bare lowercase slug; '#' is display-only.
+    # dynamic_collection + cut + cut_member (spec/81): the DC is the live
+    # formula; the Cut is frozen and made from it (source_dc_id +
+    # expr_snapshot_json). Membership is FILE-based — the member row references
+    # the exported final in doc.lineage (added further down), not the item.
+    doc.dynamic_collections.append(m.DynamicCollection(
+        id="dc-1", tag="best_macro_shots",
+        created_at="2026-04-16T00:00:00+00:00", updated_at="2026-04-16T00:00:00+00:00",
+        expr_json='[["+", "exported"]]',
+        filters_json='{"styles": ["macro"], "media_type": "both"}',
+    ))
     doc.cuts.append(m.Cut(
         id="cut-1", tag="best_macro_shots",
         created_at="2026-04-16T00:00:00+00:00", updated_at="2026-04-16T00:00:00+00:00",
+        source_dc_id="dc-1",
+        expr_snapshot_json='[["+", "exported"]]',
         target_s=600, max_s=720, photo_s=6.0,
-        pool_expr_json='[["+", "exported"]]',
-        style_filter_json='["macro"]',
-        type_filter="both", default_state="skipped",
+        default_state="skipped",
         music_category="happy",
+        overlay_fields_json='["when", "where"]', overlay_mode="embedded",
     ))
     doc.cut_members.append(m.CutMember(
         cut_id="cut-1", export_relpath="03 - Processed/Day01/P1000001.jpg",
@@ -381,10 +389,14 @@ def test_json_top_level_shape(tmp_path):
     # share_tag / subsets / share_maps retired. spec/61: photo_tags retired too —
     # cuts + cut_members (file-based membership) + photo_persons carry Share.
     for key in ("event", "trip_days", "cameras", "camera_calibration_pairs",
-                "items", "buckets", "stacks", "cuts", "cut_members",
-                "photo_persons", "lineage"):
+                "items", "buckets", "stacks", "dynamic_collections", "cuts",
+                "cut_members", "photo_persons", "lineage"):
         assert key in data
     assert "photo_tags" not in data
+    # the DC carries the live formula; the Cut is frozen from it (spec/81)
+    assert [d["tag"] for d in data["dynamic_collections"]] == ["best_macro_shots"]
+    assert data["cuts"][0]["source_dc_id"] == "dc-1"
+    assert data["cuts"][0]["expr_snapshot_json"] == '[["+", "exported"]]'
     # an item nests its satellites (cuts are flat at the top level)
     photo = next(i for i in data["items"] if i["id"] == "i-photo")
     assert set(photo["phase_state"]) == {"pick"}
@@ -467,6 +479,7 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     store = _make_store(tmp_path)
     conn = store.conn
     # Reconstruct the v2 shape: cut tables absent, photo_tag present.
+    conn.execute("DROP TABLE IF EXISTS dynamic_collection")
     conn.execute("DROP TABLE cut_member")
     conn.execute("DROP TABLE cut")
     conn.execute(
@@ -500,10 +513,149 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "cut" in names and "cut_member" in names
     assert "photo_tag" not in names
-    # The migrated DB is fully usable: the rich document (one cut, one
-    # file-based member wired to lineage) round-trips.
+    # The migrated DB is fully usable: the rich document round-trips.
     store.save_document(_rich_document())
     assert [c.tag for c in store.all(m.Cut)] == ["best_macro_shots"]
     assert [cm.export_relpath for cm in store.all(m.CutMember)] == [
         "03 - Processed/Day01/P1000001.jpg"]
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# v6 -> v7 (spec/81 — Dynamic Collection / Cut)
+# --------------------------------------------------------------------------- #
+
+
+def _rebuild_v6_cut_tables(conn) -> None:
+    """Recreate the v6 cut shape (pool_expr_json + style/type filters, no DC),
+    so the v6->v7 migration has something real to fold."""
+    conn.execute("DROP TABLE IF EXISTS dynamic_collection")
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
+    conn.execute("""
+CREATE TABLE cut (
+  id                TEXT PRIMARY KEY,
+  tag               TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  target_s          INTEGER,
+  max_s             INTEGER,
+  photo_s           REAL NOT NULL DEFAULT 6.0,
+  pool_expr_json    TEXT NOT NULL DEFAULT '[]',
+  style_filter_json TEXT NOT NULL DEFAULT '[]',
+  type_filter       TEXT NOT NULL DEFAULT 'both',
+  default_state     TEXT NOT NULL DEFAULT 'skipped',
+  music_category    TEXT,
+  last_exported_at  TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}'
+)""")
+    conn.execute("""
+CREATE TABLE cut_member (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  export_relpath TEXT NOT NULL REFERENCES lineage(export_relpath) ON DELETE CASCADE,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, export_relpath)
+)""")
+    conn.execute("CREATE INDEX ix_cut_member_file ON cut_member(export_relpath)")
+
+
+def test_migrate_v6_to_v7_synthesizes_dc_and_freezes_cut(tmp_path):
+    """v6->v7 (spec/81): a v6 cut with a pool_expr + filters synthesizes a DC
+    (reusing the cut's OWN tag), folds the filters into filters_json, points
+    source_dc_id at it, freezes expr_snapshot_json, and drops the old columns."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    _rebuild_v6_cut_tables(conn)
+    conn.execute(
+        "INSERT INTO cut (id, tag, target_s, photo_s, pool_expr_json, "
+        "style_filter_json, type_filter, default_state, created_at, updated_at) "
+        "VALUES ('c1', 'best_macro', 600, 6.0, "
+        "'[[\"+\", \"exported\"], [\"-\", \"drafts\"]]', "
+        "'[\"macro\"]', 'photo', 'skipped', 't0', 't0')")
+    conn.execute("UPDATE schema_info SET schema_version = 6 WHERE id = 1")
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 7
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "dynamic_collection" in names
+    dc = conn.execute("SELECT * FROM dynamic_collection").fetchone()
+    assert dc["tag"] == "best_macro"
+    import json as _json
+    assert _json.loads(dc["expr_json"]) == [
+        ["+", "exported"], ["-", {"kind": "cut", "id": None, "tag": "drafts"}]]
+    assert _json.loads(dc["filters_json"]) == {
+        "styles": ["macro"], "media_type": "photo"}
+    cut = conn.execute("SELECT * FROM cut").fetchone()
+    assert cut["source_dc_id"] == dc["id"]
+    assert _json.loads(cut["expr_snapshot_json"]) == _json.loads(dc["expr_json"])
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cut)")}
+    assert "pool_expr_json" not in cols
+    assert "style_filter_json" not in cols
+    assert "type_filter" not in cols
+    assert {"source_dc_id", "expr_snapshot_json", "separators",
+            "overlay_fields_json", "overlay_mode"} <= cols
+    store.close()
+
+
+def test_migrate_v6_to_v7_is_idempotent(tmp_path):
+    """Re-running migrate() after reaching v7 is a no-op (no second DC)."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    _rebuild_v6_cut_tables(conn)
+    conn.execute(
+        "INSERT INTO cut (id, tag, pool_expr_json, created_at, updated_at) "
+        "VALUES ('c1', 'best_macro', '[[\"+\", \"exported\"]]', 't0', 't0')")
+    conn.execute("UPDATE schema_info SET schema_version = 6 WHERE id = 1")
+    schema.migrate(conn)
+    n1 = conn.execute("SELECT COUNT(*) FROM dynamic_collection").fetchone()[0]
+    schema.migrate(conn)
+    n2 = conn.execute("SELECT COUNT(*) FROM dynamic_collection").fetchone()[0]
+    assert n1 == n2 == 1
+    store.close()
+
+
+def test_dc_crud_round_trips_through_document(tmp_path):
+    """A DC + a frozen Cut made from it survive store -> json -> store."""
+    (tmp_path / "a").mkdir()
+    src = _make_store(tmp_path / "a")
+    src.save_document(_rich_document())
+    reloaded = src.load_document()
+    assert [d.tag for d in reloaded.dynamic_collections] == ["best_macro_shots"]
+    dc = reloaded.dynamic_collections[0]
+    assert dc.expr_json == '[["+", "exported"]]'
+    cut = next(c for c in reloaded.cuts if c.id == "cut-1")
+    assert cut.source_dc_id == "dc-1"
+    assert cut.overlay_fields_json == '["when", "where"]'
+    assert cut.overlay_mode == "embedded"
+    assert json_dump.from_json(json_dump.to_json(reloaded)) == reloaded
+    src.close()
+
+
+def test_cut_dc_fk_set_null_leaves_cut_member(tmp_path):
+    """Deleting a DC SET-NULLs the Cut's source_dc_id (freeze invariant) and
+    leaves cut_member intact."""
+    store = _make_store(tmp_path)
+    store.save_document(_rich_document())
+    store.conn.execute("DELETE FROM dynamic_collection WHERE id = 'dc-1'")
+    cut = store.get(m.Cut, "cut-1")
+    assert cut is not None and cut.source_dc_id is None
+    assert [cm.export_relpath for cm in store.all(m.CutMember)] == [
+        "03 - Processed/Day01/P1000001.jpg"]
+    store.close()
+
+
+def test_cut_member_cascades_both_ways(tmp_path):
+    """cut_member cascades on cut delete AND on lineage delete (spec/61 §1.4)."""
+    store = _make_store(tmp_path)
+    store.save_document(_rich_document())
+    store.conn.execute(
+        "DELETE FROM lineage WHERE export_relpath = "
+        "'03 - Processed/Day01/P1000001.jpg'")
+    assert store.all(m.CutMember) == []
+    store.save_document(_rich_document())
+    assert len(store.all(m.CutMember)) == 1
+    store.conn.execute("DELETE FROM cut WHERE id = 'cut-1'")
+    assert store.all(m.CutMember) == []
     store.close()

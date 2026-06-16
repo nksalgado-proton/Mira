@@ -103,6 +103,41 @@ def test_match_count_reflects_filter_change(qapp):
     assert "70 of" in dlg._match_label.text()
 
 
+def test_pin_choice_drives_start_as(qapp):
+    """Spec/81 §1 retired the live/pinned distinction (a Cut is always
+    frozen). The 3-way choice in the dialog is now Pin choice — keep_all
+    / weed_out / pick_in — and cut_info derives the legacy ``start_as``
+    from it. keep_all & weed_out start all-in; pick_in starts all-out.
+    ``live`` is no longer emitted."""
+    adapter = _adapter()
+    adapter._build()
+    dlg = adapter._dlg
+
+    def _pick(mode: str) -> None:
+        for b in dlg._build_mode_group.buttons():
+            if b.property("_key") == mode:
+                b.setChecked(True)
+                break
+
+    # Default for a fresh Cut = keep_all → all-in.
+    info = dlg.cut_info()
+    assert info["build_mode"] == "keep_all"
+    assert info["start_as"] == "all_picked"
+    assert "live" not in info       # spec/81: live concept retired
+
+    _pick("weed_out")
+    info = dlg.cut_info()
+    assert info["build_mode"] == "weed_out"
+    assert info["start_as"] == "all_picked"   # starts full
+
+    _pick("pick_in")
+    info = dlg.cut_info()
+    assert info["build_mode"] == "pick_in"
+    assert info["start_as"] == "all_skipped"  # starts empty
+    # The dialog no longer carries a live/pinned consequence label.
+    assert not hasattr(dlg, "_mode_hint")
+
+
 def test_match_count_no_media_type_reads_empty(qapp):
     """Both checkboxes off → no honest match count; the dialog says so
     instead of showing a stale number."""
@@ -147,7 +182,10 @@ def test_load_button_disabled_without_templates(qapp):
 def test_save_template_forwards_a_cutdraft_to_the_host(qapp):
     """The host's ``template_saver`` signature is ``(name, CutDraft)`` —
     the dialog speaks its own ``cut_info()`` dict; the adapter translates
-    BEFORE the saver fires so the host store stays unchanged."""
+    BEFORE the saver fires so the host store stays unchanged. Spec/81:
+    CutDraft now carries ``expr`` / ``styles`` / ``media_type`` / ``pin_mode``;
+    the base operand ``"exported"`` stays bare, a tag becomes a typed
+    ``{"kind":"cut",...}`` ref."""
     saved: list[tuple[str, CutDraft]] = []
     adapter = _adapter(
         template_saver=lambda name, draft: saved.append((name, draft)))
@@ -163,10 +201,11 @@ def test_save_template_forwards_a_cutdraft_to_the_host(qapp):
     assert name == "Family 2026"
     assert isinstance(draft, CutDraft)
     assert draft.tag == "family_2026"
-    assert draft.style_filter == ("macro",)
-    assert draft.type_filter == "photo"
-    # The pool composition stays intact through the translation.
-    assert ("+", "exported") in draft.pool_expr
+    assert draft.styles == ("macro",)
+    assert draft.media_type == "photo"
+    # The pool composition stays intact through the translation: the
+    # default +#exported term comes through as a bare base token.
+    assert ("+", "exported") in draft.expr
 
 
 def test_load_template_repopulates_every_field(qapp):
@@ -183,9 +222,14 @@ def test_load_template_repopulates_every_field(qapp):
     assert dlg._style_chips["macro"].isChecked()
     assert not dlg._style_chips["wildlife"].isChecked()
     assert dlg._photos_cb.isChecked() and not dlg._videos_cb.isChecked()
-    # default_state="picked" → all_picked radio
-    sel_start = next(b for b in dlg._start_group.buttons() if b.isChecked())
-    assert sel_start.property("_key") == "all_picked"
+    # default_state="picked" → weed_out pin choice (spec/81 §4: start
+    # all-in, frozen on commit), which derives start_as=all_picked in
+    # cut_info. ``live`` is no longer emitted (spec/81 §1).
+    sel_mode = next(
+        b for b in dlg._build_mode_group.buttons() if b.isChecked())
+    assert sel_mode.property("_key") == "weed_out"
+    assert dlg.cut_info()["start_as"] == "all_picked"
+    assert "live" not in dlg.cut_info()
     # times: 300 s → 5 min, 420 s → 7 min, photo_s 4.0
     info = dlg.cut_info()
     assert info["target_minutes"] == 5
@@ -206,13 +250,20 @@ def test_save_then_load_round_trips_through_adapter(qapp):
 
     def saver(name: str, draft: CutDraft) -> None:
         # Mirror the host store: persist a JSON-encoded template the
-        # adapter / dialog can read back the same way the user_store does.
+        # adapter / dialog can read back the same way the user_store
+        # does. Spec/81: the new CutDraft carries ``expr`` / ``styles`` /
+        # ``media_type`` / ``pin_mode``; legacy template-column key names
+        # (pool_expr_json / style_filter_json / type_filter / default_state)
+        # are kept since they are the user-store schema, not CutDraft fields.
+        from mira.shared.cut_draft import PIN_KEEP_ALL, PIN_WEED_OUT
+        default_state = ("picked" if draft.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
+                         else "skipped")
         saved_templates.append(SimpleNamespace(
             name=name,
-            pool_expr_json=json.dumps([list(t) for t in draft.pool_expr]),
-            style_filter_json=json.dumps(list(draft.style_filter)),
-            type_filter=draft.type_filter,
-            default_state=draft.default_state,
+            pool_expr_json=json.dumps([list(t) for t in draft.expr]),
+            style_filter_json=json.dumps(list(draft.styles)),
+            type_filter=draft.media_type,
+            default_state=default_state,
             target_s=draft.target_s, max_s=draft.max_s,
             photo_s=draft.photo_s,
             music_category=draft.music_category,
@@ -226,8 +277,8 @@ def test_save_then_load_round_trips_through_adapter(qapp):
     dlg1._name_edit.setText("family_best")
     dlg1._style_chips["wildlife"].setChecked(True)
     dlg1._videos_cb.setChecked(False)
-    for b in dlg1._start_group.buttons():
-        if b.property("_key") == "all_picked":
+    for b in dlg1._build_mode_group.buttons():
+        if b.property("_key") == "weed_out":
             b.setChecked(True)
     for b in dlg1._slide_group.buttons():
         if b.property("_key") == "per_day":

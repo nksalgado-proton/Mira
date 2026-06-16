@@ -668,10 +668,11 @@ def test_delete_exported_file_cascades_to_cut_membership(tmp_path):
             source_kind="item", source_item_id="p1",
             recipe_json="{}", exported_at="t"))
         # A Cut definition + a membership row pointing at the file.
+        # Spec/81: Cut is frozen — expr_snapshot_json holds the formula,
+        # filters live on the source DC (none here = ad-hoc Cut).
         eg.store.upsert(m.Cut(
             id="cut-1", tag="best", target_s=60, max_s=120,
-            photo_s=4, pool_expr_json="[]",
-            style_filter_json="[]", type_filter="both",
+            photo_s=4, expr_snapshot_json="[]",
             default_state="picked", music_category=None,
             created_at="t", updated_at="t",
             last_exported_at=None))

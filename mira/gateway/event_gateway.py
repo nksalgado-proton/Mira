@@ -43,9 +43,9 @@ from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from core import cut_budget, cut_names
+from core import collection_resolver, cut_budget, cut_names
 from core.video_segments import segment_bounds as derive_segment_bounds
 from mira.store import models as m
 from mira.store.repo import EventStore
@@ -935,15 +935,254 @@ class EventGateway:
         rows = self.store.query_by(m.Cut, tag=tag)
         return rows[0] if rows else None
 
-    @staticmethod
-    def cut_pool_expr(cut: m.Cut) -> List[Tuple[str, str]]:
-        """The Cut's recipe expression as ``[(op, tag), ...]`` (op ∈ '+'/'-')."""
-        return [(op, tag) for op, tag in json.loads(cut.pool_expr_json)]
+    # ----- dynamic collections (spec/81 — the live-query DC noun) ---------- #
+
+    def dynamic_collections(self) -> List[m.DynamicCollection]:
+        """All Dynamic Collections, oldest first. The base #exported universe
+        is NOT a row — it is :meth:`exported_files` (operand token "exported")."""
+        return self.store.query_raw(
+            m.DynamicCollection,
+            "SELECT * FROM dynamic_collection ORDER BY created_at, id")
+
+    def dynamic_collection(self, dc_id: str) -> Optional[m.DynamicCollection]:
+        return self.store.get(m.DynamicCollection, dc_id)
+
+    def dc_by_tag(self, tag: str) -> Optional[m.DynamicCollection]:
+        rows = self.store.query_by(m.DynamicCollection, tag=tag)
+        return rows[0] if rows else None
 
     @staticmethod
-    def cut_style_filter(cut: m.Cut) -> List[str]:
-        """The Cut's style filter; empty list = All styles (spec/61 §10)."""
-        return list(json.loads(cut.style_filter_json))
+    def dc_expr(dc: m.DynamicCollection) -> List[list]:
+        """A DC's formula as ``[[op, operand], …]`` — the operand is the base
+        token ``"exported"`` or a typed ref ``{"kind","id","tag"}``."""
+        return list(json.loads(dc.expr_json))
+
+    @staticmethod
+    def dc_filters(dc: m.DynamicCollection) -> dict:
+        """A DC's filters mapping (``{"styles":[…],"media_type":…}``); readers
+        tolerate missing keys."""
+        try:
+            data = json.loads(dc.filters_json)
+            return data if isinstance(data, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def _check_dc_cycle(self, dc_id: str, expr: Sequence[Sequence]) -> None:
+        """Cheap, non-resolving cycle guard at the write seam (spec/81 §2):
+        reject a DC whose operand graph reaches its own id. Cut + base operands
+        are terminal. Raises ``ValueError("cycle")`` for a ``tr()``-able UI."""
+        by_id: Dict[str, list] = {}
+        for d in self.dynamic_collections():
+            if d.id == dc_id:
+                continue
+            by_id[d.id] = self.dc_expr(d)
+        if collection_resolver.reaches(
+                dc_id, [list(t) for t in expr],
+                dc_expr_by_id=lambda i: by_id.get(i)):
+            raise ValueError("cycle")
+
+    def create_dc(
+        self,
+        name: str,
+        *,
+        expr: Sequence[Sequence] = (),
+        styles: Sequence[str] = (),
+        media_type: str = "both",
+    ) -> m.DynamicCollection:
+        """Create a DC from a user-typed name (slugified + validated against the
+        DC namespace only — separate from Cut tags, Nelson 2026-06-16). Rejects
+        a self-referential operand graph (cycle guard). Filters fold into
+        ``filters_json``."""
+        slug = cut_names.slugify(name)
+        err = cut_names.check_tag(slug, [d.tag for d in self.dynamic_collections()])
+        if err:
+            raise ValueError(err)
+        dc_id = self._new_id()
+        expr_list = [list(t) for t in expr]
+        self._check_dc_cycle(dc_id, expr_list)
+        now = self._now()
+        dc = m.DynamicCollection(
+            id=dc_id, tag=slug, created_at=now, updated_at=now,
+            expr_json=json.dumps(expr_list),
+            filters_json=json.dumps(
+                {"styles": list(styles), "media_type": media_type}),
+        )
+        with self.store.transaction():
+            self.store.upsert(dc)
+            self._touch()
+        return dc
+
+    def update_dc(
+        self,
+        dc_id: str,
+        *,
+        expr: Optional[Sequence[Sequence]] = None,
+        styles: Optional[Sequence[str]] = None,
+        media_type: Optional[str] = None,
+    ) -> None:
+        """Edit a DC's formula / filters in place (the live recipe re-resolves
+        next read; pinned Cuts are frozen and unaffected — spec/81 §5). The
+        cycle guard runs against the NEW expr."""
+        dc = self.dynamic_collection(dc_id)
+        if dc is None:
+            raise KeyError(dc_id)
+        sets: Dict[str, str] = {}
+        if expr is not None:
+            expr_list = [list(t) for t in expr]
+            self._check_dc_cycle(dc_id, expr_list)
+            sets["expr_json"] = json.dumps(expr_list)
+        if styles is not None or media_type is not None:
+            filters = self.dc_filters(dc)
+            if styles is not None:
+                filters["styles"] = list(styles)
+            if media_type is not None:
+                filters["media_type"] = media_type
+            sets["filters_json"] = json.dumps(filters)
+        if not sets:
+            return
+        cols = ", ".join(f"{k} = ?" for k in sets)
+        with self.store.transaction() as conn:
+            conn.execute(
+                f"UPDATE dynamic_collection SET {cols}, updated_at = ? WHERE id = ?",
+                (*sets.values(), self._now(), dc_id))
+            self._touch()
+
+    def rename_dc(self, dc_id: str, new_name: str) -> m.DynamicCollection:
+        """Rename a DC (slugify + validate against the DC namespace, excluding
+        itself). Pinned Cuts keep their frozen snapshot."""
+        dc = self.dynamic_collection(dc_id)
+        if dc is None:
+            raise KeyError(dc_id)
+        slug = cut_names.slugify(new_name)
+        err = cut_names.check_tag(
+            slug, [d.tag for d in self.dynamic_collections() if d.id != dc_id])
+        if err:
+            raise ValueError(err)
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE dynamic_collection SET tag = ?, updated_at = ? WHERE id = ?",
+                (slug, self._now(), dc_id))
+            self._touch()
+        return replace(dc, tag=slug)
+
+    def delete_dc(self, dc_id: str) -> None:
+        """Drop a DC. Pinned Cuts survive (``cut.source_dc_id`` ON DELETE SET
+        NULL — the freeze invariant, spec/81 §5); their members are untouched."""
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM dynamic_collection WHERE id = ?", (dc_id,))
+            self._touch()
+
+    def dc_operand_inventory(self) -> List[dict]:
+        """The operands the New Cut dialog offers (spec/81 §2): the base
+        universe ``#exported`` plus every existing DC and Cut in this event,
+        each as a typed ref ready to drop into an expr. Base first, then DCs,
+        then Cuts (each oldest-first)."""
+        inv: List[dict] = [{"kind": "base", "tag": cut_names.EXPORTED_TAG,
+                            "operand": cut_names.EXPORTED_TAG}]
+        for d in self.dynamic_collections():
+            inv.append({"kind": "dc", "tag": d.tag,
+                        "operand": {"kind": "dc", "id": d.id, "tag": d.tag}})
+        for c in self.cuts():
+            inv.append({"kind": "cut", "tag": c.tag,
+                        "operand": {"kind": "cut", "id": c.id, "tag": c.tag}})
+        return inv
+
+    # ----- DC resolution (spec/81 §2 — pure engine in core/) --------------- #
+
+    def _operand_base_universe(self, token: str) -> set:
+        """The base-universe member set for an operand token. ``"exported"`` =
+        the live #exported relpaths; any other token = empty (event scope has
+        one base universe — the ladder rungs are cross-event, Task D)."""
+        if token == cut_names.EXPORTED_TAG:
+            return {ln.export_relpath for ln in self.exported_files()}
+        return set()
+
+    def _operand_dc(self, ref) -> Optional["collection_resolver.DCExpr"]:
+        """Resolve a ``{"kind":"dc","id"|"tag":…}`` operand to a
+        :class:`~core.collection_resolver.DCExpr`, or None when it is gone."""
+        dc = None
+        if ref.get("id"):
+            dc = self.dynamic_collection(ref["id"])
+        if dc is None and ref.get("tag"):
+            dc = self.dc_by_tag(ref["tag"])
+        if dc is None:
+            return None
+        return collection_resolver.DCExpr(
+            id=dc.id, expr=self.dc_expr(dc), filters=self.dc_filters(dc))
+
+    def _operand_cut_members(self, ref) -> set:
+        """The frozen member set of a ``{"kind":"cut",…}`` operand (terminal —
+        a Cut never re-queries its DC)."""
+        cut = None
+        if ref.get("id"):
+            cut = self.cut(ref["id"])
+        if cut is None and ref.get("tag"):
+            cut = self.cut_by_tag(ref["tag"])
+        if cut is None:
+            return set()
+        return {cm.export_relpath
+                for cm in self.store.query_by(m.CutMember, cut_id=cut.id)}
+
+    def _apply_dc_filters(self, keys, filters) -> List[str]:
+        """Narrow + chronologically order a member-key set against a DC's
+        filters (Style + media type at event scope). Returns export relpaths in
+        show order — the resolver hands these back as the DC's resolution."""
+        if not keys:
+            return []
+        styles = list(filters.get("styles") or [])
+        media = filters.get("media_type", "both") or "both"
+        rows = self._lineage_show_rows(
+            keys, style_filter=styles, type_filter=media)
+        return [ln.export_relpath for ln in rows]
+
+    def resolve_dc(
+        self,
+        expr: Sequence[Sequence],
+        filters: Optional[Mapping] = None,
+    ) -> List[m.Lineage]:
+        """Resolve a DC formula (spec/81 §2): left-to-right set algebra over
+        operands (``+``/``-``/``&``), operands resolving recursively (nested
+        DC) or terminally (base ``#exported`` / a frozen Cut), then the DC's
+        filters (Style + media type). Returns lineage rows in chronological
+        show order. Cycle-safe + memoised within the pass."""
+        ordered_keys = collection_resolver.resolve(
+            [list(t) for t in expr],
+            dict(filters or {}),
+            base_universe=self._operand_base_universe,
+            dc_by_ref=self._operand_dc,
+            cut_members=self._operand_cut_members,
+            apply_filters=self._apply_dc_filters,
+        )
+        if not ordered_keys:
+            return []
+        # _apply_dc_filters already ordered + filtered the top-level set; map
+        # the keys back to lineage rows in that exact order.
+        by_rel = {ln.export_relpath: ln
+                  for ln in self._lineage_show_rows(set(ordered_keys))}
+        return [by_rel[k] for k in ordered_keys if k in by_rel]
+
+    def dc_probe(self, expr: Sequence[Sequence],
+                 filters: Optional[Mapping] = None) -> int:
+        """The dialog's live count for a draft DC formula (spec/81 §2) — how
+        many files this expr+filters resolves to right now."""
+        return len(self.resolve_dc(expr, filters))
+
+    @staticmethod
+    def cut_expr_snapshot(cut: m.Cut) -> List[list]:
+        """The Cut's FROZEN formula as ``[[op, operand], …]`` — the recipe
+        resolved at pin time (spec/81 §5). A Cut never re-queries its DC; this
+        is for display / reproducibility, not live resolution."""
+        return list(json.loads(cut.expr_snapshot_json))
+
+    @staticmethod
+    def cut_overlay_fields(cut: m.Cut) -> List[str]:
+        """The Cut's selected overlay provenance fields (spec/81 §3.1):
+        a subset of ``when`` / ``where`` / ``how1`` / ``how2``; ``[]`` = off."""
+        try:
+            data = json.loads(cut.overlay_fields_json)
+            return [f for f in data if isinstance(f, str)]
+        except (ValueError, TypeError):
+            return []
 
     @staticmethod
     def cut_card_style(cut: m.Cut) -> str:
@@ -956,44 +1195,60 @@ class EventGateway:
             return "black"
         return style if style in ("black", "single", "multi") else "black"
 
-    def _tag_file_set(self, tag: str) -> set:
-        """The membership set (export relpaths) one pool term names. The
-        built-in 'exported' resolves live; a user tag resolves through its
-        cut row; an unknown/deleted tag contributes nothing (recipes are a
-        record of intent — graceful shrink, spec/51 §6 H carried forward)."""
-        if tag == cut_names.EXPORTED_TAG:
-            return {ln.export_relpath for ln in self.exported_files()}
-        cut = self.cut_by_tag(tag)
-        if cut is None:
-            return set()
-        return {cm.export_relpath
-                for cm in self.store.query_by(m.CutMember, cut_id=cut.id)}
+    def frame_provenance(self, export_relpath: str):
+        """Resolve one Cut member's overlay provenance (spec/81 §3.1).
 
-    def resolve_pool(
-        self,
-        pool_expr: Sequence[Tuple[str, str]],
-        *,
-        style_filter: Sequence[str] = (),
-        type_filter: str = "both",
-    ) -> List[m.Lineage]:
-        """Evaluate a Cut pool (spec/61 §2 step 2-3): left-to-right set
-        algebra over membership sets (``+`` union, ``-`` difference), then
-        the dialog filters — styles (empty = All; an active filter excludes
-        unclassified sources) and media type ('both'/'photo'/'video').
-        Returns lineage rows in chronological show order."""
-        members: set = set()
-        for op, tag in pool_expr:
-            tag_set = self._tag_file_set(tag)
-            if op == "+":
-                members |= tag_set
-            elif op == "-":
-                members -= tag_set
-            else:
-                raise ValueError(f"unknown pool operator: {op!r}")
-        if not members:
-            return []
-        return self._lineage_show_rows(
-            members, style_filter=style_filter, type_filter=type_filter)
+        Joins the lineage row to its source ``item`` (or the merged output
+        of its source ``stack_bracket``) plus the trip-day for *where*
+        context, and returns a :class:`core.cut_overlay.FrameProvenance`
+        the export / Play pipelines consume. Missing source / missing
+        facts → empty fields (the formatter omits them gracefully)."""
+        from core import cut_overlay
+        row = self.store.conn.execute(
+            "SELECT l.source_kind, l.source_item_id, l.source_bracket_id, "
+            "l.exported_at, b.output_item_id "
+            "FROM lineage l "
+            "LEFT JOIN stack_bracket b ON b.bracket_id = l.source_bracket_id "
+            "WHERE l.export_relpath = ?",
+            (export_relpath,),
+        ).fetchone()
+        if row is None:
+            return cut_overlay.FrameProvenance()
+        item_id = row["source_item_id"] or row["output_item_id"]
+        if not item_id:
+            return cut_overlay.FrameProvenance()
+        item = self.store.get(m.Item, item_id)
+        if item is None:
+            return cut_overlay.FrameProvenance()
+        when = item.capture_time_corrected or item.capture_time_raw or row["exported_at"]
+        camera_label: Optional[str] = None
+        if item.camera_id:
+            cam = self.store.get(m.Camera, item.camera_id)
+            if cam is not None:
+                camera_label = cam.camera_id  # 'Make+Model' business key
+        city: Optional[str] = None
+        country: Optional[str] = None
+        if item.day_number is not None:
+            day = self.store.get(m.TripDay, item.day_number)
+            if day is not None:
+                city = day.location or None
+                try:
+                    country = json.loads(day.extras_json or "{}").get("country")
+                except (ValueError, TypeError):
+                    country = None
+        return cut_overlay.FrameProvenance(
+            when=when,
+            city=city,
+            country=country,
+            camera=camera_label,
+            lens_model=item.lens_model,
+            flash_fired=(None if item.flash_fired is None
+                         else bool(item.flash_fired)),
+            aperture_f=item.aperture_f,
+            shutter_speed_s=item.shutter_speed_s,
+            iso=item.iso,
+            focal_length_mm=item.focal_length_mm,
+        )
 
     def _lineage_show_rows(
         self,
@@ -1044,18 +1299,15 @@ class EventGateway:
         ).fetchall()
         return [r["c"] for r in rows if r["c"]]
 
-    def pool_show_totals(
+    def dc_show_totals(
         self,
-        pool_expr: Sequence[Tuple[str, str]],
-        *,
-        style_filter: Sequence[str] = (),
-        type_filter: str = "both",
+        expr: Sequence[Sequence],
+        filters: Optional[Mapping] = None,
     ) -> cut_budget.ShowTotals:
-        """Budget composition of a DRAFT pool — the dialog's live counts +
-        budget hint read this before any cut row exists. Same semantics as
-        :meth:`cut_show_totals` (separator_count = member days)."""
-        rows = self.resolve_pool(
-            pool_expr, style_filter=style_filter, type_filter=type_filter)
+        """Budget composition of a DRAFT DC formula (spec/81 §2) — the dialog's
+        live counts + budget hint read this before any Cut exists. Same
+        semantics as :meth:`cut_show_totals` (separator_count = member days)."""
+        rows = self.resolve_dc(expr, filters)
         if not rows:
             return cut_budget.ShowTotals()
         relpaths = [ln.export_relpath for ln in rows]
@@ -1938,21 +2190,26 @@ class EventGateway:
         self,
         name: str,
         *,
+        source_dc_id: Optional[str] = None,
+        expr_snapshot: Sequence[Sequence] = (),
         target_s: Optional[int] = None,
         max_s: Optional[int] = None,
         photo_s: float = 6.0,
-        pool_expr: Sequence[Tuple[str, str]] = (),
-        style_filter: Sequence[str] = (),
-        type_filter: str = "both",
         default_state: str = "skipped",
         music_category: Optional[str] = None,
+        separators: bool = True,
+        overlay_fields: Sequence[str] = (),
+        overlay_mode: Optional[str] = None,
         card_style: str = "black",
     ) -> m.Cut:
-        """Create a Cut from a user-typed name. The dialog previews the
-        transform live, but the gateway is the enforcement point: the name is
-        slugified here and re-validated against this event's tags — raises
-        ``ValueError`` carrying the :func:`core.cut_names.check_tag` code
-        ('empty' / 'reserved' / 'taken')."""
+        """Create a frozen Cut from a user-typed name (spec/81 §3). The dialog
+        previews the transform live, but the gateway is the enforcement point:
+        the name is slugified here and re-validated against the Cut namespace —
+        raises ``ValueError`` carrying the :func:`core.cut_names.check_tag` code
+        ('empty' / 'reserved' / 'taken'). ``source_dc_id`` is the DC pinned from
+        (None = ad-hoc); ``expr_snapshot`` is the formula frozen at pin
+        (style + media filters live on the DC, not the Cut). Membership is
+        written separately via :meth:`set_cut_members`."""
         slug = cut_names.slugify(name)
         err = cut_names.check_tag(slug, [c.tag for c in self.cuts()])
         if err:
@@ -1960,11 +2217,14 @@ class EventGateway:
         now = self._now()
         cut = m.Cut(
             id=self._new_id(), tag=slug, created_at=now, updated_at=now,
+            source_dc_id=source_dc_id,
+            expr_snapshot_json=json.dumps([list(t) for t in expr_snapshot]),
             target_s=target_s, max_s=max_s, photo_s=photo_s,
-            pool_expr_json=json.dumps([list(t) for t in pool_expr]),
-            style_filter_json=json.dumps(list(style_filter)),
-            type_filter=type_filter, default_state=default_state,
+            default_state=default_state,
             music_category=music_category,
+            separators=separators,
+            overlay_fields_json=json.dumps(list(overlay_fields)),
+            overlay_mode=overlay_mode,
             extras_json=json.dumps({"card_style": card_style}),
         )
         with self.store.transaction():
@@ -1993,10 +2253,11 @@ class EventGateway:
         return replace(cut, tag=slug)
 
     def update_cut_settings(self, cut_id: str, **fields) -> None:
-        """Re-entering the creation session may change the recipe fields
-        (target_s / max_s / photo_s / pool_expr_json / style_filter_json /
-        type_filter / default_state / music_category / card_style). Tag
-        changes go through :meth:`rename_cut`; membership through
+        """Re-pinning may change the Cut's frozen fields (target_s / max_s /
+        photo_s / source_dc_id / expr_snapshot_json / default_state /
+        music_category / separators / overlay_fields_json / overlay_mode /
+        card_style). Style + media filters live on the DC, not here. Tag changes
+        go through :meth:`rename_cut`; membership through
         :meth:`set_cut_members`."""
         card_style = fields.pop("card_style", None)
         if card_style is not None:
@@ -2007,9 +2268,10 @@ class EventGateway:
                 extras = {}
             extras["card_style"] = card_style
             fields["extras_json"] = json.dumps(extras)
-        allowed = {"target_s", "max_s", "photo_s", "pool_expr_json",
-                   "style_filter_json", "type_filter", "default_state",
-                   "music_category", "extras_json"}
+        allowed = {"target_s", "max_s", "photo_s", "source_dc_id",
+                   "expr_snapshot_json", "default_state", "music_category",
+                   "separators", "overlay_fields_json", "overlay_mode",
+                   "extras_json"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown cut fields: {sorted(unknown)}")

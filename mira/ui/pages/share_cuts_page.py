@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -92,9 +93,62 @@ class PoolSnapshot:
     sub_line: str = ""
 
 
+@dataclass
+class DCSnapshot:
+    """One Dynamic Collection row (spec/81 §2): a live recipe — formula +
+    filters — that resolves to a member-file set on demand. The DC list
+    surfaces these as reusable operands; pinning one (or composing on top
+    of it) produces a Cut."""
+
+    dc_id: str
+    name: str             # the DC's tag (without the '#' prefix; UI prepends)
+    expr_summary: str = ""    # e.g. "+#exported -#drafts"
+    live_count: int = 0       # how many files this DC resolves to right now
+    filters_summary: str = "" # e.g. "macro · photo"
+
+
 def _fmt_duration(s: int) -> str:
     m, sec = divmod(max(0, int(s)), 60)
     return f"{m}:{sec:02d}"
+
+
+def _format_dc_expr(expr) -> str:
+    """A one-line, human-readable summary of a DC formula (spec/81 §2):
+    operator + operand chips, e.g. ``+#exported -#drafts``. The base
+    token ``"exported"`` and any DC/Cut operand surface as ``#tag``.
+    Display operators are ``+`` / ``-`` / ``∩`` (∩ is the user-facing
+    glyph for the resolver's ASCII ``&``)."""
+    bits: list[str] = []
+    op_glyph = {"+": "+", "-": "-", "&": "∩"}
+    for pair in expr or ():
+        try:
+            op, operand = pair[0], pair[1]
+        except (IndexError, TypeError):
+            continue
+        if isinstance(operand, str):
+            tag = operand
+        elif isinstance(operand, dict):
+            tag = str(operand.get("tag") or "")
+        else:
+            continue
+        if not tag:
+            continue
+        bits.append(f"{op_glyph.get(op, op)}#{tag}")
+    return " ".join(bits)
+
+
+def _format_dc_filters(filters) -> str:
+    """A one-line summary of a DC's filter map: styles + media type."""
+    if not isinstance(filters, dict):
+        return ""
+    bits: list[str] = []
+    styles = filters.get("styles") or []
+    if styles:
+        bits.append(" + ".join(str(s) for s in styles))
+    media = filters.get("media_type")
+    if media and media != "both":
+        bits.append(str(media))
+    return " · ".join(bits)
 
 
 # ── rename dialog (carried over from the legacy chassis) ─────────────
@@ -388,6 +442,89 @@ class CutRow(Card):
         self.layout().addLayout(row)
 
 
+# ── DC row (the Dynamic Collections tab content) ─────────────────────
+
+
+class DCRow(Card):
+    """One Dynamic Collection row (spec/81 §2): a recipe + filters that
+    resolves to a member-file set on demand. A DC is NOT playable /
+    exportable on its own (spec/81 §2) — the only action available is
+    "Pin → New Cut" which opens the New Cut dialog with this DC
+    pre-selected as the source. Delete drops the DC; pinned Cuts survive
+    (ON DELETE SET NULL, the freeze invariant)."""
+
+    ROW_HEIGHT = 92
+
+    pin_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
+
+    def __init__(
+        self,
+        snapshot: "DCSnapshot",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, padded=True)
+        self._snapshot = snapshot
+        self.setFixedHeight(self.ROW_HEIGHT)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.layout().setContentsMargins(18, 18, 18, 18)
+        self.layout().setSpacing(10)
+
+        row = QHBoxLayout()
+        row.setSpacing(14)
+
+        info = QVBoxLayout()
+        info.setSpacing(4)
+        name_label = QLabel(f"#{snapshot.name}" if snapshot.name else "")
+        name_label.setObjectName("CardTitle")
+        info.addWidget(name_label)
+        meta_bits: list[str] = [
+            f"<b>{snapshot.live_count}</b> files",
+        ]
+        if snapshot.expr_summary:
+            meta_bits.append(snapshot.expr_summary)
+        if snapshot.filters_summary:
+            meta_bits.append(snapshot.filters_summary)
+        meta = QLabel(" · ".join(meta_bits))
+        meta.setObjectName("Sub")
+        meta.setTextFormat(Qt.TextFormat.RichText)
+        meta.setWordWrap(True)
+        info.addWidget(meta)
+        info.addStretch()
+        info_wrap = QWidget()
+        info_wrap.setLayout(info)
+        row.addWidget(info_wrap, 1)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        pin_btn = primary_button("Pin → New Cut")
+        pin_btn.setToolTip(tr(
+            "Open the New Cut dialog with this Dynamic Collection "
+            "pre-loaded as the source."))
+        pin_btn.clicked.connect(
+            lambda: self.pin_requested.emit(snapshot.dc_id))
+        actions.addWidget(pin_btn)
+        kebab = QToolButton()
+        kebab.setObjectName("KebabBtn")
+        kebab.setText("⋮")
+        kebab.setToolTip(tr("More actions"))
+        kebab.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        kebab.setArrowType(Qt.ArrowType.NoArrow)
+        menu = QMenu(kebab)
+        delete_action = menu.addAction(tr("Delete"))
+        delete_action.triggered.connect(
+            lambda: self.delete_requested.emit(snapshot.dc_id))
+        kebab.setMenu(menu)
+        actions.addWidget(kebab)
+        actions_wrap = QWidget()
+        actions_wrap.setLayout(actions)
+        row.addWidget(actions_wrap)
+
+        self.layout().addLayout(row)
+
+
 # ── list view ─────────────────────────────────────────────────────────
 
 
@@ -407,6 +544,8 @@ class _CutsListView(QWidget):
     adjust_requested = pyqtSignal(str)
     rename_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
+    dc_pin_requested = pyqtSignal(str)
+    dc_delete_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -417,6 +556,7 @@ class _CutsListView(QWidget):
         self.gateway = gateway
         self._pool = PoolSnapshot()
         self._cuts: list[CutSnapshot] = []
+        self._dcs: list[DCSnapshot] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -448,17 +588,32 @@ class _CutsListView(QWidget):
         header_row.addWidget(new_btn, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(header_row)
 
-        # Pool card slot
+        # Pool card slot (the #exported card is the universe for BOTH
+        # Cuts and DCs — spec/81 §2 — so it sits above the tabs, not
+        # inside one of them).
         self._pool_slot = QVBoxLayout()
         self._pool_slot.setContentsMargins(0, 0, 0, 0)
         outer.addLayout(self._pool_slot)
 
-        # Section label
+        # Tabs: Cuts (the frozen, playable/exportable artifacts) and DCs
+        # (the live recipes, spec/81 §2). The two-noun model surfaces here.
+        self._tabs = QTabWidget()
+        self._tabs.setObjectName("ShareTabs")
+        self._tabs.setDocumentMode(True)
+        self._tabs.addTab(self._build_cuts_tab(), tr("Cuts"))
+        self._tabs.addTab(self._build_dcs_tab(), tr("Dynamic Collections"))
+        outer.addWidget(self._tabs, 1)
+
+    def _build_cuts_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 12, 0, 0)
+        v.setSpacing(12)
+
         self._section_label = QLabel("Cuts · 0")
         self._section_label.setObjectName("Micro")
-        outer.addWidget(self._section_label)
+        v.addWidget(self._section_label)
 
-        # Cuts list scroll
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -474,7 +629,45 @@ class _CutsListView(QWidget):
         self._scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        outer.addWidget(self._scroll, 1)
+        v.addWidget(self._scroll, 1)
+        return host
+
+    def _build_dcs_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 12, 0, 0)
+        v.setSpacing(12)
+
+        self._dc_section_label = QLabel("Dynamic Collections · 0")
+        self._dc_section_label.setObjectName("Micro")
+        v.addWidget(self._dc_section_label)
+
+        self._dc_empty_hint = QLabel(tr(
+            "Dynamic Collections are reusable recipes — set algebra over "
+            "the exported universe (and other DCs / Cuts), with optional "
+            "filters. Compose one in the New Cut dialog and Save as DC… "
+            "to see it here."))
+        self._dc_empty_hint.setObjectName("PageHint")
+        self._dc_empty_hint.setWordWrap(True)
+        v.addWidget(self._dc_empty_hint)
+
+        self._dc_scroll = QScrollArea()
+        self._dc_scroll.setWidgetResizable(True)
+        self._dc_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._dc_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        dc_inner = QWidget()
+        self._dcs_layout = QVBoxLayout(dc_inner)
+        self._dcs_layout.setContentsMargins(0, 0, 0, 0)
+        self._dcs_layout.setSpacing(12)
+        self._dcs_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._dc_scroll.setWidget(dc_inner)
+        self._dc_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        v.addWidget(self._dc_scroll, 1)
+        return host
 
     # ── data API ────────────────────────────────────────────────────────
 
@@ -482,9 +675,11 @@ class _CutsListView(QWidget):
         self,
         pool: PoolSnapshot,
         cuts: list[CutSnapshot],
+        dcs: list["DCSnapshot"] = (),
     ) -> None:
         self._pool = pool
         self._cuts = list(cuts)
+        self._dcs = list(dcs or ())
         self._render()
 
     def _render(self) -> None:
@@ -519,6 +714,22 @@ class _CutsListView(QWidget):
             row.delete_requested.connect(self.delete_requested.emit)
             self._cuts_layout.addWidget(row)
         self._cuts_layout.addStretch(1)
+
+        # DCs tab — same clear-then-rebuild pattern.
+        self._dc_section_label.setText(
+            f"Dynamic Collections · {len(self._dcs)}")
+        self._dc_empty_hint.setVisible(not self._dcs)
+        while self._dcs_layout.count():
+            it = self._dcs_layout.takeAt(0)
+            w = it.widget() if it else None
+            if w is not None:
+                w.deleteLater()
+        for snap in self._dcs:
+            row = DCRow(snap)
+            row.pin_requested.connect(self.dc_pin_requested.emit)
+            row.delete_requested.connect(self.dc_delete_requested.emit)
+            self._dcs_layout.addWidget(row)
+        self._dcs_layout.addStretch(1)
 
 
 # ── chassis — the page MainWindow mounts ──────────────────────────────
@@ -572,6 +783,8 @@ class ShareCutsPage(QWidget):
         self.list_page.adjust_requested.connect(self._on_adjust_cut)
         self.list_page.rename_requested.connect(self._on_rename_cut)
         self.list_page.delete_requested.connect(self._on_delete_cut)
+        self.list_page.dc_pin_requested.connect(self._on_pin_dc)
+        self.list_page.dc_delete_requested.connect(self._on_delete_dc)
         self._stack.addWidget(self.list_page)
         self.detail_page = CutDetailPage(show_export=True, show_play=True)
         self.detail_page.back_requested.connect(self._on_detail_back)
@@ -675,7 +888,33 @@ class ShareCutsPage(QWidget):
                 description=(cut.music_category or ""),
                 exported_date=str(cut.last_exported_at or "")[:10],
             ))
-        self.list_page.setForPreview(pool, cuts)
+        dcs = self._build_dc_snapshots()
+        self.list_page.setForPreview(pool, cuts, dcs)
+
+    def _build_dc_snapshots(self) -> list[DCSnapshot]:
+        """Read DCs (spec/81 §2) for the DCs tab: tag, live resolution
+        count, and one-line summaries of the formula + filters. The live
+        count comes from the gateway's resolver (the DC is a recipe;
+        membership is computed on demand)."""
+        out: list[DCSnapshot] = []
+        eg = self._eg
+        if eg is None:
+            return out
+        for dc in eg.dynamic_collections():
+            expr = eg.dc_expr(dc)
+            filters = eg.dc_filters(dc)
+            try:
+                live = eg.dc_probe(expr, filters)
+            except Exception:  # noqa: BLE001 — a malformed DC counts as 0
+                live = 0
+            out.append(DCSnapshot(
+                dc_id=dc.id,
+                name=dc.tag or "",
+                expr_summary=_format_dc_expr(expr),
+                live_count=int(live or 0),
+                filters_summary=_format_dc_filters(filters),
+            ))
+        return out
 
     # ── New Cut → session ────────────────────────────────────────────
 
@@ -703,13 +942,14 @@ class ShareCutsPage(QWidget):
             style_options=eg.cut_style_options(),
             music_categories=categories,
             music_hint=music_hint,
-            pool_probe=lambda expr: len(eg.resolve_pool(expr)),
-            totals_probe=lambda expr, styles, tf: eg.pool_show_totals(
-                expr, style_filter=styles, type_filter=tf),
+            pool_probe=lambda expr: len(eg.resolve_dc(expr)),
+            totals_probe=lambda expr, styles, tf: eg.dc_show_totals(
+                expr, filters={"styles": list(styles), "media_type": tf}),
             event_label=eg.event().name,
             separators_on=self._separators_on(),
             templates=self._templates(),
             template_saver=self._save_template,
+            dc_saver=self._save_dc,
         )
 
     def _templates(self) -> list:
@@ -745,22 +985,70 @@ class ShareCutsPage(QWidget):
             log.exception("could not load cut templates")
             return []
 
+    def _save_dc(self, name: str, info: dict) -> None:
+        """Save the dialog's current source as a Dynamic Collection
+        (spec/81 §2). Translates the dialog's ``cut_info()`` payload (the
+        same shape the adapter consumes for template saves) into a
+        :meth:`EventGateway.create_dc` call. Raises ``ValueError`` with
+        a ``check_tag`` code ('empty' / 'reserved' / 'taken') on bad
+        names so the dialog can surface a user-friendly message; the
+        ``cycle`` code surfaces from the gateway's cycle guard. The page
+        refreshes on success so the DC tab shows the new DC."""
+        eg = self._eg
+        if eg is None:
+            return
+        # Translate the dialog's signed-mult pool dict into the new
+        # operand encoding the gateway expects (the same translation the
+        # CutDraft adapter does).
+        from mira.ui.shared.new_cut_dialog_adapter import _expr_from_counts
+        expr = _expr_from_counts(info.get("pool", {}))
+        styles = list(info.get("styles") or [])
+        media_type = "both"
+        if bool(info.get("include_photos", True)) and not bool(
+                info.get("include_videos", True)):
+            media_type = "photo"
+        elif bool(info.get("include_videos", True)) and not bool(
+                info.get("include_photos", True)):
+            media_type = "video"
+        eg.create_dc(
+            name,
+            expr=[list(t) for t in expr],
+            styles=styles,
+            media_type=media_type,
+        )
+        # Refresh the page so the DC tab shows the new DC.
+        self.refresh()
+
     def _save_template(self, name: str, draft) -> None:
+        """Persist the dialog's recipe to the user-level template store.
+
+        spec/81 reshape: :class:`CutDraft` now carries ``expr`` / ``styles`` /
+        ``media_type`` / ``pin_mode``. The user-store column names stay
+        legacy (``pool_expr_json`` / ``style_filter_json`` / ``type_filter`` /
+        ``default_state``) — that table is the user-level template schema,
+        not a CutDraft field. We derive the legacy ``default_state`` from
+        the new ``pin_mode`` (keep-all + weed-out start all-in → ``picked``;
+        pick-in starts all-out → ``skipped``). The JSON inside
+        ``pool_expr_json`` is the new operand encoding (bare ``"exported"``
+        or typed ``{"kind":"cut|dc",...}`` ref) — readers handle either."""
         us = getattr(self.gateway, "user_store", None)
         if us is None:
             return
         import json
         import uuid
         from datetime import datetime, timezone
+        from mira.shared.cut_draft import PIN_KEEP_ALL, PIN_WEED_OUT
         from mira.user_store import models as um
+        default_state = ("picked" if draft.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
+                         else "skipped")
         us.upsert(um.CutTemplate(
             id=uuid.uuid4().hex,
             name=name,
             created_at=datetime.now(timezone.utc).isoformat(),
-            pool_expr_json=json.dumps([list(t) for t in draft.pool_expr]),
-            style_filter_json=json.dumps(list(draft.style_filter)),
-            type_filter=draft.type_filter,
-            default_state=draft.default_state,
+            pool_expr_json=json.dumps([list(t) for t in draft.expr]),
+            style_filter_json=json.dumps(list(draft.styles)),
+            type_filter=draft.media_type,
+            default_state=default_state,
             target_s=draft.target_s,
             max_s=draft.max_s,
             photo_s=draft.photo_s,
@@ -796,19 +1084,38 @@ class ShareCutsPage(QWidget):
 
     def _on_adjust_cut(self, cut_id: str) -> None:
         """Adjust = back through the DIALOG first (Nelson 2026-06-12):
-        every setting editable — name, pool, filters, times, music,
+        every setting editable — name, source, filters, times, music,
         cards — then Start enters the session seeded from membership,
-        where the picks themselves change. Save Cut commits both."""
+        where the picks themselves change. Save Cut commits both.
+
+        Spec/81 reshape: a Cut no longer carries ``pool_expr_json`` /
+        ``style_filter_json`` / ``type_filter`` (those columns dropped in
+        migration v6→v7). The frozen formula lives on the Cut as
+        ``expr_snapshot_json``; the filters live on the source DC
+        (``filters_json``). The prefill keys keep their legacy names since
+        the dialog adapter reads them under those names — the *content*
+        switches to the new shape."""
         eg = self._eg
         cut = eg.cut(cut_id) if eg else None
         if cut is None:
             return
+        import json
         from types import SimpleNamespace
+        # Filters live on the DC now; for a Cut with no live DC (orphaned
+        # via DC delete, or ad-hoc), fall back to empty filters.
+        styles_json = '[]'
+        type_filter = "both"
+        if cut.source_dc_id:
+            dc = eg.dynamic_collection(cut.source_dc_id)
+            if dc is not None:
+                filters = eg.dc_filters(dc)
+                styles_json = json.dumps(list(filters.get("styles") or []))
+                type_filter = filters.get("media_type", "both") or "both"
         prefill = SimpleNamespace(
             name=cut.tag,
-            pool_expr_json=cut.pool_expr_json,
-            style_filter_json=cut.style_filter_json,
-            type_filter=cut.type_filter,
+            pool_expr_json=cut.expr_snapshot_json,
+            style_filter_json=styles_json,
+            type_filter=type_filter,
             default_state=cut.default_state,
             target_s=cut.target_s, max_s=cut.max_s,
             photo_s=cut.photo_s,
@@ -1019,6 +1326,14 @@ class ShareCutsPage(QWidget):
                     card_style=card_style, seed_key=cut_id_seed)
                 if not img.save(str(target), "JPG", 92):
                     raise OSError(f"could not write {target}")
+        # Spec/81 §3.1 — overlays. When the Cut has fields selected, feed
+        # the export a provenance resolver so embedded mode writes IPTC
+        # *where* tags (technical EXIF rides the file already). The
+        # gateway owns the join. ``target`` is NOT passed → export_cut
+        # defaults to ``<event_root>/Cuts/<tag>/`` per spec/81 §5 (the
+        # Cut never carries a stored target).
+        overlay_fields = eg.cut_overlay_fields(cut)
+        provenance_resolver = eg.frame_provenance if overlay_fields else None
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             result = export_cut(
@@ -1029,6 +1344,7 @@ class ShareCutsPage(QWidget):
                 opener_writer=opener_writer,
                 audio_root=getattr(
                     self._settings(), "audio_library_path", "") or None,
+                provenance_resolver=provenance_resolver,
             )
         except Exception:  # noqa: BLE001 — disk-level surprises surface honestly
             log.exception("export failed for cut %s", cut_id)
@@ -1106,4 +1422,63 @@ class ShareCutsPage(QWidget):
         if box.exec() != QMessageBox.StandardButton.Yes:
             return
         eg.delete_cut(cut_id)
+        self.refresh()
+
+    # ── DC actions (spec/81 §2 — DC is a live recipe, not playable) ──
+
+    def _on_pin_dc(self, dc_id: str) -> None:
+        """Pin → New Cut (spec/81 §4): open the New Cut dialog with this
+        DC's formula + filters pre-loaded as the source. The user picks a
+        pin mode (keep-all / weed-out / pick-in) and lands in the pin
+        session — the only path from a DC to a playable / exportable
+        artifact."""
+        eg = self._eg
+        if eg is None:
+            return
+        dc = eg.dynamic_collection(dc_id)
+        if dc is None:
+            return
+        import json
+        from types import SimpleNamespace
+        filters = eg.dc_filters(dc)
+        prefill = SimpleNamespace(
+            name=dc.tag,
+            pool_expr_json=dc.expr_json,
+            style_filter_json=json.dumps(list(filters.get("styles") or [])),
+            type_filter=filters.get("media_type", "both") or "both",
+            default_state="picked",
+            target_s=None, max_s=None,
+            photo_s=6.0,
+            music_category=None,
+            card_style="black",
+        )
+        kwargs = self._dialog_kwargs()
+        draft = self._exec_edit_dialog(prefill, kwargs)
+        if draft is None:
+            return
+        # Carry the DC link through so the resulting Cut's
+        # source_dc_id points at it (the freeze invariant — spec/81 §5).
+        from dataclasses import replace as _replace
+        draft = _replace(draft, source_dc_id=dc_id)
+        session = CutSession.from_draft(
+            eg, draft, separators_on=self._separators_on())
+        self._start_session(session)
+
+    def _on_delete_dc(self, dc_id: str) -> None:
+        eg = self._eg
+        dc = eg.dynamic_collection(dc_id) if eg else None
+        if dc is None:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Delete Dynamic Collection"))
+        box.setText(tr(
+            "Delete {tag}? The recipe goes; any Cuts pinned from it "
+            "survive (their frozen membership is untouched)."
+        ).replace("{tag}", cut_names.display_tag(dc.tag)))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        eg.delete_dc(dc_id)
         self.refresh()

@@ -16,7 +16,8 @@ from mira.shared.cut_session import CutSession
 from mira.store.repo import EventStore
 from mira.ui.shared.cut_session_page import CutSessionPage
 
-from tests.test_cut_session import POOL, _draft
+from mira.shared.cut_draft import PIN_WEED_OUT
+from tests.test_cut_session import _draft
 from tests.test_gateway_cuts import _doc, _now
 
 
@@ -41,7 +42,7 @@ def _page(gw, tmp_path, **draft_over) -> CutSessionPage:
 
 
 def test_days_panel_rows_with_pick_counts(qapp, gw, tmp_path):
-    page = _page(gw, tmp_path, default_state="picked")
+    page = _page(gw, tmp_path, pin_mode=PIN_WEED_OUT)   # weed-out = all-picked
     texts = [b.text() for b in page._days._buttons]
     assert len(texts) == 2
     assert "Day 1" in texts[0] and "1 of 1 picked" in texts[0]

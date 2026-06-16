@@ -35,11 +35,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 from PyQt6.QtWidgets import QDialog, QWidget
 
-from mira.shared.cut_draft import CutDraft
+from mira.shared.cut_draft import (
+    CutDraft, PIN_KEEP_ALL, PIN_PICK_IN, PIN_WEED_OUT,
+)
 from mira.ui.pages.new_cut_dialog import (
     NewCutContext,
     NewCutDialog as _RedesignedNewCutDialog,
@@ -65,31 +67,70 @@ def _slug(name: str) -> str:
     return s or "untitled"
 
 
-def _pool_expr_from_counts(counts: dict) -> Tuple[Tuple[str, str], ...]:
-    """Translate the redesigned ``{"#name": signed_mult}`` shape into the
-    legacy ``((op, tag), ...)`` shape — signed multiplier becomes that
-    many ``(+, tag)`` or ``(−, tag)`` tuples."""
-    out: list[Tuple[str, str]] = []
+def _expr_from_counts(counts: dict) -> Tuple[Tuple[str, Any], ...]:
+    """Translate the dialog's ``{"#name": signed_mult}`` shape into the
+    spec/81 DC operand encoding: ordered ``((op, operand), ...)`` where the
+    base token ``"exported"`` stays bare and any user tag becomes a typed
+    ``{"kind":"cut","id":None,"tag":...}`` ref. Signed multiplier expands
+    to repeated terms (``+`` for >0, ``-`` for <0; ``-`` is the ASCII
+    operator the resolver accepts)."""
+    out: list[Tuple[str, Any]] = []
     for prefixed, mult in counts.items():
         mult = int(mult)
         if mult == 0:
             continue
         tag = prefixed.lstrip("#")
-        op = "+" if mult > 0 else "−"
-        out.extend([(op, tag)] * abs(mult))
+        op = "+" if mult > 0 else "-"
+        operand: Any = tag if tag == "exported" else {
+            "kind": "cut", "id": None, "tag": tag}
+        out.extend([(op, operand)] * abs(mult))
     return tuple(out)
 
 
-def _selected_pools_from_expr(
-    expr: Sequence[Tuple[str, str]],
-) -> dict:
-    """Inverse — fold a legacy expression into the redesigned signed-mult
-    dict so prefill round-trips."""
+def _counts_from_expr(expr: Sequence[Sequence[Any]]) -> dict:
+    """Inverse — fold a DC expression back into the dialog's signed-mult
+    counts dict so a saved template round-trips. The bare base token
+    ``"exported"`` and a ``{"kind":"cut|dc","tag":...}`` ref both surface as
+    ``"#tag"`` keys (the dialog renders chips by tag — the kind is implicit
+    in the operand inventory)."""
     counts: dict[str, int] = {}
-    for op, tag in expr:
+    for pair in expr:
+        try:
+            op, operand = pair[0], pair[1]
+        except (IndexError, TypeError):
+            continue
+        if isinstance(operand, str):
+            tag = operand
+        elif isinstance(operand, dict):
+            tag = operand.get("tag") or ""
+        else:
+            continue
+        if not tag:
+            continue
         key = f"#{tag}"
         counts[key] = counts.get(key, 0) + (1 if op == "+" else -1)
     return counts
+
+
+def _pin_mode_from_info(info: dict) -> str:
+    """Derive the spec/81 pin mode (keep-all / weed-out / pick-in) from the
+    dialog's emit. The dialog's 3-way Build mode (keep_all / weed_out /
+    pick_in) maps 1:1; legacy emits without ``build_mode`` fall back to
+    ``start_as`` ("all_picked" → weed-out, "all_skipped" → pick-in)."""
+    mode = info.get("build_mode")
+    if mode == "keep_all":
+        return PIN_KEEP_ALL
+    if mode == "pick_in":
+        return PIN_PICK_IN
+    if mode == "weed_out":
+        return PIN_WEED_OUT
+    return PIN_WEED_OUT if info.get("start_as") == "all_picked" else PIN_PICK_IN
+
+
+def _default_state_from_pin_mode(pin_mode: str) -> str:
+    """The legacy template column. keep-all & weed-out start all-in
+    (``"picked"``); pick-in starts all-out (``"skipped"``)."""
+    return "picked" if pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT) else "skipped"
 
 
 def _build_context(
@@ -149,7 +190,7 @@ def _apply_prefill(
     if pool_json:
         try:
             expr = [tuple(t) for t in json.loads(pool_json)]
-            counts = _selected_pools_from_expr(expr)
+            counts = _counts_from_expr(expr)
             ctx.selected_pool_counts = counts
             ctx.selected_pools = list(counts.keys())
         except (TypeError, ValueError):
@@ -168,6 +209,12 @@ def _apply_prefill(
 
     state = getattr(prefill, "default_state", "skipped") or "skipped"
     ctx.start_as = "all_picked" if state == "picked" else "all_skipped"
+    # spec/80 — seed the dialog's build mode from the persisted default
+    # state. An existing Cut was built by trimming, so it lands on a
+    # pinning refinement mode (not live): picked → weed_out, skipped →
+    # pick_in. (Live re-evaluation persistence is the gated backend piece;
+    # until then a re-opened Cut presents as pinned.)
+    ctx.build_mode = "weed_out" if state == "picked" else "pick_in"
 
     target_s = getattr(prefill, "target_s", None)
     if target_s is not None:
@@ -218,11 +265,18 @@ def _card_style_from_slide(slide_cards: str) -> str:
 
 def _draft_from_info(info: dict) -> CutDraft:
     """Translate the redesigned dialog's ``cut_info()`` payload into a
-    :class:`CutDraft`. Shared between ``.draft()`` and the
+    spec/81 :class:`CutDraft`. Shared between ``.draft()`` and the
     template-save wrapper so the host always receives the same
-    canonical shape."""
+    canonical shape.
+
+    Spec/81 reshape: the dialog still emits ``pool`` (signed-mult dict),
+    ``styles`` / ``include_photos`` / ``include_videos`` (filters), and
+    ``build_mode`` / ``start_as`` (pin choice). The adapter folds those
+    into the new CutDraft fields — ``expr`` with the typed operand
+    encoding, ``styles`` / ``media_type`` filters, and ``pin_mode``.
+    Overlays + separators ride the dialog reframe (Task C continued)."""
     name = (info.get("name") or "").strip()
-    pool_expr = _pool_expr_from_counts(info.get("pool", {}))
+    expr = _expr_from_counts(info.get("pool", {}))
     target_min = int(info.get("target_minutes", 0) or 0)
     max_min = int(info.get("max_minutes", 0) or 0)
     per_photo = float(info.get("per_photo_seconds", 0.0) or 0.0)
@@ -232,23 +286,26 @@ def _draft_from_info(info: dict) -> CutDraft:
         music_category = None
     else:
         music_category = music_choice
+    overlay_fields = tuple(info.get("overlay_fields", ()) or ())
+    overlay_mode = info.get("overlay_mode") or None
+    if overlay_mode not in ("embedded", "burn_in"):
+        overlay_mode = None     # NULL = inherit the settings default
     return CutDraft(
         name=name,
         tag=_slug(name),
-        pool_expr=pool_expr,
-        style_filter=tuple(info.get("styles", ()) or ()),
-        type_filter=_type_filter_from(
+        expr=expr,
+        styles=tuple(info.get("styles", ()) or ()),
+        media_type=_type_filter_from(
             bool(info.get("include_photos", True)),
             bool(info.get("include_videos", True)),
         ),
-        default_state=(
-            "picked" if info.get("start_as") == "all_picked"
-            else "skipped"
-        ),
+        pin_mode=_pin_mode_from_info(info),
         target_s=(target_min * 60) if target_min > 0 else None,
         max_s=(max_min * 60) if max_min > 0 else None,
         photo_s=per_photo,
         music_category=music_category,
+        overlay_fields=overlay_fields,
+        overlay_mode=overlay_mode,
         card_style=_card_style_from_slide(
             info.get("slide_cards", "all_black")),
     )
@@ -278,6 +335,7 @@ class NewCutDialog:
         separators_on: bool = True,
         templates: Sequence[object] = (),
         template_saver: Optional[Callable[[str, CutDraft], None]] = None,
+        dc_saver: Optional[Callable[[str, dict], None]] = None,
         music_hint: Optional[str] = None,
         prefill: Optional[object] = None,
         heading_text: Optional[str] = None,
@@ -290,6 +348,11 @@ class NewCutDialog:
         self._prefill = prefill
         self._templates = list(templates or [])
         self._template_saver = template_saver
+        # Spec/81 §2 — Save as DC. Receives ``(name, cut_info_dict)`` and
+        # is expected to call :meth:`EventGateway.create_dc`; the dialog
+        # surfaces any :class:`ValueError` ('taken'/'reserved'/'empty'/
+        # 'cycle') as a user-friendly message.
+        self._dc_saver = dc_saver
 
         self._ctx = _build_context(
             existing_cuts=existing_cuts,
@@ -338,6 +401,7 @@ class NewCutDialog:
             totals_probe=self._totals_probe,
             templates=self._templates,
             template_saver=self._make_template_saver(),
+            dc_saver=self._dc_saver,
             separators_on=self._separators_on,
             parent=self._parent,
         )

@@ -1,16 +1,33 @@
 # spec/32 — Dynamic Collections & Exploration App
 
-**Status:** Design registered. Foundation built (2026-06-02). Implementation deferred until
-post-Curate. No behaviour changes to the core pipeline — this spec describes what the
-database already supports and where to go next.
+> **REVISED 2026-06-16 by [spec/81](81-dynamic-collection-and-cut.md).** The
+> **Dynamic Collection (DC)** described here is now the **canonical live-query
+> noun** of the whole app — generalised by spec/81 to **set algebra over
+> operands** (base universes *and other DCs/Cuts*) plus the filters catalogued
+> below, and made **scope-agnostic** (the same DC engine serves event and
+> cross-event; only the operands in range and the storage home differ). A DC is
+> only a definition — to play or export, it is **pinned into a Cut** (spec/81
+> §3–§4). Legacy pipeline vocabulary in this doc (**cull / curate / select /
+> kept**) is reconciled below to the locked terms (charter): the phases are
+> **Collect / Pick / Edit / Export**, the verbs **Pick / Skip**, the surviving
+> state value `'picked'`, and the universes the ladder rungs
+> `#collected / #picked / #edited / #exported`. Read spec/81 first.
+
+**Status:** Design registered. Foundation built (2026-06-02). Implementation
+deferred until **post-Pick** (cross-event DCs+Cuts are spec/81's phase 2). No
+behaviour changes to the core pipeline — this spec describes what the database
+already supports and where to go next.
 
 ---
 
 ## 1. Vision
 
-A **Dynamic Collection** is a named, saved query that produces a set of items across all
-events, assembled on-the-fly from multi-dimensional criteria. The user never manually
-curates the collection — they declare rules and the system delivers.
+A **Dynamic Collection** is a named, saved query — a **formula of set algebra
+over operands plus filters** — that resolves live to a set of media files across
+all events. The user never hand-assembles the collection: they declare the
+formula and the system delivers. It is **reusable** (an operand inside other
+DCs) and **only a definition** — pinned into a Cut when the user wants to play
+or export it (spec/81).
 
 **Example queries that motivated this spec (Nelson 2026-06-02):**
 
@@ -36,9 +53,9 @@ The database (as of 2026-06-02) supports the following dimensions:
 
 | Key | Type | Notes |
 |---|---|---|
-| `stars` | int 1–5 | Star rating — curation phase |
+| `stars` | int 1–5 | Star rating — Pick/Edit-phase curatorial input |
 | `color_label` | str | `red`/`yellow`/`green`/`blue`/`purple` (LRC-compatible) |
-| `pick` | bool | "Portfolio pick" — distinct from stars |
+| `flag` | bool | Portfolio flag — distinct from stars. **Renamed from `pick`** to avoid colliding with the locked Pick/Skip decision verbs (charter); the old key name is reconciled at implementation. |
 | `caption` | str | Slide caption for PTE AV Studio bundles |
 
 Accessed via `json_extract(extras_json, '$.stars')`. Partial indexes already exist
@@ -70,6 +87,11 @@ used for LRC interoperability:
 | `sublocation` | Landmark, street, specific location |
 | `region` | Free-text regional grouping (e.g. `"South America"`, `"International"`) |
 
+These IPTC-shaped location fields double as the **overlay "where" source**: at
+export Mira writes them into the file's IPTC so PTE renders them natively
+(spec/81 §3.1). The technical EXIF (§2d) is already in the file; only location
+needs writing.
+
 ### 2d. Technical / EXIF (per item, indexed columns)
 
 | Column | Type | Query example |
@@ -90,11 +112,15 @@ Indexes: `ix_item_iso`, `ix_item_aperture`, `ix_item_shutter`, `ix_item_focal`,
 
 | Criterion | How |
 |---|---|
-| Survived cull | `phase_state.state = 'kept' AND phase = 'cull'` |
-| Survived select | `phase_state.state = 'kept' AND phase = 'select'` |
+| Picked (survived the Pick pass) | `phase_state.state = 'picked' AND phase = 'pick'` — the `#picked` universe |
+| Edited | `#edited` rung (carries edits; spec/61 §1.1 notes edited ≠ exported) |
+| Exported | `#exported` rung (lineage-backed; the base universe for event Cuts) |
 | Classification / genre | `item.classification = 'macro'` |
 | Is a stack output | `item.provenance = 'stack_output'` |
 | Is a clip | `item.provenance = 'clip'` |
+
+(Legacy `phase = 'cull' / 'select'` and `state = 'kept'` are retired in favour
+of the locked Collect/Pick/Edit/Export ladder and the `'picked'` state.)
 
 ### 2f. Bracket / stack detection (per item, columns — deferred)
 
@@ -110,7 +136,7 @@ timestamp proximity) to be implemented at ingest in a future milestone.
 
 Via `item.extras_json → {"face_set_id": "abc123"}` pointing to a `face_set` table.
 Run offline using a local DNN (InsightFace / DeepFace — no cloud, offline-first).
-Only runs on the curated subset (post-Select), not on the full raw archive.
+Only runs on the picked subset (post-Pick), not on the full raw archive.
 
 ### 2h. Tags / keywords (deferred — future `item_tag` table)
 
@@ -147,7 +173,7 @@ CREATE TABLE global_items (
   flash_fired       INTEGER,
   lens_model        TEXT,
   camera_id         TEXT,
-  cull_state        TEXT,          -- latest phase_state.state
+  pick_state        TEXT,          -- latest phase_state.state (was cull_state)
   -- from event.extras_json:
   country           TEXT,
   country_code      TEXT,
@@ -157,7 +183,7 @@ CREATE TABLE global_items (
   -- from item.extras_json (synced at save):
   stars             INTEGER,
   color_label       TEXT,
-  pick              INTEGER,
+  flag              INTEGER,       -- portfolio flag (was pick)
   PRIMARY KEY (event_uuid, item_id)
 );
 ```
@@ -205,8 +231,8 @@ Pre-shipped presets (examples):
 - "High-ISO shots" — `iso >= 1600`
 - "Long exposures" — `shutter_speed_s >= 0.5`
 - "Wide-open glass" — `aperture_f <= 2.0`
-- "Macro selects" — `classification = 'macro' AND cull_state = 'kept'`
-- "5-star picks" — `stars = 5 AND pick = 1`
+- "Macro picks" — `classification = 'macro' AND pick_state = 'picked'`
+- "5-star flags" — `stars = 5 AND flag = 1`
 - "Flash portraits" — `flash_fired = 1 AND classification = 'portrait'`
 
 ---
@@ -229,7 +255,7 @@ Once a collection is resolved to a set of `(event_uuid, item_id, origin_relpath)
 
 1. ✅ **Schema foundation** — EXIF columns on `item`; `extras_json` on `event` + `trip_day`;
    partial indexes; existing databases backfilled (2026-06-02).
-2. **Curate phase** — star rating + color label UI (keyboard 1–5 in culler);
+2. **Pick phase** — star rating + color label UI (keyboard 1–5 in the Picker);
    `set_stars` / `set_color_label` gateway mutators.
 3. **Location entry** — plan editor UI for `event.extras_json` location fields
    (City, Country, CountryCode, Region); day-level override in ManageDaysDialog.

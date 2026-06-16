@@ -1,5 +1,15 @@
 # spec/61 — Share phase: event Cuts (creation + consumption)
 
+> **REVISED 2026-06-16 by [spec/81](81-dynamic-collection-and-cut.md).** The
+> surfaces and mechanics below all still apply, with two reframings spec/81
+> makes canonical: (1) a **Cut is a materialised Dynamic Collection (DC)** — the
+> pool expression (§2.2) is now a first-class, reusable, live **DC**, and
+> `#exported` is the event's **base DC**; the Picker session (§2) is the **pin**
+> that freezes a DC into a Cut. (2) **Export (§5.2) carries the Cut's
+> *composition* (members, budget, separators, audio) but NOT an absolute target
+> path** — target is a remembered default, not frozen into the Cut (spec/81 §5).
+> Read spec/81 first; it governs the model, this doc governs the Share surfaces.
+
 **Status:** design **LOCKED 2026-06-11**, Nelson (design-mode session, third
 session of 2026-06-11). Supersedes [spec/51](51-share-cuts-vision.md) for the
 event-Cut model and surfaces; spec/51 stays in place as the record of the
@@ -110,7 +120,9 @@ Dialog fields, in order:
    field below, all still editable (kickoff addition, Nelson 2026-06-11).
 1. **Name** — free text + live tag preview (§1.5).
 2. **Pool** — boolean algebra over the Cuts that already exist:
-   `#exported − #cut_1 + #cut_2` (evaluated left to right). The universe for
+   `#exported − #cut_1 + #cut_2` (union `+`, difference `−`, **intersection
+   `∩`** — all three; evaluated left to right, grouping via nested DCs per
+   spec/81 §2). The universe for
    event Cuts is always **#exported**. This is the power move: "everything I
    exported but haven't used yet", "the union of my two favourites", "the long
    version minus the short version" are all one expression, no special
@@ -198,6 +210,28 @@ today. MC generates them:
   route — touches the parked maps topic). The plain card ships first because
   it is always legible and never embarrasses.
 
+### 4.1 Overlays — the provenance-counterpart attachment (spec/81 §3.1)
+
+Separators are **event-shaped** (they orient one event's days) and so default ON
+for event Cuts. Their sibling for the cross-event / portfolio case is the
+**overlay**: provenance text drawn *on each frame* — **when** (date/time),
+**where** (event/location), **how¹** (hardware: lens/camera/flash), **how²**
+(settings: aperture/shutter/ISO, focal length). A per-Cut multi-select over
+fields Mira already holds (spec/32 §2); "none" is valid; settings-driven default
+(OFF for event Cuts, ON for cross-event — spec/81 §3.1).
+
+Same attachment pattern as separators: **derived live, never stored**, drawn on
+top at play time (non-destructive), no membership change. **It costs no budget**
+(it sits on an existing frame; it adds no slide). **Export = two modes, a
+setting** (decided 2026-06-16; full detail spec/81 §3.1): default
+**embedded metadata** — the fields live in the file's EXIF/IPTC (technical EXIF
+already present; **where** written into IPTC per spec/32 §2c) and **PTE renders
+them via its native *Add Text with EXIF/IPTC* feature** — no separate sidecar
+file, export stays **pure links**; opt-in **Mira-native burn-in** renders
+self-contained copies (bundled ExifTool + render pipeline) for non-PTE use. This
+is informational provenance, not a per-slide effect or a Show profile (spec/81
+§7).
+
 ---
 
 ## 5. Consuming a Cut
@@ -232,9 +266,22 @@ with every event per [spec/57](57-folders-and-roundtrip.md)):
   named so plain filename sort = chronological show order.
 - **Separator images** rendered into sequence (§4).
 - **`audio/` subdir** with linked songs (§5.3).
-- Export is a **snapshot**; the Cut stays live in the database. Re-export
-  after changes → fresh materialization. Renaming a Cut never rewrites
+- **Overlay metadata** (§4.1) when overlays are on, default mode: the chosen
+  fields are present in each member's EXIF/IPTC (Mira writes **where** to IPTC;
+  technical EXIF already there) for PTE to render natively — media links stay
+  untouched (pure links preserved). Burn-in mode instead emits rendered copies
+  with the text drawn in (not links).
+- Export is a **snapshot**; the Cut's frozen members stay in the database.
+  Re-export after changes → fresh materialization. Renaming a Cut never rewrites
   already-exported folders; the next export uses the new name.
+- **Composition travels with the Cut; the target does not (spec/81 §5).** The
+  Cut carries its members, budget, separators, and audio selection, so
+  **re-export reproduces the same bundle content** — repeatable and boring. The
+  **output location is NOT frozen into the Cut**: baking an absolute path in
+  would breach the charter's no-hardcoded-paths invariant (#2) and make the Cut
+  non-portable. `<event_root>/Cuts/<tag>/` is the standing event-local
+  convention; any chosen target is a remembered *default*, re-confirmed (not
+  re-derived from the Cut) each export.
 
 ### 5.3 Audio — the user's library, the user's categories
 

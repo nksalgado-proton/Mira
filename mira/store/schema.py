@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -455,33 +455,66 @@ CREATE TABLE stack_member (
 );
 CREATE INDEX ix_stack_member_item ON stack_member(item_id);
 
--- ===== cut (D) — event Cut definitions (spec/61) ============================
--- The Share-phase artifact. ``tag`` is the canonical lowercase slug WITHOUT
--- the '#' (display prepends it; the export folder is Cuts/<tag>/). UNIQUE in
--- this per-event DB = per-event uniqueness; core.cut_names always emits
--- lowercase so the COLLATE NOCASE is belt-and-braces. The built-in #exported
--- is NOT a row — it is a live query over lineage (phase='edit'); reserved
--- built-in names are refused by core.cut_names. target_s/max_s NULL = no
--- time limit. pool_expr_json: [["+"|"-", "<tag>"], ...] evaluated left to
--- right ("exported" = the built-in). style_filter_json: [] = All styles.
+-- ===== dynamic_collection (D) — the DC: a formula, resolved live (spec/81) ===
+-- The DC is the live-query NOUN (spec/81 §2): set algebra over operands +
+-- filters, resolved on demand — never a stored member set. ``tag`` is the
+-- canonical lowercase slug WITHOUT the '#' (core.cut_names emits lowercase;
+-- COLLATE NOCASE is belt-and-braces). DC and Cut have SEPARATE tag namespaces
+-- (Nelson 2026-06-16): a DC and a Cut may share a #name — operands are typed
+-- by ``kind`` so there is no ambiguity. The built-in #exported is NOT a row;
+-- it is the base-universe token ``"exported"`` an operand names.
+--   expr_json    — ordered left-to-right pairs [[<op>, <operand>], …] where
+--                  <op> ∈ '+' union / '-' difference / '&' intersection
+--                  (display ∩) and <operand> is the base token "exported" OR a
+--                  typed ref {"kind":"dc"|"cut","id":…,"tag":…}. No precedence;
+--                  grouping is nesting a sub-DC operand (spec/81 §2).
+--   filters_json — event scope = {"styles":[…],"media_type":"both"}; readers
+--                  tolerate missing keys (the spec/32 Phase-2 catalogue extends
+--                  this object without a rewrite).
+CREATE TABLE dynamic_collection (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+
+-- ===== cut (D) — a Cut: a FROZEN materialisation of a DC (spec/81 §3) ========
+-- The only thing playable / exportable. ``tag`` is the canonical lowercase
+-- slug WITHOUT the '#' (display prepends it; the export folder is Cuts/<tag>/).
+-- A Cut is always frozen (spec/81 §1): it holds frozen members (cut_member) +
+-- the formula resolved at pin time (``expr_snapshot_json``) and NEVER re-queries
+-- its DC live. ``source_dc_id`` is the DC it was pinned from (NULL = ad-hoc, or
+-- the DC was later deleted — ON DELETE SET NULL, the freeze invariant: the Cut
+-- survives, cut_member untouched). target_s/max_s NULL = no time limit. Style +
+-- media filters live on the DC's filters_json, NOT here (Nelson 2026-06-16) —
+-- the Cut is self-describing via expr_snapshot_json + its frozen members.
+-- No target-path column (spec/81 §5; charter invariant #2). Overlays
+-- (spec/81 §3.1): overlay_fields_json = selected provenance fields
+-- ('when'/'where'/'how1'/'how2'; [] = off); overlay_mode = 'embedded'|'burn_in'
+-- (NULL = inherit the settings default). separators (spec/61 §4, default ON).
 CREATE TABLE cut (
-  id                TEXT PRIMARY KEY,
-  tag               TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
-  target_s          INTEGER CHECK (target_s IS NULL OR target_s > 0),
-  max_s             INTEGER CHECK (max_s IS NULL OR max_s > 0),
-  photo_s           REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
-  pool_expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(pool_expr_json)),
-  style_filter_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(style_filter_json)),
-  type_filter       TEXT NOT NULL DEFAULT 'both' CHECK (type_filter IN ('both','photo','video')),
-  default_state     TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
-  music_category    TEXT,
-  last_exported_at  TEXT,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL,
+  id                  TEXT PRIMARY KEY,
+  tag                 TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  source_dc_id        TEXT REFERENCES dynamic_collection(id) ON DELETE SET NULL,
+  expr_snapshot_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_snapshot_json)),
+  target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s             REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  default_state       TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category      TEXT,
+  separators          INTEGER NOT NULL DEFAULT 1 CHECK (separators IN (0,1)),
+  overlay_fields_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(overlay_fields_json)),
+  overlay_mode        TEXT CHECK (overlay_mode IN ('embedded','burn_in') OR overlay_mode IS NULL),
+  last_exported_at    TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
   -- the sanctioned escape hatch (house pattern); holds e.g. card_style
   -- ('black'|'single'|'multi' — the separator/opener colour choice,
   -- Nelson 2026-06-12). Rendered, never queried.
-  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+  extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
 );
 
 -- ===== cut_member (D) — membership = exported FILES (spec/61 §1.2) ==========
@@ -800,12 +833,120 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
         "WHERE experience_type IS NOT NULL")
 
 
+def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """spec/81 (Nelson 2026-06-16) — the Dynamic Collection / Cut model.
+
+    spec/80 modelled the live formula as a *mode on the Cut*
+    (``pool_expr_json`` + a live/pinned split). spec/81 makes the
+    formula a first-class noun — the **Dynamic Collection (DC)** — and
+    makes a **Cut always frozen**. The schema follows:
+
+    * ``dynamic_collection`` arrives — the live-query recipe (set algebra
+      over operands + filters), resolved on demand, never a stored member
+      set. Separate tag namespace from ``cut`` (operands are typed by
+      ``kind``).
+    * ``cut`` gains ``source_dc_id`` (the DC it was pinned from; ON DELETE
+      SET NULL — the freeze invariant, the Cut survives a DC delete),
+      ``expr_snapshot_json`` (the formula frozen at pin), the overlay
+      attachment columns (``overlay_fields_json`` / ``overlay_mode``,
+      spec/81 §3.1), and the ``separators`` flag (spec/61 §4, default ON).
+    * The recipe + filter columns fold into the synthesized DC, then drop:
+      each existing ``cut`` synthesizes a DC reusing the cut's OWN tag (no
+      prefix — separate namespaces), translating ``pool_expr_json`` into
+      ``expr_json`` (the bare token ``"exported"`` stays bare; a user tag
+      becomes a typed ``{"kind":"cut",...}`` ref) and folding
+      ``style_filter_json`` + ``type_filter`` into ``filters_json``. The
+      cut's ``source_dc_id`` + ``expr_snapshot_json`` then point at it.
+    * ``pool_expr_json`` / ``style_filter_json`` / ``type_filter`` drop.
+
+    Additive ``ALTER TABLE ADD COLUMN`` can't carry a CHECK or a FK that
+    SQLite back-validates existing rows against — the added ``source_dc_id``
+    FK is enforced on NEW writes only (Nelson decision #6, accepted: no
+    table rebuild). Fresh installs get the full DDL above. ``cut_member``
+    is untouched (FILE-based, lineage-backed, cascade both ways)."""
+    import json as _json
+
+    # 1. The DC table.
+    conn.execute("""
+CREATE TABLE dynamic_collection (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+)""")
+
+    # 2-6. The new cut columns (no CHECK via ALTER — validated at the seam).
+    conn.execute("ALTER TABLE cut ADD COLUMN source_dc_id TEXT "
+                 "REFERENCES dynamic_collection(id) ON DELETE SET NULL")
+    conn.execute("ALTER TABLE cut ADD COLUMN expr_snapshot_json TEXT "
+                 "NOT NULL DEFAULT '[]'")
+    conn.execute("ALTER TABLE cut ADD COLUMN separators INTEGER "
+                 "NOT NULL DEFAULT 1")
+    conn.execute("ALTER TABLE cut ADD COLUMN overlay_fields_json TEXT "
+                 "NOT NULL DEFAULT '[]'")
+    conn.execute("ALTER TABLE cut ADD COLUMN overlay_mode TEXT")
+
+    # 7. Backfill: synthesize one DC per existing cut, reusing the cut's
+    #    own tag (separate namespace -> no collision). Translate the recipe;
+    #    fold the two filter columns into filters_json.
+    rows = conn.execute(
+        "SELECT id, tag, pool_expr_json, style_filter_json, type_filter, "
+        "created_at, updated_at FROM cut").fetchall()
+    for r in rows:
+        try:
+            old_expr = _json.loads(r["pool_expr_json"] or "[]")
+        except (ValueError, TypeError):
+            old_expr = []
+        new_expr = []
+        for pair in old_expr:
+            try:
+                op, tag = pair[0], pair[1]
+            except (IndexError, TypeError):
+                continue
+            if tag == "exported":
+                new_expr.append([op, "exported"])
+            else:
+                new_expr.append([op, {"kind": "cut", "id": None, "tag": tag}])
+        try:
+            styles = _json.loads(r["style_filter_json"] or "[]")
+        except (ValueError, TypeError):
+            styles = []
+        filters = {"styles": styles, "media_type": r["type_filter"] or "both"}
+        dc_id = _new_uuid_for_migration()
+        conn.execute(
+            "INSERT INTO dynamic_collection "
+            "(id, tag, expr_json, filters_json, created_at, updated_at, extras_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, '{}')",
+            (dc_id, r["tag"], _json.dumps(new_expr), _json.dumps(filters),
+             r["created_at"], r["updated_at"]))
+        conn.execute(
+            "UPDATE cut SET source_dc_id = ?, expr_snapshot_json = ? WHERE id = ?",
+            (dc_id, _json.dumps(new_expr), r["id"]))
+
+    # 8. Drop the folded-in columns.
+    conn.execute("ALTER TABLE cut DROP COLUMN pool_expr_json")
+    conn.execute("ALTER TABLE cut DROP COLUMN style_filter_json")
+    conn.execute("ALTER TABLE cut DROP COLUMN type_filter")
+
+
+def _new_uuid_for_migration() -> str:
+    """A fresh id for migration-synthesized rows. Kept module-local so the
+    migration is self-contained (the gateway's injected ``new_id`` is a
+    runtime concern; a migration runs once at open with no gateway)."""
+    import uuid as _uuid
+    return _uuid.uuid4().hex
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
     _migrate_v3_to_v4,
     _migrate_v4_to_v5,
     _migrate_v5_to_v6,
+    _migrate_v6_to_v7,
 ]
 
 
@@ -824,7 +965,7 @@ def initialize(
     if _schema_info_exists(conn):
         raise RuntimeError("initialize() called on an already-initialised database")
     created_at = created_at or _utc_now_iso()
-    conn.executescript(DDL)  # autocommit: each DDL statement commits on its own
+    conn.executescript(DDL)
     conn.execute(
         "INSERT INTO schema_info (id, schema_version, app_version, event_id, created_at) "
         "VALUES (1, ?, ?, ?, ?)",
@@ -847,7 +988,7 @@ def migrate(conn: sqlite3.Connection) -> None:
             f"v{SCHEMA_VERSION}; upgrade Mira to open it"
         )
     while current < SCHEMA_VERSION:
-        step = MIGRATIONS[current - 1]  # version N -> N+1
+        step = MIGRATIONS[current - 1]
         conn.execute("BEGIN")
         try:
             step(conn)

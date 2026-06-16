@@ -7,7 +7,8 @@ it converts the flat :class:`EventDocument` to a nested JSON dict and back. The 
 / ``video_snapshot``; each source video's ``video_markers``; members under each stack)
 lives *here only*; the store and the dataclasses stay flat.
 
-cut + cut_member (spec/61 — definitions + FILE-based membership referencing lineage)
+dynamic_collection (spec/81 — the live-query formula noun), cut + cut_member
+(spec/81/§61 — frozen Cut definitions + FILE-based membership referencing lineage)
 and photo_person (M:N people links) serialize flat at the top level — none of them fit
 the "nested under each item" pattern the legacy share_tag (1:1) used.
 
@@ -87,6 +88,7 @@ def to_json(doc: m.EventDocument) -> Dict[str, Any]:
         "buckets": [asdict(x) for x in doc.buckets],
         "item_visits": [asdict(x) for x in doc.item_visits],
         "stacks": stacks_json,
+        "dynamic_collections": [asdict(x) for x in doc.dynamic_collections],
         "cuts": [asdict(x) for x in doc.cuts],
         "cut_members": [asdict(x) for x in doc.cut_members],
         "photo_persons": [asdict(x) for x in doc.photo_persons],
@@ -129,6 +131,9 @@ def from_json(data: Dict[str, Any]) -> m.EventDocument:
     ]
     doc.buckets = [_build(m.Bucket, x) for x in data.get("buckets", [])]
     doc.item_visits = [_build(m.ItemVisit, x) for x in data.get("item_visits", [])]
+    doc.dynamic_collections = [
+        _build(m.DynamicCollection, x) for x in data.get("dynamic_collections", [])
+    ]
     doc.cuts = [_build(m.Cut, x) for x in data.get("cuts", [])]
     doc.cut_members = [_build(m.CutMember, x) for x in data.get("cut_members", [])]
     doc.photo_persons = [_build(m.PhotoPerson, x) for x in data.get("photo_persons", [])]

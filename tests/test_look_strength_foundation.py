@@ -54,12 +54,15 @@ def test_v4_event_db_migrates_clean(tmp_path):
     pre-migration photos render IDENTICALLY. The later v5→v6 step
     (spec/64) needs an event table to operate on, so the v4 fixture
     seeds one in the v4 shape (with the retired scope/mood/transport
-    columns, which v5→v6 drops)."""
+    columns, which v5→v6 drops). The v6→v7 step (spec/81) reshapes
+    ``cut`` — the fixture seeds the v4 cut shape too so that step
+    has the legacy columns it folds into a synthesized DC."""
     db = tmp_path / "old.db"
     # Build a v4 schema by hand: schema_info pinned to 4 + adjustment
     # table WITHOUT look_strength + the v4 event table shape (so the
-    # v5→v6 step has something to ALTER). The migration runner reads
-    # schema_info and applies v4→v5→v6→…
+    # v5→v6 step has something to ALTER) + the v4 cut/cut_member tables
+    # (so the v6→v7 step has the legacy columns to fold). The migration
+    # runner reads schema_info and applies v4→v5→v6→v7…
     conn = sqlite3.connect(str(db))
     conn.executescript("""
         CREATE TABLE schema_info (
@@ -105,6 +108,37 @@ def test_v4_event_db_migrates_clean(tmp_path):
         );
         CREATE INDEX ix_event_scope ON event(scope) WHERE scope IS NOT NULL;
         CREATE INDEX ix_event_mood  ON event(mood)  WHERE mood  IS NOT NULL;
+        -- v4 cut shape (pool_expr_json + filter columns; extras_json was
+        -- added in v3→v4). The v6→v7 migration folds these into a DC.
+        CREATE TABLE lineage (
+            export_relpath TEXT PRIMARY KEY,
+            phase TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_item_id TEXT, source_bracket_id TEXT,
+            recipe_json TEXT, exported_at TEXT
+        );
+        CREATE TABLE cut (
+            id                TEXT PRIMARY KEY,
+            tag               TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            target_s          INTEGER,
+            max_s             INTEGER,
+            photo_s           REAL NOT NULL DEFAULT 6.0,
+            pool_expr_json    TEXT NOT NULL DEFAULT '[]',
+            style_filter_json TEXT NOT NULL DEFAULT '[]',
+            type_filter       TEXT NOT NULL DEFAULT 'both',
+            default_state     TEXT NOT NULL DEFAULT 'skipped',
+            music_category    TEXT,
+            last_exported_at  TEXT,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL,
+            extras_json       TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE cut_member (
+            cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+            export_relpath TEXT NOT NULL REFERENCES lineage(export_relpath) ON DELETE CASCADE,
+            added_at       TEXT NOT NULL,
+            PRIMARY KEY (cut_id, export_relpath)
+        );
     """)
     conn.commit()
     conn.close()

@@ -192,8 +192,13 @@ def render_cut_opener_image(
 
 def cut_opener_lines(cut, totals, photo_s: float) -> list:
     """The opener's fact lines, composed in ONE place (grid tile, the
-    rehearsal and the export all show the same card)."""
-    import json
+    rehearsal and the export all show the same card).
+
+    Spec/81 reshape: a Cut no longer carries ``style_filter_json``
+    (filters moved to the source DC). The opener now reads only the
+    Cut's own self-describing facts — count·length, target, music,
+    created date. Showing the source DC's styles is a later refinement
+    (callers would need to thread the DC's filters through)."""
 
     def _mmss(seconds: float) -> str:
         s = max(0, int(round(seconds)))
@@ -205,12 +210,6 @@ def cut_opener_lines(cut, totals, photo_s: float) -> list:
     bits = []
     if cut.target_s:
         bits.append(tr("target {t}").replace("{t}", _mmss(cut.target_s)))
-    try:
-        styles = json.loads(cut.style_filter_json)
-    except (ValueError, TypeError):
-        styles = []
-    if styles:
-        bits.append(" + ".join(str(s) for s in styles))
     if cut.music_category:
         bits.append(tr("music: {c}").replace("{c}", str(cut.music_category)))
     if bits:

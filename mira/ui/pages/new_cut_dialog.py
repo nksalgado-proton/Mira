@@ -2,8 +2,8 @@
 
 Modal opened from Surface 09 (Share / Cuts) via + New Cut. Configures
 and starts a new cut: name + pool composition (additive/subtractive over
-named pools) + style + media types + slide cards + start state + timing
-+ music.
+named pools) + style + media types + slide cards + build mode (spec/80 —
+keep-all/live vs weed-out/pick-in pinned) + timing + music.
 
 Composition (design-system §Surface 13):
     Header:        cut icon tile · 'New Cut' + event subtitle ·
@@ -16,8 +16,9 @@ Composition (design-system §Surface 13):
       Style + Media type: two-column row — style pill_toggles + media
                    checkboxes (Photos / Videos).
       Match count: 'N of M match' in green.
-      Slide cards / Start as: two columns of radio-style pill toggle
-                   groups.
+      Slide cards / Build mode: two columns of radio-style pill toggle
+                   groups; Build mode carries a live/pinned consequence
+                   hint (spec/80).
       Timing & music: 4-column row — Target / Max steppers · Per-photo
                    spin · Music select. Hint: '≈ N photo slides fit'.
     Footer:        ghost Save as template…   |   ghost Cancel · primary
@@ -49,6 +50,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -109,7 +111,17 @@ class NewCutContext:
     include_photos: bool = True
     include_videos: bool = True
     slide_cards: str = "all_black"   # all_black | one_random | per_day
-    start_as: str = "all_skipped"     # all_skipped | all_picked
+    # spec/80 — how the Cut is built. The three modes map onto the locked
+    # spec/61 default-state + a live/pinned consequence:
+    #   keep_all  → live formula, no refinement session  (all-in)
+    #   weed_out  → pinned snapshot, start all-in, skip the rejects
+    #   pick_in   → pinned snapshot, start all-out, pick the keepers
+    # A brand-new Cut defaults to keep_all (the simplest Cut = its pool,
+    # re-evaluated). ``start_as`` stays as the back-compat seed the adapter
+    # reads from prefill (default_state); the dialog derives the initial
+    # build_mode from it when build_mode isn't given explicitly.
+    build_mode: str = "keep_all"      # keep_all | weed_out | pick_in
+    start_as: str = "all_skipped"     # all_skipped | all_picked (legacy seed)
     target_minutes: int = 10
     max_minutes: int = 12
     per_photo_seconds: float = 6.0
@@ -201,6 +213,7 @@ class NewCutDialog(QDialog):
         ] = None,
         templates: Sequence[object] = (),
         template_saver: Optional[Callable[[str, dict], None]] = None,
+        dc_saver: Optional[Callable[[str, dict], None]] = None,
         separators_on: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
@@ -222,6 +235,12 @@ class NewCutDialog(QDialog):
         self._totals = cut_budget.ShowTotals()
         self._templates = list(templates or [])
         self._template_saver = template_saver
+        # Spec/81 §2: the dialog can save its current source (the
+        # composed formula + filters) as a reusable DC. When wired, the
+        # "Save as DC…" footer button is enabled; it asks for a name and
+        # fires ``dc_saver(name, cut_info_dict)``. The host translates
+        # the info to a :meth:`EventGateway.create_dc` call.
+        self._dc_saver = dc_saver
         # Seed _pool_counts BEFORE building the UI so the formula + chips
         # row paint correctly on the first paint pass. Edit-mode prefill
         # passes ``selected_pool_counts`` to express signed multipliers;
@@ -440,20 +459,73 @@ class NewCutDialog(QDialog):
             self._ctx.slide_cards,
         )
         sc_col.addWidget(sc_host)
-        sa_col = QVBoxLayout()
-        sa_col.setSpacing(6)
-        sa_col.addWidget(_micro("Start as"))
-        sa_host, self._start_group = _radio_group(
+        # Pin choice (spec/81 §4 — replaces spec/80's Build mode). The
+        # choice is how the budget pass starts. All three produce a
+        # FROZEN Cut (spec/81 §1 — there is no live Cut, the live thing
+        # is the DC). Keep-all pins one-to-one with no session; weed-out
+        # and pick-in run the budget pass on opposite seeds. The
+        # live/pinned consequence hint is gone — a Cut is always frozen.
+        bm_col = QVBoxLayout()
+        bm_col.setSpacing(6)
+        bm_col.addWidget(_micro("Pin choice"))
+        bm_host, self._build_mode_group = _radio_group(
             [
-                ("all_skipped", "All skipped — pick the keepers in"),
-                ("all_picked",  "All picked — weed out"),
+                ("keep_all", "Keep all — pin one-to-one, no session"),
+                ("weed_out", "Weed out — start full, skip the rest"),
+                ("pick_in",  "Pick in — start empty, pick the keepers"),
             ],
-            self._ctx.start_as,
+            self._initial_build_mode(),
         )
-        sa_col.addWidget(sa_host)
+        bm_col.addWidget(bm_host)
         row_ss.addLayout(sc_col, 1)
-        row_ss.addLayout(sa_col, 1)
+        row_ss.addLayout(bm_col, 1)
         v.addLayout(row_ss)
+
+        # Overlays (spec/81 §3.1) — provenance text per frame. Costs no
+        # budget (sits on existing frames). Default OFF for event Cuts;
+        # spec/81 §3.1 sets cross-event default to ON. The mode toggles
+        # between embedded EXIF/IPTC (PTE renders, link-pure default) and
+        # Mira burn-in (rendered copies, self-contained).
+        v.addWidget(_micro("Overlays"))
+        overlay_hint = QLabel(tr(
+            "Add provenance text to each frame — costs no slide. Embedded "
+            "writes the metadata into the file (PTE renders, members stay "
+            "links); Burn-in renders copies with the text drawn in."))
+        overlay_hint.setObjectName("Faint")
+        overlay_hint.setWordWrap(True)
+        v.addWidget(overlay_hint)
+        ov_row = QHBoxLayout()
+        ov_row.setSpacing(14)
+        # Field checkboxes
+        fields_col = QVBoxLayout()
+        fields_col.setSpacing(4)
+        fields_col.addWidget(_micro("Fields"))
+        self._overlay_field_cbs: dict[str, QCheckBox] = {}
+        for key, label in (
+            ("when", tr("When (date / time)")),
+            ("where", tr("Where (event / location)")),
+            ("how1", tr("How¹ (lens · camera · flash)")),
+            ("how2", tr("How² (aperture · shutter · ISO · focal)")),
+        ):
+            cb = QCheckBox(label)
+            cb.setObjectName("DaysTableCheck")
+            self._overlay_field_cbs[key] = cb
+            fields_col.addWidget(cb)
+        ov_row.addLayout(fields_col, 1)
+        # Mode radio
+        mode_col = QVBoxLayout()
+        mode_col.setSpacing(4)
+        mode_col.addWidget(_micro("Mode"))
+        mode_host, self._overlay_mode_group = _radio_group(
+            [
+                ("embedded", tr("Embedded metadata (PTE renders, link-pure)")),
+                ("burn_in",  tr("Burn-in (Mira renders copies, no PTE)")),
+            ],
+            "embedded",
+        )
+        mode_col.addWidget(mode_host)
+        ov_row.addLayout(mode_col, 1)
+        v.addLayout(ov_row)
 
         # Timing & music
         v.addWidget(_micro("Timing & music"))
@@ -540,6 +612,18 @@ class NewCutDialog(QDialog):
             "as a reusable recipe for any event."))
         self._save_tpl_btn.clicked.connect(self._on_save_template)
         h.addWidget(self._save_tpl_btn)
+        # Save as DC… — spec/81 §2. Persists the current source (the
+        # composed formula + Style/Media filters) as a reusable
+        # Dynamic Collection. Dialog stays open after the save so the
+        # user can keep configuring or click Start to make a Cut too.
+        self._save_dc_btn = ghost_button("Save as DC…")
+        self._save_dc_btn.setEnabled(self._dc_saver is not None)
+        self._save_dc_btn.setToolTip(tr(
+            "Save this source — the formula + filters — as a Dynamic "
+            "Collection. The DC appears in the Share page's DCs tab and "
+            "can be pinned into a Cut later."))
+        self._save_dc_btn.clicked.connect(self._on_save_dc)
+        h.addWidget(self._save_dc_btn)
         h.addStretch()
         cancel = ghost_button("Cancel")
         cancel.clicked.connect(self.reject)
@@ -712,6 +796,32 @@ class NewCutDialog(QDialog):
         else:
             self._name_tag_hint.setText("(tag will preview here)")
 
+    # ── build mode (spec/80) ───────────────────────────────────────────
+
+    _BUILD_MODES = ("keep_all", "weed_out", "pick_in")
+
+    def _initial_build_mode(self) -> str:
+        """The mode the dialog opens on. Trust ``ctx.build_mode`` when it's
+        one of the known modes (the adapter sets it from a prefilled Cut's
+        default_state); a fresh Cut keeps the dataclass default
+        ``keep_all`` — the simplest Cut is its pool, kept live."""
+        mode = (self._ctx.build_mode or "").strip()
+        return mode if mode in self._BUILD_MODES else "keep_all"
+
+    def _current_build_mode(self) -> str:
+        if hasattr(self, "_build_mode_group"):
+            for b in self._build_mode_group.buttons():
+                if b.isChecked():
+                    return str(b.property("_key"))
+        return self._initial_build_mode()
+
+    def _on_mode_changed(self) -> None:
+        """Spec/81 §1 retired the live/pinned consequence: a Cut is always
+        frozen. Kept as a no-op so callers wired to the button group's
+        toggle signal don't break (the legacy connect happened in
+        ``_build_ui`` and was removed with the consequence hint)."""
+        return  # no-op
+
     # ── templates ─────────────────────────────────────────────────────
     # spec/61 §2: the recipe is replayable per event. The host owns the
     # template store; the dialog only knows how to read a recipe object
@@ -754,13 +864,18 @@ class NewCutDialog(QDialog):
         tf = getattr(t, "type_filter", "both") or "both"
         self._photos_cb.setChecked(tf in ("both", "photo"))
         self._videos_cb.setChecked(tf in ("both", "video"))
-        start_as = ("all_picked"
-                    if getattr(t, "default_state", "skipped") == "picked"
-                    else "all_skipped")
-        for b in self._start_group.buttons():
-            if b.property("_key") == start_as:
+        # A template carries the legacy default_state; map it onto a build
+        # mode. 'picked' (start all-in → weed out); 'skipped' (start
+        # all-out → pick in). Templates predate the live/pinned split, so a
+        # loaded recipe lands on a pinning refinement mode, not live.
+        build_mode = ("weed_out"
+                      if getattr(t, "default_state", "skipped") == "picked"
+                      else "pick_in")
+        for b in self._build_mode_group.buttons():
+            if b.property("_key") == build_mode:
                 b.setChecked(True)
                 break
+        self._on_mode_changed()
         target_s = getattr(t, "target_s", None)
         max_s = getattr(t, "max_s", None)
         self._set_spin(0, max(1, int(round((target_s or 0) / 60))) or 1)
@@ -817,6 +932,40 @@ class NewCutDialog(QDialog):
         except Exception:                                      # noqa: BLE001
             log.exception("template_saver raised")
 
+    def _on_save_dc(self) -> None:
+        """Spec/81 §2 — Save the current source as a reusable Dynamic
+        Collection. Pre-fills the name modal with the current Cut name
+        (the dialog already prevents tag collisions on the Cut side; the
+        host's saver re-validates against the DC namespace before
+        inserting). Errors surface via a small message box; the dialog
+        stays open so the user can adjust + retry or proceed to Start."""
+        if self._dc_saver is None:
+            return
+        default = self._name_edit.text().strip()
+        dlg = _TemplateNameDialog(default=default, parent=self)
+        dlg.setWindowTitle(tr("Save as Dynamic Collection"))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._dc_saver(dlg.template_name(), self.cut_info())
+        except ValueError as exc:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.NoIcon)
+            box.setWindowTitle(tr("Save as DC"))
+            code = str(exc)
+            text = {
+                "taken": tr("A Dynamic Collection by that name already "
+                            "exists. Pick a different name."),
+                "reserved": tr("That name is a built-in. Pick a different one."),
+                "empty": tr("The name has no usable characters."),
+                "cycle": tr("This source would form a cycle (DC referring "
+                            "to itself). Adjust the source and try again."),
+            }.get(code, code)
+            box.setText(text)
+            box.exec()
+        except Exception:                                      # noqa: BLE001
+            log.exception("dc_saver raised")
+
     def _on_start(self) -> None:
         self._was_applied = True
         self.accept()
@@ -829,11 +978,12 @@ class NewCutDialog(QDialog):
             if b.isChecked():
                 slide_cards = b.property("_key")
                 break
-        start_as = "all_skipped"
-        for b in self._start_group.buttons():
-            if b.isChecked():
-                start_as = b.property("_key")
-                break
+        # Spec/81: ``build_mode`` is renamed Pin choice in the UI but
+        # the emit key stays for adapter back-compat. ``start_as`` is
+        # derived (keep-all + weed-out start all-in; pick-in starts
+        # all-out). ``live`` retired — a Cut is always frozen.
+        build_mode = self._current_build_mode()
+        start_as = "all_skipped" if build_mode == "pick_in" else "all_picked"
         selected_styles = [s for s, chip in self._style_chips.items() if chip.isChecked()]
         return {
             "name": self._name_edit.text().strip(),
@@ -842,12 +992,31 @@ class NewCutDialog(QDialog):
             "include_photos": self._photos_cb.isChecked(),
             "include_videos": self._videos_cb.isChecked(),
             "slide_cards": slide_cards,
+            "build_mode": build_mode,
             "start_as": start_as,
             "target_minutes": int(self._spin_value(0)),
             "max_minutes": int(self._spin_value(1)),
             "per_photo_seconds": float(self._spin_value(2)),
             "music": self._music.currentText(),
+            # Overlays (spec/81 §3.1) — selected fields + mode.
+            "overlay_fields": self._active_overlay_fields(),
+            "overlay_mode": self._active_overlay_mode(),
         }
+
+    def _active_overlay_fields(self) -> list:
+        """The selected overlay field keys, in the canonical order (matches
+        :data:`core.cut_overlay.OVERLAY_FIELDS`)."""
+        order = ("when", "where", "how1", "how2")
+        return [k for k in order
+                if self._overlay_field_cbs.get(k)
+                and self._overlay_field_cbs[k].isChecked()]
+
+    def _active_overlay_mode(self) -> str:
+        """The selected mode (``"embedded"`` default; ``"burn_in"`` opt-in)."""
+        for b in self._overlay_mode_group.buttons():
+            if b.isChecked():
+                return str(b.property("_key"))
+        return "embedded"
 
     def _spin_value(self, idx: int) -> float:
         """Read the spin widget out of the idx-th stepper_block. Returns

@@ -64,6 +64,7 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.VideoAdjustment, "video_adjustment", ("item_id",)),
     _TableInfo(m.StackBracket, "stack_bracket", ("bracket_id",)),
     _TableInfo(m.StackMember, "stack_member", ("bracket_id", "item_id"), ("bracket_id", "ordinal")),
+    _TableInfo(m.DynamicCollection, "dynamic_collection", ("id",), ("created_at", "id")),
     _TableInfo(m.Cut, "cut", ("id",), ("created_at", "id")),
     _TableInfo(m.CutMember, "cut_member", ("cut_id", "export_relpath")),
     _TableInfo(m.PhotoPerson, "photo_person", ("item_id", "person_id")),
@@ -86,6 +87,7 @@ _DOC_CLASSES: tuple = (
     m.Adjustment, m.VideoAdjustment,
     m.StackBracket, m.StackMember, m.PhotoPerson,
     m.Bucket, m.ItemVisit, m.Lineage,
+    m.DynamicCollection,  # before Cut — cut.source_dc_id FKs it (deferred anyway)
     m.Cut, m.CutMember,   # after Lineage — cut_member FKs lineage (deferred anyway)
 )
 
@@ -264,6 +266,7 @@ class EventStore:
             m.VideoAdjustment: doc.video_adjustments,
             m.StackBracket: doc.stacks,
             m.StackMember: doc.stack_members,
+            m.DynamicCollection: doc.dynamic_collections,
             m.Cut: doc.cuts,
             m.CutMember: doc.cut_members,
             m.PhotoPerson: doc.photo_persons,
@@ -298,6 +301,7 @@ class EventStore:
             video_adjustments=self.all(m.VideoAdjustment),
             stacks=self.all(m.StackBracket),
             stack_members=self.all(m.StackMember),
+            dynamic_collections=self.all(m.DynamicCollection),
             cuts=self.all(m.Cut),
             cut_members=self.all(m.CutMember),
             photo_persons=self.all(m.PhotoPerson),

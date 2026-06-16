@@ -52,6 +52,15 @@ class _FakeAppGateway:
 def gw(tmp_path):
     store = EventStore.create(tmp_path / "event.db", event_id="evt-c")
     store.save_document(_doc())
+    # Materialise the on-disk bytes for every Exported Media/ lineage row so
+    # the rescan prune (filesystem is the source of truth for the exported
+    # tier) keeps them on Share entry instead of reconciling the pool to empty.
+    for (rel,) in store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE export_relpath LIKE 'Exported Media/%'").fetchall():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"\xff\xd8\xff\xd9")
     counter = itertools.count(1)
     g = EventGateway(store, event_root=tmp_path, now=_now,
                      new_id=lambda: f"id-{next(counter)}")

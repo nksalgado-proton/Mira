@@ -2028,6 +2028,26 @@ class EventGateway:
             conn.execute("DELETE FROM lineage WHERE phase = ?", (phase,))
             self._touch()
 
+    @staticmethod
+    def _unlink_with_retry(path: "Path", *, attempts: int = 5,
+                           delay: float = 0.1) -> None:
+        """Unlink ``path``, retrying transient Windows file locks (WinError
+        32 — a brief handle held by the thumbnailer / AV / Qt pixmap loader).
+        A vanished file counts as success; the last error is re-raised if
+        every attempt fails, so the caller's no-erase-the-record guard still
+        fires."""
+        import time
+        for i in range(attempts):
+            try:
+                path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if i == attempts - 1:
+                    raise
+                time.sleep(delay * (i + 1))
+
     def delete_exported_file(self, item_id: str) -> Dict:
         """Undo one item's Export ship: delete its on-disk JPEG(s) under
         ``Exported Media/``, drop its lineage row(s), and flip
@@ -2069,7 +2089,7 @@ class EventGateway:
             abs_path = event_root / rel
             if abs_path.is_file():
                 try:
-                    abs_path.unlink()
+                    self._unlink_with_retry(abs_path)
                     deleted.append(abs_path)
                 except OSError:
                     log.exception(
@@ -2168,7 +2188,7 @@ class EventGateway:
         missing: list = []
         if abs_path.is_file():
             try:
-                abs_path.unlink()
+                self._unlink_with_retry(abs_path)
                 deleted.append(abs_path)
             except OSError:
                 log.exception(
@@ -2206,7 +2226,9 @@ class EventGateway:
         }
 
     def rescan_exported_media(self) -> int:
-        """Backfill missing ``Exported Media/`` lineage rows.
+        """Reconcile ``Exported Media/`` lineage to the bytes on disk:
+        **prune** rows whose file is gone, then **backfill** rows for
+        orphan files that exist on disk but lack one.
 
         Mirrors the spec/57 §3 ``Edited Media/`` returns scan: walk the
         on-disk tree, find files that have no lineage row pointing at
@@ -2227,7 +2249,7 @@ class EventGateway:
         stems (more than one Pick-kept photo with the same filename, e.g.
         ``DSC0001.cr3`` on day 1 AND day 2) are SKIPPED — the rescan is
         conservative; the user re-runs Export to disambiguate. Returns
-        the number of rows written.
+        the number of lineage rows reconciled (pruned + backfilled).
 
         Cheap: scans only the existing ``Exported Media/`` subtree, runs
         the stem map once. Suitable to call on every Share/Export entry
@@ -2235,9 +2257,44 @@ class EventGateway:
         """
         if self.event_root is None:
             return 0
-        exported_root = Path(self.event_root) / "Exported Media"
+        event_root = Path(self.event_root)
+        exported_root = event_root / "Exported Media"
+
+        # ---- Prune pass (Nelson 2026-06-15): the bytes on disk are the
+        # source of truth for the EXPORTED tier. Any 'edit' lineage row
+        # under ``Exported Media/`` whose file no longer exists is stale
+        # dirt — drop it. Runs even when the folder is empty or absent, so a
+        # wiped ``Exported Media/`` reconciles ``#exported`` (and the
+        # exported clusters that read off lineage) back to empty. The
+        # ``cut_member.export_relpath`` FK CASCADE removes the file from
+        # every Cut for free (regenerable tier — re-export rebuilds it).
+        pruned = 0
+        stale_rows = self.store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE phase = 'edit' "
+            "AND export_relpath LIKE 'Exported Media/%'"
+        ).fetchall()
+        for r in stale_rows:
+            rel = r["export_relpath"]
+            if (event_root / rel).is_file():
+                continue
+            try:
+                if self.delete_exported_file_by_relpath(rel).get(
+                        "rows_deleted"):
+                    pruned += 1
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "rescan_exported_media: prune failed for %s", rel)
+        if pruned:
+            log.info(
+                "rescan_exported_media: pruned %d stale lineage row(s) — "
+                "file missing under %s", pruned, exported_root)
+
+        # Backfill needs the folder to exist; a missing folder means there
+        # is nothing on disk to add (the prune above already reconciled the
+        # rows downward to match).
         if not exported_root.is_dir():
-            return 0
+            return pruned
 
         # Already-recorded ship rows — skip files that already have one.
         already_rows = self.store.conn.execute(
@@ -2300,7 +2357,7 @@ class EventGateway:
             log.info(
                 "rescan_exported_media: backfilled %d lineage row(s) "
                 "under %s", written, exported_root)
-        return written
+        return written + pruned
 
     # ----- event ---------------------------------------------------------- #
 

@@ -261,6 +261,71 @@ def test_rescan_no_op_when_no_exported_media_folder(tmp_path):
         eg.store.close()
 
 
+def test_rescan_prunes_when_bytes_gone_and_cascades_cuts(tmp_path):
+    """The bytes on disk are the source of truth (Nelson 2026-06-15). A
+    lineage row under ``Exported Media/`` whose file is gone is pruned on
+    rescan so ``#exported`` reconciles to empty, and the
+    ``cut_member.export_relpath`` FK CASCADE removes the file from every
+    Cut that held it — the Cut definition itself survives."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        rel = "Exported Media/Dia 1/p1.jpg"
+        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True)
+        (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="p1", recipe_json="{}", exported_at="t"))
+        eg.set_edit_exported("p1", True)
+        # The file is a member of a Cut.
+        with eg.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO cut (id, tag, created_at, updated_at) "
+                "VALUES ('c1', 'Highlights', 't', 't')")
+            conn.execute(
+                "INSERT INTO cut_member (cut_id, export_relpath, added_at) "
+                "VALUES ('c1', ?, 't')", (rel,))
+        assert eg.exported_item_ids() == {"p1"}
+
+        # The bytes vanish — the user wiped Exported Media/.
+        (ship / "p1.jpg").unlink()
+
+        assert eg.rescan_exported_media() == 1
+        # #exported reconciled to empty; the freshness flag cleared.
+        assert eg.exported_item_ids() == set()
+        assert eg.exported_files() == []
+        adj = eg.adjustment("p1")
+        assert adj is None or adj.edit_exported is False
+        # The Cut lost the file via the FK CASCADE; the Cut row survives.
+        members = eg.store.conn.execute(
+            "SELECT 1 FROM cut_member WHERE cut_id = 'c1'").fetchall()
+        assert members == []
+        assert eg.store.conn.execute(
+            "SELECT 1 FROM cut WHERE id = 'c1'").fetchone() is not None
+    finally:
+        eg.store.close()
+
+
+def test_rescan_prunes_even_when_whole_folder_wiped(tmp_path):
+    """The old guard returned early when ``Exported Media/`` was absent,
+    leaving orphan lineage rows as dirt. Now an entirely missing folder
+    still prunes the now-orphan rows down to match the (empty) disk."""
+    eg = _make_eg_picked(tmp_path)
+    try:
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json="{}", exported_at="t"))
+        eg.set_edit_exported("p1", True)
+        assert eg.exported_item_ids() == {"p1"}
+        # No Exported Media/ folder exists at all.
+        assert not (tmp_path / "Exported Media").exists()
+        assert eg.rescan_exported_media() == 1
+        assert eg.exported_item_ids() == set()
+    finally:
+        eg.store.close()
+
+
 def test_edit_candidate_helpers_for_third_party_returns(tmp_path):
     """spec/66 §1.2 — ``edit_candidate_item_ids`` returns items with a
     third-party return sitting in ``Edited Media/`` (and not yet shipped);

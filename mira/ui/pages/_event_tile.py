@@ -425,18 +425,18 @@ class EventTile(Card):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent, padded=False)
-        # spec/77 §7.2 — let QSS draw the tile's rounded fill + visible
-        # border by tagging as ``#TileCard`` and flipping
-        # ``WA_StyledBackground`` so the rule actually paints (without
-        # this, a QFrame doesn't render its QSS background reliably).
-        # No paintEvent override — the half-built paint-the-border path
-        # is the reason the v3 build shipped without a border at all.
+        # spec/77 §7.2 — QSS draws the rounded fill (``#TileCard``
+        # role + ``WA_StyledBackground`` so the rule actually paints);
+        # the BORDER is painted by ``paintEvent`` (see below) using the
+        # same recipe as the days-grid Thumb so the corner stroke is
+        # antialiased and smooth. The 2-px contents-margin reserves
+        # space for the stroke so children never sit over it.
         self.setObjectName("TileCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._data = data
         self._sample_pixmaps = list(sample_pixmaps or [])
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(2, 2, 2, 2)
         outer.setSpacing(0)
         outer.addWidget(self._build_title_row())
         if data.is_closed:
@@ -635,3 +635,32 @@ class EventTile(Card):
         catch their clicks first via Qt's child-first event flow."""
         super().mousePressEvent(evt)
         self.activated.emit(self._data.event_id)
+
+    def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
+        """Paint the rounded antialiased tile border, copying the
+        days-grid Thumb pattern (``mira/ui/design/thumbs.py``
+        :247-257). QSS owns the background fill (rounded via
+        ``border-radius`` + ``WA_StyledBackground``); the border can't
+        live in QSS because Qt's QSS border + border-radius doesn't
+        antialias the corner stroke. Recipe:
+
+        * super().paintEvent first → QSS paints the rounded fill.
+        * ``setClipping(False)`` → the stroke isn't cut in half by the
+          widget's painter clip (Thumb explicitly does this).
+        * 2-px ``QPen`` with ``RoundJoin`` so the corners stay clean.
+        * ``drawRoundedRect`` on a rect inset by half the stroke width,
+          radius reduced by the same amount, with ``Antialiasing`` on.
+        """
+        super().paintEvent(evt)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipping(False)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        border_pen = QPen(QColor(_palette_color("card_border")), 2.0)
+        border_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(
+            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0),
+            TILE_RADIUS - 1.0, TILE_RADIUS - 1.0,
+        )
+        painter.end()

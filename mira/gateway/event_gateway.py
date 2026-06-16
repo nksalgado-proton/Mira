@@ -84,11 +84,30 @@ class EventGateway:
         event_root: Optional[Path] = None,
         now: Callable[[], str] = _utc_now_iso,
         new_id: Callable[[], str] = _new_uuid,
+        db_path: Optional[Path] = None,
+        backups_dir: Optional[Path] = None,
+        app_version: str = "",
     ) -> None:
         self.store = store
         self.event_root = event_root
         self._now = now
         self._new_id = new_id
+        # spec/79 §7.2 — close-if-dirty snapshot context. ``backups_dir``
+        # is None for ad-hoc opens (tests, direct EventStore.open); the
+        # real run gets one from Gateway.open_event.
+        self._db_path = Path(db_path) if db_path is not None else None
+        self._backups_dir = Path(backups_dir) if backups_dir is not None else None
+        self._app_version = app_version
+        # Baseline count of writes on this connection — close compares
+        # against it to decide whether the session was dirty. The
+        # baseline is captured AFTER ``EventStore.open`` so a pending
+        # schema migration's writes are already folded in (a migrated
+        # session is dirty in its own right; the snapshot saves the
+        # post-migrate state).
+        try:
+            self._changes_at_open = self.store.conn.total_changes
+        except AttributeError:
+            self._changes_at_open = 0
 
     # ----- lifecycle ----------------------------------------------------- #
 
@@ -100,10 +119,44 @@ class EventGateway:
         event_root: Optional[Path] = None,
         now: Callable[[], str] = _utc_now_iso,
         new_id: Callable[[], str] = _new_uuid,
+        backups_dir: Optional[Path] = None,
+        app_version: str = "",
     ) -> "EventGateway":
-        return cls(EventStore.open(db_path), event_root=event_root, now=now, new_id=new_id)
+        return cls(
+            EventStore.open(db_path),
+            event_root=event_root, now=now, new_id=new_id,
+            db_path=Path(db_path), backups_dir=backups_dir,
+            app_version=app_version,
+        )
 
     def close(self) -> None:
+        # spec/79 §7.2 — snapshot before close-if-dirty. Runs while
+        # the source connection is still open (the online backup API
+        # needs both sides) and only when this session wrote at least
+        # one row. Snapshot failure is logged but never blocks close
+        # — a stuck close would be worse than a missed snapshot.
+        if (
+            self._backups_dir is not None
+            and self._db_path is not None
+            and self._db_path.exists()
+        ):
+            try:
+                dirty = self.store.conn.total_changes > self._changes_at_open
+            except AttributeError:
+                dirty = False
+            if dirty:
+                try:
+                    from core import db_backup
+                    db_backup.snapshot(
+                        self._db_path,
+                        self._backups_dir,
+                        app_version=self._app_version,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "db_backup: snapshot on close failed for %s: %s",
+                        self._db_path, exc,
+                    )
         self.store.close()
 
     def __enter__(self) -> "EventGateway":

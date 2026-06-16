@@ -42,6 +42,22 @@ SORT_TYPE   = "type"
 _VALID_SORTS = (SORT_NEWEST, SORT_OLDEST, SORT_NAME, SORT_TYPE)
 
 
+# spec/79 §7 — per-event backup snapshots live in a sibling tree to
+# the event roots so a "delete files" wipe of one event doesn't take
+# its own pre-destructive snapshot with it.
+BACKUPS_DIR_NAME = ".mira-backups"
+
+
+def _live_app_version() -> str:
+    """Same metadata read the About dialog uses; ``"dev"`` fallback so
+    tests / source checkouts still attach a value."""
+    try:
+        from importlib import metadata
+        return metadata.version("mira")
+    except Exception:                                      # noqa: BLE001
+        return "dev"
+
+
 @dataclass
 class EventsQuery:
     """Filter parameters for :meth:`Gateway.events_index_filtered`.
@@ -656,6 +672,30 @@ class Gateway:
             entry = self.index.get(event_id)
             root = self.index.resolve_root(entry, self.photos_base_path())
             if root is not None and root.exists():
+                # spec/79 §7.2 — a pre-destructive snapshot of the
+                # event.db before the folder wipe. The backups dir is
+                # a SIBLING of the event root, so the snapshot rides
+                # out the rmtree. Failure here is logged but does NOT
+                # block the delete — the user explicitly confirmed.
+                db_path = root / "event.db"
+                backups_dir = self.event_backups_dir(event_id)
+                if db_path.exists() and backups_dir is not None:
+                    try:
+                        from core import db_backup
+                        db_backup.snapshot(
+                            db_path,
+                            backups_dir,
+                            app_version=_live_app_version(),
+                        )
+                        log.info(
+                            "delete_event: pre-destructive snapshot of "
+                            "%s saved before folder wipe", event_id,
+                        )
+                    except Exception as exc:               # noqa: BLE001
+                        log.warning(
+                            "delete_event: pre-destructive snapshot "
+                            "FAILED for %s: %s", event_id, exc,
+                        )
                 import shutil
                 shutil.rmtree(root)
                 log.info("delete_event: removed event folder %s", root)
@@ -665,14 +705,35 @@ class Gateway:
     # ----- open one event ------------------------------------------------ #
 
     def open_event(self, event_id: str) -> EventGateway:
-        """Resolve the root, open its ``event.db``, return the per-event facade."""
+        """Resolve the root, open its ``event.db``, return the per-event facade.
+
+        Wires the spec/79 §7.2 close-if-dirty snapshot context — the
+        EventGateway snapshots its db on close when the session
+        wrote at least one row.
+        """
         entry = self.index.get(event_id)
         if entry is None:
             raise KeyError(f"no event {event_id} in the index")
         root = self.index.resolve_root(entry, self.photos_base_path())
         if root is None:
             raise RuntimeError(f"event {event_id} root is unresolvable (relocated?)")
-        return EventGateway.open(root / "event.db", event_root=root, now=self._now)
+        return EventGateway.open(
+            root / "event.db",
+            event_root=root,
+            now=self._now,
+            backups_dir=self.event_backups_dir(event_id),
+            app_version=_live_app_version(),
+        )
+
+    def event_backups_dir(self, event_id: str) -> Optional[Path]:
+        """``<photos_base_path>/.mira-backups/<event_id>/`` — where
+        :mod:`core.db_backup` writes this event's snapshots. ``None``
+        when ``photos_base_path`` isn't set yet (pre-wizard); callers
+        treat that as "skip backups, the library has no anchor"."""
+        base = self.photos_base_path()
+        if base is None:
+            return None
+        return base / BACKUPS_DIR_NAME / event_id
 
     # ----- materialise (restore from backup, charter §4 step 5) ---------- #
 

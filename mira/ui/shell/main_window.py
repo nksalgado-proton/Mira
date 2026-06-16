@@ -1737,6 +1737,11 @@ class MainWindow(QMainWindow):
         per-event surface entries show. Returns True iff the page accepted the
         load.
         """
+        # spec/79 §7.3 — quick_check the event.db before letting the
+        # user touch it. On failure, offer to restore from the latest
+        # backup; if the user declines, the door stays closed.
+        if not self._check_event_integrity(event_id):
+            return False
         if self._event_is_closed(event_id):
             return self._open_event_cuts_list(event_id)
         if not self._gate_missing_originals(event_id):
@@ -1759,6 +1764,102 @@ class MainWindow(QMainWindow):
         The cache is the source of truth the dashboard already filters on."""
         entry = self.gateway.index.get(event_id)
         return bool(entry and entry.get("is_closed"))
+
+    def _check_event_integrity(self, event_id: str) -> bool:
+        """spec/79 §7.3 — ``PRAGMA quick_check`` the event.db before the
+        user touches it. On a clean check, return True. On corruption,
+        offer to restore from the latest snapshot (spec/79 §5); the user's
+        choice gates the open.
+
+        Returns True iff the door should proceed to open the event.
+        """
+        from core import db_backup
+        entry = self.gateway.index.get(event_id)
+        if entry is None:
+            return True                                       # let the
+                                                              # normal path
+                                                              # raise
+        root = self.gateway.index.resolve_root(
+            entry, self.gateway.photos_base_path())
+        if root is None:
+            return True
+        db_path = root / "event.db"
+        if not db_path.exists():
+            return True
+        if db_backup.quick_check(db_path):
+            return True
+        backups_dir = self.gateway.event_backups_dir(event_id)
+        snap = (
+            db_backup.latest_snapshot(backups_dir)
+            if backups_dir is not None else None
+        )
+        return self._offer_event_restore(event_id, db_path, snap)
+
+    def _offer_event_restore(self, event_id, db_path, snap) -> bool:
+        """Show the spec/79 §4 damage dialog. Returns True iff the
+        user accepted Restore AND the restore succeeded — the only
+        case where the open should proceed."""
+        from mira.ui.design.dialogs import MessageDialog
+        log.warning(
+            "spec/79: event %s has a damaged db at %s", event_id, db_path)
+        if snap is None:
+            MessageDialog.error(
+                tr("This event is damaged"),
+                tr(
+                    "Mira detected damage in this event's database, "
+                    "but there are no backup snapshots to restore "
+                    "from. The event can't be opened safely. Remove "
+                    "it from Mira, or restore the file manually from "
+                    "your NAS / system backups."
+                ),
+                parent=self,
+            ).exec()
+            return False
+        dlg = MessageDialog(
+            intent="warning",
+            title=tr("This event is damaged"),
+            message=tr(
+                "Mira detected damage in this event's database. "
+                "Restore from the most recent backup (taken {when})? "
+                "The damaged file will be saved alongside the "
+                "backups so it isn't lost."
+            ).replace("{when}", snap.created_at),
+            primary_text=tr("Restore from backup"),
+            ghost_text=tr("Cancel"),
+            parent=self,
+        )
+        dlg.exec()
+        if dlg.result_kind() != "primary":
+            return False
+        from core import db_backup
+        try:
+            saved = db_backup.restore(snap, db_path)
+            log.info(
+                "spec/79 restore: %s restored from %s; corrupt "
+                "original saved at %s", event_id, snap.db_path, saved)
+        except ValueError as exc:
+            log.warning("spec/79 restore failed: %s", exc)
+            MessageDialog.error(
+                tr("Restore failed"),
+                tr(
+                    "The backup snapshot itself failed integrity "
+                    "checks. Mira can't safely restore from it."
+                ),
+                parent=self,
+            ).exec()
+            return False
+        except OSError as exc:
+            log.warning("spec/79 restore I/O failure: %s", exc)
+            MessageDialog.error(
+                tr("Restore failed"),
+                tr(
+                    "Mira couldn't swap the snapshot in. Check disk "
+                    "space and permissions, then try again."
+                ),
+                parent=self,
+            ).exec()
+            return False
+        return True
 
     def _open_event_cuts_list(self, event_id: str) -> bool:
         """Closed event body click (spec/64 §2.4) → land on the Cuts list.

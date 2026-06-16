@@ -30,6 +30,7 @@ from mira.ui.pages.share_cuts_page import (
     CutRow,
     CutSnapshot,
     ShareCutsPage,
+    _ExportTargetDialog,
     _RenameCutDialog,
 )
 
@@ -259,10 +260,79 @@ def test_save_as_dc_creates_a_dc_and_refreshes(qapp, gw, tmp_path):
     assert any(d.name == "best_macros" for d in shell.list_page._dcs)
 
 
+def test_dialog_kwargs_offers_existing_dcs(qapp, gw, tmp_path):
+    """Spec/81 §2: the New Cut dialog's add row offers DCs as operands
+    so a DC can be composed out of other DCs (all-time-best =
+    best-macro + best-wildlife). Host passes existing_dcs alongside
+    existing_cuts; each carries (id, tag, live_count) so the chip count
+    reflects the live resolution."""
+    shell = _shell(gw)
+    # Save two DCs through the host seam so the gateway has rows.
+    shell._save_dc("Best macros", {
+        "pool": {"#exported": 1}, "styles": ["macro"],
+        "include_photos": True, "include_videos": False,
+    })
+    shell._save_dc("Best wildlife", {
+        "pool": {"#exported": 1}, "styles": [],
+        "include_photos": True, "include_videos": True,
+    })
+    kwargs = shell._dialog_kwargs()                      # noqa: SLF001
+    dcs = kwargs["existing_dcs"]
+    tags = [tag for _id, tag, _n in dcs]
+    assert "best_macros" in tags and "best_wildlife" in tags
+    # Each DC carries an id (the resolver prefers id over tag — spec/81 §5).
+    for dc_id, _tag, _n in dcs:
+        assert dc_id and isinstance(dc_id, str)
+
+
+def test_save_dc_composed_of_other_dcs_resolves_end_to_end(qapp, gw, tmp_path):
+    """Spec/81 §2: composing a DC out of other DCs via the dialog's
+    pool_expr produces a recipe the gateway resolves correctly. The
+    enabler for all-time-best = best-macro + best-wildlife."""
+    shell = _shell(gw)
+    # First seed two source DCs.
+    shell._save_dc("Best macros", {
+        "pool": {"#exported": 1}, "styles": ["macro"],
+        "include_photos": True, "include_videos": False,
+    })
+    shell._save_dc("Best wildlife", {
+        "pool": {"#exported": 1}, "styles": [],
+        "include_photos": True, "include_videos": True,
+    })
+    dc_macro = next(dc for dc in gw.dynamic_collections()
+                    if dc.tag == "best_macros")
+    dc_wild = next(dc for dc in gw.dynamic_collections()
+                   if dc.tag == "best_wildlife")
+    # Now compose the umbrella DC. The dialog would ship pool_expr with
+    # typed-ref operands — same shape here.
+    shell._save_dc("All-time best", {
+        "pool_expr": [
+            ["+", {"kind": "dc", "id": dc_macro.id, "tag": dc_macro.tag}],
+            ["+", {"kind": "dc", "id": dc_wild.id, "tag": dc_wild.tag}],
+        ],
+        "pool": {},                          # ignored when pool_expr present
+        "styles": [],
+        "include_photos": True, "include_videos": True,
+    })
+    umbrella = next(dc for dc in gw.dynamic_collections()
+                    if dc.tag == "all_time_best")
+    # The umbrella DC's resolution is the union of its operand DCs — and
+    # NON-empty so we know the resolver actually walked the nested DC
+    # operands (the pre-spec/81 bare-string bug returned an empty set).
+    members = gw.resolve_dc(gw.dc_expr(umbrella), gw.dc_filters(umbrella))
+    assert len(members) > 0
+
+
 def test_back_button_works_after_creating_cut(qapp, gw, tmp_path):
     """Regression (Nelson 2026-06-16): after a session commit returns to
     the Cuts list, the header Back button must still fire ``closed``. The
-    QTabWidget I added in C.2 must not displace / hide / steal the button."""
+    QTabWidget I added in C.2 must not displace / hide / steal the button.
+
+    KI-1 fix (Nelson 2026-06-16): ``_return_to_list`` now switches the
+    stack to ``list_page`` and hands focus to its back button BEFORE
+    tearing the session page down — Qt's input subsystem ends up with a
+    live focus target instead of a button inside a queued-for-deletion
+    widget, so the next mouse click on the back button actually lands."""
     shell = _shell(gw)
     closed = []
     shell.closed.connect(lambda: closed.append(True))
@@ -272,8 +342,35 @@ def test_back_button_works_after_creating_cut(qapp, gw, tmp_path):
     shell._session_page._session.set_state("Exported Media/e2.jpg", True)
     shell._session_page._on_create()
     assert shell._stack.currentWidget() is shell.list_page
+    back = shell.list_page._back                        # noqa: SLF001
+    # The back button is alive and clickable. ``isVisible`` would always
+    # be False in pytest (no top-level show()), so test ``isEnabled``
+    # instead — the proxy for "user can interact with this".
+    assert back.isEnabled()
+    # The session page is fully released — re-entering New Cut on a
+    # stale handle would crash.
+    assert shell._session_page is None                  # noqa: SLF001
     # Click the header Back button — same path the user would take.
-    shell.list_page._back.click()                       # noqa: SLF001
+    back.click()
+    assert closed == [True]
+
+
+def test_back_button_works_after_cancelled_session(qapp, gw, tmp_path):
+    """Same invariant as the create flow, but via the cancel exit
+    (KI-1, Nelson 2026-06-16)."""
+    shell = _shell(gw)
+    closed = []
+    shell.closed.connect(lambda: closed.append(True))
+    session = CutSession.from_draft(gw, _draft())
+    shell._start_session(session)
+    # Drive the cancel exit at the page level — _on_cancel is what the
+    # session-page back button triggers.
+    shell._session_page.cancelled.emit()
+    assert shell._stack.currentWidget() is shell.list_page
+    back = shell.list_page._back                        # noqa: SLF001
+    assert back.isEnabled()
+    assert shell._session_page is None                  # noqa: SLF001
+    back.click()
     assert closed == [True]
 
 
@@ -291,6 +388,83 @@ def test_rename_dialog_preview_and_gating(qapp):
     dlg._edit.setText("Nova Versão")
     assert "#nova_versao" in dlg._preview.text() and dlg._ok.isEnabled()
     assert dlg.new_name() == "Nova Versão"
+
+
+# --------------------------------------------------------------------------- #
+# Export target dialog — spec/81 §5 "defaulted, not frozen"
+# --------------------------------------------------------------------------- #
+
+
+def test_export_target_dialog_defaults_to_event_cuts_folder(qapp, tmp_path):
+    """Spec/81 §5: the default is ``<event_root>/Cuts/<tag>/`` —
+    pre-filled and selectable in one click."""
+    from pathlib import Path
+    default = Path(tmp_path) / "Cuts" / "short_version"
+    dlg = _ExportTargetDialog(
+        default_path=default, tag_display="#short_version")
+    assert dlg._edit.text() == str(default)              # noqa: SLF001
+    assert dlg.target() == default
+    assert dlg._ok.isEnabled()                            # noqa: SLF001
+
+
+def test_export_target_dialog_empty_path_disables_ok(qapp, tmp_path):
+    """Empty text disables Export — the dialog refuses to ship without
+    a target."""
+    dlg = _ExportTargetDialog(
+        default_path=tmp_path / "Cuts" / "x", tag_display="#x")
+    dlg._edit.setText("")                                # noqa: SLF001
+    assert not dlg._ok.isEnabled()                       # noqa: SLF001
+
+
+def test_export_target_dialog_accepts_creatable_path(qapp, tmp_path):
+    """A path whose parent exists (but the leaf doesn't) is fine — the
+    export will mkdir the rest. The OK button stays enabled."""
+    from pathlib import Path
+    new = Path(tmp_path) / "FreshDest" / "subcut"
+    assert not new.exists() and new.parent.parent.exists()
+    dlg = _ExportTargetDialog(
+        default_path=tmp_path / "Cuts" / "x", tag_display="#x")
+    dlg._edit.setText(str(new))                          # noqa: SLF001
+    assert dlg._ok.isEnabled()                           # noqa: SLF001
+    assert "will write to" in dlg._status.text()         # noqa: SLF001
+
+
+def test_export_target_dialog_rejects_nonexistent_drive(qapp, tmp_path):
+    """If no part of the path resolves to an existing parent (e.g. an
+    unmounted drive letter on Windows), Export is disabled."""
+    dlg = _ExportTargetDialog(
+        default_path=tmp_path / "Cuts" / "x", tag_display="#x")
+    # A drive letter that is virtually certain not to exist.
+    dlg._edit.setText("Z:\\definitely\\not\\here")       # noqa: SLF001
+    assert not dlg._ok.isEnabled()                       # noqa: SLF001
+
+
+def test_on_export_cut_skips_when_target_dialog_cancelled(qapp, gw, tmp_path):
+    """If the user cancels the target picker, ``_on_export_cut`` returns
+    without touching the gateway — no folder is created."""
+    shell = _shell(gw)
+    cut = next(iter(gw.cuts()))
+    cuts_root = tmp_path / "Cuts"
+    assert not cuts_root.exists()
+    # Stub the modal seam to simulate Cancel.
+    shell._exec_target_dialog = lambda default, c: None  # noqa: SLF001
+    shell._on_export_cut(cut.id)                         # noqa: SLF001
+    assert not cuts_root.exists()
+
+
+def test_on_export_cut_uses_picked_target(qapp, gw, tmp_path):
+    """When the user picks a target (or accepts the default), the
+    export writes there. The folder shows up after the call."""
+    from pathlib import Path
+    shell = _shell(gw)
+    cut = next(iter(gw.cuts()))
+    custom = tmp_path / "Elsewhere" / "my_export"
+    shell._exec_target_dialog = lambda default, c: custom  # noqa: SLF001
+    # Stub the QMessageBox so the summary popup doesn't park on the desktop.
+    from PyQt6.QtWidgets import QMessageBox
+    QMessageBox.exec = lambda self: None
+    shell._on_export_cut(cut.id)                          # noqa: SLF001
+    assert custom.exists()
 
 
 # --------------------------------------------------------------------------- #

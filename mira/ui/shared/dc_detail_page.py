@@ -1,17 +1,24 @@
-"""The #exported pool detail surface — flat grid of every shipped
+"""The #exported DC detail surface — flat grid of every shipped
 file, with multi-select + Delete affordance (spec/61 §1.4).
+
+Spec/81 §2 vocabulary: ``#exported`` is the event's **base Dynamic
+Collection** (the universe every Cut starts from). This surface is
+the drill-down for THAT DC — it is what the user opens to manage
+the files in it (delete a stale export, etc.). User DCs (recipes
+saved via Save as DC…) get a different surface (the New Cut dialog
+re-prefilled, not a detail page) since they're recipes, not stored
+files.
 
 Reused machinery:
 
 * :class:`~mira.ui.design.ThumbGrid` — the shared flat show-order
-  grid the Cut detail uses; the pool is a "live-query" pseudo-Cut
-  whose membership is everything under ``Exported Media/`` (spec/61
-  §1.1).
+  grid the Cut detail uses; the ``#exported`` DC's resolution is
+  everything under ``Exported Media/`` (spec/61 §1.1, spec/81 §2).
 * :meth:`~mira.gateway.event_gateway.EventGateway.
   delete_exported_file_by_relpath` — drops one lineage row + its
   on-disk file; ``cut_member.export_relpath`` FK CASCADE handles
   membership cleanup automatically (spec/61 §1.4 + schema FK).
-* :class:`PoolUnexportSnapshot` — mirror of the Days-Grid
+* :class:`DCUnexportSnapshot` — mirror of the Days-Grid
   ``_UnexportSnapshot`` for the Ctrl+Z restore of a single quick
   delete.
 
@@ -34,6 +41,11 @@ must re-read their ledger on entry.
 Charter pin: only ``Exported Media/`` files come into the
 deletion set. ``Original Media/`` is never reachable from this
 surface.
+
+History: spec/81 renamed "pool" → DC (Dynamic Collection). The QSS
+object names (``#PoolDetailPage``, ``#PoolCountLabel``) keep their
+old identifiers since they're widely referenced in
+``assets/themes/redesign.qss``; the visual treatment is unchanged.
 """
 from __future__ import annotations
 
@@ -76,8 +88,8 @@ _UNDO_MAX = 16
 
 
 @dataclass
-class PoolUnexportSnapshot:
-    """One reversible Pool-mode quick-delete (single cell). Holds
+class DCUnexportSnapshot:
+    """One reversible #exported-DC quick-delete (single cell). Holds
     the on-disk file's bytes + the lineage row so Ctrl+Z restores
     both. Cut membership stays gone — the user has to re-add the
     file from this surface after restoring (matches the Days-Grid
@@ -98,21 +110,23 @@ def _kind_for(relpath: str) -> str:
     return "photo"
 
 
-class PoolDetailPage(QWidget):
-    """The #exported pool drill-down."""
+class DCDetailPage(QWidget):
+    """The #exported DC drill-down (spec/81 §2)."""
 
     back_requested = pyqtSignal()
     files_deleted = pyqtSignal(set)         # set[export_relpath]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        # QSS object name kept for back-compat (assets/themes/redesign.qss
+        # rules attach to ``#PoolDetailPage``).
         self.setObjectName("PoolDetailPage")
         self._eg = None
         self._root: Optional[Path] = None
         self._files: List[m.Lineage] = []
         self._thumbs: Dict[str, QPixmap] = {}
         self._selected: set[str] = set()
-        self._undo_stack: list[PoolUnexportSnapshot] = []
+        self._undo_stack: list[DCUnexportSnapshot] = []
 
         from mira.ui.media.photo_cache import photo_cache
         self._cache = photo_cache()
@@ -152,7 +166,7 @@ class PoolDetailPage(QWidget):
         self._back_btn.setToolTip(tr("Back to the Cuts list. (Esc)"))
         self._back_btn.clicked.connect(self.back_requested.emit)
         chrome.addWidget(self._back_btn)
-        self._header_lbl = QLabel(tr("#exported — the pool"))
+        self._header_lbl = QLabel(tr("#exported — the base Dynamic Collection"))
         self._header_lbl.setObjectName("DayGridHeader")
         chrome.addWidget(self._header_lbl, stretch=1)
         outer.addLayout(chrome)
@@ -223,7 +237,7 @@ class PoolDetailPage(QWidget):
                 state=state,
                 payload=f.export_relpath,
             ))
-        self._header_lbl.setText(tr("#exported — the pool"))
+        self._header_lbl.setText(tr("#exported — the base Dynamic Collection"))
         self._grid.set_items(items)
         self._request_missing_thumbs()
 
@@ -313,7 +327,7 @@ class PoolDetailPage(QWidget):
         else:
             self._delete_batch_with_confirm(list(self._selected))
 
-    def _capture_snapshot(self, relpath: str) -> Optional[PoolUnexportSnapshot]:
+    def _capture_snapshot(self, relpath: str) -> Optional[DCUnexportSnapshot]:
         """Capture file bytes + lineage row BEFORE the delete so
         Ctrl+Z can restore both. Returns ``None`` if the file is
         missing on disk or the lineage row is gone (defensive — the
@@ -348,14 +362,14 @@ class PoolDetailPage(QWidget):
             recipe_json=row["recipe_json"],
             exported_at=row["exported_at"],
         )
-        return PoolUnexportSnapshot(
+        return DCUnexportSnapshot(
             export_relpath=relpath,
             file_bytes=file_bytes,
             dest_path=dest,
             lineage_row=lineage,
         )
 
-    def _push_undo(self, snap: PoolUnexportSnapshot) -> None:
+    def _push_undo(self, snap: DCUnexportSnapshot) -> None:
         self._undo_stack.append(snap)
         if len(self._undo_stack) > _UNDO_MAX:
             self._undo_stack.pop(0)
@@ -470,4 +484,4 @@ class PoolDetailPage(QWidget):
         self._refresh()
 
 
-__all__ = ["PoolDetailPage", "PoolUnexportSnapshot"]
+__all__ = ["DCDetailPage", "DCUnexportSnapshot"]

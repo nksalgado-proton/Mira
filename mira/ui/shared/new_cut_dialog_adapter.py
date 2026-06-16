@@ -92,12 +92,16 @@ def _counts_from_expr(expr: Sequence[Sequence[Any]]) -> dict:
     counts dict so a saved template round-trips. The bare base token
     ``"exported"`` and a ``{"kind":"cut|dc","tag":...}`` ref both surface as
     ``"#tag"`` keys (the dialog renders chips by tag — the kind is implicit
-    in the operand inventory)."""
+    in the operand inventory). ``∩`` (resolver ``&``) operands are skipped
+    — they ride :func:`_intersect_from_expr` instead (mutually exclusive
+    with the signed-mult counts per name)."""
     counts: dict[str, int] = {}
     for pair in expr:
         try:
             op, operand = pair[0], pair[1]
         except (IndexError, TypeError):
+            continue
+        if op == "&":
             continue
         if isinstance(operand, str):
             tag = operand
@@ -110,6 +114,35 @@ def _counts_from_expr(expr: Sequence[Sequence[Any]]) -> dict:
         key = f"#{tag}"
         counts[key] = counts.get(key, 0) + (1 if op == "+" else -1)
     return counts
+
+
+def _intersect_from_expr(expr: Sequence[Sequence[Any]]) -> list:
+    """Spec/81 §2 — the ``∩`` operand display names a saved expression
+    carries. Mirrors :func:`_counts_from_expr` (same chip-keyed name
+    shape) but for the intersect operator. Order preserved so
+    templates round-trip into the same formula display."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for pair in expr:
+        try:
+            op, operand = pair[0], pair[1]
+        except (IndexError, TypeError):
+            continue
+        if op != "&":
+            continue
+        if isinstance(operand, str):
+            tag = operand
+        elif isinstance(operand, dict):
+            tag = operand.get("tag") or ""
+        else:
+            continue
+        if not tag:
+            continue
+        key = f"#{tag}"
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def _pin_mode_from_info(info: dict) -> str:
@@ -136,6 +169,7 @@ def _default_state_from_pin_mode(pin_mode: str) -> str:
 def _build_context(
     *,
     existing_cuts: Sequence[Tuple[str, int]],
+    existing_dcs: Sequence[Tuple[str, str, int]],
     exported_count: int,
     style_options: Sequence[str],
     music_categories: Sequence[str],
@@ -144,14 +178,33 @@ def _build_context(
     prefill: Optional[object],
 ) -> NewCutContext:
     """Compose a :class:`NewCutContext` from the legacy seven-key kwargs
-    plus an optional ``prefill`` (Edit mode). ``existing_cuts`` carries
-    ``(tag, count)`` tuples; the redesigned dialog wants prefixed names
-    (``#tag``) so the formula reads naturally."""
+    plus an optional ``prefill`` (Edit mode). The dialog's add row offers
+    THREE operand kinds (spec/81 §2): the base universe ``#exported``,
+    every Dynamic Collection (``existing_dcs`` = ``(id, tag, live_count)``
+    tuples), and every frozen Cut (``existing_cuts`` = ``(tag, count)``
+    tuples). Order: base → DCs (event recipes) → Cuts. When a DC and a
+    Cut share a tag (spec/81 §2 puts them in separate namespaces, so
+    collision is rare but legal) the display names disambiguate with
+    a ``— DC`` / ``— Cut`` suffix so the dialog's add-row chips stay
+    distinguishable."""
     available: list[PoolOption] = [
-        PoolOption(name=f"#{_EXPORTED_TAG}", count=int(exported_count or 0)),
+        PoolOption(name=f"#{_EXPORTED_TAG}",
+                   count=int(exported_count or 0), kind="base"),
     ]
+    # Detect tag collisions so DC / Cut sharing a tag render distinctly.
+    dc_tags = {tag for _id, tag, _n in existing_dcs}
+    cut_tags = {tag for tag, _n in existing_cuts}
+    collisions = dc_tags & cut_tags
+    for dc_id, tag, n in existing_dcs:
+        suffix = " — DC" if tag in collisions else ""
+        available.append(PoolOption(
+            name=f"#{tag}{suffix}", count=int(n or 0),
+            kind="dc", id=dc_id or None))
     for tag, n in existing_cuts:
-        available.append(PoolOption(name=f"#{tag}", count=int(n or 0)))
+        suffix = " — Cut" if tag in collisions else ""
+        available.append(PoolOption(
+            name=f"#{tag}{suffix}", count=int(n or 0),
+            kind="cut"))
 
     ctx = NewCutContext(
         event_name=event_label or "",
@@ -193,6 +246,7 @@ def _apply_prefill(
             counts = _counts_from_expr(expr)
             ctx.selected_pool_counts = counts
             ctx.selected_pools = list(counts.keys())
+            ctx.selected_pool_intersect = _intersect_from_expr(expr)
         except (TypeError, ValueError):
             log.warning("could not parse prefill pool_expr_json: %r", pool_json)
 
@@ -276,7 +330,16 @@ def _draft_from_info(info: dict) -> CutDraft:
     encoding, ``styles`` / ``media_type`` filters, and ``pin_mode``.
     Overlays + separators ride the dialog reframe (Task C continued)."""
     name = (info.get("name") or "").strip()
-    expr = _expr_from_counts(info.get("pool", {}))
+    # Spec/81 §2 — prefer the typed-ref expr the dialog ships in
+    # ``pool_expr`` (kind + id + tag per operand) over the legacy
+    # ``pool`` dict (tag-keyed signed-mult, blind to kind). Templates
+    # loaded from pre-spec/81 JSON fall through to ``_expr_from_counts``
+    # which still treats non-exported tags as Cut refs.
+    pool_expr = info.get("pool_expr")
+    if pool_expr:
+        expr = tuple((p[0], p[1]) for p in pool_expr)
+    else:
+        expr = _expr_from_counts(info.get("pool", {}))
     target_min = int(info.get("target_minutes", 0) or 0)
     max_min = int(info.get("max_minutes", 0) or 0)
     per_photo = float(info.get("per_photo_seconds", 0.0) or 0.0)
@@ -327,6 +390,7 @@ class NewCutDialog:
         *,
         existing_cuts: Sequence[Tuple[str, int]],
         exported_count: int,
+        existing_dcs: Sequence[Tuple[str, str, int]] = (),
         style_options: Sequence[str] = (),
         music_categories: Sequence[str] = (),
         pool_probe: Optional[Callable[[list], int]] = None,
@@ -356,6 +420,7 @@ class NewCutDialog:
 
         self._ctx = _build_context(
             existing_cuts=existing_cuts,
+            existing_dcs=existing_dcs,
             exported_count=exported_count,
             style_options=style_options,
             music_categories=music_categories,

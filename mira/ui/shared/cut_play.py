@@ -12,19 +12,26 @@ Windowed by default (Nelson 2026-06-12) — a normal movable, resizable
 black-canvas window. **F11 or F (or double-click) toggles full screen**;
 Esc steps DOWN one level: full screen → window → end the rehearsal.
 Space pause/resume · ←/→ step. Photos rescale live with the window.
+
+Overlays (spec/81 §3.1): when ``overlay_fields`` is non-empty and
+``provenance_resolver`` is wired, every file frame draws its provenance
+text live (when / where / how¹ / how²) on top of the image or video.
+The in-app Play **always** draws overlays live — independent of the
+Cut's export ``overlay_mode`` (embedded vs burn-in) — because the
+rehearsal is the user's preview of the final hand-off.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QSizePolicy, QStackedLayout, QWidget)
+    QDialog, QLabel, QSizePolicy, QStackedLayout, QWidget)
 
-from core import audio_library
+from core import audio_library, cut_overlay
 from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
 from mira.ui.i18n import tr
 from mira.ui.media.image_loader import load_pixmap
@@ -48,6 +55,10 @@ class CutPlayerDialog(QDialog):
         opener_image: Optional[QImage] = None,
         card_style: str = "black",
         seed_prefix: str = "",
+        overlay_fields: Sequence[str] = (),
+        provenance_resolver: Optional[
+            Callable[[str], Optional[cut_overlay.FrameProvenance]]
+        ] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -72,6 +83,15 @@ class CutPlayerDialog(QDialog):
         self._music_index = 0
         self._index = -1
         self._paused = False
+        # Spec/81 §3.1 — live overlays. ``overlay_fields`` is the
+        # multi-select (when / where / how¹ / how²) and the resolver
+        # returns one :class:`FrameProvenance` per relpath. When either
+        # is missing or empty, the overlay simply never paints — the
+        # rehearsal still plays cleanly. The mode (embedded / burn_in)
+        # only matters at export; Play always draws live.
+        self._overlay_fields: tuple = tuple(overlay_fields or ())
+        self._provenance_resolver = provenance_resolver
+        self._overlay_label: Optional[QLabel] = None
 
         self._layout = QStackedLayout(self)
         self._layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
@@ -104,6 +124,29 @@ class CutPlayerDialog(QDialog):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.advance)
+
+        # Build the overlay label lazily on first frame that has text;
+        # the empty-fields case skips construction entirely so a Cut
+        # without overlays is byte-for-byte the pre-spec/81 player.
+        if self._overlay_fields and self._provenance_resolver is not None:
+            self._overlay_label = QLabel(self)
+            self._overlay_label.setObjectName("CutPlayOverlay")
+            # Inline styling on the rehearsal canvas mirrors the existing
+            # ``setStyleSheet("background-color: black;")`` on the dialog
+            # itself — Play is the show, not app chrome, so it owns its
+            # pixels rather than riding the theme QSS.
+            self._overlay_label.setStyleSheet(
+                "color: #ffffff;"
+                " background-color: rgba(0, 0, 0, 150);"
+                " padding: 8px 12px;"
+                " font-size: 14px;"
+                " border-radius: 6px;")
+            self._overlay_label.setWordWrap(True)
+            self._overlay_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.NoTextInteraction)
+            self._overlay_label.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._overlay_label.hide()
 
     # ── lazy multimedia ──────────────────────────────────────────────
 
@@ -197,6 +240,11 @@ class CutPlayerDialog(QDialog):
             self._show_pixmap(pm)
             if not self._paused:
                 self._timer.start(self._photo_ms)
+        # Refresh the overlay AFTER the frame paint (the frame setup
+        # raises_() its widget; the overlay then raises ABOVE it). Opener
+        # / separator slides carry no provenance — the helper hides the
+        # label for them.
+        self._update_overlay(kind, payload)
 
     def _separator_image(self, day) -> QImage:
         meta = self._day_meta.get(day)
@@ -257,6 +305,58 @@ class CutPlayerDialog(QDialog):
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
         self._fit_current()
+        self._position_overlay()
+
+    # ── overlays (spec/81 §3.1) ──────────────────────────────────────
+
+    def _update_overlay(self, kind: str, payload) -> None:
+        """Recompute the overlay text for the current frame and place it
+        bottom-left over the frame. Hides the label on slides that carry
+        no provenance (opener / separator) and on any miss-by-resolver
+        (a relpath the gateway can't join — graceful, no crash)."""
+        lbl = self._overlay_label
+        if lbl is None or self._provenance_resolver is None:
+            return
+        relpath = getattr(payload, "export_relpath", None)
+        if not relpath or kind in ("opener", "sep"):
+            lbl.hide()
+            return
+        try:
+            provenance = self._provenance_resolver(relpath)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "rehearsal overlay: provenance_resolver raised for %s",
+                relpath)
+            lbl.hide()
+            return
+        if provenance is None:
+            lbl.hide()
+            return
+        lines = cut_overlay.compose_overlay_lines(
+            self._overlay_fields, provenance)
+        if not lines:
+            lbl.hide()
+            return
+        lbl.setText("\n".join(lines))
+        # adjustSize() before reading height for placement
+        lbl.adjustSize()
+        self._position_overlay()
+        lbl.raise_()
+        lbl.show()
+
+    def _position_overlay(self) -> None:
+        """Bottom-left corner with a 24 px margin. Width is capped at
+        2/3 of the dialog so long where/how lines wrap instead of
+        sprawling across the frame."""
+        lbl = self._overlay_label
+        if lbl is None or not lbl.isVisible() and not lbl.text():
+            return
+        margin = 24
+        max_w = max(180, int(self.width() * 0.66))
+        lbl.setMaximumWidth(max_w)
+        lbl.adjustSize()
+        y = max(margin, self.height() - lbl.height() - margin)
+        lbl.move(margin, y)
 
     def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
         self._toggle_fullscreen()

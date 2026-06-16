@@ -337,3 +337,194 @@ def test_no_inline_stylesheets_on_pool_and_match_widgets(qapp):
     for btn in dlg.findChildren(QPushButton):
         if btn.objectName() == "PoolStepperBtn":
             assert btn.styleSheet() == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spec/81 §2 — DCs alongside Cuts in the add row
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_available_pools_lists_base_then_dcs_then_cuts(qapp):
+    """Spec/81 §2 — the add row offers base, then DCs (event recipes),
+    then Cuts (frozen). Order is stable so the user sees the same
+    layout on every reopen."""
+    adapter = _adapter(
+        existing_dcs=[
+            ("dc1", "best_macro", 12),
+            ("dc2", "best_wildlife", 9),
+        ],
+        existing_cuts=[("short_version", 60)],
+        exported_count=231,
+    )
+    pools = adapter._ctx.available_pools                # noqa: SLF001
+    assert [p.name for p in pools] == [
+        "#exported", "#best_macro", "#best_wildlife", "#short_version",
+    ]
+    assert [p.kind for p in pools] == ["base", "dc", "dc", "cut"]
+    assert pools[1].id == "dc1" and pools[2].id == "dc2"
+
+
+def test_tag_collision_disambiguates_display(qapp):
+    """Tag collisions across the DC/Cut namespaces (spec/81 §2 puts them
+    in separate ones, so legal but rare) are surfaced with a ``— DC`` /
+    ``— Cut`` suffix so the user can tell the chips apart."""
+    adapter = _adapter(
+        existing_dcs=[("dc1", "best", 5)],
+        existing_cuts=[("best", 7)],
+        exported_count=0,
+    )
+    names = [p.name for p in adapter._ctx.available_pools]   # noqa: SLF001
+    assert names == ["#exported", "#best — DC", "#best — Cut"]
+
+
+def test_pool_expr_emits_typed_refs_for_dc_and_cut(qapp):
+    """``cut_info()['pool_expr']`` is the typed-ref operand encoding
+    (spec/81 §2) — the base universe stays bare, DC + Cut chips carry
+    kind + id + tag. Fixes the pre-spec/81 silent-empty bug where a
+    bare 'short_version' looked like an unknown base token and the
+    resolver returned an empty set."""
+    adapter = _adapter(
+        existing_dcs=[("dc-best", "best_macro", 12)],
+        existing_cuts=[("short_version", 60)],
+        exported_count=231,
+    )
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    # Compose: +#exported + #best_macro - #short_version.
+    dlg._pool_counts = {
+        "#exported": 1, "#best_macro": 1, "#short_version": -1,
+    }
+    dlg._refresh_selected_chips()                           # noqa: SLF001
+    info = dlg.cut_info()
+    assert info["pool_expr"] == [
+        ["+", "exported"],
+        ["+", {"kind": "dc", "id": "dc-best", "tag": "best_macro"}],
+        ["-", {"kind": "cut", "id": None, "tag": "short_version"}],
+    ]
+
+
+def test_pool_expr_falls_back_to_legacy_when_pool_option_missing(qapp):
+    """A chip whose name doesn't match any :class:`PoolOption` (legacy
+    template prefill that adds a chip the adapter never knew about)
+    falls back to the pre-spec/81 'assume Cut' rule for stability."""
+    adapter = _adapter()
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    dlg._pool_counts = {"#exported": 1, "#mystery": -1}
+    dlg._refresh_selected_chips()                           # noqa: SLF001
+    info = dlg.cut_info()
+    # 'mystery' is treated as a Cut operand (legacy fallback).
+    assert info["pool_expr"] == [
+        ["+", "exported"],
+        ["-", {"kind": "cut", "id": None, "tag": "mystery"}],
+    ]
+
+
+def test_draft_from_info_prefers_pool_expr_over_pool(qapp):
+    """The adapter's ``draft()`` (the public seam :class:`CutSession`
+    consumes) prefers ``pool_expr`` when present so the typed-ref
+    operands survive into the :class:`CutDraft`."""
+    adapter = _adapter(
+        existing_dcs=[("dc-best", "best_macro", 12)],
+        existing_cuts=[("short_version", 60)],
+        exported_count=231,
+    )
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    dlg._name_edit.setText("All-time best")
+    dlg._pool_counts = {"#exported": 1, "#best_macro": 1}
+    dlg._refresh_selected_chips()                           # noqa: SLF001
+    draft = adapter.draft()
+    assert isinstance(draft, CutDraft)
+    assert draft.expr == (
+        ("+", "exported"),
+        ("+", {"kind": "dc", "id": "dc-best", "tag": "best_macro"}),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ∩ (intersect) — spec/81 §2 third operator
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_intersect_toggle_emits_amp_operator_in_expr(qapp):
+    """Clicking ∩ on a chip puts the operand into the formula with the
+    ``&`` operator (display ``∩``). Order: signed operands first, then
+    intersects — so the formula reads "union/diff first, then narrow"."""
+    adapter = _adapter(
+        existing_dcs=[("dc-w", "wildlife", 50)],
+        existing_cuts=[],
+        exported_count=231,
+    )
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    # User clicks ∩ on the wildlife DC.
+    dlg._toggle_intersect("#wildlife")                      # noqa: SLF001
+    info = dlg.cut_info()
+    # The expr now has: + #exported (default), ∩ #wildlife.
+    assert info["pool_expr"] == [
+        ["+", "exported"],
+        ["&", {"kind": "dc", "id": "dc-w", "tag": "wildlife"}],
+    ]
+
+
+def test_intersect_clears_signed_count_and_vice_versa(qapp):
+    """Mutually exclusive: clicking ∩ on a chip that already has a
+    signed multiplier replaces the multiplier; clicking +/− on a chip
+    in the intersect set removes it from intersect."""
+    adapter = _adapter(
+        existing_cuts=[("family", 12)],
+        exported_count=231,
+    )
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    dlg._pool_counts = {"#family": 2}
+    # ∩ replaces +×2
+    dlg._toggle_intersect("#family")                        # noqa: SLF001
+    assert "#family" not in dlg._pool_counts                # noqa: SLF001
+    assert "#family" in dlg._pool_intersect                 # noqa: SLF001
+    # + replaces ∩
+    dlg._step_pool("#family", +1)                           # noqa: SLF001
+    assert "#family" not in dlg._pool_intersect             # noqa: SLF001
+    assert dlg._pool_counts["#family"] == 1                 # noqa: SLF001
+
+
+def test_intersect_toggles_off_on_second_click(qapp):
+    """A second ∩ click removes the operand from intersect (no
+    contribution to the formula)."""
+    adapter = _adapter(existing_cuts=[("family", 12)], exported_count=231)
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    dlg._toggle_intersect("#family")                        # noqa: SLF001
+    assert "#family" in dlg._pool_intersect                 # noqa: SLF001
+    dlg._toggle_intersect("#family")                        # noqa: SLF001
+    assert "#family" not in dlg._pool_intersect             # noqa: SLF001
+    info = dlg.cut_info()
+    # Only the default #exported remains.
+    assert info["pool_expr"] == [["+", "exported"]]
+
+
+def test_intersect_prefill_round_trips_through_template(qapp):
+    """A saved expr with ``∩`` operands prefills the intersect set on
+    edit/reopen so the formula display + emit are stable across save
+    → load."""
+    from types import SimpleNamespace
+    import json
+    prefill = SimpleNamespace(
+        name="Wildlife-best",
+        pool_expr_json=json.dumps([
+            ["+", "exported"],
+            ["&", {"kind": "dc", "id": "dc-w", "tag": "wildlife"}],
+        ]),
+    )
+    adapter = _adapter(
+        existing_dcs=[("dc-w", "wildlife", 50)],
+        prefill=prefill,
+    )
+    adapter._build()                                        # noqa: SLF001
+    dlg = adapter._dlg
+    assert "#wildlife" in dlg._pool_intersect               # noqa: SLF001
+    # And the round trip preserves the operator.
+    info = dlg.cut_info()
+    assert ["&", {"kind": "dc", "id": "dc-w", "tag": "wildlife"}] \
+        in info["pool_expr"]

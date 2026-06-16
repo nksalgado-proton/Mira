@@ -1,4 +1,4 @@
-"""The PoolDetailPage delete flow — multi-select, cascade-aware
+"""The DCDetailPage delete flow — multi-select, cascade-aware
 confirm, single-cell undo (Nelson 2026-06-15 task).
 
 Pins the page-level behaviour that builds on the engine guarantees
@@ -24,7 +24,7 @@ import pytest
 from mira.gateway.event_gateway import EventGateway
 from mira.store import models as m
 from mira.store.repo import EventStore
-from mira.ui.shared.pool_detail_page import PoolDetailPage
+from mira.ui.shared.dc_detail_page import DCDetailPage
 
 FIXED_NOW = "2026-06-15T12:00:00+00:00"
 
@@ -98,7 +98,7 @@ def gw(event_dir):
 
 @pytest.fixture
 def page(qapp, gw):
-    p = PoolDetailPage()
+    p = DCDetailPage()
     p.open_pool(gw)
     yield p
     p.close_event()
@@ -211,7 +211,7 @@ def test_batch_confirm_dialog_names_cut_count(page, monkeypatch):
             return None                    # user cancelled
 
     monkeypatch.setattr(
-        "mira.ui.shared.pool_detail_page.QMessageBox", _FakeBox)
+        "mira.ui.shared.dc_detail_page.QMessageBox", _FakeBox)
     page._on_cell_activated(0)             # p1 → in cut-1
     page._on_cell_activated(1)             # p2 → in cut-1
     page._on_delete_clicked()
@@ -243,7 +243,7 @@ def test_batch_confirm_body_no_cuts_branch(page, monkeypatch):
         def clickedButton(self): return None
 
     monkeypatch.setattr(
-        "mira.ui.shared.pool_detail_page.QMessageBox", _FakeBox)
+        "mira.ui.shared.dc_detail_page.QMessageBox", _FakeBox)
     # p3 is in NO cut + a duplicate to make it a batch (≥2).
     page._on_cell_activated(2)
     page._on_cell_activated(0)             # also p1 to keep it batch
@@ -280,7 +280,7 @@ def test_batch_delete_cascades_cut_member_via_fk(
         def clickedButton(self): return self._delete_btn
 
     monkeypatch.setattr(
-        "mira.ui.shared.pool_detail_page.QMessageBox", _FakeBox)
+        "mira.ui.shared.dc_detail_page.QMessageBox", _FakeBox)
     page._on_cell_activated(0)             # p1
     page._on_cell_activated(1)             # p2
     page._on_delete_clicked()
@@ -319,7 +319,7 @@ def test_batch_delete_clears_undo_stack(page, monkeypatch):
         def clickedButton(self): return self._delete_btn
 
     monkeypatch.setattr(
-        "mira.ui.shared.pool_detail_page.QMessageBox", _FakeBox)
+        "mira.ui.shared.dc_detail_page.QMessageBox", _FakeBox)
     # First, single delete to seed an undo entry.
     page._on_cell_activated(2)
     page._on_delete_clicked()

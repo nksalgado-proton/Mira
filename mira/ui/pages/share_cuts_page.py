@@ -216,6 +216,124 @@ class _RenameCutDialog(QDialog):
         return self._edit.text().strip()
 
 
+# ── export-target dialog (spec/81 §5 — "defaulted, not frozen") ─────
+
+
+class _ExportTargetDialog(QDialog):
+    """Pick where this Cut's folder gets written.
+
+    Spec/81 §5: the export target is **defaulted, not frozen** — the Cut
+    stores no path, the default is ``<event_root>/Cuts/<tag>/``, and the
+    user can override it per export. This is the user-visible surface of
+    that: a read-only default line, an editable target, a Browse… button.
+    OK lands on the visible value; Cancel skips the export."""
+
+    def __init__(
+        self,
+        *,
+        default_path: Path,
+        tag_display: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("Export Cut"))
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._default_path = Path(default_path)
+
+        box = QVBoxLayout(self)
+        # Heading + hint line — same form-grammar as _RenameCutDialog.
+        heading = QLabel(tr("Export {tag} to…").replace(
+            "{tag}", tag_display))
+        heading.setObjectName("DialogHeading")
+        box.addWidget(heading)
+        hint = QLabel(tr(
+            "Where the files, separators, and audio playlist will land. "
+            "The default is the event's Cuts folder; change it freely."))
+        hint.setObjectName("PageHint")
+        hint.setWordWrap(True)
+        box.addWidget(hint)
+
+        group = QGroupBox(tr("Target folder"))
+        group.setObjectName("FormFieldGroup")
+        gbox = QVBoxLayout(group)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._edit = QLineEdit(str(self._default_path))
+        self._edit.setToolTip(tr(
+            "The folder will be created if it doesn't exist."))
+        self._edit.textChanged.connect(self._refresh)
+        row.addWidget(self._edit, 1)
+        browse = ghost_button("Browse…")
+        browse.setToolTip(tr("Pick another folder."))
+        browse.clicked.connect(self._on_browse)
+        row.addWidget(browse)
+        gbox.addLayout(row)
+        # Tiny status line: shows whether the path resolves to a creatable
+        # location. We don't pre-create — that's the export's job.
+        self._status = QLabel("")
+        self._status.setObjectName("PageHint")
+        gbox.addWidget(self._status)
+        box.addWidget(group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Export"))
+            self._ok.setToolTip(tr("Start the export."))
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel is not None:
+            cancel.setToolTip(tr("Don't export."))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box.addWidget(buttons)
+        self._refresh()
+
+    def _on_browse(self) -> None:
+        # Open the system picker rooted at the deepest existing parent of
+        # the current value (the default `<event_root>/Cuts/<tag>/` may not
+        # exist yet on the first export — Qt would refuse to open there).
+        from PyQt6.QtWidgets import QFileDialog
+        start = self._edit.text().strip() or str(self._default_path)
+        cur = Path(start)
+        while cur != cur.parent and not cur.exists():
+            cur = cur.parent
+        chosen = QFileDialog.getExistingDirectory(
+            self, tr("Choose export folder"), str(cur),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if chosen:
+            self._edit.setText(chosen)
+
+    def _refresh(self) -> None:
+        text = self._edit.text().strip()
+        ok = bool(text)
+        if not text:
+            self._status.setText(tr("type a folder path"))
+        else:
+            p = Path(text)
+            # Path is valid if some ancestor exists (the export will mkdir
+            # the rest). Drives that don't exist are rejected.
+            anc = p
+            while anc != anc.parent and not anc.exists():
+                anc = anc.parent
+            if anc.exists():
+                self._status.setText(tr(
+                    "will write to {path}").replace("{path}", text))
+            else:
+                self._status.setText(tr(
+                    "no part of {path} exists yet").replace("{path}", text))
+                ok = False
+        if self._ok is not None:
+            self._ok.setEnabled(ok)
+
+    def target(self) -> Path:
+        return Path(self._edit.text().strip())
+
+
 # ── share-state identity header (spec/71) ────────────────────────────
 
 
@@ -290,7 +408,10 @@ class _ShareIdentityHeader(QWidget):
 
 
 class _PoolCard(QFrame):
-    """Accent-framed pool card mirroring the CrossEventCutsBand chrome."""
+    """Accent-framed card for the #exported base DC (spec/81 §2 — the
+    universe every Cut starts from). Visual chrome mirrors the
+    CrossEventCutsBand pattern. Class kept named ``_PoolCard`` to
+    avoid touching the ``#CrossEventBand`` QSS rule it rides on."""
 
     open_requested = pyqtSignal()
 
@@ -320,7 +441,8 @@ class _PoolCard(QFrame):
         t = QLabel("#exported")
         t.setObjectName("CardTitle")
         title_row.addWidget(t)
-        title_row.addWidget(tag("Pool"))
+        # Spec/81 §2: #exported is the event's base DC — the chip says so.
+        title_row.addWidget(tag("Base DC"))
         title_row.addStretch()
         block.addLayout(title_row)
         sub_text = pool.sub_line or (
@@ -331,8 +453,8 @@ class _PoolCard(QFrame):
         sub.setObjectName("Sub")
         block.addWidget(sub)
         h.addLayout(block, 1)
-        # Open pool ghost button
-        btn = ghost_button("Open pool")
+        # Open the #exported drill-down (spec/61 §1.4 cascade-aware Delete).
+        btn = ghost_button("Open")
         btn.clicked.connect(self.open_requested.emit)
         h.addWidget(btn)
 
@@ -795,8 +917,8 @@ class ShareCutsPage(QWidget):
         # The #exported pool detail — flat grid of every shipped file
         # with multi-select + cascade-aware Delete (spec/61 §1.4 + the
         # Nelson 2026-06-15 task: explicit deletion of exported media).
-        from mira.ui.shared.pool_detail_page import PoolDetailPage
-        self.pool_page = PoolDetailPage()
+        from mira.ui.shared.dc_detail_page import DCDetailPage
+        self.pool_page = DCDetailPage()
         self.pool_page.back_requested.connect(self._on_pool_back)
         self.pool_page.files_deleted.connect(self._on_pool_files_deleted)
         self._stack.addWidget(self.pool_page)
@@ -924,6 +1046,19 @@ class ShareCutsPage(QWidget):
         for cut in eg.cuts():
             totals = eg.cut_show_totals(cut.id)
             cut_counts.append((cut.tag, totals.photo_count + totals.video_count))
+        # Spec/81 §2 — the New Cut dialog's add row offers DCs as
+        # operands alongside Cuts, so a DC can be composed out of other
+        # DCs (``all-time-best = best-macro + best-wildlife``). Each DC
+        # carries its live resolution count (recipe → set, evaluated on
+        # demand) so the chip count is honest. A malformed DC is read as
+        # zero (matches the DCs tab's resilience).
+        dc_rows: list[tuple[str, str, int]] = []
+        for dc in eg.dynamic_collections():
+            try:
+                live = eg.dc_probe(eg.dc_expr(dc), eg.dc_filters(dc))
+            except Exception:                              # noqa: BLE001
+                live = 0
+            dc_rows.append((dc.id, dc.tag, int(live or 0)))
         audio_path = getattr(self._settings(), "audio_library_path", "")
         categories = audio_library.list_moods(audio_path)
         if categories:
@@ -938,6 +1073,7 @@ class ShareCutsPage(QWidget):
                 "Set the audio library folder in Settings to enable music.")
         return dict(
             existing_cuts=cut_counts,
+            existing_dcs=dc_rows,
             exported_count=len(eg.exported_files()),
             style_options=eg.cut_style_options(),
             music_categories=categories,
@@ -997,11 +1133,16 @@ class ShareCutsPage(QWidget):
         eg = self._eg
         if eg is None:
             return
-        # Translate the dialog's signed-mult pool dict into the new
-        # operand encoding the gateway expects (the same translation the
-        # CutDraft adapter does).
+        # Spec/81 §2 — prefer the typed-ref ``pool_expr`` the dialog
+        # ships (kind + id + tag per operand). Falls back to the legacy
+        # signed-mult dict translation only when ``pool_expr`` is
+        # absent (older dialog tests / pre-spec/81 callers).
         from mira.ui.shared.new_cut_dialog_adapter import _expr_from_counts
-        expr = _expr_from_counts(info.get("pool", {}))
+        pool_expr = info.get("pool_expr")
+        if pool_expr:
+            expr = [list(p) for p in pool_expr]
+        else:
+            expr = [list(t) for t in _expr_from_counts(info.get("pool", {}))]
         styles = list(info.get("styles") or [])
         media_type = "both"
         if bool(info.get("include_photos", True)) and not bool(
@@ -1012,7 +1153,7 @@ class ShareCutsPage(QWidget):
             media_type = "video"
         eg.create_dc(
             name,
-            expr=[list(t) for t in expr],
+            expr=expr,
             styles=styles,
             media_type=media_type,
         )
@@ -1160,14 +1301,35 @@ class ShareCutsPage(QWidget):
             self._session_page = None
 
     def _on_session_done(self, _cut) -> None:
-        self._teardown_session()
-        self.refresh()
-        self._stack.setCurrentWidget(self.list_page)
+        self._return_to_list()
 
     def _on_session_done_nothing(self) -> None:
-        self._teardown_session()
+        self._return_to_list()
+
+    def _return_to_list(self) -> None:
+        """Return to the Cuts list after a session ends.
+
+        Order matters (KI-1, Nelson 2026-06-16): make the list page
+        current FIRST, then tear the session down. The reverse order
+        leaves a frame where ``QStackedWidget`` has to auto-pick a new
+        current widget while focus is still parked on a button inside
+        the now-removed session page, and the Qt input subsystem ends
+        up with focus pointing at a widget that's queued for deletion
+        — clicks on the list-page Back button visually register but
+        don't deliver. Refreshing the data + handing focus explicitly
+        to the list-page Back button gives the input system a clean
+        target before the deleteLater fires."""
         self.refresh()
         self._stack.setCurrentWidget(self.list_page)
+        # Force focus off any session-page child (which is about to be
+        # deleted) and onto a live widget on the list page. The back
+        # button is the natural default since the user just finished
+        # a session.
+        try:
+            self.list_page._back.setFocus()                # noqa: SLF001
+        except Exception:                                  # noqa: BLE001
+            pass
+        self._teardown_session()
 
     # ── row actions ──────────────────────────────────────────────────
 
@@ -1258,6 +1420,14 @@ class ShareCutsPage(QWidget):
                 lines=cut_opener_lines(cut, totals, cut.photo_s),
                 aspect=aspect, height=1080,
                 card_style=card_style, seed_key=cut.id)
+        # Spec/81 §3.1 — live overlays in Play. When the Cut has any
+        # overlay field selected, the dialog draws ``when / where / how¹
+        # / how²`` over each frame; the resolver is the same gateway
+        # join the embedded export uses. In-app Play always draws live
+        # regardless of the Cut's ``overlay_mode`` (embedded vs burn_in
+        # only matters at export — the rehearsal previews the hand-off).
+        overlay_fields = eg.cut_overlay_fields(cut)
+        provenance_resolver = eg.frame_provenance if overlay_fields else None
         dlg = CutPlayerDialog(
             entries,
             event_root=Path(eg.event_root),
@@ -1268,12 +1438,42 @@ class ShareCutsPage(QWidget):
             opener_image=opener_image,
             card_style=card_style,
             seed_prefix=cut.id,
+            overlay_fields=overlay_fields,
+            provenance_resolver=provenance_resolver,
             parent=self,
         )
         dlg.setWindowTitle(
             cut_names.display_tag(cut.tag) + " — " + tr("rehearsal"))
         dlg.start()
         dlg.exec()
+
+    def _pick_export_target(self, cut) -> Optional[Path]:
+        """Spec/81 §5 seam — prompt for the export target.
+
+        Defaulted to ``<event_root>/Cuts/<tag>/`` (the same shape
+        :func:`cut_export.default_target` produces, but we recompute here
+        so the picker can show it even when the export module hasn't been
+        imported yet at the call-site). Returns the picked path on Accept;
+        ``None`` on Cancel — caller bails. A test seam (``_exec_target_dialog``)
+        lets tests stub the dialog without exec()-ing the real one."""
+        from mira.shared.cut_export import default_target
+        eg = self._eg
+        if eg is None:
+            return None
+        default = default_target(Path(eg.event_root), cut.tag)
+        return self._exec_target_dialog(default, cut)
+
+    def _exec_target_dialog(self, default: Path, cut) -> Optional[Path]:
+        """The modal seam (mirrors ``_exec_edit_dialog``). Tests stub
+        this; the app runs the real dialog."""
+        dlg = _ExportTargetDialog(
+            default_path=default,
+            tag_display=cut_names.display_tag(cut.tag),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dlg.target()
 
     def _separator_writer(self, cut):
         """The export's separator renderer — the UI layer owns pixels
@@ -1299,13 +1499,21 @@ class ShareCutsPage(QWidget):
 
     def _on_export_cut(self, cut_id: str) -> None:
         """Export all (spec/61 §5.2): links + separators + audio, wait
-        cursor through the work, honest summary after."""
+        cursor through the work, honest summary after.
+
+        Spec/81 §5: the export target is the user's call — defaulted to
+        ``<event_root>/Cuts/<tag>/`` (the Cut never stores a path) but
+        editable per export. The picker dialog runs BEFORE any work
+        starts; Cancel skips the export entirely."""
         eg = self._eg
         cut = eg.cut(cut_id) if eg else None
         if cut is None:
             return
         from PyQt6.QtGui import QGuiApplication
-        from mira.shared.cut_export import export_cut
+        from mira.shared.cut_export import default_target, export_cut
+        target = self._pick_export_target(cut)
+        if target is None:
+            return
         seps = self._separators_on()
         opener_writer = None
         if seps:
@@ -1329,9 +1537,8 @@ class ShareCutsPage(QWidget):
         # Spec/81 §3.1 — overlays. When the Cut has fields selected, feed
         # the export a provenance resolver so embedded mode writes IPTC
         # *where* tags (technical EXIF rides the file already). The
-        # gateway owns the join. ``target`` is NOT passed → export_cut
-        # defaults to ``<event_root>/Cuts/<tag>/`` per spec/81 §5 (the
-        # Cut never carries a stored target).
+        # gateway owns the join. ``target`` is the user-picked folder
+        # (spec/81 §5 — defaulted, not frozen).
         overlay_fields = eg.cut_overlay_fields(cut)
         provenance_resolver = eg.frame_provenance if overlay_fields else None
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -1339,6 +1546,7 @@ class ShareCutsPage(QWidget):
             result = export_cut(
                 eg, cut,
                 event_root=Path(eg.event_root),
+                target=target,
                 separators_on=seps,
                 separator_writer=self._separator_writer(cut) if seps else None,
                 opener_writer=opener_writer,

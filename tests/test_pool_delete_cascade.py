@@ -1,11 +1,12 @@
-"""Cascade-aware delete from the #exported pool (Nelson 2026-06-15
+"""Cascade-aware delete from the #exported DC (Nelson 2026-06-15
 task — explicit deletion of exported media from Share/Cuts).
 
-Also pins the lenient ``exported_files_all`` query the Pool uses so
-its set matches the Export grid's "Exported" watermark exactly even
-when items have a hidden day or no matching trip_day row.
+Also pins the lenient ``exported_files_all`` query the #exported
+DC's detail page uses so its set matches the Export grid's
+"Exported" watermark exactly even when items have a hidden day or
+no matching trip_day row.
 
-Pins the engine-side guarantees the PoolDetailPage relies on:
+Pins the engine-side guarantees the DCDetailPage relies on:
 
 * ``cuts_containing(export_relpath)`` returns every Cut whose
   ``cut_member`` set references the relpath.
@@ -324,7 +325,7 @@ def test_delete_by_relpath_unknown_relpath_is_a_noop(gw):
 
 
 def test_batch_delete_runs_cascade_and_keeps_originals(gw, event_dir):
-    """The PoolDetailPage's batch path: loop
+    """The DCDetailPage's batch path: loop
     ``delete_exported_file_by_relpath`` over the selection. The FK
     CASCADE drops every cut_member referencing them; Original Media/
     stays untouched (the charter pin)."""

@@ -141,3 +141,101 @@ def test_step_back_and_finish(qapp, gw, tmp_path):
     p.advance()                                   # past the end → finish
     assert done == [True]
     assert not p._timer.isActive()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live overlays (spec/81 §3.1) — when/where/how¹/how² over each frame
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _player_with_overlays(gw, tmp_path, *, fields, resolver):
+    from PyQt6.QtGui import QImage
+    entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
+    day_meta = {d.day_number: d for d in gw.trip_days()}
+    return CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta=day_meta, aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32),
+        overlay_fields=fields,
+        provenance_resolver=resolver)
+
+
+def test_no_overlay_label_when_fields_empty(qapp, gw, tmp_path):
+    """Spec/81 §3.1: a Cut with no overlay fields runs the rehearsal
+    without ever building the overlay label — byte-for-byte the pre-
+    spec/81 player path."""
+    from core.cut_overlay import FrameProvenance
+    p = _player_with_overlays(
+        gw, tmp_path, fields=(),
+        resolver=lambda _rel: FrameProvenance(when="2026-06-16"))
+    assert p._overlay_label is None                # noqa: SLF001
+
+
+def test_overlay_text_draws_for_file_frames(qapp, gw, tmp_path):
+    """A file frame whose resolver returns provenance with the selected
+    fields lights up the overlay label with composed text. Each
+    advance() refreshes from the resolver."""
+    from core.cut_overlay import FrameProvenance
+    calls: list[str] = []
+
+    def resolver(relpath):
+        calls.append(relpath)
+        return FrameProvenance(
+            when="June 14, 2026 · 14:23",
+            city="Cabaceira", country="Portugal",
+            event_name="Costa Rica 2026")
+
+    p = _player_with_overlays(
+        gw, tmp_path, fields=("when", "where"), resolver=resolver)
+    p.advance()                                    # opener — no overlay
+    assert not p._overlay_label.isVisible()        # noqa: SLF001
+    p.advance()                                    # sep — no overlay
+    assert not p._overlay_label.isVisible()        # noqa: SLF001
+    p.advance()                                    # file frame 1
+    text = p._overlay_label.text()                 # noqa: SLF001
+    assert "June 14, 2026 · 14:23" in text
+    assert "Costa Rica 2026" in text
+    assert "Cabaceira" in text
+    assert calls[-1] == "Exported Media/e1.jpg"
+
+
+def test_overlay_hides_when_resolver_returns_none(qapp, gw, tmp_path):
+    """A relpath the gateway can't join (missing provenance) hides the
+    label gracefully — never crashes the rehearsal."""
+    p = _player_with_overlays(
+        gw, tmp_path, fields=("when",), resolver=lambda _rel: None)
+    # walk to the first file frame
+    p.advance(); p.advance(); p.advance()
+    assert not p._overlay_label.isVisible()        # noqa: SLF001
+
+
+def test_overlay_resolver_errors_are_swallowed(qapp, gw, tmp_path):
+    """A resolver that raises (corrupt row, gateway hiccup) must not
+    crash the player; the label hides for that frame and Play continues."""
+    def boom(_relpath):
+        raise RuntimeError("synthetic")
+
+    p = _player_with_overlays(
+        gw, tmp_path, fields=("when",), resolver=boom)
+    p.advance(); p.advance(); p.advance()          # walk to file frame
+    assert not p._overlay_label.isVisible()        # noqa: SLF001
+    # And the rehearsal didn't end / break.
+    assert p._index == 2
+
+
+def test_overlay_fields_filter_what_renders(qapp, gw, tmp_path):
+    """Selecting only 'where' renders ONLY the where line — no when,
+    no how¹/². Confirms the dialog uses the shared formatter."""
+    from core.cut_overlay import FrameProvenance
+    p = _player_with_overlays(
+        gw, tmp_path, fields=("where",),
+        resolver=lambda _rel: FrameProvenance(
+            when="2026-06-14", city="Cabaceira",
+            camera="Canon R5", lens_model="100-500mm",
+            aperture_f=7.1, iso=400))
+    p.advance(); p.advance(); p.advance()          # walk to file frame
+    text = p._overlay_label.text()                 # noqa: SLF001
+    assert "Cabaceira" in text
+    assert "2026-06-14" not in text
+    assert "Canon R5" not in text
+    assert "ISO" not in text

@@ -83,10 +83,19 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class PoolOption:
-    """One available named pool the user can add to / subtract from."""
+    """One available named pool the user can add to / subtract from.
+
+    Spec/81 §2 — operands are typed: the base universe ``#exported``, any
+    Dynamic Collection, and any frozen Cut. ``kind`` carries the type so
+    the dialog can emit typed-ref operands into ``pool_expr`` (and the
+    resolver can tell a DC ``#best`` from a Cut ``#best`` — the two live
+    in separate tag namespaces). ``id`` lets the resolver look up by id
+    when present (preferred over tag-based lookup)."""
 
     name: str          # e.g. '#exported'
     count: int = 0
+    kind: str = "base"     # "base" | "dc" | "cut"
+    id: Optional[str] = None
 
 
 @dataclass
@@ -105,6 +114,10 @@ class NewCutContext:
     # add-row chips' paint pass — Qt re-laying out the pool box after
     # widgets were already added lost their backing-store).
     selected_pool_counts: dict[str, int] = field(default_factory=dict)
+    # Spec/81 §2 — operand display names selected with the ``∩``
+    # operator. Mutually exclusive with ``selected_pool_counts`` per
+    # name. ``[]`` = no intersection operands (the common case).
+    selected_pool_intersect: list[str] = field(default_factory=list)
     name: str = ""
     styles: list[str] = field(default_factory=list)
     selected_styles: list[str] = field(default_factory=list)
@@ -142,7 +155,7 @@ def _divider() -> QFrame:
 
 
 class _PoolChip(QFrame):
-    """"Available pool" chip — ``#exported (23) [-] [+]``.
+    """"Available pool" chip — ``#exported (23) [−] [+] [∩]``.
 
     Uses the global ``QFrame#PoolChipHost`` QSS rule (card2 bg + line
     border + 14px radius) and ``WA_StyledBackground`` so the cascade
@@ -151,11 +164,15 @@ class _PoolChip(QFrame):
     paintEvent both failed when ``_step_pool`` was invoked before the
     first paint pass — the global QSS rule survives that path.
 
-    Signals: ``stepped(delta)`` — +1 / -1 from the +/- click; the host
-    owns the pool-counts ledger and refreshes the formula.
+    Signals:
+    - ``stepped(delta)`` — +1 / -1 from the +/− click; the host
+      owns the pool-counts ledger and refreshes the formula.
+    - ``intersect_toggled()`` — the ∩ click (spec/81 §2). The host
+      toggles the operand between intersect-mode and counts-mode.
     """
 
     stepped = pyqtSignal(int)
+    intersect_toggled = pyqtSignal()
 
     def __init__(self, name: str, count: int, parent: QWidget | None = None):
         super().__init__(parent)
@@ -180,6 +197,20 @@ class _PoolChip(QFrame):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, d=delta: self.stepped.emit(d))
             h.addWidget(btn)
+        # Spec/81 §2 — intersection operator. Niche (composition by
+        # nesting DCs covers most needs) but the resolver supports
+        # ``&`` so we surface a button. The label is the display glyph
+        # ``∩``; the host translates to ASCII ``&`` at the resolver
+        # seam.
+        intersect_btn = QPushButton("∩", self)
+        intersect_btn.setObjectName("PoolStepperBtn")
+        intersect_btn.setFixedSize(22, 22)
+        intersect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        intersect_btn.setToolTip(tr(
+            "Intersect — narrow the running pool to files also in this "
+            "operand."))
+        intersect_btn.clicked.connect(self.intersect_toggled.emit)
+        h.addWidget(intersect_btn)
 
 
 def _radio_group(
@@ -252,6 +283,15 @@ class NewCutDialog(QDialog):
             self._pool_counts = {
                 name: 1 for name in (self._ctx.selected_pools or [])
             }
+        # Spec/81 §2 — intersection. A chip name in this set contributes
+        # to the formula with the ``∩`` operator (resolver ``&``)
+        # instead of a signed multiplier. ``_pool_counts`` and
+        # ``_pool_intersect`` are MUTUALLY exclusive per name: clicking
+        # the ∩ button on a chip removes it from counts and adds it
+        # here; clicking +/- removes it from here. Seeded from the
+        # prefill expr by ``_apply_prefill`` (adapter side).
+        self._pool_intersect: set[str] = set(
+            self._ctx.selected_pool_intersect or ())
         self._style_chips: dict[str, QPushButton] = {}
         self._build_ui()
         # Seed the Name field from prefill (Edit mode) before the first
@@ -308,7 +348,7 @@ class NewCutDialog(QDialog):
         self._load_btn.setEnabled(bool(self._templates))
         self._load_btn.setToolTip(
             tr("Pre-fill every field below from a saved template — the "
-               "pool re-evaluates against THIS event's Cuts.")
+               "source re-evaluates against THIS event's Cuts.")
             if self._templates else
             tr("No saved templates yet — configure a Cut and use \"Save "
                "as template…\" to create one."))
@@ -353,14 +393,18 @@ class NewCutDialog(QDialog):
         self._name_edit.textChanged.connect(self._on_name_changed)
         v.addWidget(self._name_tag_hint)
 
-        # Pool. The QFrame#Card2 container the migration used wouldn't
+        # Source. Per spec/81 §2 — the user is composing a Dynamic
+        # Collection (formula + filters) that the Cut materialises from.
+        # "Source" reads as "where does this Cut's content come from"
+        # without leaking the DC term into the dialog chrome.
+        # The QFrame#Card2 container the migration used wouldn't
         # paint its bg/border reliably inside this dialog's QScrollArea
         # (descendant paint pass under the styled QFrame swallowed both
         # the bg and several siblings). Flat layout inside an unwrapped
         # host renders all children consistently — the formula is the
         # box's visual signature anyway, the chrome wasn't carrying
         # weight.
-        v.addWidget(_micro("Pool"))
+        v.addWidget(_micro("Source"))
         self._pool_box = QWidget()
         self._pool_layout = QVBoxLayout(self._pool_box)
         self._pool_layout.setContentsMargins(0, 0, 0, 0)
@@ -389,13 +433,16 @@ class NewCutDialog(QDialog):
             chip.stepped.connect(
                 lambda delta, n=pool.name: self._step_pool(n, delta)
             )
+            chip.intersect_toggled.connect(
+                lambda n=pool.name: self._toggle_intersect(n)
+            )
             add_row.addWidget(chip)
         add_row.addStretch()
         self._pool_layout.addLayout(add_row)
         # Live summary — sits below the add row. Same custom-paint
         # workaround would apply but a plain QLabel with inline color
         # paints fine since there's no bg/border to render.
-        self._pool_summary = QLabel("pool: 0 files")
+        self._pool_summary = QLabel("source: 0 files")
         self._pool_summary.setObjectName("PoolSummary")
         self._pool_layout.addWidget(self._pool_summary)
         v.addWidget(self._pool_box)
@@ -636,6 +683,10 @@ class NewCutDialog(QDialog):
     # ── pool ──────────────────────────────────────────────────────────
 
     def _step_pool(self, name: str, delta: int) -> None:
+        # +/- always wins over an existing ∩ for this operand — the user
+        # is asking for union/difference now. Keeping both would be a
+        # contradiction (the resolver couldn't know which to emit).
+        self._pool_intersect.discard(name)
         cur = self._pool_counts.get(name, 0)
         new = max(-3, min(3, cur + delta))
         if new == 0:
@@ -646,11 +697,32 @@ class NewCutDialog(QDialog):
         self._refresh_pool_summary()
         self._refresh_start_enabled()
 
+    def _toggle_intersect(self, name: str) -> None:
+        """Spec/81 §2 — flip the ∩ flag for this operand. Mutually
+        exclusive with the +/− multiplier: turning ∩ ON clears any
+        ``_pool_counts`` entry, and turning it OFF leaves the chip
+        with no contribution (user can re-click +/− to put it back)."""
+        if name in self._pool_intersect:
+            self._pool_intersect.discard(name)
+        else:
+            self._pool_intersect.add(name)
+            self._pool_counts.pop(name, None)
+        self._refresh_selected_chips()
+        self._refresh_pool_summary()
+        self._refresh_start_enabled()
+
     def _refresh_selected_chips(self) -> None:
         """Rebuild the pool composition row — formula tokens (algebraic
         view) followed by the click-to-remove chips. One row keeps the
         formula reliably painted (a nested under-#Card2 host obscured
-        it) and reads as a single continuous composition."""
+        it) and reads as a single continuous composition.
+
+        Spec/81 §2: each operand carries one of three operators —
+        ``+`` / ``−`` / ``∩``. Stable order is +/− operands first
+        (in available-pools declared order), then ∩ operands. The
+        resolver evaluates left-to-right, so the ∩ narrows the union/
+        difference accumulator — the natural reading of "intersect the
+        pool with X" (spec/81 §2)."""
         while self._selected_chips_row.count():
             it = self._selected_chips_row.takeAt(0)
             w = it.widget() if it else None
@@ -663,19 +735,25 @@ class NewCutDialog(QDialog):
         for name in self._pool_counts:
             if name not in ordered:
                 ordered.append(name)
-        active = [
+        signed = [
             (name, int(self._pool_counts[name])) for name in ordered
             if int(self._pool_counts[name]) != 0
         ]
+        # Intersect operands follow the +/− block, also in declared order.
+        intersect_ordered = [pp.name for pp in self._ctx.available_pools
+                             if pp.name in self._pool_intersect]
+        for name in self._pool_intersect:
+            if name not in intersect_ordered:
+                intersect_ordered.append(name)
         # Formula tokens — operators tinted accent, terms in ink with
         # ink_soft multipliers. §3.13's "composition should read as a
         # formula."
-        if not active:
-            hint = QLabel("compose the pool below")
+        if not signed and not intersect_ordered:
+            hint = QLabel("compose the source below")
             hint.setObjectName("PoolFormulaHint")
             self._selected_chips_row.addWidget(hint)
         else:
-            for i, (name, mult) in enumerate(active):
+            for i, (name, mult) in enumerate(signed):
                 sign = "+" if mult > 0 else "−"
                 if i == 0 and mult > 0:
                     pass  # implicit +
@@ -689,23 +767,68 @@ class NewCutDialog(QDialog):
                 mult_lbl = QLabel(f"× {abs(mult)}")
                 mult_lbl.setObjectName("PoolFormulaMult")
                 self._selected_chips_row.addWidget(mult_lbl)
+            for j, name in enumerate(intersect_ordered):
+                # ∩ leading the formula (no +/− operands) reads
+                # awkwardly — spec/81 §2 calls degenerate ∩-led
+                # exprs "empty" — but we render whatever the user
+                # composed so the live preview is honest.
+                op = QLabel("∩")
+                op.setObjectName("PoolFormulaOp")
+                self._selected_chips_row.addWidget(op)
+                token = QLabel(name)
+                token.setObjectName("PoolFormulaTerm")
+                self._selected_chips_row.addWidget(token)
         self._selected_chips_row.addStretch()
 
     def _pool_expr(self) -> list:
-        """The signed-mult ``_pool_counts`` flattened into the
-        ``[(op, tag), ...]`` shape ``resolve_pool`` / ``pool_show_totals``
-        expect — one entry per unit of multiplier, ASCII operators
-        (the gateway raises ``ValueError`` on anything else)."""
+        """The signed-mult ``_pool_counts`` + intersect set flattened
+        into the spec/81 §2 operand encoding — ASCII operators
+        (``+`` / ``-`` / ``&``) and typed-ref operands. The base
+        universe ``#exported`` stays a bare token; every Cut or DC
+        operand becomes ``{"kind": …, "id": …, "tag": …}``. The kind
+        comes from the matching :class:`PoolOption` in
+        ``available_pools``; without a match we fall back to the legacy
+        "Cut" assumption for back-compat with templates that predate
+        spec/81 (a bare-string operand silently resolved as an unknown
+        base universe — empty set — which was a hidden bug). Order
+        matches the formula display: signed multipliers first, then
+        intersects (so left-to-right reads as "narrow the pool by …")."""
         out: list = []
         for prefixed in self._pool_counts:
             mult = int(self._pool_counts[prefixed])
             if mult == 0:
                 continue
-            t = prefixed.lstrip("#")
             op = "+" if mult > 0 else "-"
+            operand = self._operand_for_name(prefixed)
             for _ in range(abs(mult)):
-                out.append((op, t))
+                out.append((op, operand))
+        # Spec/81 §2 — ∩ operands trail the +/− block. Same
+        # available-pools order so two equivalent compositions emit
+        # identical exprs (matters for save-as-template round trips).
+        ordered = [pp.name for pp in self._ctx.available_pools
+                   if pp.name in self._pool_intersect]
+        for name in self._pool_intersect:
+            if name not in ordered:
+                ordered.append(name)
+        for prefixed in ordered:
+            out.append(("&", self._operand_for_name(prefixed)))
         return out
+
+    def _operand_for_name(self, prefixed: str):
+        """Translate a chip's display name into a spec/81 operand. Looks
+        up the :class:`PoolOption` by display name to learn the kind +
+        id; without a match the operand falls back to a Cut-shaped ref
+        (back-compat with pre-spec/81 templates whose JSON lacked
+        kind info)."""
+        for pool in self._ctx.available_pools:
+            if pool.name == prefixed:
+                tag = pool.name.split(" — ")[0].lstrip("#")
+                if pool.kind == "base":
+                    return tag
+                return {"kind": pool.kind, "id": pool.id, "tag": tag}
+        tag = prefixed.lstrip("#")
+        return tag if tag == "exported" else {
+            "kind": "cut", "id": None, "tag": tag}
 
     def _active_style_filter(self) -> list:
         return [s for s, chip in self._style_chips.items() if chip.isChecked()]
@@ -734,7 +857,7 @@ class NewCutDialog(QDialog):
                 pool_n = self._fallback_pool_count()
         else:
             pool_n = self._fallback_pool_count()
-        self._pool_summary.setText(f"pool: {pool_n} files")
+        self._pool_summary.setText(f"source: {pool_n} files")
         # Match count — what's left AFTER the style + media-type filters.
         tf = self._active_type_filter()
         if tf is None:
@@ -988,6 +1111,11 @@ class NewCutDialog(QDialog):
         return {
             "name": self._name_edit.text().strip(),
             "pool": dict(self._pool_counts),
+            # Spec/81 §2 — the already-translated expr with typed-ref
+            # operands. Adapter + host prefer this over ``pool`` (which is
+            # ambiguous when a DC and a Cut share a tag and is missing
+            # kind information altogether for legacy pre-spec/81 reads).
+            "pool_expr": [list(t) for t in self._pool_expr()],
             "styles": selected_styles,
             "include_photos": self._photos_cb.isChecked(),
             "include_videos": self._videos_cb.isChecked(),

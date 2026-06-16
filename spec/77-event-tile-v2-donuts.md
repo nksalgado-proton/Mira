@@ -31,8 +31,9 @@ One **fixed tile size** (≈248px wide; tune on real photos). Every tile identic
 The `FlowLayout` reflows columns by window width. **No size slider** (a live
 slider re-layouts the whole grid per tick — janky; do not build it).
 
-Tiles are **rounded** (`radius_xl`) — see §7.2 for how to render the rounding
-cleanly (the thing that kept breaking).
+Tiles are **square** (`TILE_RADIUS = 0`, no corner rounding — Nelson's final
+call after the rounded-corner rendering kept breaking). See §7.2 for the
+painted square border.
 
 ---
 
@@ -44,27 +45,28 @@ cleanly (the thing that kept breaking).
   (§6). No badge eating the name's width.
 - **4:3 area:** the four donuts in a **2×2** — Collect (top-left), Pick
   (top-right), Edit (bottom-left), Export (bottom-right); reading order = pipeline
-  order. Each donut: phase icon centred, `%` below the ring (§4).
+  order. Each donut: phase icon centred, `%` to the **left** of the ring (§4).
 
 ## 3. Closed-event tile
 
 - **Title row:** same shape — icon · name + meta · `⋮`.
 - **4:3 area:** the `PhotoCycler` (chrome-free ambient cycler from spec/75 §6 —
   shuffled auto-advance, blurred-fill, no arrows/dots) over the event's
-  **exported keepers**. **NO text overlay — remove the `N exported · M shot`
-  counts strip entirely.** The photo fills the area and shines; nothing covers
-  it. The photo's **bottom corners are clipped to the tile radius** (§7.2) so it
-  lines up with the rounded border — nothing square pokes out.
+  **exported keepers**. **NO text overlay — no counts strip.** The photo fills
+  the area and shines; nothing covers it. Tiles are square (§1), so the photo is
+  square too (`top_radius=0`, `bottom_radius=TILE_RADIUS=0`) and meets the tile's
+  square border flush.
 
 ---
 
 ## 4. The four phase donuts
 
-Reuse the `Donut`/`DonutSlice` widget (`mira/ui/design`, used by the Phases
-page). Each donut paints a ring; the **phase icon sits centred inside it** and
-the **`%` sits just below the ring** (never both stacked in the centre). All four
-**always paint a complete ring** — a not-started donut shows a **full faint track
-ring**, never just an icon + `%`.
+Each donut is painted (`_PhaseDonut`); the **phase icon sits centred inside the
+ring** and the **`%` sits to the LEFT of the ring** (right-aligned in a fixed
+`"100%"`-width slot, baseline-centred on the ring) — never stacked in the centre,
+and not below (below cramped the 2×2 rows). All four **always paint a complete
+ring** — a not-started donut shows a **full faint track ring**, never just an
+icon + `%`.
 
 Two donuts are **progress gauges** (amber → green over a faint track); two are
 **green/red, default-Skip** gauges (start a **full red ring**, green grows out,
@@ -99,19 +101,18 @@ glyph.
 - Data: `exported = COUNT(adjustment WHERE edit_exported=1)`; `picked` as above;
   `red = picked − exported`. Icon: export glyph.
 
-**Colours** (define as QSS/palette roles, not inline hex): green `#34d399`, red
-`#ef4444`, amber `#fbbf24`, track = faint `line`. Only **Collect & Edit** use the
-faint track for their remainder; **Pick & Export** use **red** for theirs.
+**Colours** (palette tokens, not inline hex): green `#34d399`, red `#ef4444`,
+amber `#fbbf24`, faint ring = the `track` token. Only **Collect & Edit** use the
+faint track for their remainder; **Pick & Export** use **red** for theirs. Note:
+light `track` was bumped from `#eceef4` (invisible on the white card) to
+`#d3d7df` so a 0% ring reads in light theme.
 
-**2×2 layout — the `%` must hug its OWN ring:** every donut cell is the **same
-size**. In each cell, **top-anchor** the group: ring at the top, then a **tight
-fixed gap (~4px), then the `%` directly under it** — and **all remaining vertical
-space sits BELOW the `%`** (before the next row). Do **not** vertically centre the
-group: centring floated the `%` toward the middle of the cell, so the top row's
-`%` ended up closer to the bottom row's ring than to its own. With top-anchoring,
-every `%` sits ~4px under its ring and is clearly separated from the next row, so
-it unambiguously belongs to the ring above it. Same tight gap for all four. Leave
-**bottom padding** in the 4:3 area so the lowest `%`s never clip the border.
+**2×2 layout — `%` LEFT of each ring:** every donut cell is the **same size**.
+In each cell the group lays out **left-to-right**: a fixed `"100%"`-width `%`
+slot, a small gap, then the ring sized to the remaining area; the whole group is
+centred on both axes, the `%` right-aligned in its slot and baseline-centred on
+the ring. Putting the `%` beside (not below) its ring is what fixed the earlier
+cramming where a top-row `%` sat closer to the bottom-row ring than its own.
 
 ---
 
@@ -157,36 +158,30 @@ upscales the pixmap and every icon looks soft. **Fix at the source:** render at
 `size × devicePixelRatioF()`, then `pixmap.setDevicePixelRatio(dpr)` before
 returning. This sharpens every icon in the app.
 
-### 7.2 Tile border — PAINT it exactly like the days-grid `Thumb` (copy that code)
-QSS `border + border-radius` gaps at the rounded corners and vanishes in dark —
-that is what's wrong now. The days grid already solved this: its border is
-**painted, not QSS** (`mira/ui/design/thumbs.py`), and its corners are clean and
-clearly visible. **Copy that exact approach** into the event tile's `paintEvent`:
+### 7.2 Tile border — PAINTED, square
+The border is **painted in the tile's `paintEvent`** (QSS `border + border-radius`
+gapped the corners and vanished in dark; the days-grid `Thumb` proved the painted
+approach). As built — square, `MiterJoin`:
 
 ```python
 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-painter.setClipping(False)                 # so the stroke isn't cut at the edge
+painter.setClipping(False)                   # stroke not cut at the edge
 painter.setBrush(Qt.BrushStyle.NoBrush)
-pen = QPen(QColor(card_border), 2)         # 2px neutral border (days grid uses 3
-pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)#  px for its state border — match that
-painter.setPen(pen)                        #  visibility; bump to 3 if Nelson wants)
-painter.drawRoundedRect(
-    rect.adjusted(1.0, 1.0, -1.0, -1.0), radius_xl - 1.0, radius_xl - 1.0)
+pen = QPen(QColor(card_border), 2.0)
+pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)  # sharp square corners
+painter.setPen(pen)
+painter.drawRect(rect.adjusted(1.0, 1.0, -1.0, -1.0))   # square — no radius
 ```
 
-- **Painted, not QSS.** Set `QFrame#TileCard` QSS to fill + radius only
-  (`background: {card}; border-radius: {radius_xl}px; border: none;`) with
-  `WA_StyledBackground` so the fill is rounded/clips; the `paintEvent` draws the
-  visible rounded border on top.
-- **`card_border` must be clearly visible in BOTH themes** — thick (2–3px) and
-  contrasty, like the days-grid border. No more hairline that disappears in dark.
-- `setContentsMargins(2, 2, 2, 2)` on the tile's layout so children never paint
-  over the border ring.
-- **Clip the closed `PhotoCycler`'s bottom-left/right corners to `radius_xl`**
-  (`QPainterPath` round-rect on the bottom two corners only) so the photo lines
-  up with the rounded border — nothing square pokes out.
-- Delete the dead "border: none, will paint later" state that left the tile with
-  no border at all.
+- **Painted, not QSS.** `QFrame#TileCard` QSS is fill only:
+  `background: {card}; border: none; border-radius: 0px;` + `WA_StyledBackground`;
+  the `paintEvent` draws the square border on top.
+- **`card_border` is clearly visible in BOTH themes** — 2px, contrasty
+  (`#5d6580` dark / `#a8aebf` light).
+- `setContentsMargins(2, 2, 2, 2)` on the tile layout so children never paint
+  over the border.
+- The closed `PhotoCycler` is square too (`top_radius=0`, `bottom_radius=0`) — no
+  corner clipping.
 
 ---
 
@@ -209,15 +204,16 @@ pre-creates rows, count a different signal (e.g. a user-touched/dirty flag).
 
 ## 10. Definition of done
 1. `verify.bat` green, incl. the close→reopen test (§6) and a tile-render test.
-2. Tiles are **rounded** with a **continuous, clearly visible border in both
-   themes**; the closed photo's bottom corners match the radius.
+2. Tiles are **square** with a **continuous, clearly visible 2px border in both
+   themes**; the closed photo is square and meets the border flush.
 3. Open tile: full-width non-truncating name, flat `⋮`, no badge, four donuts in
-   an even 2×2 (identical ring→`%` gaps, no `%` clipping).
-4. Donuts: **crisp HiDPI icons**, icon centred + `%` below, a **full ring even at
-   0%**; Collect/Edit amber→green over a track; **Pick & Export start full red**
-   (default-Skip) with green growing out.
+   an even 2×2.
+4. Donuts: **crisp HiDPI icons**, icon centred + `%` to the **left** of the ring,
+   a **full ring even at 0%** (light `track` = `#d3d7df`); Collect/Edit amber→green
+   over a track; **Pick & Export start full red** (default-Skip) with green
+   growing out.
 5. From/To mandatory; Collect uses the header span.
 6. `⋮` Close/Reopen works; export-less close is recoverable.
 7. No size slider. Fixed ~248px tile.
 8. Screenshot the events grid (a few open + a closed) **at HiDPI** for Nelson —
-   confirm sharp icons, clean rounded borders, even donuts.
+   confirm sharp icons, clean square borders, even donuts.

@@ -137,6 +137,14 @@ QProgressBar#StageBar[state="skip"]::chunk  { background: {red}; }
 QFrame#CrossEventBand    { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                               stop:0 {accent_soft}, stop:0.55 {card}, stop:1 {card});
                            border: 1px solid {accent}; border-radius: {radius_xl}px; }
+/* The legacy ``QWidget { background-color: window }`` rule in dark.qss
+ * paints an opaque window-coloured rectangle behind every QLabel by
+ * default — so the band's title + subtitle came out on black boxes
+ * over the gradient. Override here for ALL non-pill labels under the
+ * band so they paint flat over the accent wash. ``#Tag`` keeps its
+ * own pill background; ``#SearchGlyph`` is already transparent. */
+QFrame#CrossEventBand QLabel              { background: transparent; }
+QFrame#CrossEventBand QLabel#Tag          { background: {accent_soft}; }
 
 /* ---- Title bar (Mira logo + embedded menu + theme toggle, host-installed via
    QMainWindow.setMenuWidget) ---- */

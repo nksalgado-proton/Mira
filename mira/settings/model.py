@@ -192,12 +192,6 @@ class Settings:
         "Day-grid default cell size (px). Slider on the day grid still "
         "lets you scrub per-session; this is the value the grid opens at.",
         140)
-    events_grid_tile_size: int = _u(
-        "Events grid tile width (px). The slider in the events toolbar "
-        "writes here on every change so the choice survives a restart; "
-        "header text size stays constant — only the 4:3 area + donuts "
-        "scale with this value (spec/77 §10.5).",
-        248)
     log_rotate_keep_days: int = _u(
         "How many days of rotated log files to keep.",
         14)

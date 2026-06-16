@@ -17,13 +17,14 @@ QWidget#RedesignRoot { background: qradialgradient(cx:0.8, cy:-0.1, radius:1.1, 
 
 /* ---- Cards / panels ---- */
 QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
-/* Event tiles (spec/77 §10.3) — the faint `line` weight worked for
- * hairline section dividers but was nearly invisible against the dark
- * page background. The events grid asks for a more present border so
- * each tile reads as a distinct card in both themes; this role inherits
- * everything else from #Card so a TileCard is still a Card with the
- * usual drop-shadow + radius. */
-QFrame#TileCard    { background: {card}; border: 1px solid {card_border}; border-radius: {radius_xl}px; }
+/* Event tiles (spec/77 §10.3) — the QSS border + border-radius combo
+ * does NOT antialias the corners in Qt; on a high-DPI screen the
+ * border breaks into jagged stair-steps at every corner. The tile
+ * paints its own rounded border in ``EventTile.paintEvent`` with
+ * antialiasing, so this rule deliberately carries the background +
+ * radius ONLY (border: none) — the radius still clips the QSS bg
+ * fill so the corner area outside the rounded rect stays unpainted. */
+QFrame#TileCard    { background: {card}; border: none; border-radius: {radius_xl}px; }
 QFrame#Card2,
 QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
 
@@ -53,13 +54,14 @@ QPushButton#Primary:hover   { background: {accent}; }
 QPushButton#DangerGhost           { background: transparent; color: {ink}; border: 1px solid {line};
                                     border-radius: {radius_md}px; padding: 8px 14px; font-weight: 600; }
 QPushButton#DangerGhost:hover     { border-color: {red}; color: {red}; }
-/* The tile's ⋮ menu button — spec/77 §10.2 promoted this from a
- * faint glyph to a solid, clearly-visible control with a standing
- * background so it reads on any tile body (open card surface OR
- * closed-tile title row sitting directly above a photo). */
-QPushButton#TileMore         { background: {card2}; color: {ink}; border: 1px solid {line};
-                               border-radius: 14px; padding: 0; font-size: 18px; font-weight: 800; }
-QPushButton#TileMore:hover   { background: {accent_soft}; color: {accent}; border-color: {accent}; }
+/* The tile's ⋮ menu button — spec/77 §10.2 (revised 2026-06-16): the
+ * boxed/bordered v1 read as a heavy box even when not interacted with.
+ * Flat + borderless + hover-only background keeps the affordance
+ * light; the 16-px glyph is reachable thanks to a ~22-px hit target. */
+QPushButton#TileMore         { background: transparent; color: {ink_soft};
+                               border: none; border-radius: 6px;
+                               padding: 0; font-size: 16px; font-weight: 800; }
+QPushButton#TileMore:hover   { background: {accent_soft}; color: {accent}; }
 QPushButton#TileMore:pressed { background: {accent_soft}; }
 
 /* ---- Inputs ---- */

@@ -74,24 +74,19 @@ _CATEGORY_ICONS_DIR = (
     Path(__file__).resolve().parents[3] / "assets" / "icons" / "categories"
 )
 
-# spec/77 §1 + §10.5 — the tile is a fixed title row on top of a 4:3
-# content area; the slider in the events toolbar scales the tile width
-# live. Header text stays the same size at every width (§10.5), so the
-# title row height is a constant — only the 4:3 area + donuts grow.
-TILE_DEFAULT_WIDTH = 248       # the approved-mock comfortable size
-TILE_MIN_WIDTH = 196           # narrow enough the slider is useful…
-TILE_MAX_WIDTH = 400           # …without shrinking past donut % legibility
-TILE_PREFERRED_WIDTH = TILE_DEFAULT_WIDTH    # legacy alias kept stable
+# spec/77 §1 — the tile is a fixed title row on top of a 4:3 content
+# area. The size-slider experiment (the prior §10.5 revision) was pulled
+# in the 2026-06-16 follow-up: a fixed 248-px tile keeps the grid
+# uniform and lets the title row + donut % type sit at one calibrated
+# size, so we don't have to choose between "names truncate at 196" and
+# "donuts swim in dead space at 400".
+TILE_WIDTH = 248
+TILE_PREFERRED_WIDTH = TILE_WIDTH   # legacy alias kept stable
 TITLE_ROW_HEIGHT = 54
+TILE_TOTAL_HEIGHT = TITLE_ROW_HEIGHT + int(TILE_WIDTH * 3 / 4)
 
 
 _PHASES = ("collect", "pick", "edit", "export")
-
-
-def total_tile_height(tile_width: int) -> int:
-    """The full tile height for a given tile width — the title row is a
-    constant; the content area is a 4:3 box below it."""
-    return TITLE_ROW_HEIGHT + int(tile_width * 3 / 4)
 
 
 def _palette_mode() -> str:
@@ -279,16 +274,20 @@ class _PhaseDonut(QWidget):
 
         # Phase icon — centred inside the ring's hole at ~58 % of the
         # hole's diameter. Drawn from the crisp ``PHASE_GLYPH`` SVG
-        # family via ``tinted_svg_pixmap`` (cached per (path, size,
-        # color)), so the line-icon stays sharp at any scale.
+        # family via the HiDPI-aware ``tinted_svg_pixmap`` (renders at
+        # ``size × DPR`` physical pixels, ``setDevicePixelRatio`` on the
+        # result), so the line-icon stays sharp on 2× screens. We
+        # position by the LOGICAL ``icon_size`` (not ``pm.width()``,
+        # which returns the physical pixel count and would scale the
+        # offset with the DPR).
         hole = side - ring_w * 2
         icon_size = max(16, int(hole * 0.58))
         if self._icon_path is not None and self._icon_path.exists():
             ink = QColor(_palette_color("ink", "#e4e8f5"))
             pm = tinted_svg_pixmap(self._icon_path, icon_size, ink)
             if not pm.isNull():
-                ix = int(rect.center().x() - pm.width() / 2)
-                iy = int(rect.center().y() - pm.height() / 2)
+                ix = int(rect.center().x() - icon_size / 2)
+                iy = int(rect.center().y() - icon_size / 2)
                 painter.drawPixmap(ix, iy, pm)
 
         # Percent text — below the ring, centred horizontally. The font
@@ -402,21 +401,15 @@ class EventTile(Card):
         data: EventCardData,
         *,
         sample_pixmaps: Optional[List[QPixmap]] = None,
-        tile_width: int = TILE_DEFAULT_WIDTH,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent, padded=False)
-        # spec/77 §10.3 — re-tag as #TileCard so the stronger border
-        # role lands. Card's drop-shadow effect is already set up.
+        # spec/77 §10.3 — re-tag as #TileCard so the (border-less) QSS
+        # role lands; the tile's own paintEvent draws the antialiased
+        # rounded border on top of the QSS fill.
         self.setObjectName("TileCard")
         self._data = data
         self._sample_pixmaps = list(sample_pixmaps or [])
-        # spec/77 §10.5 — the toolbar slider hands a width down to each
-        # tile. The 4:3 content area scales with this; the title row's
-        # height stays constant (header text size is constant by spec).
-        self._tile_width = max(
-            TILE_MIN_WIDTH, min(TILE_MAX_WIDTH, int(tile_width))
-        )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -425,18 +418,14 @@ class EventTile(Card):
             outer.addWidget(self._build_closed_content(), 1)
         else:
             outer.addWidget(self._build_open_content(), 1)
-        self.setFixedSize(QSize(
-            self._tile_width, total_tile_height(self._tile_width)
-        ))
+        self.setFixedSize(QSize(TILE_WIDTH, TILE_TOTAL_HEIGHT))
         self.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(
-            self._tile_width, total_tile_height(self._tile_width)
-        )
+        return QSize(TILE_WIDTH, TILE_TOTAL_HEIGHT)
 
     # ── title row ─────────────────────────────────────────────────
 
@@ -488,15 +477,14 @@ class EventTile(Card):
         text_col.addWidget(meta)
         h.addLayout(text_col, 1)
 
-        # The ⋮ is now the only affordance in the title row (spec/77
-        # §10.2): a solid, clearly-visible top-right control with a
-        # standing background so it reads on any tile body — including
-        # a closed tile, where the title row sits directly above the
-        # photo. Styled via the `#TileMore` QSS role so light + dark
-        # share one rule.
+        # The ⋮ is the only affordance in the title row now that the
+        # status pill is gone (spec/77 §10.2 revised): flat, borderless,
+        # 16-px glyph, hover-only background. Hit target ~22 px square
+        # so the click is still reachable; the QSS ``#TileMore`` role
+        # carries the look.
         more = QPushButton("⋮")
         more.setObjectName("TileMore")
-        more.setFixedSize(28, 28)
+        more.setFixedSize(22, 22)
         more.setCursor(Qt.CursorShape.PointingHandCursor)
         more.setToolTip("More actions")
         more.clicked.connect(self._open_more_menu)
@@ -611,3 +599,23 @@ class EventTile(Card):
         catch their clicks first via Qt's child-first event flow."""
         super().mousePressEvent(evt)
         self.activated.emit(self._data.event_id)
+
+    def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
+        """Paint the rounded tile border with antialiasing on top of
+        the QSS background fill (spec/77 §10.3). Qt's QSS ``border`` +
+        ``border-radius`` combo doesn't antialias the corners — it
+        rasterises the stroke to integer pixels, so the corners come
+        out as visible stair-steps especially on HiDPI displays. We
+        delegate the background to QSS (still rounded, still themed)
+        and draw the 1px border here through ``QPainter`` with
+        ``Antialiasing`` set."""
+        super().paintEvent(evt)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(_palette_color("card_border")), 1.0))
+        # Inset by 0.5 so the 1-px stroke lands on the pixel grid; the
+        # radius matches the QSS ``border-radius: 18px`` ({radius_xl}).
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.drawRoundedRect(r, 18.0, 18.0)
+        painter.end()

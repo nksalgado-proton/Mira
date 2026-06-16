@@ -177,45 +177,51 @@ and dropping it gives the **name the full header width** (it was the main cause
 of the name truncating in every tile). Title row is now just: icon · name + meta
 (name takes all remaining width) · `⋮`.
 
-### §10.2 Make the ⋮ menu clearly accessible
-The `⋮` must be a **solid, clearly visible control pinned top-right** of the tile
-(not faint). Give it a hover background + pointing-hand cursor. On the closed
-(photo) tile it sits over the photo top-right with enough contrast to read on any
-image (translucent dark chip behind it). It is the only affordance in the title
-row now that the badge is gone.
+### §10.2 The ⋮ menu must be a FLAT, borderless control (it's a boxed button now)
+The first build rendered `⋮` as a styled `QPushButton` with a visible
+border/background — a rounded box that eats a whole column, as much room as the
+badge we just removed. **Make it flat and borderless:** transparent background +
+no border, a ~16px three-dot glyph, top-right, with a *hover-only* subtle
+background and pointing-hand cursor. Give it a dedicated QSS role (e.g.
+`#TileMenuButton`) that is transparent by default and only shows a faint
+`card2`/hover fill on `:hover`. On the closed (photo) tile, a translucent-dark
+chip behind it keeps it legible on any image. It should read as three quiet dots,
+not a button.
 
-### §10.3 Stronger tile border
-The tile border was nearly invisible in dark mode. Use a **more visible border
-role** (≈ `line`/`border-secondary` weight, not the faintest tertiary), present
-and legible in **both** themes. The tile must read as a distinct card.
+### §10.3 Tile border breaks at the corners — paint it, don't QSS it
+The `#TileCard` rule (`border: 1px solid {card_border}; border-radius:
+{radius_xl}px` in `redesign.qss`) leaves the **corners aliased / interrupted**,
+worst in dark mode — the classic Qt limitation where a QSS `border` +
+`border-radius` doesn't antialias the rounded corners. **Fix by painting the
+border in the tile's `paintEvent`:** `QPainter` with
+`setRenderHint(Antialiasing)`, a 1px pen in the `line`/`card_border` colour,
+`drawRoundedRect` on a rect inset by 0.5px, matching `radius_xl`. Drop the QSS
+`border` (keep the QSS background/radius for fill/clipping). The card must show a
+continuous, clean rounded border in both themes.
 
-### §10.4 Donuts: icon centred, % below, crisp SVG
-- Put **only the phase icon in the centre** of each ring (bigger), and move the
-  **`%` to just below the ring** — do not stack icon + % in the centre (it made
-  both look small and low-res).
-- Draw the phase icons from the project's **crisp SVG icon family** (the same
-  source the rest of the app uses), sized to the ring — not a low-res/raster or
-  font glyph. Icons that read clearly at the centre size: Collect, Pick, Edit,
-  Export (use the established phase glyphs; don't invent new low-fidelity ones).
+### §10.4 Icons look low-res — fix `tinted_svg_pixmap` for HiDPI (root cause)
+The donut/phase icons already come from the crisp `PHASE_GLYPH` SVG family via
+`tinted_svg_pixmap`, **but that function renders the SVG at logical `size × size`
+and never sets `devicePixelRatio`** (`mira/ui/design/icons.py`). On a HiDPI
+display Qt upscales the pixmap → every icon looks soft. **Fix at the source:**
+render the SVG at `size × dpr` (the target widget's / app's
+`devicePixelRatioF()`), then `pixmap.setDevicePixelRatio(dpr)` before returning.
+This sharpens **every** icon in the app, not just the tiles. After that:
+- Keep **only the phase icon centred** in each ring and the **`%` just below**
+  (already done — don't regress it).
+- If, once crisp, a specific phase glyph still reads poorly at centre size
+  (Collect/Pick/Edit/Export), swap that one SVG for a cleaner equivalent in the
+  same family — but verify the HiDPI fix first; it is the main cause.
 
-### §10.5 Grid size slider (new — mirrors the days grid)
-Add a **live size slider** to the events toolbar (next to Filters) that scales
-the **tile** — the 4:3 area and donuts grow/shrink with it — while **header text
-size stays constant** so names/labels stay legible at every size. Smaller =
-more events per row (scan many at once, important for a library of decades of
-events); larger = bigger photos/donuts.
-
-- Reuse the existing variable-cell-size mechanism (`ThumbGrid.set_cell_size` /
-  `DEFAULT_CELL_SIZE` pattern) and **persist the choice** like
-  `default_day_grid_cell_size` (a new `events_grid_tile_size` setting in
-  `mira/settings/model.py`), so it sticks across sessions.
-- **Bounded range:** because text size is held constant, set a **minimum** tile
-  width where the name + donut `%`s still fit (don't let the slider shrink past
-  legibility) and a sensible **maximum**. The `FlowLayout` reflows columns as the
-  size changes.
-- Default sits at the comfortable size from the approved mock (~248px wide).
+### §10.5 Size slider — REMOVED. Do not build it.
+The live slider relayouts the whole grid on every tick → janky and slow. **Drop
+it entirely** (revert any `events_grid_tile_size` slider/setting work). Keep a
+**single fixed tile size** — the comfortable ~248px-wide box from the approved
+mock. The `FlowLayout` still reflows columns by window width; that is enough.
 
 ### §10.6 Approved reference
-The corrected look was approved against the 2026-06-16 mock: no badge, solid
-top-right `⋮`, visible border, donuts with centred icon + `%` beneath. Build to
-that.
+The corrected look was approved against the 2026-06-16 mock: **no status badge**,
+a **flat three-dot ⋮** (no box), a **continuous painted border**, **crisp
+HiDPI icons**, donuts with centred icon + `%` beneath, **fixed tile size (no
+slider)**. The bar is "as nice as the mockup" — build to that, and screenshot at
+HiDPI to confirm the icons are sharp.

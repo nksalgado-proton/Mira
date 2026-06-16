@@ -20,6 +20,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from mira.gateway.event_gateway import EventGateway, _utc_now_iso
 from mira.gateway.index import EventsIndex, make_entry
+from mira.gateway.originals_health import (
+    OriginalsCheck,
+    OriginalsHealth,
+    classify as _classify_originals,
+)
 from mira.paths import user_data_dir
 from mira.settings.repo import SettingsRepo
 from mira.store import json_dump, models as m
@@ -252,6 +257,115 @@ class Gateway:
                     "relpath": relpath,
                 })
         return blockers
+
+    # ----- missing-originals detection (charter §7, locate/relink flow) -- #
+
+    def check_originals(self, event_id: str) -> OriginalsCheck:
+        """Classify whether this event's ``Original Media/`` is reachable.
+
+        The detection layer for the captured tree (charter §7). Pure read:
+        no ``event.db`` opened, no writes, no side effects. The UI calls
+        this *before* opening the activity dashboard; a non-OK result
+        routes the user into the locate/relink dialog.
+
+        Three outcomes — see :class:`OriginalsHealth` for the contract:
+
+        * ``OK`` — ``event_root`` exists and ``Original Media/`` is
+          present and non-empty.
+        * ``STORAGE_OFFLINE`` — the storage anchor is unreadable: for
+          relative-anchored events that means ``photos_base_path`` is
+          gone; for any event it also means the drive root the event
+          lives on is gone. Action: alert and reconnect, **no data
+          change**.
+        * ``ORIGINALS_MOVED`` — the storage is mounted but the event's
+          folder (or the ``Original Media/`` leaf) isn't where the index
+          expects. Action: Locate dialog → re-anchor via
+          :meth:`relink_event`.
+
+        Unknown ``event_id`` returns an OK verdict (the missing-originals
+        flow has nothing to do here — the events list will catch it).
+        """
+        entry = self.index.get(event_id)
+        if entry is None:
+            return OriginalsCheck(
+                state=OriginalsHealth.OK,
+                event_root=None,
+                base_path=self.photos_base_path(),
+                originals_dir=None,
+            )
+        base = self.photos_base_path()
+        event_root = self.index.resolve_root(entry, base)
+        requires_base = (
+            entry.get("event_relpath") is not None
+            and not entry.get("event_root_abs")
+        )
+        return _classify_originals(
+            base_path=base,
+            event_root=event_root,
+            requires_base=requires_base,
+        )
+
+    def relink_event(self, event_id: str, new_event_root: Path) -> None:
+        """Re-anchor one event to a new on-disk location (single-event move).
+
+        The verify-then-allow primitive for :meth:`check_originals`'
+        ``ORIGINALS_MOVED`` branch. Mirrors :meth:`set_photos_base_path`
+        for the per-event case: confirm the bytes are at the new path,
+        then rewrite the events-index row through :func:`make_entry` so
+        the relative-vs-absolute decision is made by the same primitive
+        that ingest and restore use (never hand-rolled here).
+
+        * ``new_event_root`` must contain ``event.db`` (and, normally,
+          ``Original Media/``). Refused with :class:`FileNotFoundError`
+          when ``event.db`` is absent — protects against re-anchoring to
+          an arbitrary folder.
+        * If ``new_event_root`` lives under the current
+          ``photos_base_path``, the row stays *relative-anchored*
+          (``event_relpath`` set, ``event_root_abs`` cleared). If it
+          lives on a different drive (or no base is configured), the row
+          flips to *abs-anchored* (``event_root_abs`` set,
+          ``event_relpath`` cleared). The two columns are mutually
+          exclusive at the resolver layer.
+        * The index write is atomic (``EventsIndex._save`` →
+          ``protect.write_protected``); the on-disk Original Media tree
+          is never touched (charter §7).
+
+        Items, decisions, edits, markers, snapshots all survive: only
+        the index row's path columns change.
+        """
+        new_event_root = Path(new_event_root)
+        db_path = new_event_root / "event.db"
+        if not db_path.is_file():
+            raise FileNotFoundError(
+                f"no event.db at {new_event_root} — refusing relink "
+                f"(verify-then-allow gate)"
+            )
+        prev = self.index.get(event_id)
+        if prev is None:
+            raise KeyError(f"no event {event_id} in the index")
+
+        # Read the freshly-pointed event.db so the cached classification
+        # fields (name/dates/event_type/…) in the rewritten index row
+        # stay current — same projection refresh_index_entry does.
+        eg = EventGateway.open(db_path, event_root=new_event_root, now=self._now)
+        try:
+            ev = eg.event()
+        finally:
+            eg.close()
+
+        new_entry = make_entry(
+            event_id=event_id,
+            name=ev.name,
+            start_date=ev.start_date,
+            end_date=ev.end_date,
+            is_closed=ev.is_closed,
+            event_root=new_event_root,
+            photos_base_path=self.photos_base_path(),
+            event_type=ev.event_type or "unclassified",
+            event_subtype=ev.event_subtype,
+            description=ev.description,
+        )
+        self.index.upsert(new_entry)
 
     # ----- events list --------------------------------------------------- #
 

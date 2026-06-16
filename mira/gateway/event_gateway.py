@@ -2408,6 +2408,77 @@ class EventGateway:
                 "under %s", written, exported_root)
         return written + pruned
 
+    # ----- missing-originals enumeration + explicit-only prune ----------- #
+    #
+    # The originals tier is the inverse of the exported tier (above):
+    # exports are regenerable, so ``rescan_exported_media`` PRUNES
+    # missing bytes. Originals are not regenerable, so missing bytes are
+    # only ever ENUMERATED here — never auto-pruned. The only path that
+    # actually drops rows is :meth:`prune_missing_originals`, which the
+    # UI must gate behind an explicit "these files are gone for good"
+    # confirmation (charter §7).
+
+    def list_missing_origin_items(self) -> List[str]:
+        """Item ids whose ``origin_relpath`` points under ``Original Media/``
+        but whose file no longer resolves on disk.
+
+        Pure read — no writes, no cascade. Scoped to ``origin_relpath
+        LIKE 'Original Media/%'`` so derived tiers (``Edited Media/``,
+        ``Exported Media/``) and virtual rows (``origin_relpath IS
+        NULL``) stay out of the count — those have their own reconciles
+        and their own meaning of "missing". Returns ``[]`` when the
+        event has no resolved root (called before the locate flow has
+        re-anchored) so the dialog can fall back to a generic "all of
+        them" prompt.
+        """
+        if self.event_root is None:
+            return []
+        event_root = Path(self.event_root)
+        rows = self.store.conn.execute(
+            "SELECT id, origin_relpath FROM item "
+            "WHERE origin_relpath IS NOT NULL "
+            "AND origin_relpath LIKE 'Original Media/%'"
+        ).fetchall()
+        missing: List[str] = []
+        for r in rows:
+            if not (event_root / r["origin_relpath"]).is_file():
+                missing.append(r["id"])
+        return missing
+
+    def prune_missing_originals(self, item_ids: Iterable[str]) -> int:
+        """Drop the named items in one transaction; FK cascades handle the rest.
+
+        The destructive primitive behind the "These files are gone for
+        good" branch of the missing-originals dialog. The caller has
+        already confirmed; this method does not reprompt and does not
+        re-verify that the files are actually missing — the verification
+        belongs upstream so the prune itself stays a clean primitive
+        (testable in isolation, callable from a future bulk tool).
+
+        Per-item child rows ride along through the schema's ``ON DELETE
+        CASCADE`` foreign keys (``phase_state``, ``adjustment``,
+        ``video_adjustment``, ``video_marker``, ``video_segment``,
+        ``video_snapshot``, ``stack_member``, ``bucket_member``,
+        ``photo_person``, ``lineage.source_item_id`` and through it
+        ``cut_member``). ``stack_bracket.output_item_id`` is
+        ``ON DELETE SET NULL`` and survives — acceptable; the bracket
+        stays without its output. Empty input is a no-op (no
+        transaction, no ``_touch``). Returns the row count actually
+        deleted (an id that's already gone counts as zero).
+        """
+        ids = [i for i in item_ids if i]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self.store.transaction() as conn:
+            cur = conn.execute(
+                f"DELETE FROM item WHERE id IN ({placeholders})",
+                ids,
+            )
+            deleted = cur.rowcount
+            self._touch()
+        return int(deleted or 0)
+
     # ----- event ---------------------------------------------------------- #
 
     def set_closed(self, value: bool) -> None:

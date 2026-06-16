@@ -207,6 +207,7 @@ class EventHeaderDialog(QDialog):
         self,
         *,
         existing_info: Optional[dict] = None,
+        on_locate_originals: Optional[callable] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -217,6 +218,10 @@ class EventHeaderDialog(QDialog):
         self._existing_name = (
             (existing_info or {}).get("name") or ""
         ).strip()
+        # Optional secondary action surfaced in the footer when the
+        # dialog opens for an existing event (the locate/relink entry
+        # point per charter §7). Left None for the create flow.
+        self._on_locate_originals = on_locate_originals
         self._creative_chips: dict[str, QPushButton] = {}
         self._participant_chips: dict[str, QPushButton] = {}
 
@@ -491,6 +496,17 @@ class EventHeaderDialog(QDialog):
         h = QHBoxLayout(host)
         h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
+        # Optional secondary action on the left — the locate/relink
+        # entry per charter §7. Only shown when a callback was wired
+        # (existing-event path, not the create flow).
+        if self._on_locate_originals is not None:
+            locate = ghost_button(tr("Locate originals…"))
+            locate.setToolTip(tr(
+                "Check whether this event's originals are reachable, "
+                "and re-point Mira if you've moved them."
+            ))
+            locate.clicked.connect(self._on_locate_originals_clicked)
+            h.addWidget(locate)
         h.addStretch()
         cancel = ghost_button(tr("Cancel"))
         cancel.clicked.connect(self.reject)
@@ -499,6 +515,14 @@ class EventHeaderDialog(QDialog):
         self._save_btn.clicked.connect(self._on_save)
         h.addWidget(self._save_btn)
         return host
+
+    def _on_locate_originals_clicked(self) -> None:
+        """Run the wired-in locate flow without closing this dialog.
+        The user usually wants to stay in the header editor (perhaps
+        they're about to rename + relink in one sitting), so we
+        intentionally don't close on the secondary action."""
+        if self._on_locate_originals is not None:
+            self._on_locate_originals()
 
     @staticmethod
     def _make_single_select(

@@ -14,8 +14,9 @@ what it renders, and tells it what the user did; it never sees SQLite. Public su
 from mira.gateway.event_gateway import EventGateway
 from mira.gateway.gateway import EventsListing, EventsQuery, Gateway
 from mira.gateway.index import EventsIndex, make_entry
+from mira.gateway.originals_health import OriginalsCheck, OriginalsHealth
 
 __all__ = [
     "Gateway", "EventGateway", "EventsIndex", "EventsListing", "EventsQuery",
-    "make_entry",
+    "make_entry", "OriginalsCheck", "OriginalsHealth",
 ]

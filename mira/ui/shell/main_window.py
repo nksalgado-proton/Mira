@@ -1712,6 +1712,8 @@ class MainWindow(QMainWindow):
         """
         if self._event_is_closed(event_id):
             return self._open_event_cuts_list(event_id)
+        if not self._gate_missing_originals(event_id):
+            return False
         if not self.phases_page.set_event(event_id):
             return False
         self._current_event_id = event_id
@@ -1737,6 +1739,8 @@ class MainWindow(QMainWindow):
         promoted to a direct door for closed events. Back from here
         returns to the events list (the door the user came in through),
         not the activity dashboard (see :meth:`_on_curate_closed`)."""
+        if not self._gate_missing_originals(event_id):
+            return False
         if not self.curate_page.open_event(event_id):
             return False
         self._current_event_id = event_id
@@ -1744,6 +1748,101 @@ class MainWindow(QMainWindow):
         self.page_stack.show_page(self._CURATE_PAGE_KEY)
         self._refresh_menu_state()
         return True
+
+    def _gate_missing_originals(self, event_id: str) -> bool:
+        """Detection layer over the captured tree (charter §7).
+
+        Runs :meth:`Gateway.check_originals` and — if the verdict isn't
+        ``OK`` — pops :class:`MissingOriginalsDialog` with the right
+        mode (alert for OFFLINE, locate for MOVED). Translates the
+        user's choice into the appropriate gateway call:
+
+        * ``relink`` ⇒ :meth:`Gateway.relink_event` + refresh the events
+          list (the path columns moved).
+        * ``prune`` ⇒ open the event, enumerate missing items, run
+          :meth:`EventGateway.prune_missing_originals` (the explicit
+          destructive branch — the dialog has already obtained the
+          confirm).
+        * ``kept`` ⇒ no data change.
+
+        Returns ``True`` when the caller should continue and navigate
+        into the event surface, ``False`` when the navigation should
+        be suppressed (storage offline — the dashboard would render
+        broken thumbnails; keep the user on the events list until they
+        reconnect)."""
+        from mira.gateway import OriginalsHealth
+        from mira.ui.pages.missing_originals_dialog import (
+            MissingOriginalsDialog,
+            OUTCOME_PRUNE,
+            OUTCOME_RELINK,
+        )
+
+        try:
+            check = self.gateway.check_originals(event_id)
+        except Exception:                                       # noqa: BLE001
+            log.exception("check_originals failed for %s", event_id)
+            return True   # don't block navigation on a detection bug
+        if check.is_ok:
+            return True
+
+        entry = self.gateway.index.get(event_id) or {}
+        event_name = entry.get("name", "") or ""
+
+        # Pre-count missing items so the dialog body can be specific.
+        # Requires event.db to be openable (the carved-out-Original-Media
+        # subcase). When the whole event folder is gone, open_event
+        # fails and we fall back to the generic body copy.
+        missing_count: Optional[int] = None
+        if (check.state == OriginalsHealth.ORIGINALS_MOVED
+                and check.event_root is not None
+                and check.event_root.exists()):
+            try:
+                eg = self.gateway.open_event(event_id)
+                try:
+                    missing_count = len(eg.list_missing_origin_items())
+                finally:
+                    eg.close()
+            except Exception:                                   # noqa: BLE001
+                missing_count = None
+
+        dlg = MissingOriginalsDialog(
+            check=check, event_name=event_name,
+            missing_count=missing_count, parent=self,
+        )
+        dlg.exec()
+
+        if dlg.outcome == OUTCOME_RELINK and dlg.chosen_path is not None:
+            try:
+                self.gateway.relink_event(event_id, dlg.chosen_path)
+            except (FileNotFoundError, KeyError) as exc:
+                from mira.ui.design.dialogs import show_error
+                show_error(
+                    self, tr("Couldn't relink"),
+                    tr("The folder you picked doesn't contain this event's "
+                       "event.db, so Mira can't be sure it's the right one.")
+                    + f"\n\n{exc}",
+                )
+                return False
+            self.events_page.refresh()
+            return True
+
+        if dlg.outcome == OUTCOME_PRUNE:
+            try:
+                eg = self.gateway.open_event(event_id)
+                try:
+                    ids = eg.list_missing_origin_items()
+                    eg.prune_missing_originals(ids)
+                finally:
+                    eg.close()
+            except Exception:                                   # noqa: BLE001
+                log.exception("prune_missing_originals failed for %s", event_id)
+                return False
+            self.events_page.refresh()
+            return True
+
+        # Outcome == kept. Block navigation only on STORAGE_OFFLINE —
+        # the dashboard wouldn't have any media to render.
+        return check.state != OriginalsHealth.STORAGE_OFFLINE
 
     def _on_card_status_toggle_requested(self, event_id: str) -> None:
         """Status-badge click on an event tile (spec/64 §2.3) → flip
@@ -4096,7 +4195,10 @@ class MainWindow(QMainWindow):
         }
 
         dlg = self._exec_event_header_dialog(EventHeaderDialog(
-            existing_info=existing, parent=self))
+            existing_info=existing,
+            on_locate_originals=lambda: self._gate_missing_originals(event_id),
+            parent=self,
+        ))
         if not dlg:
             return
         edited = dlg.header_info()

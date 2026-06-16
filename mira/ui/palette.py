@@ -33,9 +33,10 @@ PALETTE: dict[str, dict[str, str]] = {
         "ink": "#eef1f7", "ink_soft": "#8b94a7", "ink_faint": "#5a6173",
         # `line` is the faint hairline between sub-sections; `card_border`
         # is the stronger weight used to make a Card read as a distinct
-        # surface (spec/77 §10.3 — the v1 dark border was nearly
-        # invisible against the dark page). Both themes carry both.
-        "line": "#262b38", "card_border": "#3a4054",
+        # surface (spec/77 §10.3/§10.7 — the dark border must read
+        # clearly against the dark page; the v1 #3a4054 was still too
+        # faint per Nelson's eyeball). Both themes carry both.
+        "line": "#262b38", "card_border": "#4f566f",
         "accent": "#7c6cff", "accent_soft": "#211f3a",
         "green": "#34d399", "amber": "#fbbf24", "red": "#ef4444",
         # `blue` carries the Collect phase identity (events-card pipeline
@@ -56,7 +57,7 @@ PALETTE: dict[str, dict[str, str]] = {
     "light": {
         "bg": "#eef1f6", "card": "#ffffff", "card2": "#f5f7fb",
         "ink": "#1a1f2b", "ink_soft": "#5e6679", "ink_faint": "#9aa1b1",
-        "line": "#e6e9f0", "card_border": "#d6dae5",
+        "line": "#e6e9f0", "card_border": "#b7bdcc",
         "accent": "#6a5cff", "accent_soft": "#eceaff",
         "green": "#16a34a", "amber": "#d97706", "red": "#dc2626",
         # Light-theme companion to dark's #22d3ee — darker so the

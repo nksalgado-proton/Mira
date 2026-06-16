@@ -67,7 +67,10 @@ from mira.ui.design import (
     PhotoCycler,
     tinted_svg_pixmap,
 )
-from mira.ui.palette import PALETTE
+from mira.ui.palette import PALETTE, RADIUS
+
+
+TILE_RADIUS = float(RADIUS["xl"])    # spec/77 §10.7 — tiles are rounded
 
 
 _CATEGORY_ICONS_DIR = (
@@ -222,20 +225,28 @@ class _PhaseDonut(QWidget):
         return f
 
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
-        # Reserve the bottom strip for the % label; the ring fills the
-        # rest, centred horizontally so the four donut cells line up.
+        # spec/77 §10.7 #5 — every donut cell uses the same layout:
+        # ring · fixed gap · % label, with the whole group centred
+        # vertically. Centring keeps the four cells reading identically
+        # regardless of which sits where in the 2×2 grid (previously
+        # the ring was top-anchored, so the bottom-row donuts read
+        # with more space between ring and %).
         pct_text = f"{self._percent}%"
         pct_font = self._pct_font()
         fm = QFontMetrics(pct_font)
         pct_h = fm.height()
 
-        ring_area_h = self.height() - pct_h - self._PCT_GAP
-        side = min(self.width(), ring_area_h) - self._RING_INSET * 2
+        avail_h = self.height() - pct_h - self._PCT_GAP - self._RING_INSET * 2
+        side = min(
+            self.width() - self._RING_INSET * 2, max(0, avail_h)
+        )
         if side <= 0:
             return
+        group_h = side + self._PCT_GAP + pct_h
+        top = (self.height() - group_h) / 2.0
         rect = QRectF(
-            (self.width() - side) / 2,
-            (ring_area_h - side) / 2,
+            (self.width() - side) / 2.0,
+            top,
             side, side,
         )
         ring_w = max(6, int(side * self._RING_THICKNESS_RATIO))
@@ -290,14 +301,14 @@ class _PhaseDonut(QWidget):
                 iy = int(rect.center().y() - icon_size / 2)
                 painter.drawPixmap(ix, iy, pm)
 
-        # Percent text — below the ring, centred horizontally. The font
-        # size is fixed so labels stay legible at every slider step
-        # (spec/77 §10.5 — header text constant as the tile scales).
+        # Percent text — below the ring, centred horizontally. The
+        # baseline is anchored against the bottom of the centred group
+        # (spec/77 §10.7 #5) so every cell renders the same.
         painter.setFont(pct_font)
         painter.setPen(QColor(_palette_color("ink", "#e4e8f5")))
         text_w = fm.horizontalAdvance(pct_text)
-        tx = (self.width() - text_w) / 2
-        ty = ring_area_h + self._PCT_GAP + fm.ascent()
+        tx = (self.width() - text_w) / 2.0
+        ty = top + side + self._PCT_GAP + fm.ascent()
         painter.drawText(QPointF(tx, ty), pct_text)
         painter.end()
 
@@ -326,22 +337,26 @@ def _collect_slices(
 def _pick_slices(
     picked: int, decided: int, captured: int,
 ) -> tuple[int, list[tuple[float, str]]]:
-    """Pick — green / red survival pass.
+    """Pick — default-Skip survival pass (spec/77 §10.7 #6).
 
-    Green = picked ÷ captured; red = skipped ÷ captured; faint =
-    not-yet-reviewed. Centre % = picked share. Defaults to all-track at
-    0 captured so a fresh event reads as a quiet ring."""
+    Default-Skip means every captured photo is implicitly skipped until
+    the user picks it green; the ring therefore starts FULL RED and
+    green grows out of it. No faint remainder — the ``decided`` count
+    no longer matters for the ring; only ``picked`` does.
+
+    * 0 captured  → full red (the event has photos coming, none kept).
+    * captured>0  → green = picked / captured, red = remainder.
+    * The ``decided`` parameter is accepted for API stability with the
+      gateway aggregate but is not used in the slice math any more.
+    """
     captured = max(0, int(captured))
-    decided = max(0, min(captured, int(decided)))
-    picked = max(0, min(decided, int(picked)))
-    skipped = max(0, decided - picked)
+    picked = max(0, min(captured, int(picked)))
     if captured == 0:
-        return 0, [(1.0, "track")]
+        return 0, [(1.0, "red")]
     percent = int(round(picked / captured * 100))
     return percent, [
         (picked, "green"),
-        (skipped, "red"),
-        (captured - decided, "track"),
+        (captured - picked, "red"),
     ]
 
 
@@ -364,20 +379,23 @@ def _edit_slices(
 def _export_slices(
     exported: int, picked: int
 ) -> tuple[int, list[tuple[float, str]]]:
-    """Export — green + faint. Spec/77 §7 #2: the schema has no
-    explicit drop decision (just ``edit_exported = 1`` for shipped), so
-    the red arc the spec talks about is not yet wired — Export reads
-    green (shipped) + faint (not yet shipped). When a deliberate-drop
-    signal lands, plug the red slice in here and the donut updates
-    everywhere at once."""
+    """Export — default-Skip survival pass (spec/77 §10.7 #6).
+
+    Mirrors Pick: every keeper is implicitly NOT-shipped until the user
+    exports it, so the ring starts FULL RED and green grows out of it.
+    No faint remainder.
+
+    * 0 picked  → full red (no keepers yet, nothing to ship).
+    * picked>0  → green = exported / picked, red = remainder.
+    """
     picked = max(0, int(picked))
     exported = max(0, min(picked, int(exported)))
     if picked == 0:
-        return 0, [(1.0, "track")]
+        return 0, [(1.0, "red")]
     percent = int(round(exported / picked * 100))
     return percent, [
         (exported, "green"),
-        (picked - exported, "track"),
+        (picked - exported, "red"),
     ]
 
 
@@ -551,12 +569,18 @@ class EventTile(Card):
             sub_bits.append(f"{self._data.exported_count} exported")
         if self._data.collected_count:
             sub_bits.append(f"{self._data.collected_count} shot")
+        # The cycler sits below the title row so its top edge stays
+        # square (meets the row at a straight line); the bottom corners
+        # match the tile's outer radius so the photo and the tile
+        # border share one continuous rounded edge (spec/77 §10.7 #3).
         return PhotoCycler(
             self._sample_pixmaps,
             caption=" · ".join(sub_bits),
             sub_caption="",
             tag_text="",
             pill_text="",
+            top_radius=0,
+            bottom_radius=TILE_RADIUS,
         )
 
     # ── open content: 2×2 phase donut grid ───────────────────────
@@ -564,9 +588,13 @@ class EventTile(Card):
     def _build_open_content(self) -> QWidget:
         host = QWidget()
         grid = QGridLayout(host)
-        grid.setContentsMargins(8, 8, 8, 8)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(6)
+        # spec/77 §10.7 #2 — bigger bottom margin so the bottom-row
+        # donut `%` labels never collide with the painted tile border
+        # below them. Equal top/sides so the four cells stay uniform
+        # (#5 — every donut reads identically).
+        grid.setContentsMargins(10, 8, 10, 18)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
 
         pct, slices = _collect_slices(
             self._data.days_with_captures, self._data.total_days,
@@ -601,21 +629,32 @@ class EventTile(Card):
         self.activated.emit(self._data.event_id)
 
     def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
-        """Paint the rounded tile border with antialiasing on top of
-        the QSS background fill (spec/77 §10.3). Qt's QSS ``border`` +
-        ``border-radius`` combo doesn't antialias the corners — it
-        rasterises the stroke to integer pixels, so the corners come
-        out as visible stair-steps especially on HiDPI displays. We
-        delegate the background to QSS (still rounded, still themed)
-        and draw the 1px border here through ``QPainter`` with
-        ``Antialiasing`` set."""
-        super().paintEvent(evt)
+        """Paint the rounded tile fill + border ourselves (spec/77
+        §10.3 / §10.7). Two reasons the QSS path can't do this:
+
+        1. ``background-color`` is NOT clipped to ``border-radius``
+           unless a border is also set — without the border we'd
+           painted out, the QSS background fill spreads to the four
+           corners as opaque squares poking through our rounded
+           outline.
+        2. Even with a border the corner stroke isn't antialiased; the
+           rounded edge breaks into stair-steps especially on HiDPI.
+
+        We bypass QSS for #TileCard's background (the rule is
+        ``background: transparent``) and own both the fill + the
+        outline in QPainter so the tile is one continuous rounded
+        card. The drop shadow effect on Card is unaffected — it reads
+        the widget's final rendered pixels, including this paint."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Card fill — clipped to the rounded outline so the corner
+        # area outside the rounded rect stays transparent.
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(_palette_color("card")))
+        painter.drawRoundedRect(r, TILE_RADIUS, TILE_RADIUS)
+        # 1-px AA border on top of the fill.
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(_palette_color("card_border")), 1.0))
-        # Inset by 0.5 so the 1-px stroke lands on the pixel grid; the
-        # radius matches the QSS ``border-radius: 18px`` ({radius_xl}).
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        painter.drawRoundedRect(r, 18.0, 18.0)
+        painter.drawRoundedRect(r, TILE_RADIUS, TILE_RADIUS)
         painter.end()

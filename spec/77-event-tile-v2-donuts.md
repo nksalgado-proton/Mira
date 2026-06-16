@@ -1,227 +1,204 @@
-# spec/77 — Event tile v2 (header + 4:3 area + four phase donuts)
+# spec/77 — Event tile (final, consolidated)
 
-**Status:** written 2026-06-16 from a design session with Nelson (interactive
-mockups reviewed + approved, one gauge at a time). For a full-access coding
-agent that can launch the app + run `verify.bat`.
+**Status:** consolidated 2026-06-16 after a full design pass with Nelson
+(mockups approved one element at a time, then corrected against the first two
+builds). **This is the single source of truth for the events-grid tile** — it
+replaces the earlier layered version of this spec and **supersedes the tile
+sections of spec/75 (§5/§6)**. Where spec/75 differs on the tile, this wins.
 
-**Supersedes** the tile sections of spec/75: §5 (open tile) and §6/§5's
-fixed-150px whole-tile box and the succession-strip pipeline. The slim chrome
-(spec/75 §2), filters rework (§3), and grid reflow (§4) stay as built. The
-`PhotoCycler` from spec/75 §6 is reused inside the new closed tile.
+For a full-access agent that can launch the app + run `verify.bat`. The events
+*screen* chrome (slim header, cross-event band, Filters popover, grid reflow)
+stays as built per spec/75 §2–§4. This doc is only the **tile** + the data
+behind its donuts.
 
 Read first: `spec/05-ui-standards.md` (QSS roles in **both** themes, **no inline
-`setStyleSheet`**, pointing-hand cursor on clickables), `spec/66` (phase
-definitions), and `Desktop/MiraCrafter Redesign/00-design-system.md`. All
-user-facing strings via `tr()`.
+`setStyleSheet`** in widget modules, pointing-hand cursor on clickables),
+`spec/66` (phase definitions). All user-facing strings via `tr()`.
 
 ---
 
-## §1. Tile structure & size
+## 1. Tile structure & size
 
-A tile is **a fixed title row on top of a 4:3 content area** — the 4:3 applies
-to the *content area below the title*, not the whole tile:
+A tile = a fixed **title row** on top of a **4:3 content area** (4:3 is the area
+*below* the title, not the whole tile):
 
-- **Title row** — fixed height (~50px): category icon tile (the existing SVG
-  family) · name + one-line meta · status pill · `⋮` menu.
-- **4:3 content area** — width = tile width, height = `width × 3/4`. For an open
-  event this holds the four donuts; for a closed event it's the photo.
+- **Title row** (~50px): category icon tile · name + one-line meta · `⋮` menu.
+  **No status badge** (see §6).
+- **4:3 content area** (height = tile width × 3/4): open event → the four phase
+  donuts (2×2); closed event → the photo.
 
-Total tile height = title row + 4:3 area (≈ 233px at ~244px wide). Every tile is
-identical size; the grid (spec/75 §4 `FlowLayout`, `minmax(~220px,1fr)`) reflows
-by width. Tune the exact width on real exported photos, then everything follows.
+One **fixed tile size** (≈248px wide; tune on real photos). Every tile identical.
+The `FlowLayout` reflows columns by window width. **No size slider** (a live
+slider re-layouts the whole grid per tick — janky; do not build it).
 
----
-
-## §2. Open-event tile
-
-- **Title row:** icon tile · a block with **name on its own near-full-width
-  line** (ellipsis only as last resort — it must stop truncating in the common
-  case, which was the bug in Picture21) + a muted meta line `Trip · year ·
-  category · Nd` · a small **Open** status pill (green dot + "Open") · `⋮` menu.
-- **4:3 area:** the four phase donuts in a **2×2 grid** (Collect top-left, Pick
-  top-right, Edit bottom-left, Export bottom-right — reading order = pipeline
-  order). Each donut: the phase icon centred, the value `%` beneath. Sizes/colours
-  per §4. 2×2 (not a single row) so the donuts are large enough to read and fill
-  the 4:3 area.
-
-## §3. Closed-event tile
-
-- **Title row:** same shape — icon · name + meta · **Closed** pill (pink dot) ·
-  `⋮` menu.
-- **4:3 area:** the `PhotoCycler` (spec/75 §6 — chrome-free, shuffled
-  auto-advance, blurred-fill, no arrows/dots) showing the event's **exported
-  keepers**, with a single thin translucent strip across the bottom carrying the
-  counts (`N exported · M shot`). Nothing else covers the photo.
+Tiles are **rounded** (`radius_xl`) — see §7.2 for how to render the rounding
+cleanly (the thing that kept breaking).
 
 ---
 
-## §4. The four phase donuts (the heart of this spec)
+## 2. Open-event tile
 
-Reuse the existing `Donut` / `DonutSlice` widget (`mira/ui/design`, already used
-by the Phases page) so the tile and the Phases page agree. Each donut is a ring
-over a faint `track`; the icon sits in the centre, the `%` beneath. Two donuts
-are single-arc **progress** gauges (amber while < 100, green at 100); two are
-**green/red survival-pass** gauges.
+- **Title row:** icon tile · a block with the **name on its own line, taking the
+  full remaining width** (so it stops truncating — this was the recurring bug)
+  + a muted meta line `Trip · year · category · Nd` · the **flat `⋮`** menu
+  (§6). No badge eating the name's width.
+- **4:3 area:** the four donuts in a **2×2** — Collect (top-left), Pick
+  (top-right), Edit (bottom-left), Export (bottom-right); reading order = pipeline
+  order. Each donut: phase icon centred, `%` below the ring (§4).
+
+## 3. Closed-event tile
+
+- **Title row:** same shape — icon · name + meta · `⋮`.
+- **4:3 area:** the `PhotoCycler` (chrome-free ambient cycler from spec/75 §6 —
+  shuffled auto-advance, blurred-fill, no arrows/dots) over the event's
+  **exported keepers**, with one thin translucent bottom strip carrying the
+  counts (`N exported · M shot`). The photo's **bottom corners are clipped to the
+  tile radius** (§7.2) so it lines up with the rounded border — nothing square
+  pokes out.
+
+---
+
+## 4. The four phase donuts
+
+Reuse the `Donut`/`DonutSlice` widget (`mira/ui/design`, used by the Phases
+page). Each donut paints a ring; the **phase icon sits centred inside it** and
+the **`%` sits just below the ring** (never both stacked in the centre). All four
+**always paint a complete ring** — a not-started donut shows a **full faint track
+ring**, never just an icon + `%`.
+
+Two donuts are **progress gauges** (amber → green over a faint track); two are
+**green/red, default-Skip** gauges (start a **full red ring**, green grows out,
+no faint).
 
 ### Collect — progress (amber → green)
-- **Metric:** `days_with_captures ÷ total_days`, where **total_days comes from
-  the event header date range** (see §5), not from the count of days that have
-  photos. (Today `EventCardData.total_days` = `len(days-with-items)`, which makes
-  Collect always 100% — that must change to the header span.)
-- **Colour:** amber while < 100%, green at 100%, faint remainder. Icon: camera.
+`days_with_captures ÷ total_days`, where `total_days` = the event header date
+span (§5). Amber < 100%, green at 100%, faint track for the rest. Icon: collect
+glyph. (≈100% once fully imported.)
 
-### Pick — green/red survival pass
-- **Metric:** green arc = **picked ÷ captured**; red arc = **skipped ÷ captured**;
-  faint remainder = not-yet-reviewed. Centre `%` = the **picked** share.
-- **Why:** default is Skip, so green grows as you keep; it never reaches 100%
-  (by design), green+red shows review completeness, the gap is what's left.
-- **Data:** picked = `phase_picked_count('pick')` (state='picked'); decided =
-  `phase_decided_count('pick')` (any explicit mark); skipped = decided − picked;
-  captured = count of `visible_item` `provenance='captured'`. Icon: checks.
+### Pick — green/red, **starts ALL RED**
+- green = `picked ÷ captured`; red = the rest = `(captured − picked) ÷ captured`.
+  Centre `%` = picked share.
+- **Default-Skip:** an undecided capture counts as skipped, so a fresh event is a
+  **full red ring** and green grows as the user picks. green + red = 100% always
+  (no faint). Almost never reaches all-green, by design.
+- Data: `picked = phase_picked_count('pick')` (state='picked'); `captured =
+  COUNT(visible_item WHERE provenance='captured')`; `red = captured − picked`.
+  Icon: pick glyph.
 
 ### Edit — progress (amber → green)
-- **Metric:** `developed ÷ picked`. Reaches 100% when every keeper has been
-  through the Edit pass. Colour: amber < 100, green at 100, faint remainder.
-- **Data:** developed = keepers with an `adjustment` row; picked as above.
-  Icon: adjustments/sliders.
+`developed ÷ picked`. Reaches 100% when every keeper has been through Edit.
+Amber < 100%, green at 100%, faint track for the rest. Data: `developed` =
+keepers with an `adjustment` row (see §8 flag); `picked` as above. Icon: edit
+glyph.
 
-### Export — green/red survival pass (mirrors Pick)
-- **Metric:** green arc = **exported ÷ picked** (shipped); red arc = **dropped ÷
-  picked** (deliberately not shipped); faint remainder = keepers not yet given a
-  ship decision. Centre `%` = the **shipped** share.
-- **Data:** exported = `adjustment.edit_exported = 1`; picked as above; dropped =
-  see §7 flag. Icon: upload.
+### Export — green/red, **starts ALL RED** (mirrors Pick)
+- green = `exported ÷ picked`; red = the rest = `(picked − exported) ÷ picked`.
+  Centre `%` = shipped share.
+- **Default-Skip:** a keeper defaults to not-shipped, so it starts a **full red
+  ring** and green grows as the user ships. green + red = 100% (no faint).
+- Data: `exported = COUNT(adjustment WHERE edit_exported=1)`; `picked` as above;
+  `red = picked − exported`. Icon: export glyph.
 
-Colour tokens: green `#34d399`, red `#ef4444`, amber `#fbbf24`, track = faint
-`line`. (Define as QSS/palette roles, not inline hex, per spec/05.)
+**Colours** (define as QSS/palette roles, not inline hex): green `#34d399`, red
+`#ef4444`, amber `#fbbf24`, track = faint `line`. Only **Collect & Edit** use the
+faint track for their remainder; **Pick & Export** use **red** for theirs.
+
+**2×2 layout:** every donut cell is the **same size** with the **same internal
+spacing** (ring · fixed gap · `%`), the ring+`%` group centred — so the ring→`%`
+gap is identical for all four (the first build had the top row tighter than the
+bottom). Leave **bottom padding** in the 4:3 area so the lower `%`s never clip
+against the border.
 
 ---
 
-## §5. Mandatory event date range (Collect denominator)
-
-Collect needs an independent day count, so:
+## 5. Mandatory event date range (Collect's denominator)
 
 - Make **From / To dates required** in the Event Header dialog
-  (`event_header_dialog.py`) — `Event.start_date` / `end_date` are currently
-  `Optional`; add validation so Save is blocked until both are set (consistent
-  with the existing required-field treatment). `tr()` the validation message.
-- Compute **total_days = (end_date − start_date) + 1** and feed it to the
-  tile/`EventCardData` for Collect's denominator (replacing `len(days-with-items)`).
-- `days_with_captures` = count of distinct `day_number`s that have captured items.
-
-Edge note we accepted: a legitimately photo-less day inside the range lowers
-Collect below 100% — that's fine for v1 (the From/To range already lets the user
-bound the event tightly). An "included days" refinement via the Days Table is a
-later option, out of scope here.
+  (`event_header_dialog.py`): `Event.start_date`/`end_date` are `Optional` today;
+  block Save until both are set (reuse the existing required-field pattern,
+  `tr()` the message).
+- `total_days = (end_date − start_date) + 1`; feed it to `EventCardData` for
+  Collect's denominator (replacing the current `len(days-with-items)`, which made
+  Collect always 100%).
+- `days_with_captures` = distinct `day_number`s that have captured items.
+- Accepted edge: a photo-less day inside the range lowers Collect below 100% —
+  fine for v1 (trim the range via From/To).
 
 ---
 
-## §6. Status pill + ⋮ menu (and the stranded-event fix)
+## 6. No status badge · the `⋮` menu (and the stranded-event fix)
 
-- **Status pill** in the title row: green "Open" / pink "Closed".
-- **`⋮` menu** carries the rare actions so the tile stays clean:
-  - Open tile: **Close event**, Event header…, Days table…, Delete.
-  - Closed tile: **Reopen event**, Event header…, Delete.
-- **Bug fix (real, pre-production):** closing an event that has **no exported
-  media** currently strands the user with no way back. **Reopen** in the closed
-  tile's menu must always work regardless of export state, and closing must be
-  reversible. Add a test: close an export-less event → it appears as a closed
-  tile → Reopen returns it to open with its pipeline intact.
-
----
-
-## §7. Data flags to verify while building (not design choices)
-
-1. **Edit "developed" must reflect real develops.** spec/66 mentions an
-   automatic standard-correction baseline on every keeper. If that writes an
-   `adjustment` row for every keeper at Pick time, Edit would read 100%
-   instantly. Confirm `developed` counts only keepers the user actually
-   developed; if the baseline pre-creates rows, count a different signal (e.g. a
-   user-touched/dirty flag).
-2. **Export "dropped" (red) needs an explicit drop decision.** If the model only
-   records exported = yes/no and not a deliberate red drop, render Export as
-   green (shipped) + faint (not yet shipped) with **no red** — the look is
-   otherwise identical. Wire the red arc only if a drop decision is recorded.
+- **No Open/Closed pill.** The body already says it (donuts = open, photo =
+  closed); dropping the badge gives the name full width.
+- **`⋮` is a flat, borderless control** pinned top-right — transparent bg + no
+  border, ~16px three-dot glyph, a *hover-only* faint background, pointing-hand
+  cursor. Not a boxed button. On the photo tile, a translucent-dark chip behind
+  it keeps it legible.
+- **Menu:** open tile → **Close event**, Event header…, Days table…, Delete.
+  Closed tile → **Reopen event**, Event header…, Delete.
+- **Bug fix (pre-production):** closing an event with **no exported media**
+  currently strands the user. **Reopen must always work** regardless of export
+  state, and closing must be reversible. Test: close an export-less event → it
+  shows as a closed tile → Reopen restores it to open with its pipeline intact.
 
 ---
 
-## §8. Constraints & reuse
-- Reuse: `Donut`/`DonutSlice`, the category-icon SVG family, `PhotoCycler`
-  (spec/75 §6), `StatTile`/status pills.
+## 7. Rendering techniques (the things that kept breaking)
+
+### 7.1 Crisp icons — fix `tinted_svg_pixmap` for HiDPI
+The phase icons come from the `PHASE_GLYPH` SVG family via `tinted_svg_pixmap`
+(`mira/ui/design/icons.py`), but that function renders the SVG at logical
+`size × size` and **never sets `devicePixelRatio`**, so on a HiDPI display Qt
+upscales the pixmap and every icon looks soft. **Fix at the source:** render at
+`size × devicePixelRatioF()`, then `pixmap.setDevicePixelRatio(dpr)` before
+returning. This sharpens every icon in the app.
+
+### 7.2 Rounded tile + clean border + matching photo corners
+A QSS `border + border-radius` on a `QFrame` leaves the corners aliased
+(worst in dark) — and the latest build went fully square, which is also wrong.
+Do it in paint:
+- Drop the QSS `border`. In the tile's `paintEvent`, `QPainter` with
+  `setRenderHint(Antialiasing)`, draw the rounded fill and a **1px rounded-rect
+  border** (`drawRoundedRect`, rect inset 0.5px) at `radius_xl`.
+- **Clip the tile's content** to that rounded rect so nothing square pokes out.
+- **Clip the closed `PhotoCycler` to match:** round its **bottom-left and
+  bottom-right** corners to `radius_xl` (top edge straight where it meets the
+  header) via a `QPainterPath` clip, so the photo's rounded bottom lines up with
+  the tile border.
+- The border must be **clearly visible in BOTH light and dark** — choose a
+  `card_border`/`line` value with real contrast against the fill, not the
+  faintest token.
+
+---
+
+## 8. Data flag to verify while building
+**Edit "developed" must reflect real develops.** spec/66 mentions an automatic
+standard-correction baseline on every keeper. If that writes an `adjustment` row
+for every keeper at Pick time, Edit would read 100% instantly. Confirm
+`developed` counts only keepers the user actually developed; if the baseline
+pre-creates rows, count a different signal (e.g. a user-touched/dirty flag).
+(Export no longer needs a "dropped" flag — its red is simply `picked − exported`.)
+
+---
+
+## 9. Constraints & reuse
+- Reuse: `Donut`/`DonutSlice`, the `PHASE_GLYPH` SVG family, `PhotoCycler`
+  (spec/75 §6), the category-icon SVG family.
 - QSS roles for every new colour/state, present in `light.qss` **and** `dark.qss`;
   no inline `setStyleSheet` in widget modules; pointing-hand cursor on the tile,
   the `⋮`, and menu items.
-- Tile, status pill, and `⋮` are clickable affordances (hover/pressed/disabled).
 
-## §9. Definition of done
+## 10. Definition of done
 1. `verify.bat` green, incl. the close→reopen test (§6) and a tile-render test.
-2. Open tile: title row (non-truncating name) + 2×2 donuts matching §4 rules;
-   closed tile: title row + clean cycling photo + counts strip.
-3. From/To mandatory in the header; Collect uses the header span; an event with
-   a photo-less day reads Collect < 100%.
-4. Pick/Export show green/red/faint; Collect/Edit show amber→green.
-5. ⋮ menu Close/Reopen works; export-less close is recoverable.
-6. Capture a screenshot of the events grid (a few open + a closed) for Nelson.
-
----
-
-## §10. Revision 2026-06-16 (post-build review with Nelson)
-
-The first build (Pictures 22/23) was close, but Nelson flagged five things.
-**These corrections govern over the descriptions above where they conflict.**
-
-### §10.1 Kill the status badge entirely
-Remove the green "Open" / pink "Closed" pill from the title row. The tile's body
-already says it — **donuts = open, photo = closed** — so the badge is redundant,
-and dropping it gives the **name the full header width** (it was the main cause
-of the name truncating in every tile). Title row is now just: icon · name + meta
-(name takes all remaining width) · `⋮`.
-
-### §10.2 The ⋮ menu must be a FLAT, borderless control (it's a boxed button now)
-The first build rendered `⋮` as a styled `QPushButton` with a visible
-border/background — a rounded box that eats a whole column, as much room as the
-badge we just removed. **Make it flat and borderless:** transparent background +
-no border, a ~16px three-dot glyph, top-right, with a *hover-only* subtle
-background and pointing-hand cursor. Give it a dedicated QSS role (e.g.
-`#TileMenuButton`) that is transparent by default and only shows a faint
-`card2`/hover fill on `:hover`. On the closed (photo) tile, a translucent-dark
-chip behind it keeps it legible on any image. It should read as three quiet dots,
-not a button.
-
-### §10.3 Tile border breaks at the corners — paint it, don't QSS it
-The `#TileCard` rule (`border: 1px solid {card_border}; border-radius:
-{radius_xl}px` in `redesign.qss`) leaves the **corners aliased / interrupted**,
-worst in dark mode — the classic Qt limitation where a QSS `border` +
-`border-radius` doesn't antialias the rounded corners. **Fix by painting the
-border in the tile's `paintEvent`:** `QPainter` with
-`setRenderHint(Antialiasing)`, a 1px pen in the `line`/`card_border` colour,
-`drawRoundedRect` on a rect inset by 0.5px, matching `radius_xl`. Drop the QSS
-`border` (keep the QSS background/radius for fill/clipping). The card must show a
-continuous, clean rounded border in both themes.
-
-### §10.4 Icons look low-res — fix `tinted_svg_pixmap` for HiDPI (root cause)
-The donut/phase icons already come from the crisp `PHASE_GLYPH` SVG family via
-`tinted_svg_pixmap`, **but that function renders the SVG at logical `size × size`
-and never sets `devicePixelRatio`** (`mira/ui/design/icons.py`). On a HiDPI
-display Qt upscales the pixmap → every icon looks soft. **Fix at the source:**
-render the SVG at `size × dpr` (the target widget's / app's
-`devicePixelRatioF()`), then `pixmap.setDevicePixelRatio(dpr)` before returning.
-This sharpens **every** icon in the app, not just the tiles. After that:
-- Keep **only the phase icon centred** in each ring and the **`%` just below**
-  (already done — don't regress it).
-- If, once crisp, a specific phase glyph still reads poorly at centre size
-  (Collect/Pick/Edit/Export), swap that one SVG for a cleaner equivalent in the
-  same family — but verify the HiDPI fix first; it is the main cause.
-
-### §10.5 Size slider — REMOVED. Do not build it.
-The live slider relayouts the whole grid on every tick → janky and slow. **Drop
-it entirely** (revert any `events_grid_tile_size` slider/setting work). Keep a
-**single fixed tile size** — the comfortable ~248px-wide box from the approved
-mock. The `FlowLayout` still reflows columns by window width; that is enough.
-
-### §10.6 Approved reference
-The corrected look was approved against the 2026-06-16 mock: **no status badge**,
-a **flat three-dot ⋮** (no box), a **continuous painted border**, **crisp
-HiDPI icons**, donuts with centred icon + `%` beneath, **fixed tile size (no
-slider)**. The bar is "as nice as the mockup" — build to that, and screenshot at
-HiDPI to confirm the icons are sharp.
+2. Tiles are **rounded** with a **continuous, clearly visible border in both
+   themes**; the closed photo's bottom corners match the radius.
+3. Open tile: full-width non-truncating name, flat `⋮`, no badge, four donuts in
+   an even 2×2 (identical ring→`%` gaps, no `%` clipping).
+4. Donuts: **crisp HiDPI icons**, icon centred + `%` below, a **full ring even at
+   0%**; Collect/Edit amber→green over a track; **Pick & Export start full red**
+   (default-Skip) with green growing out.
+5. From/To mandatory; Collect uses the header span.
+6. `⋮` Close/Reopen works; export-less close is recoverable.
+7. No size slider. Fixed ~248px tile.
+8. Screenshot the events grid (a few open + a closed) **at HiDPI** for Nelson —
+   confirm sharp icons, clean rounded borders, even donuts.

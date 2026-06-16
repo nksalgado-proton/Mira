@@ -17,14 +17,14 @@ QWidget#RedesignRoot { background: qradialgradient(cx:0.8, cy:-0.1, radius:1.1, 
 
 /* ---- Cards / panels ---- */
 QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
-/* Event tiles (spec/77 §10.3) — the QSS border + border-radius combo
- * does NOT antialias the corners in Qt; on a high-DPI screen the
- * border breaks into jagged stair-steps at every corner. The tile
- * paints its own rounded border in ``EventTile.paintEvent`` with
- * antialiasing, so this rule deliberately carries the background +
- * radius ONLY (border: none) — the radius still clips the QSS bg
- * fill so the corner area outside the rounded rect stays unpainted. */
-QFrame#TileCard    { background: {card}; border: none; border-radius: {radius_xl}px; }
+/* Event tiles (spec/77 §10.3/§10.7) — Qt's QSS does NOT clip a
+ * ``background-color`` fill to ``border-radius`` unless a border is
+ * also set, AND it does NOT antialias the corner stroke. Both shapes
+ * come out square / stair-stepped. The tile owns its painting
+ * entirely: ``EventTile.paintEvent`` paints the rounded card fill +
+ * the AA-rounded border in QPainter. This rule keeps the background
+ * transparent so the QSS doesn't paint a square fill behind us. */
+QFrame#TileCard    { background: transparent; border: none; }
 QFrame#Card2,
 QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
 

@@ -52,24 +52,66 @@ _PHOTO_INSET = 6  # px the contained photo sits inset from the tile edge
 _DEFAULT_INTERVAL_MS = 3500
 
 
+def _mixed_rounded_path(
+    rect: QRectF, *, top: float, bottom: float
+) -> QPainterPath:
+    """Build a path with the top corners rounded by ``top`` and the
+    bottom corners rounded by ``bottom``. ``0`` on either pair leaves
+    those corners square — used by the event tile's closed body where
+    the photo's top edge meets the title row (square) and its bottom
+    edge meets the tile's bottom rounding (radius_xl)."""
+    path = QPainterPath()
+    if top <= 0 and bottom <= 0:
+        path.addRect(rect)
+        return path
+    x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
+    path.moveTo(x + top, y)
+    path.lineTo(x + w - top, y)
+    if top > 0:
+        path.arcTo(x + w - 2 * top, y, 2 * top, 2 * top, 90, -90)
+    path.lineTo(x + w, y + h - bottom)
+    if bottom > 0:
+        path.arcTo(
+            x + w - 2 * bottom, y + h - 2 * bottom,
+            2 * bottom, 2 * bottom, 0, -90,
+        )
+    path.lineTo(x + bottom, y + h)
+    if bottom > 0:
+        path.arcTo(x, y + h - 2 * bottom, 2 * bottom, 2 * bottom, 270, -90)
+    path.lineTo(x, y + top)
+    if top > 0:
+        path.arcTo(x, y, 2 * top, 2 * top, 180, -90)
+    path.closeSubpath()
+    return path
+
+
 class PhotoCycler(QWidget):
     """Chrome-free slideshow over a shuffled photo list.
 
     Args:
-        pixmaps:     The photos to cycle through. ``None`` / empty draws a
-                     "no photos" placeholder so the tile never reads as
-                     broken.
-        interval_ms: Auto-advance interval. Pass ``0`` to freeze on the
-                     first frame (useful for tests + the single-photo
-                     case).
-        caption:     Bottom caption line (typically the event name). Empty
-                     string omits the bottom strip entirely.
-        sub_caption: Secondary line under ``caption`` ("169 shot · 18
-                     exported"). Optional.
-        tag_text:    Small uppercase pill painted top-left (the
-                     ``Trip``/``Session`` type tag). Empty string skips.
-        pill_text:   Small pill painted top-right (the ``Closed`` status).
-                     Empty string skips.
+        pixmaps:       The photos to cycle through. ``None`` / empty draws a
+                       "no photos" placeholder so the tile never reads as
+                       broken.
+        interval_ms:   Auto-advance interval. Pass ``0`` to freeze on the
+                       first frame (useful for tests + the single-photo
+                       case).
+        caption:       Bottom caption line (typically the event name). Empty
+                       string omits the bottom strip entirely.
+        sub_caption:   Secondary line under ``caption`` ("169 shot · 18
+                       exported"). Optional.
+        tag_text:      Small uppercase pill painted top-left (the
+                       ``Trip``/``Session`` type tag). Empty string skips.
+        pill_text:     Small pill painted top-right (the ``Closed`` status).
+                       Empty string skips.
+        top_radius:    Round the top-left / top-right corners by this many
+                       pixels (default ``_RADIUS``). Set to ``0`` when the
+                       cycler sits below a title row so the top edge meets
+                       the row at a straight line.
+        bottom_radius: Round the bottom-left / bottom-right corners by this
+                       many pixels (default ``_RADIUS``). Set to the host
+                       tile's outer radius (``radius_xl``) when the cycler
+                       sits inside an event tile, so the photo's bottom
+                       lines up with the tile border exactly.
     """
 
     indexChanged = pyqtSignal(int)
@@ -83,6 +125,8 @@ class PhotoCycler(QWidget):
         sub_caption: str = "",
         tag_text: str = "",
         pill_text: str = "",
+        top_radius: float = _RADIUS,
+        bottom_radius: float = _RADIUS,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -90,6 +134,8 @@ class PhotoCycler(QWidget):
         self._sub_caption = sub_caption
         self._tag_text = tag_text
         self._pill_text = pill_text
+        self._top_radius = float(top_radius)
+        self._bottom_radius = float(bottom_radius)
         self._interval_ms = max(0, int(interval_ms))
         self._index = 0
         self._tiny_cache: dict[int, QPixmap] = {}
@@ -180,8 +226,13 @@ class PhotoCycler(QWidget):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         rect = QRectF(0, 0, self.width(), self.height())
-        clip = QPainterPath()
-        clip.addRoundedRect(rect, _RADIUS, _RADIUS)
+        # Mixed-corner clip: when embedded in an event tile we want a
+        # square top edge (meets the title row) + bottom corners that
+        # match the tile's outer radius. Default round-all keeps the
+        # standalone usage unchanged.
+        clip = _mixed_rounded_path(
+            rect, top=self._top_radius, bottom=self._bottom_radius,
+        )
         painter.setClipPath(clip)
 
         if not self._pixmaps:

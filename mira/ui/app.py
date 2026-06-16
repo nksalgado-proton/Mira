@@ -183,32 +183,52 @@ def _silence_libav_stderr() -> None:
     log.debug("libav stderr: no avutil found to silence (harmless)")
 
 
-def _acquire_instance_lock(data_dir: Path) -> bool:
-    """Write a PID lockfile; return False if another live instance is detected.
+def _resolve_library_root(settings_obj, data_dir: Path) -> Path:
+    """Where the library's writer lock lives (spec/76 §A.1).
 
-    Uses a plain text file containing the owner PID.  On the next launch we
-    check whether that PID is still alive — if not the lock is stale (crash)
-    and we take over.  Race conditions are acceptable for a single-user desktop
-    app: the window between read-PID and write-PID is milliseconds."""
-    import os
-
-    lock = data_dir / "running.lock"
-    if lock.exists():
-        try:
-            pid = int(lock.read_text(encoding="utf-8").strip())
-            os.kill(pid, 0)  # raises OSError if the process is dead
-            return False     # process is alive — another instance is running
-        except (ValueError, OSError):
-            pass             # stale lock from a previous crash — ignore
-    lock.write_text(str(os.getpid()), encoding="utf-8")
-    return True
+    The "library root" is the base that holds every event — today
+    that's ``settings.photos_base_path``; on a future NAS setup it
+    will be a UNC share. We fall back to the user-data dir when no
+    base path is set yet (first run, pre-wizard) so there's always a
+    place for the lock — never a hardcoded path (invariant #2).
+    """
+    raw = getattr(settings_obj, "photos_base_path", "") or ""
+    return Path(raw) if raw else data_dir
 
 
-def _release_instance_lock(data_dir: Path) -> None:
-    try:
-        (data_dir / "running.lock").unlink(missing_ok=True)
-    except OSError:
-        pass
+def _show_lock_conflict_dialog(holder) -> str:
+    """Modal dialog when another Mira instance owns the writer lock.
+
+    Per spec/76 §A.4, full read-only mode (§B.1) isn't in this slice
+    yet — the acceptable interim is to **decline to open** with a
+    clear message + Retry, rather than ever open a second writer.
+
+    Returns ``"retry"`` if the user wants to retry the acquire,
+    ``"cancel"`` otherwise.
+    """
+    from mira.ui.design.dialogs import MessageDialog
+    from mira.ui.i18n import tr
+    msg = tr(
+        "This library is already open for editing on {host} (since "
+        "{since}). Two writers would corrupt the store, so Mira can't "
+        "open a second one. Close the other Mira, then Retry."
+    ).replace("{host}", holder.hostname).replace("{since}", holder.acquired_at)
+    dlg = MessageDialog(
+        intent="warning",
+        title=tr("Library is in use"),
+        message=msg,
+        primary_text=tr("Retry"),
+        ghost_text=tr("Cancel"),
+    )
+    dlg.exec()
+    return "retry" if dlg.result_kind() == "primary" else "cancel"
+
+
+# spec/76 §A.2 — the heartbeat QTimer must outlive ``main()`` so the
+# library lock stays fresh for the lifetime of the QApplication. A
+# module-level reference keeps Qt's parent-less timer from being GC'd
+# the moment ``main()`` returns to the caller (Python REPL, tests).
+_LIBRARY_LOCK_HEARTBEAT = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -273,19 +293,56 @@ def main(argv: list[str] | None = None) -> int:
     # level — after the QApplication exists, before the first clip opens.
     _silence_libav_stderr()
 
-    # Single-instance guard — must come after QApplication exists so we can
-    # show a message box if needed, but before the main window is built.
-    if not _acquire_instance_lock(data_dir):
-        from PyQt6.QtWidgets import QMessageBox
-        log.warning("Another Mira instance (PID in running.lock) is already running")
-        QMessageBox.warning(
-            None,
-            "Mira already open",
-            "Mira is already running.\n\nCheck the taskbar and bring that window to the front.",
-        )
-        return 1
-
     settings = SettingsRepo().load()
+
+    # spec/76 §A — the library single-writer lock. Acquire at the
+    # library root (photos_base_path, or user_data_dir until the
+    # wizard sets one). Replaces the old PID-only running.lock — the
+    # advisory file + heartbeat works on local disks AND the future
+    # NAS share; the old kill(pid, 0) check did not.
+    from core import library_lock
+    library_root = _resolve_library_root(settings, data_dir)
+    while True:
+        result = library_lock.acquire(library_root)
+        if result.acquired:
+            log.info("Library writer lock acquired at %s", library_root)
+            break
+        if result.holder is None:
+            from PyQt6.QtWidgets import QMessageBox
+            log.warning(
+                "Library writer lock could not be written at %s", library_root)
+            QMessageBox.critical(
+                None,
+                "Library lock failed",
+                f"Mira couldn't write its writer lock at {library_root}. "
+                "Check permissions and free space, then try again.",
+            )
+            return 1
+        log.warning(
+            "Library writer lock held by %s (pid %d) at %s — "
+            "second instance declined.",
+            result.holder.hostname, result.holder.pid, library_root,
+        )
+        if _show_lock_conflict_dialog(result.holder) == "cancel":
+            return 1
+
+    # Heartbeat — keep the lock's mtime fresh so other machines /
+    # processes know we're alive. The timer parent is the QApplication
+    # so it lives as long as the event loop.
+    from PyQt6.QtCore import QTimer
+    global _LIBRARY_LOCK_HEARTBEAT
+    _LIBRARY_LOCK_HEARTBEAT = QTimer(app)
+    _LIBRARY_LOCK_HEARTBEAT.setInterval(
+        library_lock.HEARTBEAT_INTERVAL_SECONDS * 1000)
+
+    def _heartbeat():
+        if not library_lock.refresh(library_root):
+            log.warning(
+                "Library writer lock heartbeat failed at %s — "
+                "lock may have been taken over.", library_root)
+    _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
+    _LIBRARY_LOCK_HEARTBEAT.start()
+
     theme = "dark" if force_dark else settings.theme
     if theme not in ("light", "dark"):
         log.warning("Unknown theme %r in settings — falling back to light", theme)
@@ -314,7 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Event loop starting")
     code = app.exec()
     log.info("Event loop ended (exit code %d)", code)
-    _release_instance_lock(data_dir)
+    if _LIBRARY_LOCK_HEARTBEAT is not None:
+        _LIBRARY_LOCK_HEARTBEAT.stop()
+    if library_lock.release(library_root):
+        log.info("Library writer lock released at %s", library_root)
     return code
 
 

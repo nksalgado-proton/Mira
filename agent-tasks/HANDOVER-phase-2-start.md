@@ -80,7 +80,9 @@ Phase 1 left the engine ready to extend, not lock-in to event scope.
   `dynamic_collection` table. For cross-event Cuts the `source_dc_id`
   needs to reference a cross-event DC (different home). Either: drop
   the FK and use a UUID + a kind discriminator, OR keep two
-  `source_*_id` columns. Settle at Phase 2 kickoff.
+  `source_*_id` columns. **Recommendation (apply this):** drop the
+  FK, store the id as opaque, and add `source_dc_kind` (`"event"` /
+  `"user"`).
 
 ---
 
@@ -96,9 +98,9 @@ instead of fanning out across every `event.db`. Columns per spec/32 §3
 (reconciled names: **`pick_state`** was `cull_state`; **`flag`** was
 `pick`). Plus an event_id FK so members can roundtrip to their event.
 
-**Sync trigger** is the open question — on event close? on app
-startup? on demand? Spec/32 §3 leans "background, eventually
-consistent". **Settle at kickoff.**
+**Sync trigger** — on event close? on app startup? on demand? Spec/32
+§3 leans "background, eventually consistent". **Recommendation (apply
+this):** sync on event close + startup reconcile.
 
 **Cross-event DC schema lives here too** — or as a sibling table:
 - Option A — **extend `dynamic_collection`** to cross-event by making
@@ -110,7 +112,8 @@ consistent". **Settle at kickoff.**
 
 C is the spec-aligned answer (spec/32 already names `saved_filter`)
 but requires reconciling the predicate-tree shape with our typed-ref
-`expr_json`. **Settle at kickoff.**
+`expr_json`. **Recommendation (apply this):** wrap `saved_filter` —
+reconcile predicate-tree ↔ `expr_json` as you go.
 
 ### 2. Resolver extension (`core/collection_resolver.py` + a new seam)
 - Add the three new ladder tokens (`collected`/`picked`/`edited`) as
@@ -212,10 +215,13 @@ because the resolver itself doesn't change.
 
 ---
 
-## Open questions to settle at kickoff (with Nelson)
+## Open questions — pick the recommendation, don't ask
 
 These are the brief's "settle at kickoff" plus what surfaced during
-Phase 1:
+Phase 1. **Posture (Nelson 2026-06-16): pick the recommended path
+on each and proceed.** Flag back only if the recommendation falls
+apart on contact with the code. Each item below has its
+recommendation in bold:
 
 1. **Cross-event DC storage** — extend `dynamic_collection` (nullable
    `event_id`) vs new `user_dynamic_collection` vs wrap
@@ -243,8 +249,10 @@ Phase 1:
 1. `git log -1` — confirm you're on `8c4d11b` or later.
 2. Run the focused pytest subset above — must be green.
 3. Read the spec/81 §2.1 table + spec/32 in full.
-4. Open a kickoff conversation with Nelson on the five questions
-   above — DO NOT pick the storage / sync design unilaterally.
+4. Apply the recommended answers to the five open questions above.
+   Don't open a kickoff conversation for them — Nelson signed off on
+   the "pick recommended path" posture at handover. Flag back only
+   if a recommendation breaks against the code.
 5. Build in this order:
    a. **`global_items`** projection + sync (smallest, no UI).
    b. **Cross-event resolver accessors** (ladder tokens + filter

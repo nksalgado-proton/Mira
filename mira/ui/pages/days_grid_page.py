@@ -1803,7 +1803,8 @@ class DaysGridPage(QWidget):
 
     def _on_export_clicked(self) -> None:
         """Submit this day's not-yet-shipped green cells to the spec/60
-        batch engine via the spec/59 §8 ``BatchExportQueue``.
+        batch engine via the spec/59 §8 ``BatchJobQueue`` (renamed from
+        ``BatchExportQueue`` by spec/84 once ingest started riding it).
 
         The pool is the day's flat photo cells whose state is
         ``picked`` and that aren't already in

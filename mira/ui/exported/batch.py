@@ -7,13 +7,14 @@ grid MVP) so the redesigned per-day Export surface — the
 to the spec/60 batch engine without duplicating the partition /
 hardlink / commit-closure plumbing.
 
-The engine + the :class:`~mira.ui.shell.batch_queue.BatchExportQueue`
-contract are locked (spec/68 §4). This module only re-parents the
-*trigger* — it builds a manifest, partitions third-party returns into
-the hardlink path, and enqueues the rest with a commit closure that
-records ``edit-phase`` lineage rows under ``Exported Media/`` and flips
-``Adjustment.edit_exported = True`` for the units that actually
-landed.
+The engine + the :class:`~mira.ui.shell.batch_queue.BatchJobQueue`
+contract are locked (spec/68 §4; spec/84 §2 renamed the queue from
+``BatchExportQueue`` to ``BatchJobQueue`` so ingest can ride it too).
+This module only re-parents the *trigger* — it builds a manifest,
+partitions third-party returns into the hardlink path, and enqueues
+the rest with a commit closure that records ``edit-phase`` lineage rows
+under ``Exported Media/`` and flips ``Adjustment.edit_exported = True``
+for the units that actually landed.
 
 The hardlink + render contract is the same one the prior MVP
 established: a Pick-kept item with an ``Edited Media/`` return (a
@@ -248,7 +249,8 @@ def submit_export_batch(
     snapshot_cells: Optional[List[SnapshotCell]] = None,
 ) -> bool:
     """Build the spec/60 manifest from ``cells`` and submit it through
-    the app's :class:`BatchExportQueue`.
+    the app's :class:`BatchJobQueue` (spec/84 rename — the queue serves
+    both exports and ingest now).
 
     * ``cells`` are the green PHOTO ship-targets (the items that should
       land under ``Exported Media/``). Each carries its source path; the
@@ -543,12 +545,16 @@ def submit_export_batch(
         _cleanup_snapshot_temps(snapshot_temp_paths)
         return False
     worker.finished.connect(worker.deleteLater)
+    # spec/84 §2 — the progress line now owns the verb prefix
+    # (``Exporting …`` for ``job_type="export"``); the label carries only
+    # the descriptive tail.
     batch_queue.enqueue(
         worker,
-        tr("Export — {name} ({n})")
+        tr("{name} ({n})")
         .replace("{name}", event_name)
         .replace("{n}", str(len(units) + len(clip_units))),
         commit,
+        job_type="export",
     )
     return True
 

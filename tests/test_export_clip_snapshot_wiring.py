@@ -202,10 +202,11 @@ def test_submit_export_batch_builds_clip_units_via_the_walker(
     captured = {}
 
     class _FakeQueue:
-        def enqueue(self, job, title, commit):
+        def enqueue(self, job, title, commit, *, job_type="export"):
             captured["job"] = job
             captured["title"] = title
             captured["commit"] = commit
+            captured["job_type"] = job_type
             return None
 
     monkeypatch.setattr(

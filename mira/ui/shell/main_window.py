@@ -138,13 +138,15 @@ class MainWindow(QMainWindow):
         self.read_only_banner = ReadOnlyBanner()
         outer.addWidget(self.read_only_banner)
 
-        # spec/59 §8 — the app-level batch queue + its ONE progress line,
-        # directly below the menubar, visible from every page; hidden
-        # when idle. Jobs run strictly one at a time.
+        # spec/59 §8 + spec/84 §2 — the app-level batch queue + its ONE
+        # progress line, directly below the menubar, visible from every
+        # page; hidden when idle. Jobs run strictly one at a time. Both
+        # exports AND ingest copies ride this queue (spec/84 generalised
+        # the queue from export-only to all batch jobs).
         from mira.ui.shell.batch_queue import (
-            BatchExportQueue, BatchProgressLine,
+            BatchJobQueue, BatchProgressLine,
         )
-        self.batch_queue = BatchExportQueue(self)
+        self.batch_queue = BatchJobQueue(self)
         self.batch_line = BatchProgressLine()
         self.batch_line.bind(self.batch_queue)
         outer.addWidget(self.batch_line)

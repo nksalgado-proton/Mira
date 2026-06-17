@@ -18,7 +18,13 @@ from mira.settings.model import Settings
 from mira.store import models as m
 from mira.store.repo import EventStore
 from mira.gateway.event_gateway import EventGateway
-from mira.ui.shell.batch_queue import BatchExportQueue
+from mira.ui.shell.batch_queue import (
+    BatchExportQueue,  # back-compat alias verified below
+    BatchJobQueue,
+    BatchProgressLine,
+    JOB_TYPE_EXPORT,
+    JOB_TYPE_IMPORT,
+)
 
 
 def test_edit_default_ships_born_green():
@@ -186,3 +192,71 @@ def test_queue_cancel_routes_to_the_running_worker(qapp):
     assert not q.idle
     q.cancel_current()
     assert w.cancelled
+
+
+# --------------------------------------------------------------------------- #
+# spec/84 §2 — the queue's job-type-aware shape (ingest rides this queue too)
+# --------------------------------------------------------------------------- #
+
+
+def test_batch_export_queue_is_still_an_alias_for_batch_job_queue():
+    """The rename is back-compatible — the old class name still works."""
+    assert BatchExportQueue is BatchJobQueue
+
+
+def test_enqueue_default_job_type_is_export(qapp):
+    journal: list = []
+    q = BatchJobQueue()
+    w = _FakeWorker("e", journal)
+    q.enqueue(w, "an event")
+    # By the time the (synchronous) worker has finished, the queue is
+    # idle and running_job_type clears — pin the property's idle value
+    # AND that the export default was respected during the run.
+    assert q.running_job_type == ""
+    assert "start:e" in journal
+
+
+def test_enqueue_records_job_type_while_running(qapp):
+    """The progress line needs to read ``job_type`` of the *running*
+    job — pin it survives across the start of the next pending job."""
+    journal: list = []
+    captured: list = []
+
+    class _SignallingWorker(_FakeWorker):
+        def start(self) -> None:
+            self._journal.append(f"start:{self._name}")
+            # Snapshot the queue's state DURING execution. We can't
+            # close over `q` cleanly, so the test patches it in after.
+            captured.append(("running", getattr(self, "_q").running_job_type))
+            self.progress.emit(1, 1, self._name)
+            self.finished_result.emit(SimpleNamespace(ok_count=1))
+
+    q = BatchJobQueue()
+    w = _SignallingWorker("import-job", journal)
+    w._q = q
+    q.enqueue(w, "Mauritius (12)", None, job_type=JOB_TYPE_IMPORT)
+    assert ("running", JOB_TYPE_IMPORT) in captured
+    assert q.idle  # job ran synchronously; queue clears after
+
+
+def test_progress_line_uses_importing_verb_for_import_jobs(qapp):
+    """``BatchProgressLine`` reads ``job_type`` and prefixes the verb —
+    "Importing" for ingest, "Exporting" for export."""
+    head_export = BatchProgressLine._format_head(
+        JOB_TYPE_EXPORT, "Mauritius (12)")
+    head_import = BatchProgressLine._format_head(
+        JOB_TYPE_IMPORT, "Mauritius (12)")
+    assert head_export.startswith("Exporting") and "Mauritius" in head_export
+    assert head_import.startswith("Importing") and "Mauritius" in head_import
+
+
+def test_progress_line_falls_back_to_bare_label_for_unknown_types(qapp):
+    """Unknown job type → bare label; lets a future job lane render
+    usefully even before the verb map learns its verb."""
+    assert BatchProgressLine._format_head("future-thing", "label") == "label"
+    assert BatchProgressLine._format_head("", "") == ""
+
+
+def test_progress_line_cancel_tooltip_is_job_type_aware(qapp):
+    assert BatchProgressLine._cancel_tooltip(JOB_TYPE_EXPORT) != \
+        BatchProgressLine._cancel_tooltip(JOB_TYPE_IMPORT)

@@ -19,14 +19,24 @@ from mira.ui.pages.new_cross_event_dc_dialog import (
 )
 
 
-_INVENTORIES = CrossEventInventories(
-    classifications=("landscape", "macro", "portrait", "wildlife"),
-    cameras=("Pana+G9M2", "Pana+S5"),
-    lenses=("LEICA 45mm", "LUMIX 100-300", "LUMIX 24-105", "Lumix 42.5"),
-    country_codes=("CR", "NP"),
-    cities=("La Fortuna", "Monteverde", "Namche Bazaar"),
-    color_labels=("green", "red"),
-)
+# spec/83 §5: inventories carry ``(value, count)`` pairs sourced lazily by
+# filters_json key. The dialog still iterates each facet at construction time
+# in slice 1; slice 3 (two-tier shell) is what flips it to true on-demand.
+_INVENTORIES = CrossEventInventories.from_dict({
+    "styles": [
+        ("landscape", 2), ("macro", 1), ("portrait", 1), ("wildlife", 1),
+    ],
+    "camera_ids":    [("Pana+G9M2", 4), ("Pana+S5", 1)],
+    "lens_models":   [
+        ("LEICA 45mm", 1), ("LUMIX 100-300", 1),
+        ("LUMIX 24-105", 1), ("Lumix 42.5", 1),
+    ],
+    "country_codes": [("CR", 3), ("NP", 2)],
+    "cities": [
+        ("La Fortuna", 1), ("Monteverde", 1), ("Namche Bazaar", 1),
+    ],
+    "color_labels":  [("green", 1), ("red", 1)],
+})
 
 
 def _make_dialog(qapp, *, existing=None, existing_tags=(), probe=None):

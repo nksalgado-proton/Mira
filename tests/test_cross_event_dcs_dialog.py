@@ -24,12 +24,12 @@ from mira.user_store.repo import UserStore
 NOW = "2026-06-16T00:00:00+00:00"
 
 
-_INVENTORIES = CrossEventInventories(
-    classifications=("macro", "wildlife"),
-    cameras=("Pana+G9M2",),
-    lenses=("LEICA 45mm",),
-    country_codes=("CR", "NP"),
-)
+_INVENTORIES = CrossEventInventories.from_dict({
+    "styles":        [("macro", 1), ("wildlife", 1)],
+    "camera_ids":    [("Pana+G9M2", 1)],
+    "lens_models":   [("LEICA 45mm", 1)],
+    "country_codes": [("CR", 1), ("NP", 1)],
+})
 
 
 def _open_user_store(tmp_path) -> UserStore:

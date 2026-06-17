@@ -74,18 +74,40 @@ class CrossEventDcInfo:
     filters: dict = field(default_factory=dict)
 
 
+FacetInventoryResolver = Callable[[str], Sequence[tuple]]
+"""Per-facet inventory callable — given a ``filters_json`` key, return
+``[(value, photo_count), …]`` most-used-first (spec/83 §5). The dialog uses
+this lazily so a high-cardinality read (camera / lens / city / country) only
+runs when the user actually adds that filter — the rest of the catalogue
+never touches SQLite at dialog open."""
+
+
 @dataclass(frozen=True)
 class CrossEventInventories:
-    """The facet vocabularies the dialog displays — pulled from
-    :class:`LibraryGateway` at host construction time, frozen here so the
-    dialog is testable without a live gateway."""
+    """The facet inventory seam the dialog speaks through (spec/83 §5).
 
-    classifications: Sequence[str] = ()
-    cameras: Sequence[str] = ()
-    lenses: Sequence[str] = ()
-    country_codes: Sequence[str] = ()
-    cities: Sequence[str] = ()
-    color_labels: Sequence[str] = ()
+    Wraps a single :data:`FacetInventoryResolver` callable; tests pass a
+    static dict via :meth:`from_dict`, the host wires
+    :meth:`LibraryGateway.facet_inventory`. Reads return ``(value, count)``
+    pairs because the picker (spec/83 §4) shows counts and the
+    main-vs-occasional split (spec/85) is count-driven for untagged gear.
+    """
+
+    facet_inventory: Optional[FacetInventoryResolver] = None
+
+    def for_key(self, facet_key: str) -> Sequence[tuple]:
+        """``(value, count)`` pairs for the facet, or ``[]`` if no resolver
+        is wired (the dialog tolerates the absent case so tests stay tiny)."""
+        if self.facet_inventory is None:
+            return ()
+        return self.facet_inventory(facet_key)
+
+    @classmethod
+    def from_dict(cls,
+                  by_key: Dict[str, Sequence[tuple]]) -> "CrossEventInventories":
+        """Test helper — build inventories from a literal ``{key: [(v, n)]}``
+        mapping. Unknown keys return ``[]``."""
+        return cls(facet_inventory=lambda k: by_key.get(k, ()))
 
 
 # --------------------------------------------------------------------------- #
@@ -486,8 +508,7 @@ class NewCrossEventDcDialog(QDialog):
 
         # Curatorial group
         body_l.addWidget(self._build_section(
-            tr("Style"), self._make_multi("styles",
-                                          self._inventories.classifications)))
+            tr("Style"), self._make_multi("styles")))
         body_l.addWidget(self._build_section(
             tr("Media type"),
             self._make_single("media_type", [
@@ -498,8 +519,7 @@ class NewCrossEventDcDialog(QDialog):
         body_l.addWidget(self._build_section(
             tr("Rating (stars)"), self._make_stars_min()))
         body_l.addWidget(self._build_section(
-            tr("Color label"),
-            self._make_multi("color_labels", self._inventories.color_labels)))
+            tr("Color label"), self._make_multi("color_labels")))
         body_l.addWidget(self._build_section(
             tr("Portfolio flag"),
             self._make_single("flag", [
@@ -510,11 +530,9 @@ class NewCrossEventDcDialog(QDialog):
 
         # Hardware
         body_l.addWidget(self._build_section(
-            tr("Camera"),
-            self._make_multi("camera_ids", self._inventories.cameras)))
+            tr("Camera"), self._make_multi("camera_ids")))
         body_l.addWidget(self._build_section(
-            tr("Lens"),
-            self._make_multi("lens_models", self._inventories.lenses)))
+            tr("Lens"), self._make_multi("lens_models")))
         body_l.addWidget(self._build_section(
             tr("Flash"),
             self._make_single("flash_fired", [
@@ -548,12 +566,9 @@ class NewCrossEventDcDialog(QDialog):
         body_l.addWidget(self._build_section(
             tr("Capture date"), self._make_date_range()))
         body_l.addWidget(self._build_section(
-            tr("Country"),
-            self._make_multi("country_codes",
-                             self._inventories.country_codes)))
+            tr("Country"), self._make_multi("country_codes")))
         body_l.addWidget(self._build_section(
-            tr("City"),
-            self._make_multi("cities", self._inventories.cities)))
+            tr("City"), self._make_multi("cities")))
 
         body_l.addStretch()
         scroll.setWidget(body)
@@ -613,8 +628,14 @@ class NewCrossEventDcDialog(QDialog):
 
     # ----- facet factories — register each so refresh_count walks them ---- #
 
-    def _make_multi(self, key: str, options: Sequence[str]) -> _MultiSelectFacet:
-        w = _MultiSelectFacet(key, list(options))
+    def _make_multi(self, key: str) -> _MultiSelectFacet:
+        """Build a multi-select facet by pulling its vocabulary lazily from
+        :attr:`_inventories` (spec/83 §5). The current dialog still iterates
+        every facet at construction; slice 3 will defer this until the user
+        adds the filter."""
+        pairs = self._inventories.for_key(key)
+        options = [str(v) for v, _ in pairs]
+        w = _MultiSelectFacet(key, options)
         w.changed.connect(self._refresh_count)
         self._facets.append(w)
         return w

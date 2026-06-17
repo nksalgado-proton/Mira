@@ -389,52 +389,93 @@ def test_dc_operand_inventory_lists_saved_filters_after_ladder(tmp_path):
     store.close()
 
 
-def test_available_classifications_dedupes_and_orders(tmp_path):
+def test_available_classifications_returns_value_count_pairs(tmp_path):
+    """spec/83 §5 — each inventory returns ``(value, count)`` pairs ordered
+    most-used-first. ``landscape`` has two items; macro/portrait/wildlife
+    one each (tie-break by value alphabetically)."""
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
     assert lg.available_classifications() == [
-        "landscape", "macro", "portrait", "wildlife",
+        ("landscape", 2), ("macro", 1), ("portrait", 1), ("wildlife", 1),
     ]
     store.close()
 
 
-def test_available_cameras(tmp_path):
+def test_available_cameras_ordered_by_use(tmp_path):
+    """``Pana+G9M2`` appears on four items, ``Pana+S5`` on one — the heavy
+    hitter leads the list so the picker's main / occasional split (spec/83
+    §4) reads off the tail."""
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
-    assert lg.available_cameras() == ["Pana+G9M2", "Pana+S5"]
+    assert lg.available_cameras() == [("Pana+G9M2", 4), ("Pana+S5", 1)]
     store.close()
 
 
-def test_available_lenses(tmp_path):
+def test_available_lenses_ordered_by_use(tmp_path):
+    """All four lenses have one photo each — tied counts fall back to value
+    alphabetic order so the result is deterministic."""
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
     assert lg.available_lenses() == [
-        "LEICA 45mm", "LUMIX 100-300", "LUMIX 24-105", "Lumix 42.5",
+        ("LEICA 45mm", 1), ("LUMIX 100-300", 1),
+        ("LUMIX 24-105", 1), ("Lumix 42.5", 1),
     ]
     store.close()
 
 
-def test_available_country_codes(tmp_path):
+def test_available_country_codes_ordered_by_use(tmp_path):
+    """CR three items, NP two."""
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
-    assert lg.available_country_codes() == ["CR", "NP"]
+    assert lg.available_country_codes() == [("CR", 3), ("NP", 2)]
     store.close()
 
 
-def test_available_cities(tmp_path):
+def test_available_cities_ordered_by_use(tmp_path):
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
     assert lg.available_cities() == [
-        "Everest Base Camp", "La Fortuna", "Manuel Antonio",
-        "Monteverde", "Namche Bazaar",
+        ("Everest Base Camp", 1), ("La Fortuna", 1), ("Manuel Antonio", 1),
+        ("Monteverde", 1), ("Namche Bazaar", 1),
     ]
     store.close()
 
 
-def test_available_color_labels(tmp_path):
+def test_available_color_labels_ordered_by_use(tmp_path):
     lg, store = _open_library(tmp_path)
     _seed_global_items(store)
-    assert lg.available_color_labels() == ["green", "red"]
+    assert lg.available_color_labels() == [("green", 1), ("red", 1)]
+    store.close()
+
+
+def test_available_cameras_counts_repeats(tmp_path):
+    """A camera used many times reports the right ``COUNT(*)`` (not
+    ``DISTINCT`` — that would always be 1)."""
+    lg, store = _open_library(tmp_path)
+    for i in range(7):
+        store.upsert(um.GlobalItem(
+            event_uuid="E", item_id=f"i{i}", synced_at=NOW,
+            camera_id="Pana+S5"))
+    store.upsert(um.GlobalItem(
+        event_uuid="E", item_id="x", synced_at=NOW,
+        camera_id="Pana+G9M2"))
+    assert lg.available_cameras() == [("Pana+S5", 7), ("Pana+G9M2", 1)]
+    store.close()
+
+
+def test_facet_inventory_dispatches_by_filter_key(tmp_path):
+    """spec/83 §5 — the dialog's lazy seam: each ``filters_json`` key maps
+    to its inventory. Unknown keys (future tags / people) return ``[]``."""
+    lg, store = _open_library(tmp_path)
+    _seed_global_items(store)
+    assert lg.facet_inventory("styles") == lg.available_classifications()
+    assert lg.facet_inventory("camera_ids") == lg.available_cameras()
+    assert lg.facet_inventory("lens_models") == lg.available_lenses()
+    assert lg.facet_inventory("country_codes") == lg.available_country_codes()
+    assert lg.facet_inventory("cities") == lg.available_cities()
+    assert lg.facet_inventory("color_labels") == lg.available_color_labels()
+    # Unknown key — forward-compat for spec/32 tags / people roadmap.
+    assert lg.facet_inventory("tags") == []
     store.close()
 
 

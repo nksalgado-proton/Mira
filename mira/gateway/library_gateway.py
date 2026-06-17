@@ -341,59 +341,104 @@ class LibraryGateway:
                         "operand": {"kind": "dc", "id": d.id, "tag": d.tag}})
         return inv
 
-    def available_classifications(self) -> List[str]:
-        """DISTINCT non-null classifications across the projection — the
-        cross-event dialog's Style chip vocabulary. Alphabetical."""
-        rows = self.user_store.conn.execute(
-            "SELECT DISTINCT classification FROM global_items "
-            "WHERE classification IS NOT NULL ORDER BY classification"
-        ).fetchall()
-        return [r["classification"] for r in rows]
+    # ------------------------------------------------------------------ #
+    # Per-facet inventories (spec/83 §5)
+    #
+    # Each returns ``[(value, photo_count), …]`` ordered **most-used-first**
+    # so the picker's main-list / occasional split (spec/83 §4) reads off the
+    # tail directly, and the inline editor (spec/83 §3) puts the heavy
+    # hitters first. NULLs are still excluded; the count is the row count
+    # per distinct value in ``global_items``.
+    #
+    # ``camera_id`` is the per-event Make+Model business key (``"Pana+G9M2"``
+    # etc.) — semi-readable; the picker shows it verbatim. If the user wants
+    # a prettier label, the gear-wizard ([[gear-profile-wizard]]) is where
+    # display names would attach. ``country_code`` is the ISO 3166-1 alpha-2
+    # short string; the picker can map to a country name later (spec/83 open
+    # question).
+    # ------------------------------------------------------------------ #
 
-    def available_cameras(self) -> List[str]:
-        """DISTINCT camera ids across the projection — the cross-event
-        Camera filter vocabulary."""
+    def available_classifications(self) -> List[Tuple[str, int]]:
+        """``(classification, photo_count)`` across the projection,
+        most-used-first. The cross-event dialog's Style vocabulary."""
         rows = self.user_store.conn.execute(
-            "SELECT DISTINCT camera_id FROM global_items "
-            "WHERE camera_id IS NOT NULL ORDER BY camera_id"
+            "SELECT classification, COUNT(*) AS n FROM global_items "
+            "WHERE classification IS NOT NULL "
+            "GROUP BY classification ORDER BY n DESC, classification"
         ).fetchall()
-        return [r["camera_id"] for r in rows]
+        return [(r["classification"], int(r["n"])) for r in rows]
 
-    def available_lenses(self) -> List[str]:
-        """DISTINCT lens models across the projection — the cross-event
-        Lens filter vocabulary."""
+    def available_cameras(self) -> List[Tuple[str, int]]:
+        """``(camera_id, photo_count)`` across the projection, most-used-first.
+        Camera filter + gear-wizard vocabulary."""
         rows = self.user_store.conn.execute(
-            "SELECT DISTINCT lens_model FROM global_items "
-            "WHERE lens_model IS NOT NULL ORDER BY lens_model"
+            "SELECT camera_id, COUNT(*) AS n FROM global_items "
+            "WHERE camera_id IS NOT NULL "
+            "GROUP BY camera_id ORDER BY n DESC, camera_id"
         ).fetchall()
-        return [r["lens_model"] for r in rows]
+        return [(r["camera_id"], int(r["n"])) for r in rows]
 
-    def available_country_codes(self) -> List[str]:
-        """DISTINCT ISO 3166-1 alpha-2 country codes across the projection
-        — the cross-event Location filter's country vocabulary."""
+    def available_lenses(self) -> List[Tuple[str, int]]:
+        """``(lens_model, photo_count)`` across the projection, most-used-first.
+        Lens filter + gear-wizard vocabulary."""
         rows = self.user_store.conn.execute(
-            "SELECT DISTINCT country_code FROM global_items "
-            "WHERE country_code IS NOT NULL ORDER BY country_code"
+            "SELECT lens_model, COUNT(*) AS n FROM global_items "
+            "WHERE lens_model IS NOT NULL "
+            "GROUP BY lens_model ORDER BY n DESC, lens_model"
         ).fetchall()
-        return [r["country_code"] for r in rows]
+        return [(r["lens_model"], int(r["n"])) for r in rows]
 
-    def available_cities(self) -> List[str]:
-        """DISTINCT day-level cities across the projection — the cross-event
-        Location filter's city vocabulary."""
+    def available_country_codes(self) -> List[Tuple[str, int]]:
+        """``(country_code, photo_count)`` across the projection,
+        most-used-first. ISO 3166-1 alpha-2 codes."""
         rows = self.user_store.conn.execute(
-            "SELECT DISTINCT day_city FROM global_items "
-            "WHERE day_city IS NOT NULL ORDER BY day_city"
+            "SELECT country_code, COUNT(*) AS n FROM global_items "
+            "WHERE country_code IS NOT NULL "
+            "GROUP BY country_code ORDER BY n DESC, country_code"
         ).fetchall()
-        return [r["day_city"] for r in rows]
+        return [(r["country_code"], int(r["n"])) for r in rows]
 
-    def available_color_labels(self) -> List[str]:
-        """DISTINCT color labels (LRC-compatible vocabulary) across the
-        projection — the Curatorial chip vocabulary."""
+    def available_cities(self) -> List[Tuple[str, int]]:
+        """``(day_city, photo_count)`` across the projection, most-used-first."""
         rows = self.user_store.conn.execute(
-            "SELECT DISTINCT color_label FROM global_items "
-            "WHERE color_label IS NOT NULL ORDER BY color_label"
+            "SELECT day_city, COUNT(*) AS n FROM global_items "
+            "WHERE day_city IS NOT NULL "
+            "GROUP BY day_city ORDER BY n DESC, day_city"
         ).fetchall()
-        return [r["color_label"] for r in rows]
+        return [(r["day_city"], int(r["n"])) for r in rows]
+
+    def available_color_labels(self) -> List[Tuple[str, int]]:
+        """``(color_label, photo_count)`` across the projection,
+        most-used-first. LRC-compatible vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT color_label, COUNT(*) AS n FROM global_items "
+            "WHERE color_label IS NOT NULL "
+            "GROUP BY color_label ORDER BY n DESC, color_label"
+        ).fetchall()
+        return [(r["color_label"], int(r["n"])) for r in rows]
+
+    # Mapping from filters_json keys → the available_* method for that facet.
+    # ``facet_inventory`` dispatches through this so the dialog can lazily
+    # resolve any facet by its filter key (spec/83 §5).
+    _FACET_INVENTORIES: Dict[str, str] = {
+        "styles":        "available_classifications",
+        "camera_ids":    "available_cameras",
+        "lens_models":   "available_lenses",
+        "country_codes": "available_country_codes",
+        "cities":        "available_cities",
+        "color_labels":  "available_color_labels",
+    }
+
+    def facet_inventory(self, facet_key: str) -> List[Tuple[str, int]]:
+        """The lazy seam (spec/83 §5): given a ``filters_json`` key, return
+        ``(value, count)`` for the matching facet. The dialog calls this only
+        when the user opens a filter — high-cardinality reads (cameras /
+        lenses / cities / countries) never run at dialog open. Unknown keys
+        return ``[]`` (forward-compat for the spec/32 tags / people roadmap)."""
+        method_name = self._FACET_INVENTORIES.get(facet_key)
+        if method_name is None:
+            return []
+        return getattr(self, method_name)()
 
     def event_uuids_in_projection(self) -> List[str]:
         """The set of events whose items live in the projection — useful

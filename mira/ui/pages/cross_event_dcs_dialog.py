@@ -425,14 +425,11 @@ class CrossEventDcsDialog(QDialog):
         self.refresh()
 
     def _build_inventories(self) -> CrossEventInventories:
-        return CrossEventInventories(
-            classifications=tuple(self._lg.available_classifications()),
-            cameras=tuple(self._lg.available_cameras()),
-            lenses=tuple(self._lg.available_lenses()),
-            country_codes=tuple(self._lg.available_country_codes()),
-            cities=tuple(self._lg.available_cities()),
-            color_labels=tuple(self._lg.available_color_labels()),
-        )
+        """The lazy seam (spec/83 §5): pass the gateway's per-facet resolver
+        through so the dialog touches SQLite only when a filter is added,
+        not at dialog open. Today the dialog still iterates the catalogue
+        at construction; slice 3 (two-tier shell) flips it to true lazy."""
+        return CrossEventInventories(facet_inventory=self._lg.facet_inventory)
 
 
 __all__ = ["CrossEventDcsDialog"]

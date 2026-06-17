@@ -56,6 +56,13 @@ from core import collection_resolver, cut_names
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import line_input, primary_button, ghost_button
 from mira.ui.i18n import tr
+from mira.ui.pages._filter_family import (
+    FilterDimension,
+    GROUP_ORDER,
+    _ActiveFilterRow,
+    build_cross_event_catalogue,
+    group_label as _group_label,
+)
 from mira.ui.pages.facet_picker_dialog import (
     FacetPickerDialog,
     GearProfileSnapshot,
@@ -543,91 +550,6 @@ class _OriginRadio(QWidget):
 
 
 # --------------------------------------------------------------------------- #
-# Filter dimensions — the spec/32 §2 catalogue, opt-in
-# --------------------------------------------------------------------------- #
-
-
-# Display order of the four filter groups in the Add-filter menu (spec/32 §2
-# + spec/83 §2). Keys match :attr:`FilterDimension.group`.
-GROUP_CURATORIAL  = "curatorial"
-GROUP_CAMERA_LENS = "camera_lens"
-GROUP_SETTINGS    = "settings"
-GROUP_WHEN_WHERE  = "when_where"
-
-_GROUP_ORDER: Tuple[str, ...] = (
-    GROUP_CURATORIAL, GROUP_CAMERA_LENS, GROUP_SETTINGS, GROUP_WHEN_WHERE,
-)
-
-
-def _group_label(group_id: str) -> str:
-    return {
-        GROUP_CURATORIAL:  tr("Curatorial"),
-        GROUP_CAMERA_LENS: tr("Camera & lens"),
-        GROUP_SETTINGS:    tr("Settings"),
-        GROUP_WHEN_WHERE:  tr("When & where"),
-    }.get(group_id, group_id)
-
-
-@dataclass(frozen=True)
-class FilterDimension:
-    """One opt-in dimension the user can add to a cross-event DC (spec/83 §2).
-
-    ``dim_id`` is the stable handle (also the menu key); ``filter_keys`` is
-    the set of ``filters_json`` keys the dimension owns — the rehydrate scan
-    matches any of them, and the catalogue cross-checks them at dialog
-    construction. ``factory`` builds the editor widget on demand (the lazy
-    inventory read happens here — spec/83 §5)."""
-
-    dim_id: str
-    label: str
-    group: str
-    filter_keys: Tuple[str, ...]
-    factory: Callable[[], "_Facet"]
-
-
-class _ActiveFilterRow(QFrame):
-    """One filter row in the dialog's active-filters stack (spec/83 §2).
-
-    Holds the dimension's editor widget plus an ✕ button that removes the
-    row. Emits :attr:`remove_requested` carrying the ``dim_id`` so the host
-    dialog can clean up its bookkeeping."""
-
-    remove_requested = pyqtSignal(str)
-
-    def __init__(self, dim: FilterDimension, facet: "_Facet",
-                 parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._dim = dim
-        self.facet = facet
-        self.setObjectName("CrossEventDcActiveFilter")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(10)
-
-        header = QLabel(dim.label, self)
-        header.setObjectName("CrossEventDcActiveFilterLabel")
-        font = header.font()
-        font.setBold(True)
-        header.setFont(font)
-        header.setMinimumWidth(120)
-        layout.addWidget(header)
-
-        layout.addWidget(facet, 1)
-
-        # ✕ button — labelled "Remove" via tooltip so screen readers + the
-        # spec/05 hint-on-every-control rule are honoured.
-        self._remove_btn = ghost_button(tr("✕"))
-        self._remove_btn.setObjectName("CrossEventDcRemoveFilter")
-        self._remove_btn.setToolTip(tr("Remove this filter"))
-        self._remove_btn.clicked.connect(
-            lambda: self.remove_requested.emit(self._dim.dim_id))
-        layout.addWidget(self._remove_btn)
-
-    def dim_id(self) -> str:
-        return self._dim.dim_id
-
-
-# --------------------------------------------------------------------------- #
 # The dialog
 # --------------------------------------------------------------------------- #
 
@@ -688,8 +610,12 @@ class NewCrossEventDcDialog(QDialog):
         self._facets: List[_Facet] = []
         self._active_rows: "Dict[str, _ActiveFilterRow]" = {}
         # Catalogue built before _build_layout so the menu can read it.
+        # Cross-event dialog uses the full spec/32 §2 catalogue (spec/81 §2.1
+        # full ladder + every facet); the event-scope sibling uses
+        # :func:`build_event_scope_catalogue` instead (spec/81 §2.1 — thin
+        # surface). Slice 8 share is the catalogue itself.
         self._dimensions: Dict[str, FilterDimension] = \
-            self._build_dimension_catalogue()
+            build_cross_event_catalogue(self)
 
         self._build_layout()
         if existing is not None:
@@ -803,118 +729,14 @@ class NewCrossEventDcDialog(QDialog):
         layout.addWidget(widget)
         return frame
 
-    # ----- dimension catalogue + Add filter --------------------------------- #
-
-    def _build_dimension_catalogue(self) -> Dict[str, FilterDimension]:
-        """The 15 dimensions the dialog offers, indexed by ``dim_id`` in
-        spec/32 §2 / spec/83 §2 display order. Each factory builds the
-        editor on demand — multi-selects pull their vocabulary lazily from
-        :attr:`_inventories` (spec/83 §5), so opening the Camera filter is
-        the first time SQLite is touched for cameras."""
-        out: Dict[str, FilterDimension] = {}
-
-        def reg(dim: FilterDimension) -> None:
-            out[dim.dim_id] = dim
-
-        # Curatorial
-        reg(FilterDimension(
-            "styles", tr("Style"), GROUP_CURATORIAL, ("styles",),
-            lambda: self._register_facet(self._make_multi("styles"))))
-        reg(FilterDimension(
-            "media_type", tr("Media type"),
-            GROUP_CURATORIAL, ("media_type",),
-            lambda: self._register_facet(self._make_single("media_type", [
-                (tr("Both"), "both"),
-                (tr("Photos only"), "photo"),
-                (tr("Videos only"), "video"),
-            ]))))
-        reg(FilterDimension(
-            "stars", tr("Rating (stars)"),
-            GROUP_CURATORIAL, ("stars_min",),
-            lambda: self._register_facet(self._make_stars_min())))
-        reg(FilterDimension(
-            "color_labels", tr("Color label"),
-            GROUP_CURATORIAL, ("color_labels",),
-            lambda: self._register_facet(self._make_multi("color_labels"))))
-        reg(FilterDimension(
-            "flag", tr("Portfolio flag"),
-            GROUP_CURATORIAL, ("flag",),
-            lambda: self._register_facet(self._make_single("flag", [
-                (tr("Any"), None),
-                (tr("Flagged"), True),
-                (tr("Not flagged"), False),
-            ]))))
-
-        # Camera & lens
-        reg(FilterDimension(
-            "camera_ids", tr("Camera"),
-            GROUP_CAMERA_LENS, ("camera_ids",),
-            lambda: self._register_facet(self._make_multi("camera_ids"))))
-        reg(FilterDimension(
-            "lens_models", tr("Lens"),
-            GROUP_CAMERA_LENS, ("lens_models",),
-            lambda: self._register_facet(self._make_multi("lens_models"))))
-        reg(FilterDimension(
-            "flash", tr("Flash"),
-            GROUP_CAMERA_LENS, ("flash_fired",),
-            lambda: self._register_facet(self._make_single("flash_fired", [
-                (tr("Any"), None),
-                (tr("Flash fired"), True),
-                (tr("No flash"), False),
-            ]))))
-
-        # Settings (exposure triangle + focal). Each is a two-key min/max
-        # range; rehydrate matches either key.
-        reg(FilterDimension(
-            "iso", tr("ISO"),
-            GROUP_SETTINGS, ("iso_min", "iso_max"),
-            lambda: self._register_facet(self._make_range(
-                "iso_min", "iso_max",
-                integer=True, lo=50, hi=409600, step=100))))
-        reg(FilterDimension(
-            "aperture", tr("Aperture (f/)"),
-            GROUP_SETTINGS, ("aperture_min", "aperture_max"),
-            lambda: self._register_facet(self._make_range(
-                "aperture_min", "aperture_max",
-                integer=False, lo=0.7, hi=64.0,
-                step=0.1, decimals=1))))
-        reg(FilterDimension(
-            "shutter", tr("Shutter (s)"),
-            GROUP_SETTINGS, ("shutter_min", "shutter_max"),
-            lambda: self._register_facet(self._make_range(
-                "shutter_min", "shutter_max",
-                integer=False, lo=0.00001, hi=3600.0,
-                step=0.1, decimals=3))))
-        reg(FilterDimension(
-            "focal", tr("Focal length (mm)"),
-            GROUP_SETTINGS, ("focal_min", "focal_max"),
-            lambda: self._register_facet(self._make_range(
-                "focal_min", "focal_max",
-                integer=False, lo=4.0, hi=2000.0,
-                step=1.0, decimals=1))))
-
-        # When & where
-        reg(FilterDimension(
-            "capture_date", tr("Capture date"),
-            GROUP_WHEN_WHERE, ("capture_from", "capture_to"),
-            lambda: self._register_facet(self._make_date_range())))
-        reg(FilterDimension(
-            "country_codes", tr("Country"),
-            GROUP_WHEN_WHERE, ("country_codes",),
-            lambda: self._register_facet(self._make_multi("country_codes"))))
-        reg(FilterDimension(
-            "cities", tr("City"),
-            GROUP_WHEN_WHERE, ("cities",),
-            lambda: self._register_facet(self._make_multi("cities"))))
-
-        return out
+    # ----- Add-filter menu (uses the slice-8 shared catalogue) ------------ #
 
     def _show_add_menu(self) -> None:
         """Open the grouped Add-filter menu (spec/83 §2). Already-active
         dimensions are disabled — adding a second Style row makes no sense.
         Re-built each click so the disabled state is always current."""
         menu = QMenu(self)
-        for group_id in _GROUP_ORDER:
+        for group_id in GROUP_ORDER:
             dims = [d for d in self._dimensions.values()
                     if d.group == group_id]
             if not dims:

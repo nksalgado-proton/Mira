@@ -279,40 +279,6 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
             },
             {
-                "key": "default_ssd_path",
-                "label": "Default backup SSD",
-                "widget": "folder",
-                "tooltip": (
-                    "Default destination when the user invokes backup to "
-                    "external storage (Synology / portable SSD)."
-                ),
-            },
-            {
-                "key": "backup_on_quit_root",
-                "label": "Backup-on-quit destination",
-                "widget": "folder",
-                "tooltip": (
-                    "Where Mira mirrors the active event when you "
-                    "quit (if the toggle below is on). One subfolder per "
-                    "event; incremental — only changed files re-copied."
-                ),
-            },
-            {
-                "key": "backup_on_quit_enabled",
-                "label": "Backup on quit",
-                "widget": "checkbox",
-                "check_label": (
-                    "Mirror the active event to the destination above "
-                    "every time you quit"
-                ),
-                "tooltip": (
-                    "When on, Mira incrementally mirrors the event "
-                    "you were last working on to the destination above "
-                    "before closing — your offsite copy stays current "
-                    "without you remembering to back up."
-                ),
-            },
-            {
                 "key": "helicon_path",
                 "label": "Helicon Focus",
                 "widget": "file",
@@ -337,6 +303,124 @@ SETTINGS_SCHEMA: list[dict] = [
                     "OpenCV engine handles every bracket."
                 ),
                 "restart_required": False,
+            },
+        ],
+    },
+    # spec/82 §G — Backups tab. ONE home for every cadence, count
+    # and destination the snapshot + bundle features read; legacy
+    # default_ssd_path / backup_on_quit_root migrated into
+    # event_backup_destination by mira.settings.model._v1_to_v2.
+    {
+        "tab": "Backups",
+        "fields": [
+            {
+                "key": "backup_snapshots_enabled",
+                "label": "Automatic safety snapshots",
+                "widget": "checkbox",
+                "check_label": (
+                    "Take automatic snapshots of each event's "
+                    "database (on close, before risky operations, "
+                    "after every added day)"
+                ),
+                "tooltip": (
+                    "Master toggle for the spec/82 §A safety net. "
+                    "Off disables both milestone and periodic "
+                    "snapshots; the manual Restore from backup… "
+                    "menu still works against the existing files."
+                ),
+            },
+            {
+                "key": "backup_periodic_minutes",
+                "label": "Periodic-while-open cadence",
+                "widget": "spinbox",
+                "tooltip": (
+                    "How often Mira takes a crash-insurance snapshot "
+                    "of the currently-open event. Off-thread; skipped "
+                    "when the database hasn't changed since the last "
+                    "snapshot. Set to 0 to disable; milestone "
+                    "snapshots still fire."
+                ),
+                "min": 0, "max": 120, "step": 1,
+                "decimals": 0, "suffix": " min",
+            },
+            {
+                "key": "backup_keep_milestone",
+                "label": "Keep last N milestone snapshots",
+                "widget": "spinbox",
+                "tooltip": (
+                    "Retention for milestone snapshots (close-if-"
+                    "dirty, pre-risky-op, per-day-add, manual). "
+                    "Higher = more rollback history at the cost of "
+                    "disk; lower = tighter footprint."
+                ),
+                "min": 1, "max": 50, "step": 1,
+                "decimals": 0,
+            },
+            {
+                "key": "backup_keep_periodic",
+                "label": "Keep last N periodic snapshots",
+                "widget": "spinbox",
+                "tooltip": (
+                    "Retention for periodic snapshots (the N-minute "
+                    "timer). These are crash insurance; a small N is "
+                    "fine because the milestone snapshots carry the "
+                    "longer history."
+                ),
+                "min": 1, "max": 20, "step": 1,
+                "decimals": 0,
+            },
+            {
+                "key": "backup_snapshots_root",
+                "label": "Safety snapshots folder",
+                "widget": "folder",
+                "tooltip": (
+                    "Where automatic safety snapshots live. Leave "
+                    "blank to use <library>/.mira-backups (rides "
+                    "your NAS RAID + snapshots). Set to a different "
+                    "drive for true offsite of the DB."
+                ),
+            },
+            {
+                "key": "event_backup_destination",
+                "label": "Default event-backup destination",
+                "widget": "folder",
+                "tooltip": (
+                    "Where the Back up event… action and the "
+                    "automatic on-quit bundle export land. Pre-fills "
+                    "the file dialog; the manual action still lets "
+                    "you confirm a different folder each time."
+                ),
+            },
+            {
+                "key": "event_backup_verify",
+                "label": "Verify event bundles after copy",
+                "widget": "checkbox",
+                "check_label": (
+                    "Re-hash every file in the bundle against its "
+                    "manifest before finalising the export"
+                ),
+                "tooltip": (
+                    "Catches a copy that went bad mid-transfer. On "
+                    "by default; can be turned off to skip the "
+                    "verify pass on very large events when you "
+                    "trust the destination drive."
+                ),
+            },
+            {
+                "key": "backup_on_quit_enabled",
+                "label": "Automatic backup on quit",
+                "widget": "checkbox",
+                "check_label": (
+                    "Export the active event as a bundle to the "
+                    "destination above every time you quit Mira"
+                ),
+                "tooltip": (
+                    "When on, Mira runs a Part-B bundle export of "
+                    "the currently-open event to "
+                    "event_backup_destination on quit — an automatic "
+                    "offsite copy that complements the manual Back "
+                    "up event… action."
+                ),
             },
         ],
     },

@@ -20,11 +20,39 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 # We own this format now, so we own its migrations (DQ4 resolved, spec/04 §2).
-SETTINGS_SCHEMA_VERSION = 1
+SETTINGS_SCHEMA_VERSION = 2
 
-# Ordered list of (from_version, migrate_fn(dict) -> dict). Empty on a fresh
-# start; each entry bumps a loaded dict from version N to N+1.
-MIGRATIONS: List = []
+# Ordered list of (from_version, migrate_fn(dict) -> dict). Each entry bumps a
+# loaded dict from version N to N+1.
+
+
+def _v1_to_v2(data: Dict[str, Any]) -> Dict[str, Any]:
+    """spec/82 Part G — fold the legacy backup-destination keys into
+    the new unified ``event_backup_destination``.
+
+    ``default_ssd_path`` was meant for "default external backup
+    destination" but never plugged into a real feature; spec/82 makes
+    it the destination for the new **Back up event…** action and the
+    automatic backup-on-quit (both Part-B bundle exports).
+    ``backup_on_quit_root`` had the same intent; it folds in too so
+    the user has ONE home for "where bundle exports land". Whichever
+    legacy key has a non-empty value wins; both are dropped after
+    the move so they can't drift apart.
+    """
+    out = dict(data)
+    legacy = (
+        (out.get("event_backup_destination") or "")
+        or (out.get("default_ssd_path") or "")
+        or (out.get("backup_on_quit_root") or "")
+    )
+    if legacy:
+        out["event_backup_destination"] = legacy
+    out.pop("default_ssd_path", None)
+    out.pop("backup_on_quit_root", None)
+    return out
+
+
+MIGRATIONS: List = [(1, _v1_to_v2)]
 
 
 def _u(help: str, default: Any = None, **kw):
@@ -52,14 +80,45 @@ class Settings:
     # ── Paths (user) ──────────────────────────────────────────────────────
     photos_base_path: str = _u("Root folder where events are stored.", "")
     exiftool_path: str = _u("Override path to the ExifTool binary.", "")
-    default_ssd_path: str = _u("Default ingest destination root.", "")
     audio_library_path: str = _u("Folder scanned for slideshow soundtracks.", "")
     print_export_path: str = _u("Destination for the Share-browse Print action.", "")
     helicon_path: str = _u("Optional Helicon Focus executable for focus stacks.", "")
     prefer_helicon_for_focus: bool = _u(
         "Use Helicon for focus brackets when configured (else embedded OpenCV).", True)
-    backup_on_quit_enabled: bool = _u("Mirror the last-touched event on quit.", False)
-    backup_on_quit_root: str = _u("Destination root for backup-on-quit.", "")
+    # ── Backups (user) — spec/82 ─────────────────────────────────────────
+    # Live on the new Backups tab. The slice-1 retention split, the
+    # slice-3 periodic cadence, the slice-7 Back up event… default
+    # destination, and the slice-8 automatic backup-on-quit all read
+    # from here. ``default_ssd_path`` + ``backup_on_quit_root`` migrated
+    # into ``event_backup_destination`` (see ``_v1_to_v2``).
+    backup_snapshots_enabled: bool = _u(
+        "Master toggle for automatic DB safety snapshots (spec/82 §A). "
+        "Off disables both milestone and periodic snapshots.", True)
+    backup_periodic_minutes: int = _u(
+        "Periodic-while-open cadence in minutes (spec/82 §A.1). "
+        "0 = off — milestone snapshots still fire.", 15)
+    backup_keep_milestone: int = _u(
+        "Retention for milestone snapshots (close-if-dirty, pre-risky-"
+        "op, per-day-add, manual). spec/82 §A.2.", 10)
+    backup_keep_periodic: int = _u(
+        "Retention for periodic snapshots (the N-minute timer). "
+        "spec/82 §A.2.", 3)
+    backup_snapshots_root: str = _u(
+        "Override for the safety snapshots directory. Blank = "
+        "<library_root>/.mira-backups (spec/79 default). Set to a "
+        "different drive for true offsite of the DB.", "")
+    event_backup_destination: str = _u(
+        "Default destination for the Back up event… action (Part-B "
+        "bundle export). Pre-fills the file dialog; the user can "
+        "still confirm a different folder each time.", "")
+    event_backup_verify: bool = _u(
+        "Re-hash the exported bundle against its manifest after copy "
+        "(Part-B step 5). On by default; can be turned off to skip "
+        "the verify pass on very large events.", True)
+    backup_on_quit_enabled: bool = _u(
+        "Automatically export the active event as a Part-B bundle to "
+        "event_backup_destination on quit. Both ship (automatic + "
+        "the manual Back up event… action).", False)
     home_timezone: float = _u(
         "Home UTC offset in hours (e.g. -3.0 for São Paulo).",
         default_factory=_system_tz_hours)

@@ -27,12 +27,19 @@ DEFAULT_SETTINGS = {
     # where the user wants their photos stored.
     "photos_base_path": "",
     "exiftool_path": "",
-    "default_ssd_path": "",
-    # Backup-on-quit (task #10, frozen 2026-05-19). When enabled +
-    # destination set, MainWindow.closeEvent runs an incremental
-    # mirror of the most recently touched event before exiting.
+    # spec/82 §G — Backups tab defaults.
+    "backup_snapshots_enabled": True,
+    "backup_periodic_minutes": 15,
+    "backup_keep_milestone": 10,
+    "backup_keep_periodic": 3,
+    "backup_snapshots_root": "",
+    "event_backup_destination": "",
+    "event_backup_verify": True,
+    # backup_on_quit: the on-quit Part-B bundle export. Re-pointed
+    # at ``event_backup_destination`` in spec/82 §G; the legacy
+    # ``backup_on_quit_root`` key folded into the same destination
+    # by the v1→v2 settings migration.
     "backup_on_quit_enabled": False,
-    "backup_on_quit_root": "",
     # Audio library root — folder containing music/ and sfx/
     # subtrees. Used by the Audio Library page to scan for tracks
     # (slideshow soundtrack helper). Empty = not configured; the

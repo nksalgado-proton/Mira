@@ -18,12 +18,13 @@ from mira.settings.model import Settings
 def test_tab_structure_matches_app_menu_vocab():
     """Tabs are the App-menu phase names + cross-cutting categories
     (Nelson 2026-06-09 design; + Calibration 2026-06-10, the spec/54
-    §4.1 tone-trims drawer). Old vocab (Picker / Select / Process /
-    Curate / Import) is gone."""
+    §4.1 tone-trims drawer; + Backups 2026-06-17, spec/82 §G — one
+    home for snapshot cadences/counts + the bundle destination).
+    Old vocab (Picker / Select / Process / Curate / Import) is gone."""
     from mira.ui.base.settings_dialog import SETTINGS_SCHEMA
     titles = [t["tab"] for t in SETTINGS_SCHEMA]
     assert titles == [
-        "General", "Appearance", "Paths", "Collect",
+        "General", "Appearance", "Paths", "Backups", "Collect",
         "Pick", "Edit", "Calibration", "Share", "Video", "Advanced",
     ]
     # Legacy vocab must NOT survive.

@@ -1080,8 +1080,18 @@ class Gateway:
         because every fixed trigger site (close-if-dirty,
         pre-risky-op, per-day-add, manual) is a milestone — only the
         slice-3 timer passes ``"periodic"``.
+
+        Retention counts come from settings
+        (``backup_keep_milestone`` / ``backup_keep_periodic``,
+        spec/82 §G). The master toggle ``backup_snapshots_enabled``
+        short-circuits the helper — no snapshot taken when the user
+        has flipped automatic backups off; the manual Back up
+        event… action bypasses this path and is unaffected.
         """
         from core import db_backup
+        settings = self.settings.load()
+        if not bool(getattr(settings, "backup_snapshots_enabled", True)):
+            return None
         entry = self.index.get(event_id)
         if entry is None:
             return None
@@ -1099,6 +1109,12 @@ class Gateway:
                 db_path, backups_dir,
                 reason=reason,
                 app_version=_live_app_version(),
+                keep_milestone=int(getattr(
+                    settings, "backup_keep_milestone",
+                    db_backup.DEFAULT_KEEP_MILESTONE)),
+                keep_periodic=int(getattr(
+                    settings, "backup_keep_periodic",
+                    db_backup.DEFAULT_KEEP_PERIODIC)),
             )
         except Exception as exc:                       # noqa: BLE001
             log.warning(

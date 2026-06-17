@@ -294,13 +294,30 @@ class MainWindow(QMainWindow):
 
         # spec/82 §A.1 — periodic-while-open snapshot timer. Crash
         # insurance: take a ``reason="periodic"`` snapshot every
-        # ``DEFAULT_INTERVAL_MINUTES`` minutes for the current event,
-        # but only when its db has changed since the last snapshot.
-        # Slice 8 swaps the constant for a settings-driven value.
-        from mira.ui.shell.periodic_snapshot import PeriodicSnapshotter
+        # ``backup_periodic_minutes`` (settings, default 15) minutes
+        # for the current event, but only when its db has changed
+        # since the last snapshot. ``backup_snapshots_enabled=False``
+        # short-circuits the timer entirely (the spec/82 §G master
+        # toggle); ``backup_periodic_minutes=0`` is the per-class
+        # off switch (milestones still fire through their own
+        # triggers).
+        from mira.ui.shell.periodic_snapshot import (
+            DEFAULT_INTERVAL_MINUTES, PeriodicSnapshotter,
+        )
+        from mira.settings.repo import SettingsRepo as _SettingsRepo
+        _snap_settings = _SettingsRepo().load()
+        _interval = (
+            int(getattr(
+                _snap_settings, "backup_periodic_minutes",
+                DEFAULT_INTERVAL_MINUTES))
+            if bool(getattr(
+                _snap_settings, "backup_snapshots_enabled", True))
+            else 0
+        )
         self._periodic_snapshotter = PeriodicSnapshotter(
             self.gateway,
             current_event_id=lambda: self._current_event_id,
+            interval_minutes=_interval,
             parent=self,
         )
         self._periodic_snapshotter.start()
@@ -316,6 +333,13 @@ class MainWindow(QMainWindow):
         _qapp = _QApp.instance()
         if _qapp is not None:
             _qapp.aboutToQuit.connect(self._snapshot_user_store_on_quit)
+            # spec/82 §G — automatic backup-on-quit. When the user has
+            # opted in via the Backups settings tab AND set an
+            # event_backup_destination, the currently-open event is
+            # exported as a Part-B bundle to that folder on quit. Same
+            # primitive as the manual Back up event… action so both
+            # paths ride one engine.
+            _qapp.aboutToQuit.connect(self._backup_event_on_quit)
 
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
@@ -1920,6 +1944,68 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _backup_event_on_quit(self) -> None:
+        """spec/82 §G — automatic backup-on-quit (Part-B bundle).
+
+        Runs only when:
+        * ``backup_on_quit_enabled`` is True (the user opted in via
+          the Backups settings tab);
+        * ``event_backup_destination`` is set (no hardcoded path,
+          invariant #2);
+        * an event is currently open (``_current_event_id`` set).
+
+        Uses the same :func:`core.event_bundle.export_event`
+        primitive the manual Back up event… action calls. Failures
+        are logged + swallowed: a stuck quit would be worse than a
+        missed backup. The user has the manual action as a fallback.
+        """
+        from mira.settings.repo import SettingsRepo
+        from core import event_bundle
+        try:
+            settings = SettingsRepo().load()
+        except Exception as exc:                            # noqa: BLE001
+            log.warning(
+                "backup-on-quit: settings load FAILED: %s", exc)
+            return
+        if not bool(getattr(settings, "backup_on_quit_enabled", False)):
+            return
+        dest = str(getattr(
+            settings, "event_backup_destination", "") or "")
+        if not dest:
+            log.info(
+                "backup-on-quit: enabled but event_backup_destination "
+                "is blank; skipping")
+            return
+        event_id = self._current_event_id
+        if not event_id:
+            return
+        entry = self.gateway.index.get(event_id)
+        if entry is None:
+            return
+        root = self.gateway.index.resolve_root(
+            entry, self.gateway.photos_base_path())
+        if root is None:
+            return
+        try:
+            from importlib import metadata
+            app_version = metadata.version("mira")
+        except Exception:                                   # noqa: BLE001
+            app_version = "dev"
+        try:
+            result = event_bundle.export_event(
+                root, root / "event.db", Path(dest),
+                app_version=app_version,
+                verify_after_copy=bool(getattr(
+                    settings, "event_backup_verify", True)),
+            )
+            log.info(
+                "spec/82 §G backup-on-quit: %s exported to %s",
+                event_id, result.bundle_dir)
+        except Exception as exc:                            # noqa: BLE001
+            log.warning(
+                "spec/82 §G backup-on-quit FAILED for %s: %s",
+                event_id, exc)
+
     def _snapshot_user_store_on_quit(self) -> None:
         """spec/82 §A.3 close-if-dirty hook for the user-data store.
 
@@ -1974,10 +2060,22 @@ class MainWindow(QMainWindow):
                 parent=self,
             ).exec()
             return
+        # spec/82 §G — pre-fill from event_backup_destination so the
+        # user lands in their usual backup folder. Still a default,
+        # not a frozen path — they can confirm a different one each
+        # time (invariant #2).
+        from mira.settings.repo import SettingsRepo
+        default_dest = ""
+        try:
+            default_dest = str(
+                getattr(SettingsRepo().load(),
+                        "event_backup_destination", "") or "")
+        except Exception:                                   # noqa: BLE001
+            pass
         dest_root = QFileDialog.getExistingDirectory(
             self,
             tr("Pick a backup destination"),
-            "",
+            default_dest,
         )
         if not dest_root:
             return
@@ -1991,6 +2089,8 @@ class MainWindow(QMainWindow):
             app_version = metadata.version("mira")
         except Exception:                                   # noqa: BLE001
             app_version = "dev"
+        verify_after = bool(getattr(
+            SettingsRepo().load(), "event_backup_verify", True))
 
         def _do_export(report):
             def _adapter(message, current=0, total=0):
@@ -1999,6 +2099,7 @@ class MainWindow(QMainWindow):
                 root, root / "event.db", dest_path,
                 app_version=app_version,
                 progress=_adapter,
+                verify_after_copy=verify_after,
             )
 
         ok, result = run_with_progress(

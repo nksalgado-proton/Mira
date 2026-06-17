@@ -417,16 +417,79 @@ class LibraryGateway:
         ).fetchall()
         return [(r["color_label"], int(r["n"])) for r in rows]
 
+    # ------------------------------------------------------------------ #
+    # Event-level inventories (spec/86 §3) — the qualifiers slice 1 pushed
+    # into ``global_items``. Counts are over ITEM rows (not distinct events)
+    # so heavy-event types lead the list the same way heavy-use cameras do.
+    # Participants is JSON; ``json_each`` expands the array per row.
+    # ------------------------------------------------------------------ #
+
+    def available_event_types(self) -> List[Tuple[str, int]]:
+        """``(event_type, photo_count)`` across the projection,
+        most-used-first. Closed enum trip / session / occasion / project /
+        unclassified (spec/52)."""
+        rows = self.user_store.conn.execute(
+            "SELECT event_type, COUNT(*) AS n FROM global_items "
+            "WHERE event_type IS NOT NULL "
+            "GROUP BY event_type ORDER BY n DESC, event_type"
+        ).fetchall()
+        return [(r["event_type"], int(r["n"])) for r in rows]
+
+    def available_event_subtypes(self) -> List[Tuple[str, int]]:
+        """``(event_subtype, photo_count)`` across the projection,
+        most-used-first. Free-text — the spec/52 curated presets are a UI
+        nudge, not a SQL constraint, so the inventory shows whatever
+        actually landed."""
+        rows = self.user_store.conn.execute(
+            "SELECT event_subtype, COUNT(*) AS n FROM global_items "
+            "WHERE event_subtype IS NOT NULL AND event_subtype <> '' "
+            "GROUP BY event_subtype ORDER BY n DESC, event_subtype"
+        ).fetchall()
+        return [(r["event_subtype"], int(r["n"])) for r in rows]
+
+    def available_experience_types(self) -> List[Tuple[str, int]]:
+        """``(experience_type, photo_count)`` across the projection,
+        most-used-first. spec/64 vocabulary (expedition_discovery /
+        studio_craft / slow_down / urban_culture / milestones_traditions);
+        events with no experience_type stay out of the list."""
+        rows = self.user_store.conn.execute(
+            "SELECT experience_type, COUNT(*) AS n FROM global_items "
+            "WHERE experience_type IS NOT NULL "
+            "GROUP BY experience_type ORDER BY n DESC, experience_type"
+        ).fetchall()
+        return [(r["experience_type"], int(r["n"])) for r in rows]
+
+    def available_participants(self) -> List[Tuple[str, int]]:
+        """``(participant_category, photo_count)`` across the projection,
+        most-used-first. ``participants`` is a JSON array on every item
+        row — ``json_each`` expands it; the count is how many items
+        include each category. Empty arrays contribute nothing (json_each
+        emits no rows for ``[]``)."""
+        rows = self.user_store.conn.execute(
+            "SELECT pe.value AS v, COUNT(*) AS n "
+            "FROM global_items, json_each(global_items.participants) AS pe "
+            "WHERE global_items.participants IS NOT NULL "
+            "  AND json_valid(global_items.participants) "
+            "  AND pe.value IS NOT NULL "
+            "GROUP BY pe.value ORDER BY n DESC, pe.value"
+        ).fetchall()
+        return [(str(r["v"]), int(r["n"])) for r in rows]
+
     # Mapping from filters_json keys → the available_* method for that facet.
     # ``facet_inventory`` dispatches through this so the dialog can lazily
     # resolve any facet by its filter key (spec/83 §5).
     _FACET_INVENTORIES: Dict[str, str] = {
-        "styles":        "available_classifications",
-        "camera_ids":    "available_cameras",
-        "lens_models":   "available_lenses",
-        "country_codes": "available_country_codes",
-        "cities":        "available_cities",
-        "color_labels":  "available_color_labels",
+        "styles":            "available_classifications",
+        "camera_ids":        "available_cameras",
+        "lens_models":       "available_lenses",
+        "country_codes":     "available_country_codes",
+        "cities":            "available_cities",
+        "color_labels":      "available_color_labels",
+        # spec/86 — event-level qualifiers.
+        "event_types":       "available_event_types",
+        "event_subtypes":    "available_event_subtypes",
+        "experience_types":  "available_experience_types",
+        "participants":      "available_participants",
     }
 
     def facet_inventory(self, facet_key: str) -> List[Tuple[str, int]]:

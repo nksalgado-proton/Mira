@@ -474,8 +474,130 @@ def test_facet_inventory_dispatches_by_filter_key(tmp_path):
     assert lg.facet_inventory("country_codes") == lg.available_country_codes()
     assert lg.facet_inventory("cities") == lg.available_cities()
     assert lg.facet_inventory("color_labels") == lg.available_color_labels()
+    # spec/86 — event-level qualifiers go through the same dispatcher.
+    assert lg.facet_inventory("event_types") == lg.available_event_types()
+    assert lg.facet_inventory("event_subtypes") == lg.available_event_subtypes()
+    assert lg.facet_inventory("experience_types") == lg.available_experience_types()
+    assert lg.facet_inventory("participants") == lg.available_participants()
     # Unknown key — forward-compat for spec/32 tags / people roadmap.
     assert lg.facet_inventory("tags") == []
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/86 — event-qualifier inventories
+# --------------------------------------------------------------------------- #
+
+
+def _seed_event_qualifier_rows(store: UserStore) -> None:
+    """Three events with different qualifier shapes — enough to exercise
+    every event-level inventory query."""
+    rows = [
+        # Costa Rica trip — wildlife subtype, expedition, Solo + Friends
+        um.GlobalItem(
+            event_uuid="A", item_id="a1", synced_at=NOW,
+            classification="macro",
+            event_type="trip", event_subtype="wildlife trip",
+            experience_type="expedition_discovery",
+            participants='["Solo","With Friends"]',
+            event_start="2024-08-10", event_end="2024-08-15",
+        ),
+        um.GlobalItem(
+            event_uuid="A", item_id="a2", synced_at=NOW,
+            classification="wildlife",
+            event_type="trip", event_subtype="wildlife trip",
+            experience_type="expedition_discovery",
+            participants='["Solo","With Friends"]',
+            event_start="2024-08-10", event_end="2024-08-15",
+        ),
+        # Wedding occasion — milestones, family + kids
+        um.GlobalItem(
+            event_uuid="B", item_id="b1", synced_at=NOW,
+            classification="portrait",
+            event_type="occasion", event_subtype="wedding",
+            experience_type="milestones_traditions",
+            participants='["With Family","With Kids"]',
+            event_start="2025-05-12", event_end="2025-05-13",
+        ),
+        # Project — unset experience + empty participants
+        um.GlobalItem(
+            event_uuid="C", item_id="c1", synced_at=NOW,
+            classification="macro",
+            event_type="project", event_subtype=None,
+            experience_type=None,
+            participants='[]',
+            event_start=None, event_end=None,
+        ),
+    ]
+    for r in rows:
+        store.upsert(r)
+
+
+def test_available_event_types_ordered_by_use(tmp_path):
+    """Trip has 2 items, occasion + project 1 each — counts lead, then
+    alphabetic tie-break."""
+    lg, store = _open_library(tmp_path)
+    _seed_event_qualifier_rows(store)
+    assert lg.available_event_types() == [
+        ("trip", 2), ("occasion", 1), ("project", 1),
+    ]
+    store.close()
+
+
+def test_available_event_subtypes_ordered_by_use(tmp_path):
+    """Free-text subtypes — empty / NULL rows stay out of the list."""
+    lg, store = _open_library(tmp_path)
+    _seed_event_qualifier_rows(store)
+    assert lg.available_event_subtypes() == [
+        ("wildlife trip", 2), ("wedding", 1),
+    ]
+    store.close()
+
+
+def test_available_experience_types_ordered_by_use(tmp_path):
+    """Events with no experience_type stay out (no contribution to the
+    main vocabulary)."""
+    lg, store = _open_library(tmp_path)
+    _seed_event_qualifier_rows(store)
+    assert lg.available_experience_types() == [
+        ("expedition_discovery", 2), ("milestones_traditions", 1),
+    ]
+    store.close()
+
+
+def test_available_participants_expands_json_array(tmp_path):
+    """spec/86 — participants is a JSON array per row; json_each unpacks
+    so a 2-item event A contributes both Solo and With Friends across each
+    of its rows. Empty arrays contribute nothing."""
+    lg, store = _open_library(tmp_path)
+    _seed_event_qualifier_rows(store)
+    assert lg.available_participants() == [
+        ("Solo", 2), ("With Friends", 2),
+        ("With Family", 1), ("With Kids", 1),
+    ]
+    store.close()
+
+
+def test_available_participants_tolerates_null_and_empty(tmp_path):
+    """NULL participants and ``'[]'`` both produce zero rows — the SQL
+    must not crash, and bad data simply contributes nothing."""
+    lg, store = _open_library(tmp_path)
+    store.upsert(um.GlobalItem(
+        event_uuid="X", item_id="x1", synced_at=NOW,
+        participants=None))
+    store.upsert(um.GlobalItem(
+        event_uuid="X", item_id="x2", synced_at=NOW,
+        participants='[]'))
+    assert lg.available_participants() == []
+    store.close()
+
+
+def test_event_qualifier_inventories_empty_when_no_rows(tmp_path):
+    lg, store = _open_library(tmp_path)
+    assert lg.available_event_types() == []
+    assert lg.available_event_subtypes() == []
+    assert lg.available_experience_types() == []
+    assert lg.available_participants() == []
     store.close()
 
 

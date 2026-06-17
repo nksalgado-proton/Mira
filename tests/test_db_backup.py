@@ -13,7 +13,13 @@ import pytest
 from core import db_backup
 from core.db_backup import (
     CORRUPT_PREFIX,
+    DEFAULT_KEEP_MILESTONE,
+    DEFAULT_KEEP_PERIODIC,
+    REASON_MILESTONE,
+    REASON_PERIODIC,
+    SIDECAR_SUFFIX,
     SnapshotInfo,
+    VALID_REASONS,
     latest_snapshot,
     list_snapshots,
     quick_check,
@@ -162,10 +168,12 @@ def test_snapshot_then_restore_round_trips(db, backups, tmp_path):
 # ── rotation ──────────────────────────────────────────────────────
 
 
-def test_rotation_prunes_to_keep(db, backups):
-    """Seven snapshots with keep=5 → only the 5 newest survive."""
+def test_rotation_prunes_milestone_class_to_keep(db, backups):
+    """Seven milestone snapshots with keep_milestone=5 → only the 5
+    newest survive."""
     for i in range(7):
-        snapshot(db, backups, keep=5, created_at=_ts(i))
+        snapshot(db, backups, reason=REASON_MILESTONE,
+                 keep_milestone=5, created_at=_ts(i))
     remaining = list_snapshots(backups)
     assert len(remaining) == 5
     # The newest five (timestamps 6, 5, 4, 3, 2) should remain.
@@ -177,7 +185,8 @@ def test_rotation_prunes_to_keep(db, backups):
 def test_rotation_drops_the_oldest_sidecar_too(db, backups):
     """Pruned snapshots take their sidecars with them — no orphans."""
     for i in range(3):
-        snapshot(db, backups, keep=2, created_at=_ts(i))
+        snapshot(db, backups, reason=REASON_MILESTONE,
+                 keep_milestone=2, created_at=_ts(i))
     db_files = sorted(backups.glob("*.db"))
     json_files = sorted(backups.glob("*.json"))
     assert len(db_files) == 2
@@ -187,9 +196,12 @@ def test_rotation_drops_the_oldest_sidecar_too(db, backups):
 
 
 def test_rotation_keep_minimum_one(db, backups):
-    """keep=0 still keeps the newest (no point pruning to nothing)."""
-    snapshot(db, backups, keep=0, created_at=_ts(0))
-    snapshot(db, backups, keep=0, created_at=_ts(1))
+    """keep_milestone=0 still keeps the newest (no point pruning to
+    nothing)."""
+    snapshot(db, backups, reason=REASON_MILESTONE,
+             keep_milestone=0, created_at=_ts(0))
+    snapshot(db, backups, reason=REASON_MILESTONE,
+             keep_milestone=0, created_at=_ts(1))
     remaining = list_snapshots(backups)
     assert len(remaining) == 1
 
@@ -349,6 +361,122 @@ def test_no_qt_imports_in_db_backup():
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "PyQt6" not in src
     assert "QtCore" not in src
+
+
+# ── spec/82 §A.2 — two-class retention ────────────────────────────
+
+
+def test_snapshot_sidecar_records_reason(db, backups):
+    """Every snapshot writes its class into the sidecar JSON so
+    rotation can read it back later."""
+    snap = snapshot(db, backups, reason=REASON_PERIODIC)
+    sidecar = json.loads(
+        snap.with_suffix(".json").read_text(encoding="utf-8"))
+    assert sidecar["reason"] == REASON_PERIODIC
+
+
+def test_snapshot_default_reason_is_milestone(db, backups):
+    """Existing callers that don't pass ``reason`` keep getting the
+    safer class — milestone — so the on-close + pre-risky-op call
+    sites land in the long-retention bucket without modification."""
+    snap = snapshot(db, backups)
+    sidecar = json.loads(
+        snap.with_suffix(".json").read_text(encoding="utf-8"))
+    assert sidecar["reason"] == REASON_MILESTONE
+
+
+def test_snapshot_rejects_unknown_reason(db, backups):
+    """A typoed reason must fail loudly — silent fall-back would
+    misclassify the snapshot for the rest of its life."""
+    with pytest.raises(ValueError):
+        snapshot(db, backups, reason="manual")          # not in VALID_REASONS
+
+
+def test_list_snapshots_surfaces_reason(db, backups):
+    snapshot(db, backups, reason=REASON_MILESTONE, created_at=_ts(0))
+    snapshot(db, backups, reason=REASON_PERIODIC, created_at=_ts(1))
+    snaps = list_snapshots(backups)
+    by_reason = {s.created_at: s.reason for s in snaps}
+    # Newest-first ordering is unchanged.
+    assert snaps[0].reason == REASON_PERIODIC
+    assert snaps[1].reason == REASON_MILESTONE
+    assert set(by_reason.values()) == {REASON_MILESTONE, REASON_PERIODIC}
+
+
+def test_legacy_sidecar_without_reason_defaults_to_milestone(db, backups):
+    """A sidecar pre-spec/82 has no ``reason`` field. Reading it as
+    milestone (the conservative default) keeps the older snapshot
+    on the longer retention budget — never silently demoted to the
+    short periodic budget where it'd be evicted by churn."""
+    snapshot(db, backups, created_at=_ts(0))
+    sidecar_path = next(backups.glob("*.json"))
+    blob = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    blob.pop("reason", None)
+    sidecar_path.write_text(json.dumps(blob), encoding="utf-8")
+    snaps = list_snapshots(backups)
+    assert len(snaps) == 1
+    assert snaps[0].reason == REASON_MILESTONE
+
+
+def test_legacy_sidecar_with_garbage_reason_defaults_to_milestone(db, backups):
+    """An unknown ``reason`` value (typo, future class, hand-edit)
+    falls back to milestone — same conservative rule as a missing
+    field."""
+    snapshot(db, backups, created_at=_ts(0))
+    sidecar_path = next(backups.glob("*.json"))
+    blob = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    blob["reason"] = "scheduled-by-hand"
+    sidecar_path.write_text(json.dumps(blob), encoding="utf-8")
+    snaps = list_snapshots(backups)
+    assert snaps[0].reason == REASON_MILESTONE
+
+
+def test_periodic_churn_does_not_evict_milestone(db, backups):
+    """spec/82 §A.2 — the reason the two-class split exists. A flood
+    of periodic snapshots must never push out the durable milestone
+    snapshots."""
+    # 1 milestone at t=0.
+    snapshot(db, backups, reason=REASON_MILESTONE,
+             keep_milestone=2, keep_periodic=3, created_at=_ts(0))
+    # 20 periodic snapshots after it.
+    for i in range(1, 21):
+        snapshot(db, backups, reason=REASON_PERIODIC,
+                 keep_milestone=2, keep_periodic=3, created_at=_ts(i))
+    snaps = list_snapshots(backups)
+    milestones = [s for s in snaps if s.reason == REASON_MILESTONE]
+    periodics = [s for s in snaps if s.reason == REASON_PERIODIC]
+    # The single old milestone survived despite 20 periodics churning
+    # through; periodic class is capped at 3.
+    assert len(milestones) == 1
+    assert milestones[0].db_path.stem == _format_stem(_ts(0))
+    assert len(periodics) == 3
+    # The 3 surviving periodics are the newest three (t=20, 19, 18).
+    assert {p.db_path.stem for p in periodics} == {
+        _format_stem(_ts(i)) for i in (18, 19, 20)
+    }
+
+
+def test_milestone_class_prunes_independently(db, backups):
+    """A flood of milestones doesn't evict periodics, either —
+    classes are symmetric in independence."""
+    snapshot(db, backups, reason=REASON_PERIODIC,
+             keep_milestone=3, keep_periodic=2, created_at=_ts(0))
+    for i in range(1, 11):
+        snapshot(db, backups, reason=REASON_MILESTONE,
+                 keep_milestone=3, keep_periodic=2, created_at=_ts(i))
+    snaps = list_snapshots(backups)
+    milestones = [s for s in snaps if s.reason == REASON_MILESTONE]
+    periodics = [s for s in snaps if s.reason == REASON_PERIODIC]
+    assert len(milestones) == 3
+    assert len(periodics) == 1
+    assert periodics[0].db_path.stem == _format_stem(_ts(0))
+
+
+def test_default_retention_limits_match_spec(db, backups):
+    """Spec/82 §A.2: defaults are 10 milestones, 3 periodics."""
+    assert DEFAULT_KEEP_MILESTONE == 10
+    assert DEFAULT_KEEP_PERIODIC == 3
+    assert set(VALID_REASONS) == {REASON_MILESTONE, REASON_PERIODIC}
 
 
 # ── helpers ───────────────────────────────────────────────────────

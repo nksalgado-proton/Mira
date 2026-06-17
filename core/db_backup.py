@@ -1,5 +1,5 @@
-"""SQLite backup, integrity check & restore (spec/79 §7 — the
-pre-freeze minimal subset).
+"""SQLite backup, integrity check & restore (spec/79 §7 + spec/82
+Part A — two-class retention).
 
 Three primitives:
 
@@ -7,14 +7,23 @@ Three primitives:
   database via SQLite's **online backup API** (a plain ``shutil.copy``
   of an open WAL db is unsafe), atomic write-then-rename
   (invariant #6), JSON side-car with ``app_version`` +
-  ``schema_version`` + ``sha256`` + ``created_at``, and last-N
-  rotation (suggest ``keep=5``).
+  ``schema_version`` + ``sha256`` + ``created_at`` + ``reason``,
+  and two-class rotation (spec/82 §A.2).
 * :func:`quick_check` / :func:`verify` — fast ``PRAGMA quick_check``
   on opening a db, and a fuller ``sha256`` + ``quick_check`` check on
   a snapshot before restore.
 * :func:`restore` — atomic swap-in of a snapshot, after backing up
   the current (possibly corrupt) file so the restore is itself
   reversible.
+
+Retention (spec/82 §A.2). Snapshots are tagged with a ``reason``
+field — ``"milestone"`` (close-if-dirty, pre-risky-op, per-day-add,
+manual) or ``"periodic"`` (the N-minute timer). Each class prunes
+independently so a long session's periodic churn can never evict
+the durable milestone snapshots. Defaults: keep last 10 milestones,
+last 3 periodics. Legacy sidecars without a ``reason`` field are
+treated as ``"milestone"`` (the conservative default — keeps them
+around through periodic churn).
 
 Build-on, not reinvent: the atomic write-then-rename pattern is the
 project's standard (:mod:`core.atomic_journal`); the SHA-256 +
@@ -48,6 +57,17 @@ CORRUPT_PREFIX = "corrupt-"
 # placed snapshots without it still list cleanly.
 _TS_RE = re.compile(r"^\d{8}T\d{6}(\d{3})?Z$")
 
+# spec/82 §A.2 — snapshot classes. ``"milestone"`` covers every
+# user-visible / event-driven trigger (close-if-dirty, pre-risky-op,
+# per-day-add, manual); ``"periodic"`` is reserved for the N-minute
+# crash-insurance timer (slice 3). Each class prunes independently
+# so periodic churn never evicts the durable milestone snapshots.
+REASON_MILESTONE = "milestone"
+REASON_PERIODIC = "periodic"
+VALID_REASONS = (REASON_MILESTONE, REASON_PERIODIC)
+DEFAULT_KEEP_MILESTONE = 10
+DEFAULT_KEEP_PERIODIC = 3
+
 
 @dataclass(frozen=True)
 class SnapshotInfo:
@@ -55,15 +75,18 @@ class SnapshotInfo:
     are siblings under the same backups directory.
 
     The sha256 / created_at / version fields come from the side-car
-    JSON; ``mtime`` is the filesystem mtime of the db (a tiebreaker
-    when two snapshots share a sidecar timestamp, which shouldn't
-    happen but is cheap to handle)."""
+    JSON; ``reason`` is the spec/82 §A.2 retention class
+    (``"milestone"`` or ``"periodic"``) — defaults to ``"milestone"``
+    when read from a legacy sidecar that pre-dates the field, so an
+    older snapshot rides the longer milestone retention rather than
+    being silently demoted to the periodic budget."""
     db_path: Path
     sidecar_path: Path
     app_version: str
     schema_version: int
     sha256: str
     created_at: str
+    reason: str = REASON_MILESTONE
 
     @property
     def name(self) -> str:
@@ -129,7 +152,9 @@ def snapshot(
     db_path: Path,
     backups_dir: Path,
     *,
-    keep: int = 5,
+    reason: str = REASON_MILESTONE,
+    keep_milestone: int = DEFAULT_KEEP_MILESTONE,
+    keep_periodic: int = DEFAULT_KEEP_PERIODIC,
     app_version: str = "",
     schema_version: Optional[int] = None,
     created_at: Optional[datetime] = None,
@@ -141,15 +166,20 @@ def snapshot(
     * Atomic write — the snapshot lands at its final name via
       ``os.replace`` from a sibling temp file (invariant #6).
     * Side-car JSON carries ``app_version`` / ``schema_version`` /
-      ``sha256`` / ``created_at``.
-    * After writing, prunes the oldest snapshots in ``backups_dir``
-      so at most ``keep`` remain (1 = "always keep just the latest"
-      = the "free space" pole; v1 defaults to 5 per spec/79 §2).
+      ``sha256`` / ``created_at`` / ``reason``.
+    * After writing, prunes each class (``"milestone"`` /
+      ``"periodic"``) independently so periodic churn never evicts
+      milestone snapshots (spec/82 §A.2). Defaults: keep last 10
+      milestones, last 3 periodics.
 
+    ``reason`` must be one of :data:`VALID_REASONS`.
     ``schema_version`` is read from the source db's ``schema_info``
     table when not passed. ``app_version`` defaults to an empty
     string; the gateway passes the live build version.
     """
+    if reason not in VALID_REASONS:
+        raise ValueError(
+            f"reason must be one of {VALID_REASONS}, got {reason!r}")
     db_path = Path(db_path)
     backups_dir = Path(backups_dir)
     backups_dir.mkdir(parents=True, exist_ok=True)
@@ -190,6 +220,7 @@ def snapshot(
         "schema_version": int(schema_version),
         "sha256": sha,
         "created_at": _format_iso(when),
+        "reason": reason,
     }
     blob = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
     with open(tmp_sidecar, "wb") as f:
@@ -201,34 +232,59 @@ def snapshot(
             pass
     _atomic_replace(tmp_sidecar, final_sidecar)
 
-    _prune(backups_dir, keep=keep)
+    _prune(
+        backups_dir,
+        keep_milestone=keep_milestone,
+        keep_periodic=keep_periodic,
+    )
     return final_db
 
 
-def _prune(backups_dir: Path, *, keep: int) -> None:
-    """Drop oldest snapshots in ``backups_dir`` so at most ``keep``
-    remain. Each snapshot = a ``.db`` file with a sortable
-    timestamp stem; the matching sidecar is removed too. Files that
-    don't match the snapshot naming convention are left alone."""
-    if keep < 1:
-        keep = 1
+def _prune(
+    backups_dir: Path,
+    *,
+    keep_milestone: int,
+    keep_periodic: int,
+) -> None:
+    """Drop oldest snapshots in ``backups_dir`` so each class keeps
+    at most ``keep_<class>`` (spec/82 §A.2). Classes prune
+    independently: a flood of periodic snapshots can never evict a
+    milestone, no matter how recent the periodic or how old the
+    milestone. Files that don't match the snapshot naming
+    convention are left alone."""
+    keep_milestone = max(1, keep_milestone)
+    keep_periodic = max(1, keep_periodic)
     snapshots = list_snapshots(backups_dir)
-    # ``list_snapshots`` returns newest-first; keep the head, drop
-    # the tail.
-    for old in snapshots[keep:]:
-        try:
-            old.db_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            log.warning("db_backup: prune failed for %s: %s", old.db_path, exc)
-        try:
-            old.sidecar_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            log.warning(
-                "db_backup: prune failed for %s: %s", old.sidecar_path, exc)
+    # ``list_snapshots`` returns newest-first; partition by class,
+    # then drop each class's tail.
+    by_class: dict[str, list[SnapshotInfo]] = {
+        REASON_MILESTONE: [],
+        REASON_PERIODIC: [],
+    }
+    for s in snapshots:
+        by_class.setdefault(s.reason, []).append(s)
+    keep = {
+        REASON_MILESTONE: keep_milestone,
+        REASON_PERIODIC: keep_periodic,
+    }
+    for cls, infos in by_class.items():
+        limit = keep.get(cls, keep_milestone)
+        for old in infos[limit:]:
+            try:
+                old.db_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning(
+                    "db_backup: prune failed for %s: %s", old.db_path, exc)
+            try:
+                old.sidecar_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning(
+                    "db_backup: prune failed for %s: %s",
+                    old.sidecar_path, exc)
 
 
 # ── list / latest ──────────────────────────────────────────────────
@@ -270,6 +326,15 @@ def list_snapshots(backups_dir: Path) -> List[SnapshotInfo]:
             )
             continue
         try:
+            # Legacy sidecars (pre-spec/82) have no ``reason`` —
+            # default to ``"milestone"`` so they ride the longer
+            # retention budget instead of being silently demoted.
+            raw_reason = blob.get("reason", REASON_MILESTONE)
+            reason = (
+                str(raw_reason)
+                if str(raw_reason) in VALID_REASONS
+                else REASON_MILESTONE
+            )
             out.append(SnapshotInfo(
                 db_path=db_path,
                 sidecar_path=sidecar_path,
@@ -277,6 +342,7 @@ def list_snapshots(backups_dir: Path) -> List[SnapshotInfo]:
                 schema_version=int(blob.get("schema_version", 0)),
                 sha256=str(blob.get("sha256", "")),
                 created_at=str(blob.get("created_at", "")),
+                reason=reason,
             ))
         except (TypeError, ValueError) as exc:
             log.warning(
@@ -408,8 +474,13 @@ def restore(
 
 __all__ = [
     "CORRUPT_PREFIX",
+    "DEFAULT_KEEP_MILESTONE",
+    "DEFAULT_KEEP_PERIODIC",
+    "REASON_MILESTONE",
+    "REASON_PERIODIC",
     "SIDECAR_SUFFIX",
     "SnapshotInfo",
+    "VALID_REASONS",
     "latest_snapshot",
     "list_snapshots",
     "quick_check",

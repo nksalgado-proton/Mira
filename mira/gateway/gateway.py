@@ -702,9 +702,12 @@ class Gateway:
                 if db_path.exists() and backups_dir is not None:
                     try:
                         from core import db_backup
+                        # spec/82 §A.1 — pre-risky-op (the delete-all
+                        # wipe) is a milestone trigger.
                         db_backup.snapshot(
                             db_path,
                             backups_dir,
+                            reason=db_backup.REASON_MILESTONE,
                             app_version=_live_app_version(),
                         )
                         log.info(

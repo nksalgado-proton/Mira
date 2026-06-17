@@ -173,9 +173,12 @@ class EventGateway:
         ):
             try:
                 from core import db_backup
+                # spec/82 §A.1 — close-if-dirty is a milestone trigger
+                # (the natural rollback point after a working session).
                 db_backup.snapshot(
                     self._db_path,
                     self._backups_dir,
+                    reason=db_backup.REASON_MILESTONE,
                     app_version=self._app_version,
                 )
             except Exception as exc:  # noqa: BLE001

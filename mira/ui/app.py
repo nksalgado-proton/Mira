@@ -301,47 +301,65 @@ def main(argv: list[str] | None = None) -> int:
     # advisory file + heartbeat works on local disks AND the future
     # NAS share; the old kill(pid, 0) check did not.
     from core import library_lock
+    from mira import session as mira_session
     library_root = _resolve_library_root(settings, data_dir)
-    while True:
-        result = library_lock.acquire(library_root)
-        if result.acquired:
-            log.info("Library writer lock acquired at %s", library_root)
-            break
-        if result.holder is None:
-            from PyQt6.QtWidgets import QMessageBox
-            log.warning(
-                "Library writer lock could not be written at %s", library_root)
-            QMessageBox.critical(
-                None,
-                "Library lock failed",
-                f"Mira couldn't write its writer lock at {library_root}. "
-                "Check permissions and free space, then try again.",
-            )
-            return 1
+    result = library_lock.acquire(library_root)
+    if not result.acquired and result.holder is None:
+        # Write failed (permissions, full disk, unreachable share) —
+        # not a conflict, can't continue.
+        from PyQt6.QtWidgets import QMessageBox
+        log.warning(
+            "Library writer lock could not be written at %s", library_root)
+        QMessageBox.critical(
+            None,
+            "Library lock failed",
+            f"Mira couldn't write its writer lock at {library_root}. "
+            "Check permissions and free space, then try again.",
+        )
+        return 1
+
+    read_only_mode = not result.acquired
+    if read_only_mode:
+        # spec/76 §B.1 — another live writer owns the lock. Open the
+        # library read-only instead of declining: every mutation is
+        # gated (gateway-level guard in ``EventGateway._touch()``;
+        # surface-level consult in PickerPage / MainWindow menus) and
+        # a persistent banner names the writer.
+        holder = result.holder
         log.warning(
             "Library writer lock held by %s (pid %d) at %s — "
-            "second instance declined.",
-            result.holder.hostname, result.holder.pid, library_root,
+            "opening read-only.",
+            holder.hostname, holder.pid, library_root,
         )
-        if _show_lock_conflict_dialog(result.holder) == "cancel":
+        # The interim Retry/Cancel dialog still shows; slice 3 replaces
+        # it with the §A.4 "Open read-only / Cancel" contract. Cancel
+        # still aborts launch; any other dismissal continues into the
+        # read-only session.
+        if _show_lock_conflict_dialog(holder) == "cancel":
             return 1
+        mira_session.set_read_only(True, holder)
+    else:
+        log.info("Library writer lock acquired at %s", library_root)
+        mira_session.set_read_only(False)
 
     # Heartbeat — keep the lock's mtime fresh so other machines /
     # processes know we're alive. The timer parent is the QApplication
-    # so it lives as long as the event loop.
-    from PyQt6.QtCore import QTimer
+    # so it lives as long as the event loop. Read-only sessions skip
+    # this — we don't own the lock, so refreshing it would be wrong.
     global _LIBRARY_LOCK_HEARTBEAT
-    _LIBRARY_LOCK_HEARTBEAT = QTimer(app)
-    _LIBRARY_LOCK_HEARTBEAT.setInterval(
-        library_lock.HEARTBEAT_INTERVAL_SECONDS * 1000)
+    if not read_only_mode:
+        from PyQt6.QtCore import QTimer
+        _LIBRARY_LOCK_HEARTBEAT = QTimer(app)
+        _LIBRARY_LOCK_HEARTBEAT.setInterval(
+            library_lock.HEARTBEAT_INTERVAL_SECONDS * 1000)
 
-    def _heartbeat():
-        if not library_lock.refresh(library_root):
-            log.warning(
-                "Library writer lock heartbeat failed at %s — "
-                "lock may have been taken over.", library_root)
-    _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
-    _LIBRARY_LOCK_HEARTBEAT.start()
+        def _heartbeat():
+            if not library_lock.refresh(library_root):
+                log.warning(
+                    "Library writer lock heartbeat failed at %s — "
+                    "lock may have been taken over.", library_root)
+        _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
+        _LIBRARY_LOCK_HEARTBEAT.start()
 
     # spec/76 §A.6 — release on clean exit. ``aboutToQuit`` fires
     # before the event loop returns regardless of how the quit was
@@ -350,7 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     # the 5-minute staleness takeover in ``core.library_lock`` —
     # ``release`` only runs when Qt gets to shut down cleanly.
     # Idempotent: a second call after ``app.exec()`` returns finds the
-    # file already gone and the timer already stopped.
+    # file already gone and the timer already stopped. Read-only
+    # sessions never released a lock they didn't own — release() is a
+    # no-op for them because the lock holder doesn't match us.
     def _teardown_library_lock():
         if _LIBRARY_LOCK_HEARTBEAT is not None:
             _LIBRARY_LOCK_HEARTBEAT.stop()

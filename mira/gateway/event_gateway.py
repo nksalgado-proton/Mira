@@ -1433,7 +1433,22 @@ class EventGateway:
     def _touch(self) -> None:
         """Stamp the event's ``updated_at``. Caller is inside a transaction.
         ``id = 1`` is the enforced singleton, so a no-WHERE update would also be safe;
-        the WHERE is explicit for clarity."""
+        the WHERE is explicit for clarity.
+
+        Also the **read-only defensive net** (spec/76 §B.1). Every
+        gateway mutator funnels through ``_touch()`` while still
+        inside the enclosing transaction, so raising here rolls the
+        write back atomically — even when a UI surface forgot to gate
+        upfront. UI is still expected to consult
+        :func:`mira.session.is_read_only` and disable controls before
+        the user can trigger the mutator; this guard only fires when
+        a surface slipped through.
+        """
+        from mira.session import ReadOnlyLibraryError, is_read_only
+        if is_read_only():
+            raise ReadOnlyLibraryError(
+                "Library is open read-only — mutation refused. The "
+                "writer lock is held by another machine.")
         self.store.conn.execute("UPDATE event SET updated_at = ? WHERE id = 1", (self._now(),))
 
     # ----- phase decisions ------------------------------------------------ #

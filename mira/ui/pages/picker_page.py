@@ -1109,6 +1109,13 @@ class PickerPage(QWidget):
         # edge stays put; the user presses Esc to leave.
 
     def _persist_state(self, nxt: str) -> None:
+        # spec/76 §B.1 — decision verbs are no-ops in read-only mode.
+        # The Picker chrome shows the "Library is read-only" hint via
+        # tooltip; we additionally guard here so a stray keystroke /
+        # border-click doesn't reach the gateway.
+        from mira.session import is_read_only
+        if is_read_only():
+            return
         item = self._items[self._index]
         self._eg.set_phase_state(item.item_id, self._phase, nxt)
         self._state[item.item_id] = nxt

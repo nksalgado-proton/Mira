@@ -130,6 +130,14 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        # spec/76 §B.1 — persistent read-only banner. Names the editing
+        # machine when another Mira holds the writer lock; hidden + zero
+        # height when this app owns the lock. Sits above the batch line
+        # so a single glance from any page reveals "you can't write".
+        from mira.ui.shell.read_only_banner import ReadOnlyBanner
+        self.read_only_banner = ReadOnlyBanner()
+        outer.addWidget(self.read_only_banner)
+
         # spec/59 §8 — the app-level batch queue + its ONE progress line,
         # directly below the menubar, visible from every page; hidden
         # when idle. Jobs run strictly one at a time.

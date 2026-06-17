@@ -314,6 +314,19 @@ QLabel#BatchProgressQueued {{
     font-size: 12px;
 }}
 
+/* spec/76 §B.1 — persistent read-only banner. Shown only when another
+ * machine holds the writer lock; sits directly below the menubar so
+ * the user has a standing reminder that mutations are no-ops in this
+ * window. */
+QWidget#ReadOnlyBanner {{
+    background-color: {warning_bg};
+    border-bottom: 1px solid {warning};
+}}
+QLabel#ReadOnlyBannerLabel {{
+    color: {warning_fg};
+    font-size: 12px;
+}}
+
 /* ── Clickable affordances ────────────────────────────────────
  * All interactive controls share three properties:
  *   1. visible border distinguishing them from static text,

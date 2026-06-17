@@ -292,6 +292,19 @@ class MainWindow(QMainWindow):
         # for this branch — see :meth:`_on_days_grid_item_activated`.
         self._export_phase_active: bool = False
 
+        # spec/82 §A.1 — periodic-while-open snapshot timer. Crash
+        # insurance: take a ``reason="periodic"`` snapshot every
+        # ``DEFAULT_INTERVAL_MINUTES`` minutes for the current event,
+        # but only when its db has changed since the last snapshot.
+        # Slice 8 swaps the constant for a settings-driven value.
+        from mira.ui.shell.periodic_snapshot import PeriodicSnapshotter
+        self._periodic_snapshotter = PeriodicSnapshotter(
+            self.gateway,
+            current_event_id=lambda: self._current_event_id,
+            parent=self,
+        )
+        self._periodic_snapshotter.start()
+
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
         self._build_menu_bar()

@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from mira.ui.design import primary_button, search_field, tag
+from mira.ui.design import ghost_button, primary_button, search_field, tag
 from mira.ui.palette import PALETTE
 
 
@@ -71,9 +71,15 @@ class CrossEventCutsBand(QFrame):
     Signals:
         submitted(str)  query string entered into the search field
                         (emitted on Search-button click or Return press).
+        new_dc_requested()  ghost-button + sigil emit this when the user
+                        asks for the new-cross-event-collection dialog
+                        (spec/81 Phase 2 — Item 5). Host opens
+                        :class:`NewCrossEventDcDialog` and on accept calls
+                        :meth:`LibraryGateway.create_dc`.
     """
 
     submitted = pyqtSignal(str)
+    new_dc_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,6 +140,13 @@ class CrossEventCutsBand(QFrame):
         )
         h.addWidget(self._search, 3)
         self._search.input.returnPressed.connect(self._emit)
+
+        # New cross-event collection — ghost button next to Search; the
+        # primary entry to the spec/81 §2.1 cross-event surface (Item 5).
+        new_btn = ghost_button("+ Collection")
+        new_btn.clicked.connect(self.new_dc_requested.emit)
+        h.addWidget(new_btn)
+        self._new_dc_button = new_btn
 
         # Primary Search button
         btn = primary_button("Search")

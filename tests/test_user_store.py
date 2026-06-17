@@ -108,6 +108,8 @@ def test_ddl_creates_every_spec53_table(tmp_path):
     }
     # spec/61 (schema v2): the user-level "cut" table retired — event Cuts
     # live in event.db; only templates are user-level.
+    # spec/81 Phase 2 (schema v3): cross-event surface arrived — global_items
+    # (cross-event projection) + saved_filter (cross-event DC home).
     assert names == {
         "schema_info",
         "installation_profile",
@@ -115,6 +117,8 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "wizard_answer",
         "event_index",
         "cut_template",
+        "global_items",
+        "saved_filter",
         "person",
         "user_camera",
         "feature_flag",
@@ -361,8 +365,11 @@ def test_migrate_v1_to_v2_reshapes_cut_tables(tmp_path):
     reshapes to the recipe. Neither ever had a writer — no data moves."""
     store = _make_store(tmp_path)
     conn = store.conn
-    # Reconstruct the v1 shape: old tables present, recipe shape absent.
+    # Reconstruct the v1 shape: old tables present, recipe shape absent,
+    # v3 cross-event tables absent.
     conn.execute("DROP TABLE cut_template")
+    conn.execute("DROP TABLE global_items")
+    conn.execute("DROP TABLE saved_filter")
     conn.execute("CREATE TABLE cut (id TEXT PRIMARY KEY, name TEXT)")
     conn.execute(
         "CREATE TABLE cut_template (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
@@ -410,4 +417,180 @@ def test_feature_flag_roundtrip_and_index_on_source(tmp_path):
     got = store.get(m.FeatureFlag, "feature.cross_event_cuts")
     assert got.enabled is True
     assert got.source == "install_profile"
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/81 Phase 2 / spec/32 §3-§4 — the cross-event surface (schema v3)
+# --------------------------------------------------------------------------- #
+
+
+def test_global_item_roundtrip_with_composite_pk(tmp_path):
+    """A ``GlobalItem`` round-trips: every field survives, the composite PK
+    ``(event_uuid, item_id)`` keys upserts, and the bool ``has_export``
+    coerces back from the 0/1 column."""
+    store = _make_store(tmp_path)
+    NOW = _now()
+    store.upsert(m.GlobalItem(
+        event_uuid="evt-1", item_id="i-100", synced_at=NOW,
+        event_name="Costa Rica 2026",
+        origin_relpath="Original Media/IMG_0001.jpg",
+        capture_time="2026-04-02T10:00:00+00:00",
+        kind="photo", provenance="captured",
+        classification="macro",
+        iso=400, aperture_f=2.8, shutter_speed_s=0.004,
+        focal_length_mm=45.0, flash_fired=0,
+        lens_model="LEICA DG MACRO-ELMARIT 45/F2.8",
+        camera_id="Panasonic+DC-G9M2",
+        pick_state="picked", edit_state="picked",
+        has_export=True,
+        country="Costa Rica", country_code="CR",
+        day_city="Monteverde", day_sublocation="Cloud Forest",
+        stars=5, color_label="green", flag=1,
+    ))
+    got = store.get(m.GlobalItem, "evt-1", "i-100")
+    assert got is not None
+    assert got.event_name == "Costa Rica 2026"
+    assert got.classification == "macro"
+    assert got.iso == 400 and got.aperture_f == 2.8
+    assert got.has_export is True              # bool coercion (INTEGER 0/1)
+    assert got.country_code == "CR"
+    assert got.stars == 5 and got.color_label == "green"
+    # Upsert overwrites by PK.
+    store.upsert(m.GlobalItem(
+        event_uuid="evt-1", item_id="i-100", synced_at=NOW,
+        classification="wildlife", stars=4, has_export=False,
+    ))
+    got = store.get(m.GlobalItem, "evt-1", "i-100")
+    assert got.classification == "wildlife" and got.stars == 4
+    assert got.has_export is False
+    store.close()
+
+
+def test_global_items_query_by_event_uuid(tmp_path):
+    """Multi-event projection: ``query_by(event_uuid=…)`` scopes to one
+    event via the indexed event_uuid column (the cross-event resolver's
+    base read for the ``#collected`` rung)."""
+    store = _make_store(tmp_path)
+    NOW = _now()
+    for ev in ("evt-1", "evt-2"):
+        for n in range(3):
+            store.upsert(m.GlobalItem(
+                event_uuid=ev, item_id=f"i-{n}", synced_at=NOW,
+                classification="macro" if n == 0 else "wildlife",
+                has_export=(n == 0),
+            ))
+    evt1 = store.query_by(m.GlobalItem, event_uuid="evt-1")
+    assert {g.item_id for g in evt1} == {"i-0", "i-1", "i-2"}
+    macros = store.query_by(m.GlobalItem, classification="macro")
+    assert len(macros) == 2 and {m_.event_uuid for m_ in macros} == {"evt-1", "evt-2"}
+    store.close()
+
+
+def test_global_items_stars_check_rejects_out_of_range(tmp_path):
+    """``stars`` CHECK enforces the 1-5 user-facing rating range
+    (spec/32 §2a)."""
+    store = _make_store(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.conn.execute(
+            "INSERT INTO global_items (event_uuid, item_id, synced_at, stars) "
+            "VALUES ('evt-1', 'i-1', 't', 6)"
+        )
+    store.close()
+
+
+def test_global_items_has_export_check_rejects_non_boolean(tmp_path):
+    """``has_export`` is INTEGER 0/1 — no other value lands."""
+    store = _make_store(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.conn.execute(
+            "INSERT INTO global_items (event_uuid, item_id, synced_at, has_export) "
+            "VALUES ('evt-1', 'i-1', 't', 2)"
+        )
+    store.close()
+
+
+def test_saved_filter_roundtrip(tmp_path):
+    """A cross-event DC is a ``saved_filter`` row (spec/81 §2.1 + spec/32 §4).
+    Same typed-ref shape as event.db ``dynamic_collection`` — the model is
+    scope-agnostic; cross-event differs only in operand range + filter breadth."""
+    store = _make_store(tmp_path)
+    NOW = _now()
+    store.upsert(m.SavedFilter(
+        id="sf-1", tag="best_macro",
+        description="Macro picks, 5-star, any year",
+        expr_json=json.dumps([["+", "exported"]]),
+        filters_json=json.dumps({
+            "styles": ["macro"], "media_type": "photo",
+            "iso_max": 800, "stars_min": 5,
+            "country_codes": ["CR", "NP"],
+        }),
+        created_at=NOW, updated_at=NOW,
+    ))
+    got = store.get(m.SavedFilter, "sf-1")
+    assert got is not None
+    assert got.tag == "best_macro"
+    assert json.loads(got.filters_json)["stars_min"] == 5
+    store.close()
+
+
+def test_saved_filter_tag_is_unique_case_blind(tmp_path):
+    """``tag`` carries ``COLLATE NOCASE UNIQUE`` — same as the event-scope
+    DC namespace. Cross-event tags collide case-blind."""
+    store = _make_store(tmp_path)
+    NOW = _now()
+    store.upsert(m.SavedFilter(
+        id="sf-1", tag="best_macro", created_at=NOW, updated_at=NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.upsert(m.SavedFilter(
+            id="sf-2", tag="BEST_MACRO", created_at=NOW, updated_at=NOW))
+    store.close()
+
+
+def test_saved_filter_empty_tag_rejected(tmp_path):
+    """Empty tag is rejected (CHECK ``tag <> ''``) — same shape as event-scope DC."""
+    store = _make_store(tmp_path)
+    NOW = _now()
+    with pytest.raises(sqlite3.IntegrityError):
+        store.upsert(m.SavedFilter(
+            id="sf-1", tag="", created_at=NOW, updated_at=NOW))
+    store.close()
+
+
+def test_migrate_v2_to_v3_adds_cross_event_tables(tmp_path):
+    """v2→v3 (spec/81 Phase 2) creates ``global_items`` + ``saved_filter``
+    as NEW tables — full CHECK + index complement intact (unlike ALTER
+    ADD COLUMN). Existing rows are untouched."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Reconstruct the v2 shape: drop the v3 tables, pin the version to 2.
+    conn.execute("DROP TABLE global_items")
+    conn.execute("DROP TABLE saved_filter")
+    conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
+    # Seed a row that should survive the migration.
+    conn.execute(
+        "INSERT INTO setting (key, value_json, updated_at) "
+        "VALUES ('marker', '\"v2-pre\"', '2026-06-16T00:00:00+00:00')"
+    )
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"global_items", "saved_filter"} <= names
+    # CHECK survived: stars=6 is rejected on the migrated table.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO global_items (event_uuid, item_id, synced_at, stars) "
+            "VALUES ('e', 'i', 't', 6)")
+    # Indexes landed.
+    idx = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='global_items'")}
+    assert "ix_global_items_event" in idx
+    assert "ix_global_items_has_export" in idx
+    # Pre-existing row untouched.
+    pre = conn.execute("SELECT value_json FROM setting WHERE key='marker'").fetchone()
+    assert pre is not None and pre["value_json"] == '"v2-pre"'
     store.close()

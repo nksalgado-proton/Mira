@@ -112,6 +112,11 @@ class EventsPage(QWidget):
         # entry point; per-events search/filter sit BELOW it.
         self._cross_band = CrossEventCutsBand()
         self._cross_band.submitted.connect(self.cross_event_query.emit)
+        # spec/81 Phase 2 Item 5 — the band's + Collection button opens the
+        # cross-event DC dialog. The dialog reads inventories from the
+        # LibraryGateway (wrapped around the umbrella gateway's user_store)
+        # and writes new DCs via create_dc.
+        self._cross_band.new_dc_requested.connect(self._open_new_cross_event_dc)
         outer.addWidget(self._cross_band)
 
         # 2. One-line toolbar — title, three compact stat chips, the
@@ -330,6 +335,242 @@ class EventsPage(QWidget):
         self._filter_btn.style().unpolish(self._filter_btn)
         self._filter_btn.style().polish(self._filter_btn)
         self._clear_btn.setVisible(active)
+
+    # ── cross-event DC entry (spec/81 Phase 2 Item 5) ──────────────────
+
+    def _open_new_cross_event_dc(self) -> None:
+        """Open the cross-event collections browser. The list shows existing
+        cross-event Dynamic Collections (saved_filter rows), lets the user
+        edit / delete / pin / create new ones. Pin → opens the cross-event
+        New Cut dialog → commits via :class:`CrossEventCutSession`."""
+        if self.gateway is None:
+            return
+        from mira.gateway.library_gateway import LibraryGateway
+        from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
+
+        lg = LibraryGateway(self.gateway.user_store)
+        dialog = CrossEventDcsDialog(
+            lg, umbrella_gateway=self.gateway, parent=self)
+        dialog.pin_requested.connect(
+            lambda dc: self._pin_cross_event_dc(lg, dc))
+        dialog.view_cuts_requested.connect(self._open_cross_event_cuts)
+        dialog.exec()
+
+    def _open_cross_event_cuts(self) -> None:
+        """Open the cross-event Cuts browser. The browser gathers cuts with
+        ``source_dc_kind = 'user'`` across every event.db in the library and
+        offers Open / Export / Delete actions per row."""
+        if self.gateway is None:
+            return
+        from mira.ui.pages.cross_event_cuts_dialog import CrossEventCutsDialog
+        dialog = CrossEventCutsDialog(self.gateway, parent=self)
+        dialog.export_requested.connect(self._on_export_cross_event_cut)
+        dialog.open_requested.connect(self._on_open_cross_event_cut)
+        dialog.exec()
+
+    def _on_open_cross_event_cut(self, row) -> None:
+        """Open the Cut detail viewer for a cross-event Cut row."""
+        from mira.ui.pages.cross_event_cut_detail_dialog import (
+            CrossEventCutDetailDialog,
+        )
+        dialog = CrossEventCutDetailDialog(self.gateway, row, parent=self)
+        dialog.exec()
+
+    def _on_export_cross_event_cut(self, row) -> None:
+        """Drive the cross-event Cut export pipeline (Task 10). Routes each
+        member through its source event for bytes (export-kind → hardlink
+        from Exported Media/; grab-kind → copy from Original Media/)."""
+        from mira.shared.cross_event_cut_export import (
+            export_cross_event_cut,
+            CrossEventExportError,
+        )
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        target = QFileDialog.getExistingDirectory(
+            self, "Pick export target",
+        )
+        if not target:
+            return
+        try:
+            summary = export_cross_event_cut(
+                self.gateway, row.anchor_event_id, row.cut_id,
+                target=target,
+            )
+        except CrossEventExportError as exc:
+            QMessageBox.warning(
+                self, "Export failed",
+                f"Could not export: {exc}",
+            )
+            return
+        QMessageBox.information(
+            self, "Export complete",
+            f"Exported {summary['member_count']} file(s) "
+            f"({summary['linked']} linked, {summary['copied']} copied, "
+            f"{summary['missing']} missing).",
+        )
+
+    def _pin_cross_event_dc(self, library_gateway, dc) -> None:
+        """Open the cross-event New Cut dialog with ``dc`` pre-selected;
+        on save, build the session via
+        :meth:`CrossEventCutSession.from_draft`, default-anchor it to the
+        event contributing the most resolved members, and commit via the
+        anchor event's gateway."""
+        from mira.gateway.cross_event_resolver import unpack_key
+        from mira.shared.cross_event_cut_session import (
+            CrossEventCutSession,
+            pick_anchor_event,
+        )
+        from mira.shared.cut_draft import CrossEventCutDraft
+        from mira.ui.pages.new_cross_event_cut_dialog import (
+            CrossEventCutInventories,
+            NewCrossEventCutDialog,
+        )
+        from PyQt6.QtWidgets import QMessageBox
+
+        # Probe the DC to find a sensible default anchor: the event that
+        # contributes the most resolved keys. Empty DC → no default;
+        # the user picks an anchor anyway.
+        keys = library_gateway.resolve_dc_keys(
+            library_gateway.dc_expr(dc),
+            library_gateway.dc_filters(dc))
+        contrib_counts: dict = {}
+        for k in keys:
+            evt, _ = unpack_key(k)
+            contrib_counts[evt] = contrib_counts.get(evt, 0) + 1
+        default_anchor = None
+        if contrib_counts:
+            top = max(contrib_counts.values())
+            candidates = sorted(
+                [e for e, n in contrib_counts.items() if n == top])
+            default_anchor = candidates[0]
+
+        # Inventories: cross-event DCs (with current DC labelled), events
+        # from the umbrella, music categories from settings (if any).
+        dcs = library_gateway.dynamic_collections()
+        events_list = self._cross_event_event_inventory()
+        music = self._cross_event_music_inventory()
+        inventories = CrossEventCutInventories(
+            dynamic_collections=tuple(
+                (d.id, "#" + d.tag) for d in dcs),
+            events=tuple(events_list),
+            music_categories=tuple(music),
+        )
+        cut_dialog = NewCrossEventCutDialog(
+            inventories=inventories,
+            default_anchor_event_id=default_anchor,
+            default_dc_id=dc.id,
+            parent=self,
+        )
+
+        def _on_save(info):
+            try:
+                self._commit_cross_event_cut(library_gateway, info)
+            except Exception as exc:                       # noqa: BLE001
+                QMessageBox.warning(
+                    cut_dialog,
+                    "Cross-event Cut",
+                    f"Could not create cross-event Cut: {exc}",
+                )
+                return
+            from core import cut_names as _names
+            QMessageBox.information(
+                cut_dialog,
+                "Cross-event Cut",
+                f"Created #{_names.slugify(info.name)} in event {info.anchor_event_id}.",
+            )
+
+        cut_dialog.saved.connect(_on_save)
+        cut_dialog.exec()
+
+    def _commit_cross_event_cut(self, library_gateway, info) -> None:
+        """Drive the engine: build a draft from the dialog info, resolve via
+        the library gateway, commit through the anchor event's gateway.
+
+        Keep-all mode commits directly with every resolved item picked.
+        Weed-out / pick-in modes route through :class:`CrossEventPickerDialog`
+        so the user refines the ledger before commit."""
+        from mira.shared.cross_event_cut_session import CrossEventCutSession
+        from mira.shared.cut_draft import (
+            CrossEventCutDraft, PIN_KEEP_ALL,
+        )
+
+        if not info.anchor_event_id:
+            raise ValueError("no anchor event picked")
+        draft = CrossEventCutDraft(
+            name=info.name,
+            tag="",
+            source_dc_id=info.source_dc_id,
+            expr=(),
+            filters={},
+            pin_mode=info.pin_mode,
+            target_s=info.target_s,
+            max_s=info.max_s,
+            photo_s=info.photo_s,
+            music_category=info.music_category,
+            anchor_event_id=info.anchor_event_id,
+            separators=info.separators,
+            overlay_fields=tuple(info.overlay_fields),
+            overlay_mode=info.overlay_mode,
+        )
+        session = CrossEventCutSession.from_draft(
+            library_gateway, draft,
+            anchor_event_id=info.anchor_event_id)
+
+        if info.pin_mode == PIN_KEEP_ALL:
+            self._direct_commit_cross_event_cut(session, info.anchor_event_id)
+            return
+
+        # Weed/Pick mode: open the Picker, let the user refine, commit on
+        # accept.
+        from mira.ui.pages.cross_event_picker_dialog import (
+            CrossEventPickerDialog,
+        )
+
+        def _commit_cb(sess):
+            self._direct_commit_cross_event_cut(sess, info.anchor_event_id)
+
+        picker = CrossEventPickerDialog(
+            session, commit_callback=_commit_cb, parent=self)
+        picker.exec()
+
+    def _direct_commit_cross_event_cut(self, session, anchor_event_id) -> None:
+        """Open the anchor event's gateway + drive ``session.commit`` +
+        close. Shared by keep-all and Picker-routed commits."""
+        anchor_gw = self.gateway.open_event(anchor_event_id)
+        try:
+            session.commit(anchor_gw)
+        finally:
+            anchor_gw.close()
+
+    def _cross_event_event_inventory(self) -> list:
+        """``(event_id, label)`` for every event in the library — the
+        anchor-event picker's vocabulary."""
+        out: list = []
+        try:
+            rows = self.gateway.list_events()
+        except Exception:                                    # noqa: BLE001
+            return out
+        for r in rows:
+            eid = r.get("id") or r.get("uuid")
+            name = r.get("name") or eid
+            if eid:
+                out.append((eid, name))
+        return out
+
+    def _cross_event_music_inventory(self) -> list:
+        """Audio-library subdirectories (the music-category picker
+        vocabulary). Empty when audio_library_path is unset / invalid.
+        Reads via :func:`core.audio_library.list_moods` against the
+        configured library root."""
+        try:
+            from core import audio_library
+            settings = self.gateway.settings.load()
+            root = getattr(settings, "audio_library_path", None)
+            if not root:
+                return []
+            return list(audio_library.list_moods(root))
+        except Exception:                                    # noqa: BLE001
+            return []
 
     # ── data ────────────────────────────────────────────────────────────
 

@@ -226,18 +226,23 @@ class DynamicCollection:
 
 @dataclass
 class Cut:
-    """One event Cut (spec/81 §3) — a FROZEN materialisation of a DC.
+    """One Cut (spec/81 §3) — a FROZEN materialisation of a DC.
     ``expr_snapshot_json`` is the formula frozen at pin; members live in
-    :class:`CutMember`. ``source_dc_id`` is the DC pinned from (NULL = ad-hoc /
-    DC deleted via ON DELETE SET NULL — the freeze invariant). Style + media
-    filters live on the DC, not here. ``overlay_fields_json`` [] = off;
-    ``overlay_mode`` 'embedded'|'burn_in'|None. ``separators`` default ON."""
+    :class:`CutMember`. ``source_dc_id`` is the DC pinned from (NULL =
+    ad-hoc / source DC deleted — the freeze invariant moved to the gateway in
+    schema v8; spec/81 Phase 2). ``source_dc_kind`` discriminates: 'event'
+    (the id is in this event.db's ``dynamic_collection``), 'user' (the id is
+    in mira.db's ``saved_filter`` — a cross-event Cut), NULL (legacy / unset
+    — readers treat as 'event' for back-compat). Style + media filters live
+    on the DC, not here. ``overlay_fields_json`` [] = off; ``overlay_mode``
+    'embedded'|'burn_in'|None. ``separators`` default ON."""
 
     id: str
     tag: str
     created_at: str
     updated_at: str
     source_dc_id: Optional[str] = None
+    source_dc_kind: Optional[str] = None        # 'event' | 'user' | None (legacy)
     expr_snapshot_json: str = '[]'
     target_s: Optional[int] = None
     max_s: Optional[int] = None
@@ -253,9 +258,37 @@ class Cut:
 
 @dataclass
 class CutMember:
+    """One row of a Cut's membership.
+
+    ``event_id`` (schema v8, spec/81 Phase 2 Item 4): NULL = legacy event-
+    scope (the member is from THIS event's lineage); non-NULL = the source
+    event's UUID for cross-event Cut members whose bytes live in another
+    event's ``Exported Media/``.
+
+    ``kind`` (schema v9, spec/81 Phase 2 Item 6, spec/61 §6 + §8): the
+    grab-originals discriminator. ``'export'`` = the legacy shape, member's
+    bytes live in the source event's ``Exported Media/<export_relpath>``.
+    ``'grab'`` = the source event has no lineage row yet (#collected /
+    #picked / #edited rungs); the export pipeline copies the ORIGINAL bytes
+    from ``Original Media/<origin_relpath>``. ``member_id`` is the
+    content-stable PK distinguisher — the export_relpath OR origin_relpath
+    depending on kind; auto-derived in ``__post_init__`` when omitted so
+    legacy callers that pass only the v7 fields still construct cleanly."""
+
     cut_id: str
-    export_relpath: str
-    added_at: str
+    export_relpath: Optional[str] = None
+    added_at: str = ""
+    member_id: Optional[str] = None
+    kind: str = "export"                          # 'export' | 'grab'
+    origin_relpath: Optional[str] = None
+    event_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.member_id is None:
+            # Auto-derive from the relpath of the kind in use. Legacy callers
+            # (v7-shape construction) only pass export_relpath; this keeps them
+            # working without touching their call site.
+            self.member_id = self.origin_relpath if self.kind == "grab" else self.export_relpath
 
 
 @dataclass

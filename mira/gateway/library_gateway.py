@@ -1,0 +1,456 @@
+"""``LibraryGateway`` — the cross-event facade (spec/81 Phase 2).
+
+Sibling to :class:`mira.gateway.event_gateway.EventGateway`. EventGateway is
+**per-event** — opens one ``event.db`` and answers questions about its items,
+its DCs, its Cuts. LibraryGateway is **cross-event** — opens the user-level
+``mira.db`` and answers the same shape of questions library-wide. The model is
+identical at both scopes (spec/81 §2 is scope-agnostic); the gateways differ
+only in *which operands they admit* and *which store they read*.
+
+The asymmetry table from spec/81 §2.1:
+
+============  =====================  ==============================================
+              Event scope            Cross-event
+============  =====================  ==============================================
+Origin        ``#exported`` only      full ladder ``collected/picked/edited/exported``
+Filters       Style + media type      full spec/32 §2 catalogue
+DC home       ``event.db``            user-level ``mira.db`` (``saved_filter``)
+============  =====================  ==============================================
+
+What this gateway owns:
+
+* **DC CRUD** against ``saved_filter`` — create / update / rename / delete /
+  list / lookup by tag. Same vocabulary as :class:`EventGateway`'s DC surface
+  (``create_dc``, ``dc_by_tag``, …) so the UI seam is uniform — the dialog
+  doesn't care which scope it's on.
+* **Resolution** — :meth:`resolve_dc` / :meth:`dc_probe` / :meth:`dc_show_totals`
+  drive :func:`mira.gateway.cross_event_resolver.resolve_cross_event` and
+  report back ``(event_uuid, item_id)`` keys + budget composition.
+* **Operand inventory** — :meth:`dc_operand_inventory` lists the operands the
+  cross-event New Cut dialog offers: the four ladder rungs as base tokens, plus
+  every existing ``saved_filter`` (typed ``dc`` ref). Cross-event Cuts join the
+  inventory when Item 4 lands.
+* **Facet inventories** — :meth:`available_classifications` / ``cameras`` /
+  ``lenses`` / ``country_codes`` — the dialog's filter-chip vocabulary, pulled
+  from the cross-event projection (DISTINCT over ``global_items``).
+* **Sync triggers** — :meth:`sync_event` (the per-event close hook) and
+  :meth:`reconcile_all` (the startup pass) delegate to
+  :mod:`mira.gateway.global_items_sync` so the projection stays in lockstep
+  with the per-event stores.
+
+No lifecycle ownership of ``mira.db`` itself: the gateway wraps an *already
+open* :class:`UserStore` (same as :class:`EventGateway` over :class:`EventStore`).
+Opening + closing belong to whoever wires it into the app.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from dataclasses import replace
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from core import collection_resolver, cut_budget, cut_names
+from mira.gateway import cross_event_resolver as cev
+from mira.gateway import global_items_sync as gis
+from mira.store.repo import EventStore
+from mira.user_store import models as um
+from mira.user_store.repo import UserStore
+
+log = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_uuid() -> str:
+    return uuid.uuid4().hex
+
+
+class LibraryGateway:
+    """The cross-event query / mutator facade. Wraps an open
+    :class:`UserStore` and is the **only** place cross-event surfaces touch
+    ``mira.db``. UI surfaces hold one per session (cross-event work spans the
+    whole app's lifetime, not a single event)."""
+
+    def __init__(
+        self,
+        user_store: UserStore,
+        *,
+        now: Callable[[], str] = _utc_now_iso,
+        new_id: Callable[[], str] = _new_uuid,
+    ) -> None:
+        self.user_store = user_store
+        self._now = now
+        self._new_id = new_id
+
+    def __enter__(self) -> "LibraryGateway":
+        return self
+
+    def __exit__(self, *exc) -> None:                         # noqa: D401
+        """Do NOT close the user_store — lifecycle is owned by the wirer."""
+        pass
+
+    # =================================================================== #
+    # Dynamic Collections (cross-event — ``saved_filter`` rows)
+    # =================================================================== #
+
+    def dynamic_collections(self) -> List[um.SavedFilter]:
+        """All cross-event DCs, oldest first. Mirrors
+        :meth:`EventGateway.dynamic_collections`; readers don't care that the
+        rows come from ``saved_filter`` rather than ``dynamic_collection``."""
+        return self.user_store.query_raw(
+            um.SavedFilter,
+            "SELECT * FROM saved_filter ORDER BY created_at, id")
+
+    def dynamic_collection(self, dc_id: str) -> Optional[um.SavedFilter]:
+        return self.user_store.get(um.SavedFilter, dc_id)
+
+    def dc_by_tag(self, tag: str) -> Optional[um.SavedFilter]:
+        rows = self.user_store.query_by(um.SavedFilter, tag=tag)
+        return rows[0] if rows else None
+
+    @staticmethod
+    def dc_expr(dc: um.SavedFilter) -> List[list]:
+        """A DC's formula as ``[[op, operand], …]`` — typed-ref shape, same
+        as event-scope (spec/81 §2)."""
+        try:
+            return list(json.loads(dc.expr_json or "[]"))
+        except (ValueError, TypeError):
+            return []
+
+    @staticmethod
+    def dc_filters(dc: um.SavedFilter) -> dict:
+        """A DC's filter mapping (the spec/32 §2 catalogue). Tolerant readers
+        — missing keys / malformed JSON fall back to ``{}``."""
+        try:
+            data = json.loads(dc.filters_json or "{}")
+            return data if isinstance(data, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def _check_dc_cycle(self, dc_id: str,
+                        expr: Sequence[Sequence]) -> None:
+        """Cheap, non-resolving cycle guard at the write seam (spec/81 §2).
+        Walks DC→DC operand refs only; base tokens + cut refs are terminal.
+        Raises ``ValueError("cycle")`` so the UI can ``tr()``-map the code."""
+        by_id: Dict[str, list] = {}
+        for d in self.dynamic_collections():
+            if d.id == dc_id:
+                continue
+            by_id[d.id] = self.dc_expr(d)
+        if collection_resolver.reaches(
+                dc_id, [list(t) for t in expr],
+                dc_expr_by_id=lambda i: by_id.get(i)):
+            raise ValueError("cycle")
+
+    def create_dc(
+        self,
+        name: str,
+        *,
+        expr: Sequence[Sequence] = (),
+        filters: Optional[Mapping[str, Any]] = None,
+        description: Optional[str] = None,
+    ) -> um.SavedFilter:
+        """Create a cross-event DC from a user-typed name (slugified +
+        validated against the cross-event DC namespace — reserved against the
+        ladder rungs + taken tags). Rejects self-referential operand graphs
+        (cycle guard). ``filters`` is the spec/32 §2 catalogue as a dict —
+        tolerant readers; unknown keys round-trip via ``filters_json``."""
+        slug = cut_names.slugify(name)
+        err = cut_names.check_tag(slug, [d.tag for d in self.dynamic_collections()])
+        if err:
+            raise ValueError(err)
+        dc_id = self._new_id()
+        expr_list = [list(t) for t in expr]
+        self._check_dc_cycle(dc_id, expr_list)
+        now = self._now()
+        sf = um.SavedFilter(
+            id=dc_id, tag=slug,
+            description=description,
+            created_at=now, updated_at=now,
+            expr_json=json.dumps(expr_list),
+            filters_json=json.dumps(dict(filters or {})),
+        )
+        with self.user_store.transaction():
+            self.user_store.upsert(sf)
+        return sf
+
+    def update_dc(
+        self,
+        dc_id: str,
+        *,
+        expr: Optional[Sequence[Sequence]] = None,
+        filters: Optional[Mapping[str, Any]] = None,
+        description: Optional[str] = None,
+    ) -> None:
+        """Edit a cross-event DC's formula / filters / description in place.
+        The cycle guard runs against the NEW expr. ``filters`` REPLACES the
+        whole mapping (event-scope's per-key merge is too narrow for the
+        cross-event catalogue's open-ended key set; callers pass the full
+        next state)."""
+        dc = self.dynamic_collection(dc_id)
+        if dc is None:
+            raise KeyError(dc_id)
+        sets: Dict[str, str] = {}
+        if expr is not None:
+            expr_list = [list(t) for t in expr]
+            self._check_dc_cycle(dc_id, expr_list)
+            sets["expr_json"] = json.dumps(expr_list)
+        if filters is not None:
+            sets["filters_json"] = json.dumps(dict(filters))
+        if description is not None:
+            sets["description"] = description
+        if not sets:
+            return
+        cols = ", ".join(f"{k} = ?" for k in sets)
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                f"UPDATE saved_filter SET {cols}, updated_at = ? WHERE id = ?",
+                (*sets.values(), self._now(), dc_id))
+
+    def rename_dc(self, dc_id: str, new_name: str) -> um.SavedFilter:
+        """Rename a cross-event DC (slug + validate against the cross-event
+        namespace, excluding itself). The cycle guard does not need to
+        re-run — renaming changes only the tag, not the operand graph."""
+        dc = self.dynamic_collection(dc_id)
+        if dc is None:
+            raise KeyError(dc_id)
+        slug = cut_names.slugify(new_name)
+        err = cut_names.check_tag(
+            slug, [d.tag for d in self.dynamic_collections() if d.id != dc_id])
+        if err:
+            raise ValueError(err)
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "UPDATE saved_filter SET tag = ?, updated_at = ? WHERE id = ?",
+                (slug, self._now(), dc_id))
+        return replace(dc, tag=slug)
+
+    def delete_dc(self, dc_id: str) -> None:
+        """Drop a cross-event DC. Cross-event Cuts that point at it (Item 4+)
+        survive via the same opaque-id discipline event-scope already uses
+        (the FK is dropped per the Phase-2 handover recommendation; freeze
+        invariant — spec/81 §5)."""
+        with self.user_store.transaction() as conn:
+            conn.execute("DELETE FROM saved_filter WHERE id = ?", (dc_id,))
+
+    # =================================================================== #
+    # Resolution + probes
+    # =================================================================== #
+
+    def resolve_dc(
+        self,
+        expr: Sequence[Sequence],
+        filters: Optional[Mapping] = None,
+    ) -> List[Tuple[str, str]]:
+        """Resolve a cross-event DC formula (spec/81 §2). Returns
+        ``(event_uuid, item_id)`` tuples in chronological show order. The
+        formula's own filters apply at the top; nested DCs' filters apply
+        before they compose upward (the resolver handles both)."""
+        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        return [cev.unpack_key(k) for k in keys]
+
+    def resolve_dc_keys(
+        self,
+        expr: Sequence[Sequence],
+        filters: Optional[Mapping] = None,
+    ) -> List[str]:
+        """The packed-key variant of :meth:`resolve_dc` — keep when the
+        caller wants the resolver's native ``"event_uuid::item_id"`` strings
+        (e.g. composing further set operations without re-packing). The flat
+        grid + export pipelines use :meth:`resolve_dc` directly."""
+        return cev.resolve_cross_event(self.user_store, expr, filters)
+
+    def dc_probe(self, expr: Sequence[Sequence],
+                 filters: Optional[Mapping] = None) -> int:
+        """The dialog's live count for a draft DC formula (spec/81 §2)."""
+        return len(cev.resolve_cross_event(self.user_store, expr, filters))
+
+    def dc_show_totals(
+        self,
+        expr: Sequence[Sequence],
+        filters: Optional[Mapping] = None,
+    ) -> cut_budget.ShowTotals:
+        """Budget composition of a cross-event DRAFT DC formula (spec/81 §2 +
+        spec/32 §3). Mirrors :meth:`EventGateway.dc_show_totals` but the
+        ``separator_count`` semantics are scope-aware: cross-event Cuts
+        default separators OFF (spec/81 §3.1), so the field reads the day
+        count the formula resolved to and the dialog zeroes it when the
+        per-Cut separators setting is off (same shape as event scope)."""
+        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        if not keys:
+            return cut_budget.ShowTotals()
+        # Resolve cross-event keys back to rows; one query joins on the
+        # composite key. ``capture_time`` (ISO 'YYYY-MM-DDT…') drives the
+        # day bucket — same surface as event-scope's ``trip_day`` join, just
+        # day-derived from time instead of stored.
+        placeholders = ",".join(["?"] * len(keys))
+        sql = (
+            "SELECT kind, duration_ms, capture_time, event_uuid "
+            "FROM global_items "
+            f"WHERE (event_uuid || '::' || item_id) IN ({placeholders})"
+        )
+        rows = self.user_store.conn.execute(sql, keys).fetchall()
+        photos = 0
+        videos = 0
+        video_ms = 0
+        days: set = set()
+        for r in rows:
+            kind = r["kind"] or "photo"
+            if kind == "video":
+                videos += 1
+                video_ms += int(r["duration_ms"] or 0)
+            else:
+                photos += 1
+            # Day bucket = (event_uuid, ISO date). Same-day across two events
+            # counts as two separators — separators orient ONE event's
+            # timeline (spec/81 §3.1), so the cross-event day count is
+            # per-event by construction. Zero-time rows contribute no day.
+            t = r["capture_time"]
+            if t:
+                days.add((r["event_uuid"], t[:10]))
+        return cut_budget.ShowTotals(
+            photo_count=photos,
+            video_count=videos,
+            separator_count=len(days),
+            video_ms_total=video_ms,
+        )
+
+    # =================================================================== #
+    # Operand + facet inventories (the dialog's vocabularies)
+    # =================================================================== #
+
+    def dc_operand_inventory(self) -> List[dict]:
+        """The operands the cross-event New Cut dialog offers (spec/81 §2 +
+        §2.1): the four ladder rungs as base tokens, then every existing
+        cross-event DC as a typed ``dc`` ref. Cross-event Cuts (Item 4) will
+        join here when their storage lands. Each entry mirrors
+        :meth:`EventGateway.dc_operand_inventory`'s shape so the dialog
+        consumes one API."""
+        inv: List[dict] = []
+        for token in (collection_resolver.BASE_COLLECTED,
+                      collection_resolver.BASE_PICKED,
+                      collection_resolver.BASE_EDITED,
+                      collection_resolver.BASE_EXPORTED):
+            inv.append({"kind": "base", "tag": token, "operand": token})
+        for d in self.dynamic_collections():
+            inv.append({"kind": "dc", "tag": d.tag,
+                        "operand": {"kind": "dc", "id": d.id, "tag": d.tag}})
+        return inv
+
+    def available_classifications(self) -> List[str]:
+        """DISTINCT non-null classifications across the projection — the
+        cross-event dialog's Style chip vocabulary. Alphabetical."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT classification FROM global_items "
+            "WHERE classification IS NOT NULL ORDER BY classification"
+        ).fetchall()
+        return [r["classification"] for r in rows]
+
+    def available_cameras(self) -> List[str]:
+        """DISTINCT camera ids across the projection — the cross-event
+        Camera filter vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT camera_id FROM global_items "
+            "WHERE camera_id IS NOT NULL ORDER BY camera_id"
+        ).fetchall()
+        return [r["camera_id"] for r in rows]
+
+    def available_lenses(self) -> List[str]:
+        """DISTINCT lens models across the projection — the cross-event
+        Lens filter vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT lens_model FROM global_items "
+            "WHERE lens_model IS NOT NULL ORDER BY lens_model"
+        ).fetchall()
+        return [r["lens_model"] for r in rows]
+
+    def available_country_codes(self) -> List[str]:
+        """DISTINCT ISO 3166-1 alpha-2 country codes across the projection
+        — the cross-event Location filter's country vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT country_code FROM global_items "
+            "WHERE country_code IS NOT NULL ORDER BY country_code"
+        ).fetchall()
+        return [r["country_code"] for r in rows]
+
+    def available_cities(self) -> List[str]:
+        """DISTINCT day-level cities across the projection — the cross-event
+        Location filter's city vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT day_city FROM global_items "
+            "WHERE day_city IS NOT NULL ORDER BY day_city"
+        ).fetchall()
+        return [r["day_city"] for r in rows]
+
+    def available_color_labels(self) -> List[str]:
+        """DISTINCT color labels (LRC-compatible vocabulary) across the
+        projection — the Curatorial chip vocabulary."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT color_label FROM global_items "
+            "WHERE color_label IS NOT NULL ORDER BY color_label"
+        ).fetchall()
+        return [r["color_label"] for r in rows]
+
+    def event_uuids_in_projection(self) -> List[str]:
+        """The set of events whose items live in the projection — useful
+        for the cross-event-band entry point (spec/75 §2) and for the
+        startup reconcile's "what do I know about" check."""
+        rows = self.user_store.conn.execute(
+            "SELECT DISTINCT event_uuid FROM global_items "
+            "ORDER BY event_uuid"
+        ).fetchall()
+        return [r["event_uuid"] for r in rows]
+
+    # =================================================================== #
+    # Sync triggers — the projection stays in lockstep with event.db
+    # =================================================================== #
+
+    def sync_event(
+        self,
+        *,
+        event_store: EventStore,
+        event_uuid: str,
+        event_name: str,
+    ) -> int:
+        """Sync one event's projection slice. The per-event close hook calls
+        this so the cross-event index never goes stale on a clean close
+        (spec/81 Phase 2 handover recommendation #2). Returns the row count
+        written."""
+        return gis.sync_event(
+            event_store=event_store,
+            user_store=self.user_store,
+            event_uuid=event_uuid,
+            event_name=event_name,
+            now=self._now,
+        )
+
+    def drop_event(self, event_uuid: str) -> int:
+        """Drop one event's projection slice (event deleted from the
+        library). Returns the row count removed."""
+        return gis.drop_event(user_store=self.user_store, event_uuid=event_uuid)
+
+    def reconcile_all(
+        self,
+        *,
+        open_event_store: Callable[[str], Optional[EventStore]],
+        known_events: Iterable[Tuple[str, str]],
+    ) -> dict:
+        """Startup reconcile: re-sync every known event + drop stale slices
+        (spec/81 Phase 2 handover recommendation #2). ``known_events`` is
+        ``(event_uuid, event_name)`` tuples from the events index;
+        ``open_event_store(uuid) -> EventStore | None`` lets the caller
+        decide the open-policy (read-only? snapshot?). Unopenable events are
+        skipped + logged, never raised."""
+        return gis.reconcile_all(
+            user_store=self.user_store,
+            open_event_store=open_event_store,
+            known_events=known_events,
+            now=self._now,
+        )
+
+
+__all__ = ["LibraryGateway"]

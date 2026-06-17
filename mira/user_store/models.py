@@ -158,6 +158,79 @@ class UserCamera:
 
 
 # --------------------------------------------------------------------------- #
+# Cross-event surface (spec/81 Phase 2; spec/32 §3 + §4) — schema v3
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class GlobalItem:
+    """One row of the cross-event item projection (spec/32 §3). A denormalised
+    snapshot of one item plus its enclosing event/day context — synced from
+    every event.db on event close + startup reconcile so cross-event resolution
+    hits this one file. PK is the composite ``(event_uuid, item_id)``.
+
+    Reconciled names from the spec/32 §3 sketch: ``pick_state`` was
+    ``cull_state`` (the locked Pick/Skip verb pair); ``flag`` was ``pick``
+    (the portfolio bit, distinct from the decision verb). The ladder rungs
+    (spec/81 §2.1) read off:
+    ``#collected`` = every row;
+    ``#picked``    = ``pick_state == 'picked'``;
+    ``#edited``    = ``edit_state == 'picked'`` (the Edit-phase commit;
+                     spec/61 §1.1 — edited ≠ exported);
+    ``#exported``  = ``has_export == True``.
+    """
+
+    event_uuid: str
+    item_id: str
+    synced_at: str
+    event_name: str = ""
+    origin_relpath: Optional[str] = None
+    export_relpath: Optional[str] = None         # latest exported relpath; NULL if not exported
+    capture_time: Optional[str] = None
+    kind: Optional[str] = None
+    provenance: Optional[str] = None
+    classification: Optional[str] = None
+    iso: Optional[int] = None
+    aperture_f: Optional[float] = None
+    shutter_speed_s: Optional[float] = None
+    focal_length_mm: Optional[float] = None
+    flash_fired: Optional[int] = None         # 0/1; NULL = unknown
+    lens_model: Optional[str] = None
+    camera_id: Optional[str] = None
+    duration_ms: Optional[int] = None
+    pick_state: Optional[str] = None
+    edit_state: Optional[str] = None
+    has_export: bool = False
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    day_city: Optional[str] = None
+    day_sublocation: Optional[str] = None
+    stars: Optional[int] = None
+    color_label: Optional[str] = None
+    flag: Optional[int] = None                # 0/1; NULL = unset
+
+
+@dataclass
+class SavedFilter:
+    """One cross-event Dynamic Collection (spec/32 §4 + spec/81 §2.1). Shape
+    is intentionally identical to the per-event ``DynamicCollection`` — the
+    spec/81 §2 model is scope-agnostic; cross-event differs only in what
+    operands ``expr_json`` admits (the full ladder, not just ``exported``) and
+    in the breadth of ``filters_json`` (the full spec/32 §2 catalogue). The
+    spec/32 §4 predicate-tree framing reconciles here to ``filters_json``
+    (the predicates) + ``expr_json`` (set algebra)."""
+
+    id: str
+    tag: str
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    expr_json: str = '[]'
+    filters_json: str = '{}'
+    extras_json: str = '{}'
+
+
+# --------------------------------------------------------------------------- #
 # Feature flags (spec/53 §2.7)
 # --------------------------------------------------------------------------- #
 

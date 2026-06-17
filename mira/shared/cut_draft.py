@@ -51,7 +51,50 @@ class CutDraft:
         return {"styles": list(self.styles), "media_type": self.media_type}
 
 
+@dataclass(frozen=True)
+class CrossEventCutDraft:
+    """The cross-event counterpart of :class:`CutDraft` (spec/81 Phase 2).
+    Same handoff role — the New Cross-Event Cut dialog snapshots its widgets
+    into one of these; the cross-event pin session
+    (:class:`mira.shared.cross_event_cut_session.CrossEventCutSession`) sources
+    its candidates from a cross-event DC resolution and writes a cut row +
+    cross-event membership on commit.
+
+    The catalogue widens (spec/81 §2.1): instead of the event-scope
+    ``styles`` + ``media_type`` pair, this draft carries the full spec/32 §2
+    ``filters`` dict. The session resolves via :class:`LibraryGateway` over
+    ``mira.db``, the commit lands in an anchor event's ``event.db``
+    (``anchor_event_id`` — schema v8 hosts cross-event Cuts there).
+
+    Attachment defaults flip cross-event: ``separators`` defaults to OFF (no
+    single timeline to orient — spec/81 §3.1), overlays default ON in the
+    UI (the dialog wires it in)."""
+
+    name: str
+    tag: str
+    source_dc_id: Optional[str] = None             # saved_filter id
+    expr: Expr = ()
+    filters: dict = None                            # spec/32 §2 catalogue
+    pin_mode: str = PIN_WEED_OUT
+    target_s: Optional[int] = None
+    max_s: Optional[int] = None
+    photo_s: float = 6.0
+    music_category: Optional[str] = None
+    anchor_event_id: Optional[str] = None           # event.db that hosts the Cut
+    separators: bool = False                        # cross-event default OFF
+    overlay_fields: Tuple[str, ...] = ()
+    overlay_mode: Optional[str] = None
+    card_style: str = "black"
+
+    def __post_init__(self):
+        # ``dict`` default = None pattern: frozen dataclasses can't mutate
+        # in __init__, but they CAN via object.__setattr__ inside
+        # __post_init__. Empty dict means "no narrowing".
+        if self.filters is None:
+            object.__setattr__(self, "filters", {})
+
+
 __all__ = [
-    "CutDraft", "Expr",
+    "CrossEventCutDraft", "CutDraft", "Expr",
     "PIN_KEEP_ALL", "PIN_WEED_OUT", "PIN_PICK_IN",
 ]

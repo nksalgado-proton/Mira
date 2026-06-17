@@ -284,8 +284,9 @@ def test_rescan_prunes_when_bytes_gone_and_cascades_cuts(tmp_path):
                 "INSERT INTO cut (id, tag, created_at, updated_at) "
                 "VALUES ('c1', 'Highlights', 't', 't')")
             conn.execute(
-                "INSERT INTO cut_member (cut_id, export_relpath, added_at) "
-                "VALUES ('c1', ?, 't')", (rel,))
+                "INSERT INTO cut_member (cut_id, member_id, kind, "
+                "export_relpath, added_at) VALUES "
+                "('c1', ?, 'export', ?, 't')", (rel, rel))
         assert eg.exported_item_ids() == {"p1"}
 
         # The bytes vanish — the user wiped Exported Media/.

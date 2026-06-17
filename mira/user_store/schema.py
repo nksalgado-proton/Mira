@@ -8,8 +8,14 @@ share the same operational discipline (`feedback_schema_evolution_policy`).
 
 v1 established the spec/53 §2 shape; **v2 (spec/61 slice 10)** retired the
 user-level ``cut`` table (event Cuts live in event.db — file-based membership)
-and reshaped ``cut_template`` to the New Cut dialog's RECIPE. Existing files
-migrate in place on open; fresh files are created at the current version.
+and reshaped ``cut_template`` to the New Cut dialog's RECIPE. **v3 (spec/81
+Phase 2)** adds the cross-event surface: ``global_items`` (spec/32 §3 — a
+cross-event projection of every event's items so cross-event queries hit ONE
+SQLite file) + ``saved_filter`` (spec/32 §4 — the cross-event DC home; same
+typed-ref shape as event.db ``dynamic_collection``, the spec/32 §4 predicate
+tree reconciled to spec/81 §2's ``expr_json`` + ``filters_json``). Both arrive
+as new tables — no ALTER, no CHECK loss. Existing files migrate in place on
+open; fresh files are created at the current version.
 """
 from __future__ import annotations
 
@@ -22,7 +28,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -154,6 +160,97 @@ CREATE TABLE user_camera (
   extras_json   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
 );
 
+-- ===== global_items (D) — cross-event projection of item facts (spec/32 §3) =
+-- The cross-event surface (spec/81 §2.1 + Phase 2) lets ONE SQLite query reach
+-- every event's items without fanning out across N event.db files. Each row is
+-- a denormalised snapshot of one item plus its enclosing event/day context.
+-- Reconciled column names: ``pick_state`` was ``cull_state`` (the locked verb
+-- pair is Pick/Skip; the column carries the ``phase='pick'`` decision); ``flag``
+-- was ``pick`` (the portfolio flag is distinct from the decision verb).
+-- Synced on event close + startup reconcile (the gateway-level sync runs the
+-- whole-event projection inside one ``UserStore.transaction``).
+-- The ladder rungs (#collected / #picked / #edited / #exported, spec/81 §2.1
+-- + spec/32 §2e) map to: #collected = every row; #picked = ``pick_state =
+-- 'picked'``; #edited = ``edit_state = 'picked'`` (the Edit-phase commit;
+-- spec/61 §1.1 — edited ≠ exported); #exported = ``has_export = 1``.
+CREATE TABLE global_items (
+  event_uuid        TEXT NOT NULL,
+  event_name        TEXT NOT NULL DEFAULT '',
+  item_id           TEXT NOT NULL,
+  origin_relpath    TEXT,                    -- relative to event_root (NULL = virtual)
+  export_relpath    TEXT,                    -- the LATEST exported relpath (NULL if not exported); cross-event Cut commit reads this
+  capture_time      TEXT,                    -- corrected; the chronological sort key
+  kind              TEXT,                    -- 'photo' | 'video'
+  provenance        TEXT,                    -- 'captured'|'snapshot'|'clip'|'stack_output'|'authored'
+  classification    TEXT,
+  iso               INTEGER,
+  aperture_f        REAL,
+  shutter_speed_s   REAL,
+  focal_length_mm   REAL,
+  flash_fired       INTEGER CHECK (flash_fired IS NULL OR flash_fired IN (0,1)),
+  lens_model        TEXT,
+  camera_id         TEXT,
+  duration_ms       INTEGER,                 -- video length; NULL = still
+  -- ladder state (spec/32 §2e, locked vocabulary)
+  pick_state        TEXT,                    -- phase_state(phase='pick').state; NULL = never decided
+  edit_state        TEXT,                    -- phase_state(phase='edit').state; NULL = never decided
+  has_export        INTEGER NOT NULL DEFAULT 0 CHECK (has_export IN (0,1)),
+  -- enclosing event/day context (denormalised so cross-event filters are one SELECT)
+  country           TEXT,
+  country_code      TEXT,                    -- ISO 3166-1 alpha-2
+  day_city          TEXT,
+  day_sublocation   TEXT,
+  -- curatorial (from item.extras_json — spec/32 §2a)
+  stars             INTEGER CHECK (stars IS NULL OR (stars >= 1 AND stars <= 5)),
+  color_label       TEXT,
+  flag              INTEGER CHECK (flag IS NULL OR flag IN (0,1)),
+  -- bookkeeping
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (event_uuid, item_id)
+);
+CREATE INDEX ix_global_items_event       ON global_items(event_uuid);
+CREATE INDEX ix_global_items_time        ON global_items(capture_time);
+CREATE INDEX ix_global_items_kind        ON global_items(kind);
+CREATE INDEX ix_global_items_class       ON global_items(classification)  WHERE classification IS NOT NULL;
+CREATE INDEX ix_global_items_iso         ON global_items(iso)             WHERE iso IS NOT NULL;
+CREATE INDEX ix_global_items_aperture    ON global_items(aperture_f)      WHERE aperture_f IS NOT NULL;
+CREATE INDEX ix_global_items_shutter     ON global_items(shutter_speed_s) WHERE shutter_speed_s IS NOT NULL;
+CREATE INDEX ix_global_items_focal       ON global_items(focal_length_mm) WHERE focal_length_mm IS NOT NULL;
+CREATE INDEX ix_global_items_flash       ON global_items(flash_fired)     WHERE flash_fired = 1;
+CREATE INDEX ix_global_items_lens        ON global_items(lens_model)      WHERE lens_model IS NOT NULL;
+CREATE INDEX ix_global_items_camera      ON global_items(camera_id)       WHERE camera_id IS NOT NULL;
+CREATE INDEX ix_global_items_pick        ON global_items(pick_state)      WHERE pick_state IS NOT NULL;
+CREATE INDEX ix_global_items_edit        ON global_items(edit_state)      WHERE edit_state IS NOT NULL;
+CREATE INDEX ix_global_items_has_export  ON global_items(has_export)      WHERE has_export = 1;
+CREATE INDEX ix_global_items_country     ON global_items(country_code)    WHERE country_code IS NOT NULL;
+CREATE INDEX ix_global_items_city        ON global_items(day_city)        WHERE day_city IS NOT NULL;
+CREATE INDEX ix_global_items_stars       ON global_items(stars)           WHERE stars IS NOT NULL;
+CREATE INDEX ix_global_items_color_label ON global_items(color_label)     WHERE color_label IS NOT NULL;
+CREATE INDEX ix_global_items_flag        ON global_items(flag)            WHERE flag = 1;
+
+-- ===== saved_filter (D) — cross-event DC home (spec/32 §4 + spec/81 §2.1) ===
+-- The cross-event DC IS a ``saved_filter`` row (no separate user-level
+-- ``dynamic_collection``). Shape is intentionally identical to event.db
+-- ``dynamic_collection`` — the spec/81 §2 model is scope-agnostic; the only
+-- difference is what operands ``expr_json`` admits (the full ladder rungs
+-- ``collected`` / ``picked`` / ``edited`` / ``exported``, vs the single
+-- ``exported`` event scope offers) and the breadth of ``filters_json`` (the
+-- full spec/32 §2 catalogue, vs event scope's Style + media type pair). The
+-- spec/32 §4 "predicate tree" framing reconciles to the typed-ref encoding
+-- here (the predicate fields become ``filters_json`` keys; the set algebra
+-- moves to ``expr_json``). Tag namespace is global at the user level
+-- (cross-event Cuts later collide-check against it).
+CREATE TABLE saved_filter (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  description  TEXT,                       -- free-text one-liner; UI only
+  expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+
 -- ===== feature_flag (D) — runtime feature gating ==========================
 -- Flag KEYS are app-code constants (see ``core/feature_flags.py``); new flags
 -- ship in code, never invented at runtime. Unknown keys at read time fold to
@@ -276,7 +373,112 @@ CREATE TABLE cut_template (
     conn.execute("CREATE INDEX ix_cut_template_name ON cut_template(name)")
 
 
-MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migrate_v1_to_v2]
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """spec/81 Phase 2 — the cross-event surface arrives.
+
+    Two new tables, neither touches existing rows:
+
+    * ``global_items`` (spec/32 §3) — the cross-event projection of every
+      event's items, populated by the gateway sync on event close + startup
+      reconcile. Reconciled names: ``pick_state`` (was ``cull_state``),
+      ``flag`` (was ``pick`` — the portfolio bit is distinct from the
+      locked Pick/Skip decision verb).
+    * ``saved_filter`` (spec/32 §4) — the cross-event DC home. Same
+      typed-ref shape as event.db ``dynamic_collection`` (spec/81 §2 is
+      scope-agnostic); the spec/32 §4 predicate-tree framing reconciles
+      to ``expr_json`` (set algebra) + ``filters_json`` (the catalogue).
+
+    Both arrive as CREATE TABLE, so the full CHECK + index complement
+    survives (unlike ALTER TABLE ADD COLUMN). No existing row is touched.
+
+    Uses individual ``conn.execute`` calls (not ``executescript``) so the
+    wrapper's explicit BEGIN/COMMIT stays intact — ``executescript`` would
+    auto-commit between statements and break the rollback path."""
+    conn.execute("""
+CREATE TABLE global_items (
+  event_uuid        TEXT NOT NULL,
+  event_name        TEXT NOT NULL DEFAULT '',
+  item_id           TEXT NOT NULL,
+  origin_relpath    TEXT,
+  capture_time      TEXT,
+  kind              TEXT,
+  provenance        TEXT,
+  classification    TEXT,
+  iso               INTEGER,
+  aperture_f        REAL,
+  shutter_speed_s   REAL,
+  focal_length_mm   REAL,
+  flash_fired       INTEGER CHECK (flash_fired IS NULL OR flash_fired IN (0,1)),
+  lens_model        TEXT,
+  camera_id         TEXT,
+  duration_ms       INTEGER,
+  pick_state        TEXT,
+  edit_state        TEXT,
+  has_export        INTEGER NOT NULL DEFAULT 0 CHECK (has_export IN (0,1)),
+  country           TEXT,
+  country_code      TEXT,
+  day_city          TEXT,
+  day_sublocation   TEXT,
+  stars             INTEGER CHECK (stars IS NULL OR (stars >= 1 AND stars <= 5)),
+  color_label       TEXT,
+  flag              INTEGER CHECK (flag IS NULL OR flag IN (0,1)),
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (event_uuid, item_id)
+)""")
+    for sql in (
+        "CREATE INDEX ix_global_items_event       ON global_items(event_uuid)",
+        "CREATE INDEX ix_global_items_time        ON global_items(capture_time)",
+        "CREATE INDEX ix_global_items_kind        ON global_items(kind)",
+        "CREATE INDEX ix_global_items_class       ON global_items(classification)  WHERE classification IS NOT NULL",
+        "CREATE INDEX ix_global_items_iso         ON global_items(iso)             WHERE iso IS NOT NULL",
+        "CREATE INDEX ix_global_items_aperture    ON global_items(aperture_f)      WHERE aperture_f IS NOT NULL",
+        "CREATE INDEX ix_global_items_shutter     ON global_items(shutter_speed_s) WHERE shutter_speed_s IS NOT NULL",
+        "CREATE INDEX ix_global_items_focal       ON global_items(focal_length_mm) WHERE focal_length_mm IS NOT NULL",
+        "CREATE INDEX ix_global_items_flash       ON global_items(flash_fired)     WHERE flash_fired = 1",
+        "CREATE INDEX ix_global_items_lens        ON global_items(lens_model)      WHERE lens_model IS NOT NULL",
+        "CREATE INDEX ix_global_items_camera      ON global_items(camera_id)       WHERE camera_id IS NOT NULL",
+        "CREATE INDEX ix_global_items_pick        ON global_items(pick_state)      WHERE pick_state IS NOT NULL",
+        "CREATE INDEX ix_global_items_edit        ON global_items(edit_state)      WHERE edit_state IS NOT NULL",
+        "CREATE INDEX ix_global_items_has_export  ON global_items(has_export)      WHERE has_export = 1",
+        "CREATE INDEX ix_global_items_country     ON global_items(country_code)    WHERE country_code IS NOT NULL",
+        "CREATE INDEX ix_global_items_city        ON global_items(day_city)        WHERE day_city IS NOT NULL",
+        "CREATE INDEX ix_global_items_stars       ON global_items(stars)           WHERE stars IS NOT NULL",
+        "CREATE INDEX ix_global_items_color_label ON global_items(color_label)     WHERE color_label IS NOT NULL",
+        "CREATE INDEX ix_global_items_flag        ON global_items(flag)            WHERE flag = 1",
+    ):
+        conn.execute(sql)
+    conn.execute("""
+CREATE TABLE saved_filter (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  description  TEXT,
+  expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+)""")
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """spec/81 Phase 2 Item 4 — cross-event Cut commit needs to route each
+    member key to its source event's exported file without fanning out across
+    every event.db. Stash the LATEST exported relpath per item in
+    ``global_items`` so :class:`CrossEventCutSession` resolves members from
+    one read. NULL = not yet exported (the ``#collected`` / ``#picked`` /
+    ``#edited`` rungs).
+
+    Additive — ALTER TABLE ADD COLUMN. The next gateway sync repopulates;
+    existing rows show NULL until then (the cross-event commit path
+    falls back to the fanout for un-synced events)."""
+    conn.execute("ALTER TABLE global_items ADD COLUMN export_relpath TEXT")
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migrate_v1_to_v2,
+    _migrate_v2_to_v3,
+    _migrate_v3_to_v4,
+]
 
 
 def initialize(

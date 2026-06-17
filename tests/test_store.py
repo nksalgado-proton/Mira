@@ -576,7 +576,8 @@ def test_migrate_v6_to_v7_synthesizes_dc_and_freezes_cut(tmp_path):
 
     schema.migrate(conn)
 
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 7
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    assert schema.SCHEMA_VERSION >= 7
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "dynamic_collection" in names
@@ -633,29 +634,40 @@ def test_dc_crud_round_trips_through_document(tmp_path):
     src.close()
 
 
-def test_cut_dc_fk_set_null_leaves_cut_member(tmp_path):
-    """Deleting a DC SET-NULLs the Cut's source_dc_id (freeze invariant) and
-    leaves cut_member intact."""
+def test_cut_dc_freeze_invariant_at_gateway_level(tmp_path):
+    """spec/81 §5 (freeze invariant). Schema v8 (spec/81 Phase 2) DROPPED the
+    FK that used to carry ON DELETE SET NULL on ``cut.source_dc_id``; the
+    equivalent guarantee now lives in :meth:`EventGateway.delete_dc`. So a
+    raw SQL ``DELETE FROM dynamic_collection`` no longer touches the Cut
+    (the source_dc_id stays as a dangling opaque id), but the gateway path
+    NULLs it correctly. The Cut + members survive either way."""
     store = _make_store(tmp_path)
     store.save_document(_rich_document())
+    # Raw SQL delete — no cascade now; the source_dc_id remains for audit.
     store.conn.execute("DELETE FROM dynamic_collection WHERE id = 'dc-1'")
     cut = store.get(m.Cut, "cut-1")
-    assert cut is not None and cut.source_dc_id is None
+    assert cut is not None
+    assert cut.source_dc_id == "dc-1"          # dangling, gateway would NULL
     assert [cm.export_relpath for cm in store.all(m.CutMember)] == [
         "03 - Processed/Day01/P1000001.jpg"]
     store.close()
 
 
-def test_cut_member_cascades_both_ways(tmp_path):
-    """cut_member cascades on cut delete AND on lineage delete (spec/61 §1.4)."""
+def test_cut_member_lineage_cascade_dropped_in_v8(tmp_path):
+    """spec/81 Phase 2 (schema v8) DROPPED the FK on
+    ``cut_member.export_relpath`` so cross-event members can reference
+    lineage in other event.db files. The cut-side cascade (cut delete →
+    members cascade) stays via the ``cut_id`` FK; integrity for the
+    lineage relationship moves to the gateway sweep."""
     store = _make_store(tmp_path)
     store.save_document(_rich_document())
+    # Lineage delete no longer cascades — the cut_member survives as a
+    # dangling reference; a gateway sweep is the new integrity seam.
     store.conn.execute(
         "DELETE FROM lineage WHERE export_relpath = "
         "'03 - Processed/Day01/P1000001.jpg'")
-    assert store.all(m.CutMember) == []
-    store.save_document(_rich_document())
     assert len(store.all(m.CutMember)) == 1
+    # Cut delete still cascades (cut_id FK ON DELETE CASCADE survives).
     store.conn.execute("DELETE FROM cut WHERE id = 'cut-1'")
     assert store.all(m.CutMember) == []
     store.close()

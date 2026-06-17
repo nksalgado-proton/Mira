@@ -87,6 +87,7 @@ class EventGateway:
         db_path: Optional[Path] = None,
         backups_dir: Optional[Path] = None,
         app_version: str = "",
+        on_close: Optional[Callable[["EventGateway"], None]] = None,
     ) -> None:
         self.store = store
         self.event_root = event_root
@@ -98,6 +99,13 @@ class EventGateway:
         self._db_path = Path(db_path) if db_path is not None else None
         self._backups_dir = Path(backups_dir) if backups_dir is not None else None
         self._app_version = app_version
+        # spec/81 Phase 2 Item 1 — close-time cross-event projection sync.
+        # The umbrella :class:`Gateway` injects a callable that runs
+        # :meth:`LibraryGateway.sync_event` against the open event store
+        # before it closes, so cross-event reads off ``global_items`` are
+        # always one event-close behind real state. None = no sync (tests,
+        # ad-hoc opens).
+        self._on_close = on_close
         # Baseline count of writes on this connection — close compares
         # against it to decide whether the session was dirty. The
         # baseline is captured AFTER ``EventStore.open`` so a pending
@@ -121,12 +129,14 @@ class EventGateway:
         new_id: Callable[[], str] = _new_uuid,
         backups_dir: Optional[Path] = None,
         app_version: str = "",
+        on_close: Optional[Callable[["EventGateway"], None]] = None,
     ) -> "EventGateway":
         return cls(
             EventStore.open(db_path),
             event_root=event_root, now=now, new_id=new_id,
             db_path=Path(db_path), backups_dir=backups_dir,
             app_version=app_version,
+            on_close=on_close,
         )
 
     def close(self) -> None:
@@ -157,6 +167,17 @@ class EventGateway:
                         "db_backup: snapshot on close failed for %s: %s",
                         self._db_path, exc,
                     )
+        # spec/81 Phase 2 Item 1 — cross-event projection sync hook.
+        # Runs BEFORE store.close() so the hook sees a live connection.
+        # Failure is logged but never blocks close.
+        if self._on_close is not None:
+            try:
+                self._on_close(self)
+            except Exception as exc:                       # noqa: BLE001
+                log.warning(
+                    "event_gateway: on_close sync failed for %s: %s",
+                    self._db_path, exc,
+                )
         self.store.close()
 
     def __enter__(self) -> "EventGateway":
@@ -1066,9 +1087,17 @@ class EventGateway:
         return replace(dc, tag=slug)
 
     def delete_dc(self, dc_id: str) -> None:
-        """Drop a DC. Pinned Cuts survive (``cut.source_dc_id`` ON DELETE SET
-        NULL — the freeze invariant, spec/81 §5); their members are untouched."""
+        """Drop a DC. Pinned Cuts survive — the freeze invariant (spec/81
+        §5) — but their ``source_dc_id`` is NULLed here at the gateway
+        level. Schema v8 (spec/81 Phase 2) dropped the FK that used to
+        carry ON DELETE SET NULL; the equivalent guarantee now lives in
+        this method. Members are untouched."""
         with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE cut SET source_dc_id = NULL, source_dc_kind = NULL "
+                "WHERE source_dc_id = ? AND (source_dc_kind = 'event' "
+                "OR source_dc_kind IS NULL)",
+                (dc_id,))
             conn.execute("DELETE FROM dynamic_collection WHERE id = ?", (dc_id,))
             self._touch()
 
@@ -2191,6 +2220,7 @@ class EventGateway:
         name: str,
         *,
         source_dc_id: Optional[str] = None,
+        source_dc_kind: Optional[str] = None,
         expr_snapshot: Sequence[Sequence] = (),
         target_s: Optional[int] = None,
         max_s: Optional[int] = None,
@@ -2207,9 +2237,12 @@ class EventGateway:
         the name is slugified here and re-validated against the Cut namespace —
         raises ``ValueError`` carrying the :func:`core.cut_names.check_tag` code
         ('empty' / 'reserved' / 'taken'). ``source_dc_id`` is the DC pinned from
-        (None = ad-hoc); ``expr_snapshot`` is the formula frozen at pin
-        (style + media filters live on the DC, not the Cut). Membership is
-        written separately via :meth:`set_cut_members`."""
+        (None = ad-hoc); ``source_dc_kind`` is the discriminator added in
+        schema v8 (spec/81 Phase 2): 'event' for an event.db DC, 'user' for
+        a cross-event ``saved_filter`` DC, ``None`` for legacy / unset.
+        ``expr_snapshot`` is the formula frozen at pin (style + media filters
+        live on the DC, not the Cut). Membership is written separately via
+        :meth:`set_cut_members`."""
         slug = cut_names.slugify(name)
         err = cut_names.check_tag(slug, [c.tag for c in self.cuts()])
         if err:
@@ -2218,6 +2251,7 @@ class EventGateway:
         cut = m.Cut(
             id=self._new_id(), tag=slug, created_at=now, updated_at=now,
             source_dc_id=source_dc_id,
+            source_dc_kind=source_dc_kind,
             expr_snapshot_json=json.dumps([list(t) for t in expr_snapshot]),
             target_s=target_s, max_s=max_s, photo_s=photo_s,
             default_state=default_state,
@@ -2269,6 +2303,7 @@ class EventGateway:
             extras["card_style"] = card_style
             fields["extras_json"] = json.dumps(extras)
         allowed = {"target_s", "max_s", "photo_s", "source_dc_id",
+                   "source_dc_kind",
                    "expr_snapshot_json", "default_state", "music_category",
                    "separators", "overlay_fields_json", "overlay_mode",
                    "extras_json"}
@@ -2292,23 +2327,74 @@ class EventGateway:
             conn.execute("DELETE FROM cut WHERE id = ?", (cut_id,))
             self._touch()
 
-    def set_cut_members(self, cut_id: str, export_relpaths: Iterable[str]) -> int:
+    def set_cut_members(
+        self,
+        cut_id: str,
+        members: Iterable,
+    ) -> int:
         """The Create Cut commit (spec/61 §2 step 7): replace the Cut's
         membership with the session's picked files, one transaction, bulk
         (no per-row transactions — store.transaction() is not reentrant).
-        Returns the new member count."""
-        relpaths = list(dict.fromkeys(export_relpaths))  # dedupe, keep order
+        Returns the new member count.
+
+        ``members`` accepts three shapes:
+
+        * ``Iterable[str]`` — legacy event-scope (kind='export', event_id=NULL,
+          export_relpath=the string). For event-scope code that never crosses
+          stores.
+        * ``Iterable[Tuple[Optional[str], str]]`` — cross-event export
+          (kind='export'). Each entry is ``(event_id, export_relpath)``.
+        * ``Iterable[dict]`` — full shape. Keys:
+          ``"kind"`` ('export'|'grab', default 'export'),
+          ``"event_id"`` (optional source event UUID),
+          ``"export_relpath"`` (set for kind='export'),
+          ``"origin_relpath"`` (set for kind='grab', the source event's
+          ``Original Media/<...>`` — spec/81 Phase 2 Item 6 grab-originals).
+          ``member_id`` defaults to whichever relpath the kind requires.
+
+        The first element's type discriminates; mixed shapes raise. Dedupes
+        on ``member_id`` so the same item can't be added twice."""
+        items = list(members)
+        rows: List[Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]] = []
+        # (cut_id, member_id, kind, export_relpath, origin_relpath, event_id)
+        if items and isinstance(items[0], dict):
+            for d in items:
+                kind = d.get("kind", "export")
+                eid = d.get("event_id")
+                if kind == "grab":
+                    origin = d["origin_relpath"]
+                    rows.append((cut_id, origin, "grab", None, origin, eid))
+                else:
+                    export = d["export_relpath"]
+                    rows.append((cut_id, export, "export", export, None, eid))
+        elif items and isinstance(items[0], str):
+            for rp in items:
+                rows.append((cut_id, rp, "export", rp, None, None))
+        elif items:
+            for (eid, rp) in items:
+                rows.append((cut_id, rp, "export", rp, None, eid))
+        # Dedupe on (cut_id, member_id) — same content-stable PK as the table.
+        seen: set = set()
+        unique: List[Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]] = []
+        for r in rows:
+            key = (r[0], r[1])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(r)
         now = self._now()
         with self.store.transaction() as conn:
             conn.execute("DELETE FROM cut_member WHERE cut_id = ?", (cut_id,))
             conn.executemany(
-                "INSERT INTO cut_member (cut_id, export_relpath, added_at) "
-                "VALUES (?, ?, ?)",
-                [(cut_id, rp, now) for rp in relpaths])
+                "INSERT INTO cut_member "
+                "(cut_id, member_id, kind, export_relpath, origin_relpath, "
+                "event_id, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(*r, now) for r in unique])
             conn.execute(
                 "UPDATE cut SET updated_at = ? WHERE id = ?", (now, cut_id))
             self._touch()
-        return len(relpaths)
+        return len(unique)
 
     def mark_cut_exported(self, cut_id: str) -> None:
         """Stamp ``last_exported_at`` — the list row's exported status
@@ -2387,8 +2473,15 @@ class EventGateway:
             self._touch()
 
     def clear_lineage(self, phase: str) -> None:
-        """Drop a phase's lineage rows (rebuilt on re-export)."""
+        """Drop a phase's lineage rows (rebuilt on re-export). The
+        spec/81 Phase 2 v8 schema dropped the FK cascade on cut_member;
+        sweep matching event-scope cut_member rows explicitly here so
+        Cuts don't keep dangling references to now-gone lineage rows."""
         with self.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM cut_member WHERE event_id IS NULL AND "
+                "export_relpath IN (SELECT export_relpath FROM lineage "
+                "WHERE phase = ?)", (phase,))
             conn.execute("DELETE FROM lineage WHERE phase = ?", (phase,))
             self._touch()
 
@@ -2426,11 +2519,14 @@ class EventGateway:
         own row) are all dropped — undoing the ship undoes every
         registered ship file for that item.
 
-        Cut membership (spec/61 §1.4) is cleaned automatically: the
-        ``cut_member.export_relpath`` foreign key carries
-        ``ON DELETE CASCADE`` on the schema, so deleting the lineage
-        row also drops every cut_member row pointing at it. The Cut
-        definition itself stays; only the membership of this file goes.
+        Cut membership cleanup (spec/61 §1.4): schema v8 (spec/81 Phase 2)
+        DROPPED the FK CASCADE on ``cut_member.export_relpath`` so cross-
+        event members can reference other events' lineage. This method now
+        sweeps event-scope cut_member rows explicitly — same end state as
+        the legacy cascade, just enforced at the gateway. Cross-event
+        members from OTHER events that happened to share a relpath in
+        THIS event survive (their bytes live elsewhere); they're cleaned
+        on next read or by a future sweep.
         """
         if self.event_root is None:
             return {"deleted_files": [], "missing_files": [],
@@ -2487,6 +2583,14 @@ class EventGateway:
                 conn.execute(
                     "DELETE FROM lineage WHERE export_relpath = ?",
                     (rel,))
+                # spec/81 Phase 2: the FK cascade is gone; sweep event-
+                # scope cut_member rows explicitly. NULL event_id = legacy
+                # event-scope; cross-event members (event_id non-NULL)
+                # belong to other events and stay put.
+                conn.execute(
+                    "DELETE FROM cut_member WHERE export_relpath = ? "
+                    "AND event_id IS NULL",
+                    (rel,))
             self._touch()
         rows_deleted = len(deleted) + len(missing)
 
@@ -2521,10 +2625,12 @@ class EventGateway:
         per-file in the #exported grid. ``delete_exported_file``
         unships the whole item — too wide a blast for this surface.
 
-        The ``cut_member.export_relpath`` FK CASCADE clears Cut
-        membership automatically when the lineage row goes.
-        ``Original Media/`` stays untouchable — the relpath must
-        match the ``Exported Media/`` prefix or the call no-ops.
+        Cut membership cleanup (spec/61 §1.4): schema v8 (spec/81 Phase 2)
+        DROPPED the FK CASCADE on ``cut_member.export_relpath`` so cross-
+        event members can reference other events' lineage. The legacy
+        event-scope cleanup runs here explicitly. ``Original Media/`` stays
+        untouchable — the relpath must match the ``Exported Media/``
+        prefix or the call no-ops.
 
         Returns ``{"deleted_files": [Path…], "missing_files":
         [str…], "rows_deleted": 0|1, "item_id": str|None}``.
@@ -2564,6 +2670,14 @@ class EventGateway:
         with self.store.transaction() as conn:
             conn.execute(
                 "DELETE FROM lineage WHERE export_relpath = ?", (rel,))
+            # spec/81 Phase 2: gateway-enforced cascade — event-scope
+            # cut_member rows for this relpath go too. Cross-event rows
+            # (event_id non-NULL) reference another event's lineage and
+            # stay put.
+            conn.execute(
+                "DELETE FROM cut_member WHERE export_relpath = ? "
+                "AND event_id IS NULL",
+                (rel,))
             self._touch()
         # Clear edit_exported only when no other shipped row survives
         # for the item — otherwise the watermark still belongs.

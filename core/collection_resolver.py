@@ -46,9 +46,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-#: The base-universe token (event scope). Cross-event adds the other ladder
-#: rungs (#collected / #picked / #edited) — left open for Task D.
+#: The base-universe tokens (spec/81 §2.1). Event scope offers ONLY
+#: :data:`BASE_EXPORTED`; cross-event offers the full ladder
+#: (:data:`BASE_COLLECTED` / :data:`BASE_PICKED` / :data:`BASE_EDITED` /
+#: :data:`BASE_EXPORTED`) so a cross-event DC can reach what *didn't* finish,
+#: not just what did (spec/61 §8). The resolver itself is scope-agnostic —
+#: the caller injects ``base_universe`` and decides which tokens to honour.
 BASE_EXPORTED = "exported"
+BASE_COLLECTED = "collected"
+BASE_PICKED = "picked"
+BASE_EDITED = "edited"
+
+#: Every ladder rung as one set (the cross-event accessor uses this to
+#: validate operand tokens against the spec/81 §2.1 ladder).
+LADDER_TOKENS = frozenset({BASE_COLLECTED, BASE_PICKED, BASE_EDITED, BASE_EXPORTED})
 
 #: Valid set-algebra operators (spec/81 §2). '&' displays as ∩.
 OPERATORS = frozenset({"+", "-", "&"})
@@ -254,7 +265,11 @@ def reaches(
 
 
 __all__ = [
+    "BASE_COLLECTED",
+    "BASE_EDITED",
     "BASE_EXPORTED",
+    "BASE_PICKED",
+    "LADDER_TOKENS",
     "OPERATORS",
     "DCExpr",
     "CycleError",

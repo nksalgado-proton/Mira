@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -486,19 +486,26 @@ CREATE TABLE dynamic_collection (
 -- slug WITHOUT the '#' (display prepends it; the export folder is Cuts/<tag>/).
 -- A Cut is always frozen (spec/81 §1): it holds frozen members (cut_member) +
 -- the formula resolved at pin time (``expr_snapshot_json``) and NEVER re-queries
--- its DC live. ``source_dc_id`` is the DC it was pinned from (NULL = ad-hoc, or
--- the DC was later deleted — ON DELETE SET NULL, the freeze invariant: the Cut
--- survives, cut_member untouched). target_s/max_s NULL = no time limit. Style +
--- media filters live on the DC's filters_json, NOT here (Nelson 2026-06-16) —
--- the Cut is self-describing via expr_snapshot_json + its frozen members.
+-- its DC live. target_s/max_s NULL = no time limit. Style + media filters live
+-- on the DC's filters_json, NOT here (Nelson 2026-06-16) — the Cut is
+-- self-describing via expr_snapshot_json + its frozen members.
 -- No target-path column (spec/81 §5; charter invariant #2). Overlays
 -- (spec/81 §3.1): overlay_fields_json = selected provenance fields
 -- ('when'/'where'/'how1'/'how2'; [] = off); overlay_mode = 'embedded'|'burn_in'
 -- (NULL = inherit the settings default). separators (spec/61 §4, default ON).
+--
+-- spec/81 Phase 2 (schema v8): ``source_dc_id`` is now OPAQUE — the FK to
+-- ``dynamic_collection(id)`` is dropped because a cross-event Cut's source DC
+-- lives in mira.db (``saved_filter``), not event.db. ``source_dc_kind``
+-- discriminates ('event' / 'user'); NULL = legacy / event-scope.
+-- The freeze invariant (spec/81 §5) is preserved at the gateway level — a
+-- delete-DC operation explicitly NULLs source_dc_id on any Cut that pointed
+-- at it (the FK ON DELETE SET NULL behaviour is replaced by gateway logic).
 CREATE TABLE cut (
   id                  TEXT PRIMARY KEY,
   tag                 TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
-  source_dc_id        TEXT REFERENCES dynamic_collection(id) ON DELETE SET NULL,
+  source_dc_id        TEXT,
+  source_dc_kind      TEXT CHECK (source_dc_kind IN ('event','user') OR source_dc_kind IS NULL),
   expr_snapshot_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_snapshot_json)),
   target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
   max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
@@ -517,18 +524,40 @@ CREATE TABLE cut (
   extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
 );
 
--- ===== cut_member (D) — membership = exported FILES (spec/61 §1.2) ==========
--- One row per (cut, exported file). References lineage by PK, so deleting an
--- export record drops the file from every Cut, and deleting a Cut cascades
--- its membership away. Two exports of one photo are two distinct candidate
--- members. Cuts are zero-byte until export materializes links (spec/61 §1.3).
+-- ===== cut_member (D) — membership = source FILES (spec/61 §1.2 + §8) =======
+-- One row per (cut, member). Deleting a Cut cascades its membership away
+-- (cut_id FK ON DELETE CASCADE). Cuts are zero-byte until export
+-- materializes links (spec/61 §1.3).
+--
+-- spec/81 Phase 2 v8 reshaped: dropped FK on export_relpath (cross-event
+-- members reference other events' lineage), added nullable event_id (the
+-- source event's UUID; NULL = legacy event-scope).
+--
+-- spec/81 Phase 2 v9 (Item 6, spec/61 §6 + §8): GRAB-ORIGINALS. A cross-
+-- event Cut may pull in items that are still ``#collected`` / ``#picked`` /
+-- ``#edited`` (no lineage row, no shipped JPEG). The export pipeline grabs
+-- the ORIGINAL bytes (the source event's ``Original Media/<...>``) instead.
+-- ``kind`` discriminates ('export' = pre-exported lineage member, 'grab' =
+-- pull-from-original). ``export_relpath`` is set for 'export'; ``origin_relpath``
+-- is set for 'grab'. PK becomes ``(cut_id, member_id)`` with ``member_id`` =
+-- the content-stable path (export_relpath OR origin_relpath) so the same
+-- item can't appear twice as both an export AND a grab in one Cut.
 CREATE TABLE cut_member (
   cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
-  export_relpath TEXT NOT NULL REFERENCES lineage(export_relpath) ON DELETE CASCADE,
+  member_id      TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'export' CHECK (kind IN ('export','grab')),
+  export_relpath TEXT,
+  origin_relpath TEXT,
+  event_id       TEXT,
   added_at       TEXT NOT NULL,
-  PRIMARY KEY (cut_id, export_relpath)
+  PRIMARY KEY (cut_id, member_id),
+  CHECK ( (kind = 'export' AND export_relpath IS NOT NULL AND origin_relpath IS NULL)
+       OR (kind = 'grab'   AND export_relpath IS NULL     AND origin_relpath IS NOT NULL) )
 );
-CREATE INDEX ix_cut_member_file ON cut_member(export_relpath);
+CREATE INDEX ix_cut_member_file   ON cut_member(export_relpath) WHERE export_relpath IS NOT NULL;
+CREATE INDEX ix_cut_member_origin ON cut_member(origin_relpath) WHERE origin_relpath IS NOT NULL;
+CREATE INDEX ix_cut_member_event  ON cut_member(event_id)       WHERE event_id IS NOT NULL;
+CREATE INDEX ix_cut_member_kind   ON cut_member(kind);
 
 -- ===== photo_person (D) — per-photo links to user-level people catalog =====
 -- The people catalog (one reference photo per person) lives outside event.db
@@ -940,6 +969,158 @@ def _new_uuid_for_migration() -> str:
     return _uuid.uuid4().hex
 
 
+def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """spec/81 Phase 2 (Nelson 2026-06-16) — the cross-event surface needs
+    to make ``cut`` + ``cut_member`` cross-event-capable.
+
+    Two reshapes, both required by the cross-event model:
+
+    * ``cut.source_dc_id`` — Phase 1's FK to ``dynamic_collection(id)`` ON
+      DELETE SET NULL is dropped. A cross-event Cut's source DC lives in
+      ``mira.db`` (``saved_filter``), not event.db; an FK can't span stores.
+      The id stays as opaque TEXT, and a new ``source_dc_kind`` column
+      ('event' / 'user') discriminates which store to look in. The freeze
+      invariant (spec/81 §5) moves to the gateway: deleting a DC explicitly
+      NULLs the ids in any Cut that referenced it.
+    * ``cut_member.export_relpath`` — Phase 1's FK to ``lineage(export_relpath)``
+      ON DELETE CASCADE is dropped for the same reason: a cross-event Cut's
+      members can reference exports in OTHER events' lineage tables. The new
+      ``event_id`` column is nullable: NULL = legacy event-scope (the member
+      is from THIS event's lineage by convention), non-NULL = the source
+      event's UUID for cross-event lookup. The ``cut_id`` FK stays — deleting
+      a Cut still cascades its membership.
+
+    Implementation: SQLite can't DROP FK via ALTER, so the standard
+    table-rebuild dance applies. ``PRAGMA defer_foreign_keys = 1`` defers the
+    enforcement to COMMIT, so the intermediate ``DROP TABLE`` + ``RENAME``
+    states don't fail the kept FKs (``cut_member.cut_id`` references the new
+    ``cut`` after rename). All data preserves verbatim — ``source_dc_kind``
+    + ``event_id`` land NULL on existing rows (legacy semantics).
+    """
+    # Defer FK checks to COMMIT — the rebuild needs intermediate states where
+    # cut_member.cut_id references a dropped-then-renamed cut table.
+    conn.execute("PRAGMA defer_foreign_keys = 1")
+
+    # ---- Rebuild ``cut`` (drop source_dc_id FK, add source_dc_kind) ------ #
+    conn.execute("""
+CREATE TABLE cut_v8 (
+  id                  TEXT PRIMARY KEY,
+  tag                 TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  source_dc_id        TEXT,
+  source_dc_kind      TEXT CHECK (source_dc_kind IN ('event','user') OR source_dc_kind IS NULL),
+  expr_snapshot_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_snapshot_json)),
+  target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s             REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  default_state       TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category      TEXT,
+  separators          INTEGER NOT NULL DEFAULT 1 CHECK (separators IN (0,1)),
+  overlay_fields_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(overlay_fields_json)),
+  overlay_mode        TEXT CHECK (overlay_mode IN ('embedded','burn_in') OR overlay_mode IS NULL),
+  last_exported_at    TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+)""")
+    # Copy every existing column; source_dc_kind lands NULL (legacy = unset,
+    # treated as 'event' by gateway readers for back-compat).
+    conn.execute("""
+INSERT INTO cut_v8 (
+  id, tag, source_dc_id, source_dc_kind, expr_snapshot_json,
+  target_s, max_s, photo_s, default_state, music_category, separators,
+  overlay_fields_json, overlay_mode, last_exported_at,
+  created_at, updated_at, extras_json
+) SELECT
+  id, tag, source_dc_id, NULL, expr_snapshot_json,
+  target_s, max_s, photo_s, default_state, music_category, separators,
+  overlay_fields_json, overlay_mode, last_exported_at,
+  created_at, updated_at, extras_json
+FROM cut""")
+    conn.execute("DROP TABLE cut")
+    conn.execute("ALTER TABLE cut_v8 RENAME TO cut")
+
+    # ---- Rebuild ``cut_member`` (drop export_relpath FK, add event_id) --- #
+    conn.execute("""
+CREATE TABLE cut_member_v8 (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  export_relpath TEXT NOT NULL,
+  event_id       TEXT,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, export_relpath)
+)""")
+    conn.execute("""
+INSERT INTO cut_member_v8 (cut_id, export_relpath, event_id, added_at)
+SELECT cut_id, export_relpath, NULL, added_at FROM cut_member""")
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("ALTER TABLE cut_member_v8 RENAME TO cut_member")
+
+    # Recreate the indexes (DROP TABLE took the old ones with it).
+    conn.execute("CREATE INDEX ix_cut_member_file ON cut_member(export_relpath)")
+    conn.execute("CREATE INDEX ix_cut_member_event ON cut_member(event_id) "
+                 "WHERE event_id IS NOT NULL")
+
+
+def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """spec/81 Phase 2 Item 6 — grab-originals (spec/61 §6 + §8).
+
+    Cross-event Cuts may want items that are still ``#collected`` / ``#picked``
+    / ``#edited`` — un-exported, no lineage row to point at. The export
+    pipeline grabs the ORIGINAL bytes from the source event's
+    ``Original Media/<...>`` instead. This migration extends ``cut_member`` to
+    discriminate the two member kinds:
+
+    * ``kind = 'export'`` — the legacy v8 shape: ``export_relpath`` set,
+      ``origin_relpath`` NULL, the export pipeline links from the source
+      event's ``Exported Media/``.
+    * ``kind = 'grab'`` — ``export_relpath`` NULL, ``origin_relpath`` set
+      (the source event's ``Original Media/<...>``), the export pipeline
+      copies/links from there.
+
+    PK changes from ``(cut_id, export_relpath)`` to ``(cut_id, member_id)``
+    where ``member_id`` is the content-stable path (export_relpath for exports
+    OR origin_relpath for grabs). Same item can't appear twice in one Cut as
+    both an export AND a grab.
+
+    Standard table rebuild — ``PRAGMA defer_foreign_keys = 1`` carries FK
+    enforcement to COMMIT so the dropped/rebuilt cut_member doesn't break
+    the kept ``cut_id`` cascade. Existing rows preserve verbatim: every row
+    is ``kind='export'``, ``member_id = export_relpath`` (unique within a
+    cut by the old PK)."""
+    conn.execute("PRAGMA defer_foreign_keys = 1")
+    conn.execute("""
+CREATE TABLE cut_member_v9 (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  member_id      TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'export' CHECK (kind IN ('export','grab')),
+  export_relpath TEXT,
+  origin_relpath TEXT,
+  event_id       TEXT,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, member_id),
+  CHECK ( (kind = 'export' AND export_relpath IS NOT NULL AND origin_relpath IS NULL)
+       OR (kind = 'grab'   AND export_relpath IS NULL     AND origin_relpath IS NOT NULL) )
+)""")
+    conn.execute("""
+INSERT INTO cut_member_v9 (
+  cut_id, member_id, kind, export_relpath, origin_relpath, event_id, added_at
+) SELECT
+  cut_id, export_relpath, 'export', export_relpath, NULL, event_id, added_at
+FROM cut_member""")
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("ALTER TABLE cut_member_v9 RENAME TO cut_member")
+
+    for sql in (
+        "CREATE INDEX ix_cut_member_file   ON cut_member(export_relpath) "
+        "WHERE export_relpath IS NOT NULL",
+        "CREATE INDEX ix_cut_member_origin ON cut_member(origin_relpath) "
+        "WHERE origin_relpath IS NOT NULL",
+        "CREATE INDEX ix_cut_member_event  ON cut_member(event_id)       "
+        "WHERE event_id IS NOT NULL",
+        "CREATE INDEX ix_cut_member_kind   ON cut_member(kind)",
+    ):
+        conn.execute(sql)
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -947,6 +1128,8 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v4_to_v5,
     _migrate_v5_to_v6,
     _migrate_v6_to_v7,
+    _migrate_v7_to_v8,
+    _migrate_v8_to_v9,
 ]
 
 

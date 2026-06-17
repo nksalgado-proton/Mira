@@ -59,6 +59,26 @@ def _live_app_version() -> str:
 
 
 @dataclass
+class CrossEventCutRow:
+    """One cross-event Cut surfaced to the cross-event Cuts list page.
+
+    The cross-event surface gathers cuts whose ``source_dc_kind = 'user'``
+    across every event.db in the index. Each row carries enough to render
+    the list without re-opening the event store for display.
+    """
+
+    cut_id: str
+    tag: str
+    anchor_event_id: str
+    anchor_event_name: str
+    source_dc_id: Optional[str]
+    member_count: int
+    last_exported_at: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class EventsQuery:
     """Filter parameters for :meth:`Gateway.events_index_filtered`.
 
@@ -709,7 +729,10 @@ class Gateway:
 
         Wires the spec/79 §7.2 close-if-dirty snapshot context — the
         EventGateway snapshots its db on close when the session
-        wrote at least one row.
+        wrote at least one row. Also wires the spec/81 Phase 2 cross-event
+        projection sync (Item 1 recommendation): on close,
+        :class:`LibraryGateway` re-projects the event's items into
+        ``global_items`` so cross-event reads stay in lockstep.
         """
         entry = self.index.get(event_id)
         if entry is None:
@@ -723,6 +746,151 @@ class Gateway:
             now=self._now,
             backups_dir=self.event_backups_dir(event_id),
             app_version=_live_app_version(),
+            on_close=self._make_sync_hook(event_id),
+        )
+
+    def _make_sync_hook(self, event_id: str) -> Callable[[EventGateway], None]:
+        """Build the close-time sync callable for ``open_event``. Captures
+        ``event_id`` + the lazy user_store; runs
+        :meth:`LibraryGateway.sync_event` against the event's name (looked
+        up at sync time so a rename mid-session lands the new name)."""
+        def _hook(eg: EventGateway) -> None:
+            from mira.gateway.library_gateway import LibraryGateway
+            try:
+                ev = eg.event()
+            except Exception:                              # noqa: BLE001
+                return                                     # malformed event row
+            lg = LibraryGateway(self.user_store, now=self._now)
+            lg.sync_event(
+                event_store=eg.store,
+                event_uuid=ev.uuid,
+                event_name=ev.name,
+            )
+        return _hook
+
+    def cross_event_cuts(self) -> list:
+        """All cross-event Cuts across the library — one row per cut row
+        with ``source_dc_kind = 'user'`` in any event.db. Events that can't
+        open (relocated, in-use lock) are skipped + logged, never raised.
+
+        Returns ``list[CrossEventCutRow]`` ordered by ``updated_at`` desc
+        (most recent on top — the list page's default order)."""
+        out: list = []
+        for entry in self.list_events():
+            event_id = entry.get("id") or entry.get("uuid")
+            if not event_id:
+                continue
+            event_name = entry.get("name") or event_id
+            root = self.index.resolve_root(entry, self.photos_base_path())
+            if root is None:
+                continue
+            db_path = root / "event.db"
+            if not db_path.exists():
+                continue
+            try:
+                store = EventStore.open(db_path)
+            except Exception:                              # noqa: BLE001
+                log.warning(
+                    "cross_event_cuts: could not open %s — skipping", db_path)
+                continue
+            try:
+                rows = store.conn.execute(
+                    "SELECT c.id, c.tag, c.source_dc_id, c.last_exported_at, "
+                    "c.created_at, c.updated_at, "
+                    "(SELECT COUNT(*) FROM cut_member cm "
+                    "  WHERE cm.cut_id = c.id) AS member_count "
+                    "FROM cut c "
+                    "WHERE c.source_dc_kind = 'user' "
+                    "ORDER BY c.updated_at DESC"
+                ).fetchall()
+                for r in rows:
+                    out.append(CrossEventCutRow(
+                        cut_id=r["id"], tag=r["tag"],
+                        anchor_event_id=event_id,
+                        anchor_event_name=event_name,
+                        source_dc_id=r["source_dc_id"],
+                        member_count=int(r["member_count"] or 0),
+                        last_exported_at=r["last_exported_at"],
+                        created_at=r["created_at"],
+                        updated_at=r["updated_at"],
+                    ))
+            finally:
+                store.close()
+        # Sort by updated_at desc across all events (each event's slice is
+        # already sorted; flat-merge them).
+        out.sort(key=lambda r: r.updated_at, reverse=True)
+        return out
+
+    def delete_cross_event_dc(self, dc_id: str) -> dict:
+        """Delete a cross-event Dynamic Collection (saved_filter row) AND
+        sweep its references across every event.db (spec/81 Phase 2 polish):
+        cuts that pointed at it get ``source_dc_id`` + ``source_dc_kind``
+        NULLed. The cut survives — freeze invariant (spec/81 §5).
+
+        Returns the sweep summary so the UI can surface what happened."""
+        from mira.gateway.library_gateway import LibraryGateway
+        from mira.shared.cross_event_sweeps import sweep_dc_references
+        lg = LibraryGateway(self.user_store, now=self._now)
+        lg.delete_dc(dc_id)
+        return sweep_dc_references(self, dc_id)
+
+    def sweep_dangling_cross_event_members(self) -> dict:
+        """Walk every event.db; drop cross-event cut_member rows whose
+        source event is no longer in the index (spec/81 Phase 2 polish).
+        Cuts survive — only the stale members go."""
+        from mira.shared.cross_event_sweeps import (
+            sweep_dangling_cross_event_members as _sweep,
+        )
+        return _sweep(self)
+
+    def delete_cross_event_cut(self, anchor_event_id: str,
+                               cut_id: str) -> None:
+        """Delete a cross-event Cut by opening its anchor event's gateway
+        and calling :meth:`EventGateway.delete_cut`. Members cascade via the
+        cut_id FK."""
+        eg = self.open_event(anchor_event_id)
+        try:
+            eg.delete_cut(cut_id)
+        finally:
+            eg.close()
+
+    def reconcile_global_items(self) -> dict:
+        """Reconcile the cross-event ``global_items`` projection against
+        every event in the index. Called from app startup (spec/81 Phase 2
+        Item 1 recommendation) so an event closed by another process / a
+        new install with existing events catches up before the user's
+        first cross-event read.
+
+        Returns the :func:`global_items_sync.reconcile_all` summary.
+        Unopenable events are skipped + logged, never raised."""
+        from mira.gateway.library_gateway import LibraryGateway
+
+        known: list = []
+        for entry in self.list_events():
+            uuid = entry.get("id") or entry.get("uuid")
+            name = entry.get("name") or ""
+            if uuid:
+                known.append((uuid, name))
+
+        def _open(uuid):
+            """Raw EventStore — no on_close sync hook (reconcile_all already
+            calls sync_event directly; the hook would re-run it on close
+            and recurse through open_event)."""
+            entry = self.index.get(uuid)
+            if entry is None:
+                return None
+            root = self.index.resolve_root(entry, self.photos_base_path())
+            if root is None:
+                return None
+            try:
+                return EventStore.open(root / "event.db")
+            except Exception:                              # noqa: BLE001
+                return None
+
+        lg = LibraryGateway(self.user_store, now=self._now)
+        return lg.reconcile_all(
+            open_event_store=_open,
+            known_events=known,
         )
 
     def event_backups_dir(self, event_id: str) -> Optional[Path]:

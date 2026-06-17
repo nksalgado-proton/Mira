@@ -66,7 +66,7 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.StackMember, "stack_member", ("bracket_id", "item_id"), ("bracket_id", "ordinal")),
     _TableInfo(m.DynamicCollection, "dynamic_collection", ("id",), ("created_at", "id")),
     _TableInfo(m.Cut, "cut", ("id",), ("created_at", "id")),
-    _TableInfo(m.CutMember, "cut_member", ("cut_id", "export_relpath")),
+    _TableInfo(m.CutMember, "cut_member", ("cut_id", "member_id")),
     _TableInfo(m.PhotoPerson, "photo_person", ("item_id", "person_id")),
     _TableInfo(m.Bucket, "bucket", ("bucket_key", "phase")),
     _TableInfo(m.ItemVisit, "item_visit", ("item_id", "phase")),

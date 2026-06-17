@@ -451,6 +451,96 @@ class LibraryGateway:
         return [r["event_uuid"] for r in rows]
 
     # =================================================================== #
+    # Gear profile (spec/85) — the photographer's kit, user-level
+    # =================================================================== #
+
+    GEAR_KIND_CAMERA = "camera"
+    GEAR_KIND_LENS = "lens"
+    _GEAR_KINDS = (GEAR_KIND_CAMERA, GEAR_KIND_LENS)
+
+    @staticmethod
+    def _validate_gear_kind(kind: str) -> None:
+        if kind not in LibraryGateway._GEAR_KINDS:
+            raise ValueError(
+                f"gear_profile.kind must be one of "
+                f"{LibraryGateway._GEAR_KINDS}, got {kind!r}")
+
+    def get_gear_profile(self) -> List[um.GearProfile]:
+        """All gear-profile rows the user has touched. Sorted by ``kind``
+        then ``key`` so the wizard (spec/85 §3) renders deterministically."""
+        return self.user_store.query_raw(
+            um.GearProfile,
+            "SELECT * FROM gear_profile ORDER BY kind, key")
+
+    def gear_profile_for(self, kind: str,
+                         key: str) -> Optional[um.GearProfile]:
+        """Lookup one row by (kind, key). The classifier user-gear-hint
+        tier (spec/85 §5, slice 7) and the picker's main / occasional
+        split (spec/83 §4, slice 5) read through this."""
+        self._validate_gear_kind(kind)
+        return self.user_store.get(um.GearProfile, kind, key)
+
+    def set_gear_active(self, kind: str, key: str,
+                        is_active: bool) -> None:
+        """Toggle the "I currently use this" flag (spec/85 §3). Upserts —
+        a row arrives on first toggle and updates in place thereafter; the
+        partial index on ``(kind, is_active) WHERE is_active = 1`` keeps the
+        active-set read cheap. ``preferred_genres`` is preserved across the
+        upsert (the spec/85 §3 wizard sets it via :meth:`set_gear_genres`).
+        """
+        self._validate_gear_kind(kind)
+        if not key:
+            raise ValueError("gear_profile.key must not be empty")
+        now = self._now()
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO gear_profile (kind, key, is_active, "
+                "preferred_genres, updated_at) "
+                "VALUES (?, ?, ?, NULL, ?) "
+                "ON CONFLICT(kind, key) DO UPDATE SET "
+                "  is_active = excluded.is_active, "
+                "  updated_at = excluded.updated_at",
+                (kind, key, 1 if is_active else 0, now))
+
+    def set_gear_genres(self, kind: str, key: str,
+                        genres: Optional[Sequence[str]]) -> None:
+        """Replace the row's preferred genres (spec/85 §3). ``genres`` is a
+        list of :class:`core.vocabulary.Scenario` keys (the wizard hands
+        these in); ``None`` or empty clears the tag. Upserts — see
+        :meth:`set_gear_active`; ``is_active`` is preserved across the
+        upsert (the wizard sets both independently)."""
+        self._validate_gear_kind(kind)
+        if not key:
+            raise ValueError("gear_profile.key must not be empty")
+        encoded: Optional[str] = (
+            None if not genres else json.dumps([str(g) for g in genres]))
+        now = self._now()
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO gear_profile (kind, key, is_active, "
+                "preferred_genres, updated_at) "
+                "VALUES (?, ?, 0, ?, ?) "
+                "ON CONFLICT(kind, key) DO UPDATE SET "
+                "  preferred_genres = excluded.preferred_genres, "
+                "  updated_at = excluded.updated_at",
+                (kind, key, encoded, now))
+
+    @staticmethod
+    def gear_preferred_genres(row: um.GearProfile) -> List[str]:
+        """Decode ``preferred_genres`` from its JSON envelope — tolerant
+        readers (malformed JSON / non-list payloads collapse to ``[]``).
+        Slice-7 classifier reads through this."""
+        if not row.preferred_genres:
+            return []
+        try:
+            data = json.loads(row.preferred_genres)
+        except (ValueError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [str(g) for g in data]
+
+    # =================================================================== #
     # Sync triggers — the projection stays in lockstep with event.db
     # =================================================================== #
 

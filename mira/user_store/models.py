@@ -231,6 +231,39 @@ class SavedFilter:
 
 
 # --------------------------------------------------------------------------- #
+# Gear profile (spec/85) — schema v5
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class GearProfile:
+    """One row of the user's gear tag (spec/85 §4). ``kind`` discriminates
+    cameras from lenses; ``key`` matches the corresponding
+    ``global_items.camera_id`` or ``global_items.lens_model`` so the picker
+    (spec/83 §4) and the classifier user-gear-hint tier (spec/85 §5 +
+    spec/58) can join on it.
+
+    Two pieces of user intent:
+
+    * ``is_active`` — the "I currently use this" flag. Beats the photo-count
+      heuristic in the high-cardinality picker's main / occasional split,
+      so a borrowed camera with 300 frames stays out of the way (spec/85
+      §1 + §5).
+    * ``preferred_genres`` — optional JSON array of :class:`Scenario` keys.
+      The classifier slots a user-gear-hint tier above the generic
+      unknown-lens fallback (spec/85 §5). NULL = unset.
+
+    User-level by purpose: the photographer's kit spans events.
+    """
+
+    kind: str            # 'camera' | 'lens'
+    key: str             # camera_id | lens_model — matches global_items
+    updated_at: str
+    is_active: bool = False
+    preferred_genres: Optional[str] = None  # JSON array of genre keys, or NULL
+
+
+# --------------------------------------------------------------------------- #
 # Feature flags (spec/53 §2.7)
 # --------------------------------------------------------------------------- #
 

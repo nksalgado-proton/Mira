@@ -121,8 +121,39 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "saved_filter",
         "person",
         "user_camera",
+        "gear_profile",
         "feature_flag",
     }
+    store.close()
+
+
+def test_gear_profile_check_rejects_invalid_kind(tmp_path):
+    """spec/85 §4 — the DDL CHECK pins ``kind`` to {camera, lens}."""
+    store = _make_store(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.conn.execute(
+            "INSERT INTO gear_profile (kind, key, is_active, updated_at) "
+            "VALUES ('body', 'X', 1, 't')"
+        )
+    store.close()
+
+
+def test_gear_profile_preferred_genres_must_be_valid_json(tmp_path):
+    """``preferred_genres`` is either NULL or a JSON envelope — same
+    json_valid rule as every other extras column."""
+    store = _make_store(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.conn.execute(
+            "INSERT INTO gear_profile "
+            "(kind, key, is_active, preferred_genres, updated_at) "
+            "VALUES ('lens', 'X', 0, '{not json', 't')"
+        )
+    # NULL is fine — explicit "no preferred genres".
+    store.conn.execute(
+        "INSERT INTO gear_profile "
+        "(kind, key, is_active, preferred_genres, updated_at) "
+        "VALUES ('lens', 'OK', 0, NULL, 't')"
+    )
     store.close()
 
 
@@ -366,10 +397,12 @@ def test_migrate_v1_to_v2_reshapes_cut_tables(tmp_path):
     store = _make_store(tmp_path)
     conn = store.conn
     # Reconstruct the v1 shape: old tables present, recipe shape absent,
-    # v3 cross-event tables absent.
+    # later-arrived tables absent. ``gear_profile`` arrived at v5 (spec/85)
+    # and must drop here too so the chain re-creates it.
     conn.execute("DROP TABLE cut_template")
     conn.execute("DROP TABLE global_items")
     conn.execute("DROP TABLE saved_filter")
+    conn.execute("DROP TABLE gear_profile")
     conn.execute("CREATE TABLE cut (id TEXT PRIMARY KEY, name TEXT)")
     conn.execute(
         "CREATE TABLE cut_template (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
@@ -563,9 +596,12 @@ def test_migrate_v2_to_v3_adds_cross_event_tables(tmp_path):
     ADD COLUMN). Existing rows are untouched."""
     store = _make_store(tmp_path)
     conn = store.conn
-    # Reconstruct the v2 shape: drop the v3 tables, pin the version to 2.
+    # Reconstruct the v2 shape: drop later-arrived tables, pin the version
+    # to 2. ``gear_profile`` arrived at v5 (spec/85); the chain re-creates
+    # it after v3.
     conn.execute("DROP TABLE global_items")
     conn.execute("DROP TABLE saved_filter")
+    conn.execute("DROP TABLE gear_profile")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -593,4 +629,42 @@ def test_migrate_v2_to_v3_adds_cross_event_tables(tmp_path):
     # Pre-existing row untouched.
     pre = conn.execute("SELECT value_json FROM setting WHERE key='marker'").fetchone()
     assert pre is not None and pre["value_json"] == '"v2-pre"'
+    store.close()
+
+
+def test_migrate_v4_to_v5_adds_gear_profile(tmp_path):
+    """v4→v5 (spec/85) creates ``gear_profile`` as a NEW table — full CHECK
+    + partial index complement intact. Existing rows untouched. The
+    ``json_valid`` CHECK on ``preferred_genres`` survives the migration so
+    callers can't slip non-JSON in."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Reconstruct the v4 shape: drop gear_profile, pin the version to 4.
+    conn.execute("DROP TABLE gear_profile")
+    conn.execute("UPDATE schema_info SET schema_version = 4 WHERE id = 1")
+    # Seed a row that should survive the migration.
+    conn.execute(
+        "INSERT INTO setting (key, value_json, updated_at) "
+        "VALUES ('marker', '\"v4-pre\"', '2026-06-17T00:00:00+00:00')"
+    )
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "gear_profile" in names
+    # CHECK survived: invalid kind is rejected on the migrated table.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO gear_profile (kind, key, is_active, updated_at) "
+            "VALUES ('body', 'X', 1, 't')")
+    # Partial index landed.
+    idx = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='gear_profile'")}
+    assert "ix_gear_profile_active" in idx
+    # Pre-existing row untouched.
+    pre = conn.execute("SELECT value_json FROM setting WHERE key='marker'").fetchone()
+    assert pre is not None and pre["value_json"] == '"v4-pre"'
     store.close()

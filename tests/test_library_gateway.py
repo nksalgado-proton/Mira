@@ -541,6 +541,144 @@ def test_drop_event_removes_slice(tmp_path):
     user_store.close()
 
 
+# --------------------------------------------------------------------------- #
+# Gear profile (spec/85) — slice 2 storage + repo
+# --------------------------------------------------------------------------- #
+
+
+def test_get_gear_profile_empty_by_default(tmp_path):
+    """No rows until the user touches a camera/lens — the wizard (spec/85
+    §3) is what seeds them."""
+    lg, store = _open_library(tmp_path)
+    assert lg.get_gear_profile() == []
+    store.close()
+
+
+def test_set_gear_active_upserts(tmp_path):
+    """First call creates the row; subsequent calls update in place."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_active("camera", "Pana+G9M2", True)
+    rows = lg.get_gear_profile()
+    assert len(rows) == 1
+    assert rows[0].kind == "camera"
+    assert rows[0].key == "Pana+G9M2"
+    assert rows[0].is_active is True
+    # Re-toggle the same gear → still one row, different flag.
+    lg.set_gear_active("camera", "Pana+G9M2", False)
+    rows = lg.get_gear_profile()
+    assert len(rows) == 1 and rows[0].is_active is False
+    store.close()
+
+
+def test_set_gear_genres_round_trips_json(tmp_path):
+    """``preferred_genres`` lands as a JSON array of strings — the slice-7
+    classifier reads it through :meth:`gear_preferred_genres`."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("lens", "LEICA 45mm", ["macro", "portrait"])
+    row = lg.gear_profile_for("lens", "LEICA 45mm")
+    assert row is not None
+    assert lg.gear_preferred_genres(row) == ["macro", "portrait"]
+    store.close()
+
+
+def test_set_gear_genres_clears_with_none(tmp_path):
+    """Passing ``None`` (or ``[]``) clears the tag — the row stays around
+    in case ``is_active`` is set, but its hint contribution disappears."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("lens", "LEICA 45mm", ["macro"])
+    lg.set_gear_genres("lens", "LEICA 45mm", None)
+    row = lg.gear_profile_for("lens", "LEICA 45mm")
+    assert row is not None
+    assert row.preferred_genres is None
+    assert lg.gear_preferred_genres(row) == []
+    store.close()
+
+
+def test_set_gear_active_preserves_genres(tmp_path):
+    """spec/85 §3 — the two toggles are independent. Toggling active must
+    not wipe a genre tag the user set earlier."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("lens", "LEICA 45mm", ["macro"])
+    lg.set_gear_active("lens", "LEICA 45mm", True)
+    row = lg.gear_profile_for("lens", "LEICA 45mm")
+    assert row.is_active is True
+    assert lg.gear_preferred_genres(row) == ["macro"]
+    store.close()
+
+
+def test_set_gear_genres_preserves_is_active(tmp_path):
+    """The inverse: setting genres must not flip ``is_active`` back to 0
+    on an active gear row."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_active("camera", "Pana+G9M2", True)
+    lg.set_gear_genres("camera", "Pana+G9M2", ["wildlife"])
+    row = lg.gear_profile_for("camera", "Pana+G9M2")
+    assert row.is_active is True
+    assert lg.gear_preferred_genres(row) == ["wildlife"]
+    store.close()
+
+
+def test_gear_profile_for_unknown_returns_none(tmp_path):
+    lg, store = _open_library(tmp_path)
+    assert lg.gear_profile_for("camera", "missing") is None
+    store.close()
+
+
+def test_gear_profile_invalid_kind_raises(tmp_path):
+    """``kind`` is closed to ``{camera, lens}`` — the gateway gates app-side
+    so callers get a clear error before the SQL CHECK fires."""
+    lg, store = _open_library(tmp_path)
+    with pytest.raises(ValueError):
+        lg.set_gear_active("body", "x", True)
+    with pytest.raises(ValueError):
+        lg.set_gear_genres("optic", "x", [])
+    with pytest.raises(ValueError):
+        lg.gear_profile_for("widget", "x")
+    store.close()
+
+
+def test_gear_profile_empty_key_raises(tmp_path):
+    """Empty ``key`` is rejected — the user-store would silently accept it,
+    but it can't match anything in ``global_items`` so the row is dead
+    weight."""
+    lg, store = _open_library(tmp_path)
+    with pytest.raises(ValueError):
+        lg.set_gear_active("camera", "", True)
+    with pytest.raises(ValueError):
+        lg.set_gear_genres("lens", "", ["macro"])
+    store.close()
+
+
+def test_get_gear_profile_returns_sorted(tmp_path):
+    """The wizard reads the full list (spec/85 §3); sort is deterministic
+    so the UI doesn't reshuffle between opens."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_active("lens", "Zuiko 50mm", True)
+    lg.set_gear_active("camera", "Pana+S5", True)
+    lg.set_gear_active("camera", "Pana+G9M2", True)
+    lg.set_gear_active("lens", "LEICA 45mm", True)
+    rows = lg.get_gear_profile()
+    assert [(r.kind, r.key) for r in rows] == [
+        ("camera", "Pana+G9M2"), ("camera", "Pana+S5"),
+        ("lens", "LEICA 45mm"), ("lens", "Zuiko 50mm"),
+    ]
+    store.close()
+
+
+def test_gear_preferred_genres_tolerates_malformed_json(tmp_path):
+    """A malformed payload (would happen only if the file is hand-edited)
+    collapses to ``[]`` so the classifier (slice 7) doesn't crash the pass."""
+    lg, store = _open_library(tmp_path)
+    row = um.GearProfile(
+        kind="lens", key="X", updated_at=NOW,
+        preferred_genres='{"not": "a list"}')
+    assert lg.gear_preferred_genres(row) == []
+    bad = um.GearProfile(
+        kind="lens", key="Y", updated_at=NOW,
+        preferred_genres="not json at all")
+    assert lg.gear_preferred_genres(bad) == []
+
+
 def test_reconcile_all_runs_known_events_and_drops_stale(tmp_path):
     """Full reconcile: open every known event, sync it, then drop slices
     for events that aren't in known_events anymore."""

@@ -28,7 +28,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -250,6 +250,31 @@ CREATE TABLE saved_filter (
   updated_at   TEXT NOT NULL,
   extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
 );
+
+-- ===== gear_profile (D) — the user's camera/lens kit tag (spec/85) =========
+-- ``kind`` discriminates cameras from lenses; ``key`` matches the matching
+-- ``global_items.camera_id`` (Make+Model business key) or
+-- ``global_items.lens_model`` so the spec/83 §4 picker and the spec/85 §5
+-- classifier user-gear-hint tier can join on it. ``is_active`` is the user's
+-- "I currently use this" flag; in the picker (spec/83 §4) it beats the
+-- photo-count heuristic that would otherwise misclassify a borrowed camera
+-- with 300 frames as "main". ``preferred_genres`` is an optional JSON array
+-- of Scenario keys (spec/85 §3 — multi-select; empty/NULL = unset); the
+-- classifier reads it as a tier just above the generic unknown-lens
+-- fallback (spec/85 §5).
+--
+-- User-level by purpose: a camera spans events. Same home as
+-- ``saved_filter`` (the cross-event DC namespace), same operational
+-- discipline (atomic-write-then-rename via the user_store transaction).
+CREATE TABLE gear_profile (
+  kind             TEXT NOT NULL CHECK (kind IN ('camera','lens')),
+  key              TEXT NOT NULL,
+  is_active        INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0,1)),
+  preferred_genres TEXT CHECK (preferred_genres IS NULL OR json_valid(preferred_genres)),
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+CREATE INDEX ix_gear_profile_active ON gear_profile(kind, is_active) WHERE is_active = 1;
 
 -- ===== feature_flag (D) — runtime feature gating ==========================
 -- Flag KEYS are app-code constants (see ``core/feature_flags.py``); new flags
@@ -474,10 +499,37 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE global_items ADD COLUMN export_relpath TEXT")
 
 
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """spec/85 — the gear-profile arrives. One new table, no existing rows
+    move (the photographer has never declared their kit before this slice).
+
+    The shape matches the spec/85 §4 SQL: ``kind`` ∈ {camera, lens} +
+    ``key`` (the matching ``global_items.camera_id`` / ``.lens_model``) +
+    ``is_active`` + JSON ``preferred_genres`` + timestamp. The partial index
+    on active rows keeps the spec/83 §4 picker's "main list" lookup cheap
+    on big collections (one row per gear item is small, but the partial
+    skips the inactive tail). Fresh installs get the full CHECK complement
+    via the DDL; the CREATE TABLE here mirrors it so migrated stores carry
+    the same constraints — unlike ALTER ADD COLUMN."""
+    conn.execute("""
+CREATE TABLE gear_profile (
+  kind             TEXT NOT NULL CHECK (kind IN ('camera','lens')),
+  key              TEXT NOT NULL,
+  is_active        INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0,1)),
+  preferred_genres TEXT CHECK (preferred_genres IS NULL OR json_valid(preferred_genres)),
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+)""")
+    conn.execute(
+        "CREATE INDEX ix_gear_profile_active ON gear_profile(kind, is_active) "
+        "WHERE is_active = 1")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
     _migrate_v3_to_v4,
+    _migrate_v4_to_v5,
 ]
 
 

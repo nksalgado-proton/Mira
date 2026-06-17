@@ -122,6 +122,7 @@ def classify_exif(
     exif: dict[str, Any],
     *,
     source: Optional[str] = None,
+    gear_hint: Optional[Callable] = None,
 ) -> ClassificationResult:
     """Classify one photo from its raw EXIF dict. Mirrors the
     import-pipeline recipe (brand → body → lens → context →
@@ -138,7 +139,12 @@ def classify_exif(
     in the UI culler never reached the phone_selfie / phone_close_
     focus / phone_face_detected / phone_default_street rules. The
     explicit ``source`` kwarg stays as an override for tests and any
-    caller that needs to force one or the other."""
+    caller that needs to force one or the other.
+
+    ``gear_hint`` threads through to :func:`core.classifier_v2.classify`
+    so callers (the background classification pass) can wire the spec/85
+    §5 user-gear-hint tier — runs after the rule loop, before the
+    GENERAL fallback."""
     try:
         from core.brand_profile import match_brand_profile_for_photo
         from core.import_pipeline import (
@@ -162,7 +168,7 @@ def classify_exif(
             RawExifEntry(path=path, exif=exif), brand, body, lens,
             source=source,
         )
-        return classify(ctx, _rules(source))
+        return classify(ctx, _rules(source), gear_hint=gear_hint)
     except Exception as exc:  # noqa: BLE001 — must never break the cull
         log.warning("genre classify failed for %s: %s", path, exc)
         return ClassificationResult(

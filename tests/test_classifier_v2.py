@@ -501,6 +501,77 @@ def test_classify_fallback_to_general_for_unknown_lens():
     assert result.needs_review is True
 
 
+def test_classify_user_gear_hint_fires_after_no_rule_match():
+    """spec/85 §5 — when no rule matches and a gear_hint is provided,
+    the hint's (scenario, confidence) becomes the result. Above the
+    UNKNOWN_LENS_FALLBACK_CONFIDENCE so the user's signal wins over
+    "I have no idea"."""
+    ctx = _context(lens=None, focal_35mm=100)
+    hint_calls = []
+
+    def hint(c):
+        hint_calls.append(c)
+        return (Scenario.MACRO, 0.45)
+
+    result = classify(ctx, _ruleset_small(), gear_hint=hint)
+    assert result.scenario == Scenario.MACRO
+    assert result.confidence == 0.45
+    assert result.rule_id == "user_gear_hint"
+    assert "gear hint" in result.reason.lower()
+    assert result.tag is None
+    assert len(hint_calls) == 1
+    assert result.confidence > UNKNOWN_LENS_FALLBACK_CONFIDENCE
+
+
+def test_classify_user_gear_hint_does_not_override_a_matching_rule():
+    """If a rule matches, the gear hint never runs — built-in rules and
+    user scenarios always win over the hint."""
+    hint_called = []
+
+    def hint(c):
+        hint_called.append(c)
+        return (Scenario.MACRO, 0.45)
+
+    # The long_exposure rule in _ruleset_small fires on shutter ≥ 1.0.
+    ctx = _context(shutter_speed=2.0)
+    result = classify(ctx, _ruleset_small(), gear_hint=hint)
+    assert result.scenario == Scenario.NIGHT_LONG_EXPOSURE
+    assert hint_called == []
+
+
+def test_classify_user_gear_hint_returning_none_falls_through_to_general():
+    """A hint that returns None (e.g. untagged gear) leaves the GENERAL
+    fallback intact — no false signal."""
+    ctx = _context(lens=None, focal_35mm=100)
+    result = classify(ctx, _ruleset_small(), gear_hint=lambda c: None)
+    assert result.scenario == Scenario.GENERAL
+    assert result.rule_id is None
+    assert result.confidence == UNKNOWN_LENS_FALLBACK_CONFIDENCE
+
+
+def test_classify_user_gear_hint_raises_safely():
+    """A misbehaving hint must not crash the classification pass — log
+    + fall through to GENERAL."""
+    def angry(c):
+        raise RuntimeError("nope")
+
+    ctx = _context(lens=None, focal_35mm=100)
+    result = classify(ctx, _ruleset_small(), gear_hint=angry)
+    assert result.scenario == Scenario.GENERAL
+    assert result.rule_id is None
+
+
+def test_classify_user_gear_hint_bad_shape_falls_through():
+    """If the hint returns something that's not a (scenario, confidence)
+    tuple, the classifier logs + falls through to GENERAL — defensive
+    against future hint refactors."""
+    ctx = _context(lens=None, focal_35mm=100)
+    result = classify(ctx, _ruleset_small(),
+                      gear_hint=lambda c: "macro")          # not a tuple
+    assert result.scenario == Scenario.GENERAL
+    assert result.rule_id is None
+
+
 def test_classify_skips_rule_with_missing_capability():
     """A rule with requires_capability that the body doesn't have is
     skipped silently. With the lens-fallback removal (2026-05-13), a

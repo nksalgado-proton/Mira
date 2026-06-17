@@ -458,6 +458,11 @@ class LibraryGateway:
     GEAR_KIND_LENS = "lens"
     _GEAR_KINDS = (GEAR_KIND_CAMERA, GEAR_KIND_LENS)
 
+    #: Confidence the spec/85 §5 user-gear-hint tier assigns. Above the
+    #: generic unknown-lens fallback (UNKNOWN_LENS_FALLBACK_CONFIDENCE = 0.30
+    #: in classifier_v2), below explicit user scenarios (typically ≥ 0.55).
+    USER_GEAR_HINT_CONFIDENCE: float = 0.45
+
     @staticmethod
     def _validate_gear_kind(kind: str) -> None:
         if kind not in LibraryGateway._GEAR_KINDS:
@@ -539,6 +544,76 @@ class LibraryGateway:
         if not isinstance(data, list):
             return []
         return [str(g) for g in data]
+
+    def gear_fingerprint(self) -> str:
+        """Stable hash of the full gear-profile state (spec/85 §5).
+
+        Used by the background classification pass to bump
+        ``item.classification_rules_version`` whenever the user changes a
+        gear flag or a preferred-genre tag — the next pass then re-
+        classifies untouched items (``classification_source != 'user'``).
+        Empty profile → fixed empty token so the stamp stays deterministic
+        across reboots before the user ever touches the wizard.
+        """
+        import hashlib
+        h = hashlib.sha256()
+        for row in self.get_gear_profile():
+            h.update(f"{row.kind}|{row.key}|{int(bool(row.is_active))}|"
+                     f"{row.preferred_genres or ''}\n".encode("utf-8"))
+        return h.hexdigest()[:12]
+
+    def make_gear_hint(
+        self,
+        *,
+        camera_id: Optional[str],
+        lens_model: Optional[str],
+    ) -> Callable:
+        """Build a per-item gear-hint callable for the classifier (spec/85
+        §5). The returned closure takes a ``PhotoContext`` and returns
+        ``(Scenario, confidence)`` for the first tagged kit it finds,
+        else ``None``.
+
+        Resolution order is **lens first**, then camera (spec/85 §6 lean
+        — the lens is the more specific optic, so a "macro lens" beats a
+        "wildlife body"). The first preferred genre in the row is the
+        hint — multi-genre rows are treated as ranked preference (the
+        user puts their primary intent first); future work might weigh
+        the whole list."""
+        # Captured at build time so the closure is fast — no per-call SQL
+        # for items shot with un-tagged gear.
+        lens_row = (self.gear_profile_for("lens", lens_model)
+                    if lens_model else None)
+        cam_row = (self.gear_profile_for("camera", camera_id)
+                   if camera_id else None)
+        # Pre-resolve the Scenario so the closure stays cheap and the
+        # error path (unknown genre string) handles once at build time.
+        from core.vocabulary import Scenario as _Scenario
+
+        hint_scenario: Optional[_Scenario] = None
+        for row in (lens_row, cam_row):
+            if row is None:
+                continue
+            for genre in self.gear_preferred_genres(row):
+                try:
+                    hint_scenario = _Scenario(genre)
+                    break
+                except ValueError:
+                    log.warning(
+                        "gear_profile preferred_genres has unknown "
+                        "scenario %r for (%s, %s) — skipping",
+                        genre, row.kind, row.key)
+                    continue
+            if hint_scenario is not None:
+                break
+
+        confidence = self.USER_GEAR_HINT_CONFIDENCE
+
+        def _hint(_ctx):
+            if hint_scenario is None:
+                return None
+            return (hint_scenario, confidence)
+
+        return _hint
 
     # =================================================================== #
     # Sync triggers — the projection stays in lockstep with event.db

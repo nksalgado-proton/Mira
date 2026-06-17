@@ -69,6 +69,7 @@ def classify_event_items(
     eg,
     event_root: Path,
     *,
+    library_gateway=None,
     exif_batch_fn: Optional[Callable] = None,
     classify_fn: Optional[Callable] = None,
     rules_version_fn: Optional[Callable[[str], str]] = None,
@@ -77,7 +78,15 @@ def classify_event_items(
     hooks default to the live machinery (``core.exif_reader.
     read_exif_batch`` / ``core.genre.classify_exif`` /
     ``core.genre.rules_version_for``) and exist so tests run without
-    ExifTool or the bundled rules."""
+    ExifTool or the bundled rules.
+
+    ``library_gateway`` (optional) opts the pass into the spec/85 §5
+    user-gear-hint tier: every candidate picks up its own gear-hint
+    callable, and the persisted ``classification_rules_version`` stamp
+    folds in :meth:`LibraryGateway.gear_fingerprint` so a gear-profile
+    change forces untouched items to re-classify on the next pass
+    (spec/58 §3 — ``classification_source='user'`` rows are never
+    overwritten)."""
     if exif_batch_fn is None:
         from core.exif_reader import read_exif_batch as exif_batch_fn
     if classify_fn is None:
@@ -89,9 +98,16 @@ def classify_event_items(
     event_root = Path(event_root)
 
     is_phone = {c.camera_id: bool(c.is_phone) for c in eg.cameras()}
+    # Gear-profile fingerprint folds into the version stamp so a wizard
+    # save bumps every untouched item to the new rules_version on the
+    # next pass (spec/85 §5 + spec/58 §3).
+    gear_fp = (
+        library_gateway.gear_fingerprint() if library_gateway else "")
     version_for = {
-        True: rules_version_fn("phone"),
-        False: rules_version_fn("camera"),
+        True: rules_version_fn("phone") + (
+            ("." + gear_fp) if gear_fp else ""),
+        False: rules_version_fn("camera") + (
+            ("." + gear_fp) if gear_fp else ""),
     }
     frozen = eg.edit_touched_item_ids()
 
@@ -171,8 +187,15 @@ def classify_event_items(
         px = exif_by_path.get(p)
         raw = getattr(px, "raw", None) or {}
         source = "phone" if is_phone.get(rep.camera_id, False) else "camera"
+        # spec/85 §5 — per-item gear hint, built from the item's camera +
+        # lens. The closure inside ``make_gear_hint`` does the SQL once at
+        # build time so the classifier's hot loop stays cheap.
+        gear_hint = (
+            library_gateway.make_gear_hint(
+                camera_id=rep.camera_id, lens_model=rep.lens_model)
+            if library_gateway else None)
         try:
-            res = classify_fn(p, raw, source=source)
+            res = classify_fn(p, raw, source=source, gear_hint=gear_hint)
         except Exception as exc:  # noqa: BLE001
             log.exception("classify pass: classify failed for %s", p)
             report.errors.append(f"{rep.origin_relpath}: {exc}")

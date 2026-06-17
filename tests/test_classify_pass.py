@@ -56,9 +56,9 @@ def _fakes(value="macro", confidence=0.85, calls=None):
     def fake_exif_batch(paths):
         return [SimpleNamespace(path=p, raw={"Model": "X"}) for p in paths]
 
-    def fake_classify(path, raw, *, source=None):
+    def fake_classify(path, raw, *, source=None, gear_hint=None):
         if calls is not None:
-            calls.append((Path(path).name, source))
+            calls.append((Path(path).name, source, gear_hint))
         return SimpleNamespace(
             scenario=SimpleNamespace(value=value),
             confidence=confidence,
@@ -91,6 +91,90 @@ def test_raw_jpeg_pair_classifies_once_jpeg_inherits(tmp_path):
             assert it.classification_needs_review == 0
     finally:
         eg.close()
+
+
+def test_classify_pass_wires_gear_hint_per_candidate(tmp_path):
+    """spec/85 §5 — when classify_event_items is wired with a
+    LibraryGateway, each candidate's classify_fn call carries a
+    per-item gear hint built from its camera + lens."""
+    from mira.gateway.library_gateway import LibraryGateway
+    from mira.user_store.repo import UserStore
+
+    user_store = UserStore.create(
+        tmp_path / "mira.db", app_version="test", created_at=NOW)
+    lg = LibraryGateway(user_store, now=lambda: NOW)
+    lg.set_gear_genres("camera", "G9", ["wildlife"])
+
+    calls = []
+    eg = _make_eg(tmp_path, [
+        _item("p1", "Original Media/_cameras/d3/G9/a.jpg"),
+    ])
+    try:
+        classify_event_items(
+            eg, tmp_path, library_gateway=lg, **_fakes(calls=calls))
+        # The third tuple element is the gear hint callable.
+        assert len(calls) == 1
+        _filename, _source, hint = calls[0]
+        assert hint is not None
+        from core.vocabulary import Scenario
+        assert hint(object()) == (Scenario.WILDLIFE, lg.USER_GEAR_HINT_CONFIDENCE)
+    finally:
+        eg.close()
+        user_store.close()
+
+
+def test_classify_pass_rules_version_includes_gear_fingerprint(tmp_path):
+    """spec/85 §5 + spec/58 §3 — toggling gear bumps the persisted
+    classification_rules_version stamp so untouched items re-classify
+    on the next pass."""
+    from mira.gateway.library_gateway import LibraryGateway
+    from mira.user_store.repo import UserStore
+
+    user_store = UserStore.create(
+        tmp_path / "mira.db", app_version="test", created_at=NOW)
+    lg = LibraryGateway(user_store, now=lambda: NOW)
+    eg = _make_eg(tmp_path, [
+        _item("p1", "Original Media/_cameras/d3/G9/a.jpg"),
+    ])
+    try:
+        classify_event_items(eg, tmp_path, library_gateway=lg,
+                             **_fakes(calls=[]))
+        first_stamp = eg.item("p1").classification_rules_version
+        # Save the user's gear-profile choice → fingerprint flips.
+        lg.set_gear_genres("camera", "G9", ["wildlife"])
+        classify_event_items(eg, tmp_path, library_gateway=lg,
+                             **_fakes(calls=[]))
+        second_stamp = eg.item("p1").classification_rules_version
+        assert first_stamp != second_stamp
+    finally:
+        eg.close()
+        user_store.close()
+
+
+def test_classify_pass_skips_user_classified_even_with_gear_hint(tmp_path):
+    """spec/58 §3 — classification_source='user' rows are NEVER overwritten,
+    even when gear-fingerprint changes."""
+    from mira.gateway.library_gateway import LibraryGateway
+    from mira.user_store.repo import UserStore
+
+    user_store = UserStore.create(
+        tmp_path / "mira.db", app_version="test", created_at=NOW)
+    lg = LibraryGateway(user_store, now=lambda: NOW)
+    lg.set_gear_genres("camera", "G9", ["wildlife"])
+
+    eg = _make_eg(tmp_path, [
+        _item("u1", "Original Media/_cameras/d3/G9/a.jpg",
+              classification="portrait", source="user"),
+    ])
+    try:
+        report = classify_event_items(
+            eg, tmp_path, library_gateway=lg, **_fakes(calls=[]))
+        assert report.skipped_user == 1
+        assert report.classified == 0
+        assert eg.item("u1").classification == "portrait"
+    finally:
+        eg.close()
+        user_store.close()
 
 
 def test_video_classifies_itself_even_sharing_a_stem(tmp_path):
@@ -186,7 +270,9 @@ def test_phone_camera_routes_phone_source(tmp_path):
     ])
     try:
         classify_event_items(eg, tmp_path, **_fakes(calls=calls))
-        assert calls == [("x.heic", "phone")]
+        # The third tuple element is the gear_hint — None when no
+        # LibraryGateway is wired.
+        assert [c[:2] for c in calls] == [("x.heic", "phone")]
     finally:
         eg.close()
 

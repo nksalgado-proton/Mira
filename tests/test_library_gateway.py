@@ -487,6 +487,99 @@ def test_event_uuids_in_projection(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Slice 7 — gear fingerprint + classifier hint
+# --------------------------------------------------------------------------- #
+
+
+def test_gear_fingerprint_changes_when_gear_changes(tmp_path):
+    """spec/85 §5 — bumping any row's is_active / preferred_genres flips
+    the fingerprint so the classifier's persisted rules_version stamp
+    rolls and untouched items re-classify on the next pass."""
+    lg, store = _open_library(tmp_path)
+    empty = lg.gear_fingerprint()
+    lg.set_gear_active("camera", "Pana+G9M2", True)
+    after_active = lg.gear_fingerprint()
+    assert after_active != empty
+    lg.set_gear_genres("camera", "Pana+G9M2", ["wildlife"])
+    after_genres = lg.gear_fingerprint()
+    assert after_genres != after_active
+    # Setting the same value again is a no-op for the fingerprint.
+    lg.set_gear_genres("camera", "Pana+G9M2", ["wildlife"])
+    assert lg.gear_fingerprint() == after_genres
+    store.close()
+
+
+def test_gear_fingerprint_empty_when_no_rows(tmp_path):
+    """The fingerprint is deterministic across runs — empty profile
+    always hashes to the same value."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    lg1, store1 = _open_library(tmp_path / "a")
+    lg2, store2 = _open_library(tmp_path / "b")
+    assert lg1.gear_fingerprint() == lg2.gear_fingerprint()
+    store1.close(); store2.close()
+
+
+def test_make_gear_hint_lens_beats_camera(tmp_path):
+    """spec/85 §6 lean — when both the camera and lens have preferred
+    genres, the lens wins (it's the more specific optic)."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("camera", "Pana+G9M2", ["wildlife"])
+    lg.set_gear_genres("lens", "LEICA 45mm", ["macro"])
+    hint = lg.make_gear_hint(camera_id="Pana+G9M2", lens_model="LEICA 45mm")
+    result = hint(object())
+    assert result is not None
+    scenario, confidence = result
+    from core.vocabulary import Scenario
+    assert scenario == Scenario.MACRO
+    assert confidence == lg.USER_GEAR_HINT_CONFIDENCE
+    store.close()
+
+
+def test_make_gear_hint_camera_only_falls_through_to_camera(tmp_path):
+    """No lens row → the camera's preferred genres take over."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("camera", "Pana+G9M2", ["wildlife"])
+    hint = lg.make_gear_hint(
+        camera_id="Pana+G9M2", lens_model="Unknown-Lens")
+    from core.vocabulary import Scenario
+    assert hint(object())[0] == Scenario.WILDLIFE
+    store.close()
+
+
+def test_make_gear_hint_returns_none_when_no_match(tmp_path):
+    """Untagged gear → hint silent; classifier falls through to GENERAL."""
+    lg, store = _open_library(tmp_path)
+    hint = lg.make_gear_hint(
+        camera_id="Pana+G9M2", lens_model="LEICA 45mm")
+    assert hint(object()) is None
+    store.close()
+
+
+def test_make_gear_hint_skips_unknown_genre_strings(tmp_path):
+    """A genre string that doesn't map to a :class:`Scenario` value is
+    logged and skipped; the hint falls through to the next candidate."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_genres("lens", "LEICA 45mm", ["bogus_genre", "macro"])
+    from core.vocabulary import Scenario
+    hint = lg.make_gear_hint(camera_id=None, lens_model="LEICA 45mm")
+    assert hint(object())[0] == Scenario.MACRO
+    store.close()
+
+
+def test_make_gear_hint_only_if_active_or_inactive_with_genres(tmp_path):
+    """Setting "I use this" without preferred genres ≠ a hint — the user
+    can flag gear active for the picker without giving the classifier any
+    signal at all (the two axes are independent, spec/85 §3)."""
+    lg, store = _open_library(tmp_path)
+    lg.set_gear_active("camera", "Pana+G9M2", True)   # no genres set
+    hint = lg.make_gear_hint(
+        camera_id="Pana+G9M2", lens_model=None)
+    assert hint(object()) is None
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
 # Sync triggers — delegate to global_items_sync, return its row counts
 # --------------------------------------------------------------------------- #
 

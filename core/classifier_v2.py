@@ -367,11 +367,20 @@ def _rule_matches(rule: Rule, context: PhotoContext) -> bool:
 def classify(
     context: PhotoContext,
     rules: RuleSet,
+    *,
+    gear_hint: Optional[
+        Callable[[PhotoContext], Optional[tuple]]
+    ] = None,
 ) -> ClassificationResult:
     """Classify a photo by running it through the refinement rules.
 
     Evaluation order is the order of rules in the RuleSet. First match
-    wins. If no rule matches, falls back to GENERAL with low confidence.
+    wins. If no rule matches, the **user-gear-hint tier** (spec/85 §5)
+    fires — when the caller supplies ``gear_hint``, the callable peeks at
+    the user's gear-profile tags via :class:`PhotoContext` and returns
+    ``(scenario, confidence)`` for a tagged camera or lens. If no rule
+    matched AND the gear hint is silent, falls back to GENERAL with low
+    confidence.
 
     The fallback previously tried ``context.lens.potential_scenarios[0]``
     (the per-user lens registry's primary use scenario), but that's a
@@ -382,9 +391,10 @@ def classify(
     the combo).
 
     This function does not raise — any invalid condition in a rule
-    causes that rule to be skipped with a warning log. This prevents a
-    single malformed user override from crashing classification for
-    every photo.
+    causes that rule to be skipped with a warning log. The gear hint is
+    likewise sandboxed: a raise inside it logs + falls through to the
+    GENERAL fallback. This prevents a single malformed user override
+    from crashing classification for every photo.
     """
     for rule in rules.rules:
         try:
@@ -403,6 +413,38 @@ def classify(
                 rule.id, type(exc).__name__, exc,
             )
             continue
+
+    # spec/85 §5 — user-gear-hint tier. Runs AFTER the rule loop so user
+    # scenarios (from the first-run wizard) and built-in refinement rules
+    # win when they fire. Above the generic unknown-lens fallback
+    # (UNKNOWN_LENS_FALLBACK_CONFIDENCE = 0.30), below explicit user
+    # scenarios (typically ≥ 0.55).
+    if gear_hint is not None:
+        try:
+            hinted = gear_hint(context)
+        except Exception as exc:                                # noqa: BLE001
+            log.warning(
+                "user-gear-hint raised %s — falling through to GENERAL: %s",
+                type(exc).__name__, exc,
+            )
+            hinted = None
+        if hinted is not None:
+            try:
+                scenario, confidence = hinted
+            except (TypeError, ValueError) as exc:
+                log.warning(
+                    "user-gear-hint returned %r (expected (scenario, "
+                    "confidence) tuple): %s", hinted, exc,
+                )
+            else:
+                return ClassificationResult(
+                    scenario=scenario,
+                    confidence=float(confidence),
+                    reason="user gear hint (spec/85 §5)",
+                    rule_id="user_gear_hint",
+                    source=context.source,
+                    tag=None,
+                )
 
     return ClassificationResult(
         scenario=Scenario.GENERAL,

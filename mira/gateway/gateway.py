@@ -1020,6 +1020,48 @@ class Gateway:
             why="app-close" if only_if_dirty else "manual",
         )
 
+    def register_event_from_root(self, event_root: Path) -> str:
+        """spec/82 §B.3 — register an imported / discovered event in
+        the library index from its on-disk ``event.db``. Returns the
+        event_id (== ``event.uuid``).
+
+        Reads the event row + day plan straight off disk so the new
+        index entry matches every other event in the index — the
+        registration is identical to what
+        :meth:`recover_orphan_events` would do for a hand-dropped
+        event folder. Used by the slice-7 Restore event… handler
+        after :func:`event_bundle.install_bundle` lands the bytes.
+        """
+        event_root = Path(event_root)
+        db_path = event_root / "event.db"
+        if not db_path.exists():
+            raise FileNotFoundError(
+                f"register_event_from_root: no event.db at {db_path}")
+        eg = EventGateway.open(
+            db_path, event_root=event_root, now=self._now,
+            app_version=_live_app_version())
+        try:
+            ev = eg.event()
+        finally:
+            eg.close()
+        entry = make_entry(
+            event_id=ev.uuid,
+            name=ev.name,
+            start_date=ev.start_date,
+            end_date=ev.end_date,
+            is_closed=ev.is_closed,
+            event_root=event_root,
+            photos_base_path=self.photos_base_path(),
+            event_type=ev.event_type or "unclassified",
+            event_subtype=ev.event_subtype,
+            description=ev.description,
+        )
+        self.index.upsert(entry)
+        log.info(
+            "spec/82 §B.3: registered imported event %s at %s",
+            ev.uuid, event_root)
+        return ev.uuid
+
     def snapshot_event(
         self,
         event_id: str,

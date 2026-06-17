@@ -585,10 +585,22 @@ class MainWindow(QMainWindow):
             event_menu, tr("&Stats…"), self._open_stats,
             surface=self._SURFACE_PER_EVENT)
         event_menu.addSeparator()
+        # spec/82 §B.2 — Back up event… (manual migration bundle
+        # export). Writes a self-contained bundle to a user-chosen
+        # destination folder. The automatic on-quit variant ships
+        # in slice 8 from the Backups settings tab; both ride the
+        # same core.event_bundle.export_event primitive.
         self._add_menu_action(
             event_menu, tr("&Back up event…"),
-            lambda: self._coming_next(tr("Back up event")),
+            self._open_back_up_event,
             surface=self._SURFACE_PER_EVENT)
+        # spec/82 §B.3 — Restore event… (import a migration bundle
+        # from another installation). Menu-only entry per Nelson's
+        # 2026-06-17 decision; no auto-discovery on drive mount.
+        self._add_menu_action(
+            event_menu, tr("Re&store event…"),
+            self._open_restore_event,
+            surface=self._SURFACE_EVENTS_LIST, modification=True)
         # spec/82 §A.4 — manual restore (the trip-workflow "roll back
         # to before yesterday's ingest" case). The corruption-driven
         # auto-restore that already lives on event open (spec/79 §4)
@@ -1926,6 +1938,257 @@ class MainWindow(QMainWindow):
             log.warning(
                 "spec/82 §A.3 user-store snapshot on quit FAILED: %s",
                 exc)
+
+    def _open_back_up_event(self) -> None:
+        """spec/82 §B.2 — manual Back up event… for the current event.
+
+        Asks the user for a destination folder, then runs
+        :func:`core.event_bundle.export_event` with the standard
+        progress dialog. The bundle lands as
+        ``<dest>/<event-folder>/`` with a top-level
+        ``mira-event.json``. Slice 8 will pre-fill the dialog with
+        ``event_backup_destination`` from settings; for now the
+        dialog opens at the user's home dir.
+
+        Per-event surface only, so ``_current_event_id`` is set.
+        """
+        from PyQt6.QtWidgets import QFileDialog
+        from core import event_bundle
+        from mira.ui.base.progress import run_with_progress
+        from mira.ui.design.dialogs import MessageDialog
+        event_id = self._current_event_id
+        if not event_id:
+            return
+        entry = self.gateway.index.get(event_id)
+        if entry is None:
+            return
+        root = self.gateway.index.resolve_root(
+            entry, self.gateway.photos_base_path())
+        if root is None:
+            MessageDialog.error(
+                tr("Can't back up"),
+                tr(
+                    "Mira couldn't resolve this event's folder. "
+                    "Check the library's photos path."
+                ),
+                parent=self,
+            ).exec()
+            return
+        dest_root = QFileDialog.getExistingDirectory(
+            self,
+            tr("Pick a backup destination"),
+            "",
+        )
+        if not dest_root:
+            return
+        dest_path = Path(dest_root)
+        event_name = str(entry.get("name") or event_id)
+
+        # The live build version stamps the bundle's manifest so a
+        # future Restore on a different installation can compare.
+        try:
+            from importlib import metadata
+            app_version = metadata.version("mira")
+        except Exception:                                   # noqa: BLE001
+            app_version = "dev"
+
+        def _do_export(report):
+            def _adapter(message, current=0, total=0):
+                report(current, total, message)
+            return event_bundle.export_event(
+                root, root / "event.db", dest_path,
+                app_version=app_version,
+                progress=_adapter,
+            )
+
+        ok, result = run_with_progress(
+            self, tr("Backing up event…"), _do_export,
+            label=tr("Copying {name}…").replace("{name}", event_name),
+        )
+        if not ok:
+            MessageDialog.error(
+                tr("Backup failed"),
+                tr(
+                    "Mira couldn't finish the backup. The "
+                    "destination folder still contains a "
+                    "``.partial`` directory you can delete.\n\n"
+                    "{err}"
+                ).replace("{err}", str(result)),
+                parent=self,
+            ).exec()
+            return
+        MessageDialog.success(
+            tr("Backup complete"),
+            tr(
+                "Backed up {name} to {dest}.\n\nKeep this folder "
+                "as a backup; continue working on the original PC."
+            )
+            .replace("{name}", event_name)
+            .replace("{dest}", str(result.bundle_dir)),
+            parent=self,
+        ).exec()
+
+    def _open_restore_event(self) -> None:
+        """spec/82 §B.3 — manual Restore event… (import a bundle).
+
+        Asks the user for a bundle folder, runs the integrity +
+        version gates, asks about Replace if the event_uuid is
+        already in the library, then installs the bundle into the
+        local library_base and registers it in the events index.
+        The writer lock (spec/76 §A) gates this implicitly because
+        the read-only mode set on the session would already have
+        disabled the menu action via ``modification=True``.
+
+        No automatic discovery on mount (Nelson 2026-06-17): the
+        user explicitly invokes this and picks the folder.
+        """
+        from PyQt6.QtWidgets import QFileDialog
+        from core import event_bundle
+        from mira.ui.base.progress import run_with_progress
+        from mira.ui.design.dialogs import MessageDialog
+        bundle_root = QFileDialog.getExistingDirectory(
+            self,
+            tr("Pick a bundle folder to restore"),
+            "",
+        )
+        if not bundle_root:
+            return
+        bundle_dir = Path(bundle_root)
+
+        # 1. Inspect — integrity + version gates.
+        from mira.user_store.schema import SCHEMA_VERSION as _TARGET
+        try:
+            plan = event_bundle.inspect_bundle(
+                bundle_dir, target_schema_version=_TARGET)
+        except FileNotFoundError as exc:
+            MessageDialog.error(
+                tr("Not a bundle"),
+                tr(
+                    "{path} is not a valid Mira event bundle "
+                    "folder.\n\n{err}"
+                ).replace("{path}", str(bundle_dir))
+                 .replace("{err}", str(exc)),
+                parent=self,
+            ).exec()
+            return
+        if not plan.integrity.ok:
+            MessageDialog.error(
+                tr("Bundle is damaged"),
+                tr(
+                    "The bundle's integrity check failed; some files "
+                    "are missing or their bytes don't match the "
+                    "manifest. Mira won't import a damaged bundle "
+                    "to avoid silently breaking your library.\n\n"
+                    "{err}"
+                ).replace("{err}", plan.integrity.error or tr(
+                    "Files: {n} missing, {m} mismatched"
+                ).replace("{n}", str(len(plan.integrity.missing)))
+                 .replace("{m}", str(len(plan.integrity.mismatch)))),
+                parent=self,
+            ).exec()
+            return
+        if plan.version_status == event_bundle.VERSION_NEWER_THAN_LOCAL:
+            MessageDialog.warning(
+                tr("Bundle is newer than this Mira"),
+                tr(
+                    "This bundle was created with a newer Mira "
+                    "(schema {b}). Update Mira on this PC first, "
+                    "then try again."
+                ).replace("{b}", str(plan.manifest.schema_version)),
+                primary_text=tr("OK"),
+                ghost_text=tr("Cancel"),
+                parent=self,
+            ).exec()
+            return
+
+        # 2. Identity gate — does this event_uuid already live here?
+        library_base = self.gateway.photos_base_path()
+        if library_base is None:
+            MessageDialog.error(
+                tr("Can't restore"),
+                tr(
+                    "Mira couldn't find a library folder yet. "
+                    "Finish the wizard first."
+                ),
+                parent=self,
+            ).exec()
+            return
+        existing = self.gateway.index.get(plan.manifest.event_uuid)
+        replace_existing = False
+        if existing is not None:
+            dlg = MessageDialog(
+                intent="warning",
+                title=tr("Replace existing event?"),
+                message=tr(
+                    "An event with the same id is already in this "
+                    "library — '{name}'. Restoring will replace it "
+                    "wholesale.\n\nMira will take a safety snapshot "
+                    "of the existing event.db first, so you can roll "
+                    "back via Restore from backup… if needed."
+                ).replace("{name}", str(existing.get("name") or "")),
+                primary_text=tr("Replace"),
+                ghost_text=tr("Cancel"),
+                parent=self,
+            )
+            dlg.exec()
+            if dlg.result_kind() != "primary":
+                return
+            replace_existing = True
+
+        # 3. If Replace, take a Part-A snapshot of the existing event
+        #    BEFORE swapping. The user's escape hatch.
+        if replace_existing:
+            saved = self.gateway.snapshot_event(
+                plan.manifest.event_uuid, reason="milestone")
+            log.info(
+                "spec/82 §B.3 Replace: pre-replace snapshot of %s -> %s",
+                plan.manifest.event_uuid, saved)
+
+        # 4. Install + register.
+        def _do_install(report):
+            report(0, 1, tr("Copying bundle into the library…"))
+            target_root = None
+            if existing is not None:
+                # Replace path: install over the existing event_root
+                # so the index entry still resolves cleanly.
+                target_root = self.gateway.index.resolve_root(
+                    existing, library_base)
+            new_root = event_bundle.install_bundle(
+                plan, library_base, target_event_root=target_root)
+            report(1, 1, tr("Registering the event…"))
+            event_id = self.gateway.register_event_from_root(new_root)
+            return (event_id, new_root)
+
+        ok, result = run_with_progress(
+            self, tr("Restoring event…"), _do_install,
+            label=tr("Restoring {name}…").replace(
+                "{name}", plan.manifest.event_name),
+        )
+        if not ok:
+            MessageDialog.error(
+                tr("Restore failed"),
+                tr(
+                    "Mira couldn't finish the restore. Check disk "
+                    "space and permissions, then try again.\n\n"
+                    "{err}"
+                ).replace("{err}", str(result)),
+                parent=self,
+            ).exec()
+            return
+        event_id, new_root = result
+        MessageDialog.success(
+            tr("Restore complete"),
+            tr(
+                "{name} is now in your library at {path}."
+            ).replace("{name}", plan.manifest.event_name)
+             .replace("{path}", str(new_root)),
+            parent=self,
+        ).exec()
+        # Refresh the events page so the new card appears.
+        try:
+            self.events_page.refresh()
+        except Exception:                                  # noqa: BLE001
+            log.exception("post-restore refresh failed")
 
     def _open_restore_user_store(self) -> None:
         """spec/82 §A.3 — Restore user data… handler.

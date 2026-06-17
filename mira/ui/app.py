@@ -199,29 +199,34 @@ def _resolve_library_root(settings_obj, data_dir: Path) -> Path:
 def _show_lock_conflict_dialog(holder) -> str:
     """Modal dialog when another Mira instance owns the writer lock.
 
-    Per spec/76 §A.4, full read-only mode (§B.1) isn't in this slice
-    yet — the acceptable interim is to **decline to open** with a
-    clear message + Retry, rather than ever open a second writer.
+    The spec/76 §A.4 contract: name the editing machine + the time
+    they acquired, offer **Open read-only** (→ the §B.1 read-only
+    session this app drops into) or **Cancel** (don't launch). No
+    "Take over editing" button — ``core.library_lock.acquire`` auto-
+    takes over stale locks before startup ever reaches this dialog
+    (Nelson 2026-06-17 confirmation), so the button has no path to
+    fire.
 
-    Returns ``"retry"`` if the user wants to retry the acquire,
+    Returns ``"read_only"`` when the user accepts read-only mode,
     ``"cancel"`` otherwise.
     """
     from mira.ui.design.dialogs import MessageDialog
     from mira.ui.i18n import tr
     msg = tr(
-        "This library is already open for editing on {host} (since "
-        "{since}). Two writers would corrupt the store, so Mira can't "
-        "open a second one. Close the other Mira, then Retry."
+        "This library is open for editing on {host} (since {since}). "
+        "Opening in read-only mode — decisions, edits, exports and "
+        "plan changes will be disabled in this window until the other "
+        "Mira closes."
     ).replace("{host}", holder.hostname).replace("{since}", holder.acquired_at)
     dlg = MessageDialog(
         intent="warning",
         title=tr("Library is in use"),
         message=msg,
-        primary_text=tr("Retry"),
+        primary_text=tr("Open read-only"),
         ghost_text=tr("Cancel"),
     )
     dlg.exec()
-    return "retry" if dlg.result_kind() == "primary" else "cancel"
+    return "read_only" if dlg.result_kind() == "primary" else "cancel"
 
 
 # spec/76 §A.2 — the heartbeat QTimer must outlive ``main()`` so the

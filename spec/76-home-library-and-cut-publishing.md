@@ -82,17 +82,24 @@ heartbeat**:
 - UI wiring (`mira/ui/shell/main_window.py` or app startup): call `acquire`
   when the library opens; start the heartbeat `QTimer`; `release` on close.
 
-### A.4 Conflict UX (minimum for now)
+### A.4 Conflict UX
 When the lock is held by a live writer, the second instance must not open
-read-write. Minimum viable behaviour for this deliverable:
+read-write. Final behaviour (Nelson 2026-06-17 confirmation):
 
 - Show a clear dialog (reuse `mira/ui/design/dialogs.py`): *"This library is open
-  for editing on **{hostname}** (since {time}). Opening in read-only mode."* —
-  with **Open read-only** and **Cancel**; if the holder is **stale**, add
-  **Take over editing**.
-- Enter read-only mode (§B.1). If full read-only mode isn't in this slice yet,
-  the acceptable interim is to **decline to open** with the same message + a
-  Retry, rather than ever opening a second writer. Never silently proceed.
+  for editing on **{hostname}** (since {time}). Opening in read-only mode —
+  decisions, edits, exports and plan changes will be disabled in this window
+  until the other Mira closes."* — with **Open read-only** (→ §B.1) and
+  **Cancel**.
+- **No "Take over editing" button.** `acquire` already auto-takes-over stale
+  locks (`mtime` older than the 5-minute timeout in §A.2), so a stale holder
+  never reaches this dialog — the button has no path to fire. The auto-takeover
+  is silent except for a startup log line. *Originally drafted as conditional
+  on a stale holder; dropped 2026-06-17 because the conditional branch is
+  unreachable with the current `acquire` semantics, and Nelson confirmed the
+  silent path is the desired behaviour.*
+- Enter read-only mode (§B.1) when the user accepts. Cancel aborts launch.
+  Never silently proceed without one of these.
 
 ### A.5 Tests
 `tests/test_library_lock.py` (no Qt): fresh acquire succeeds; second acquire

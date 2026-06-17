@@ -614,6 +614,60 @@ def test_multi_select_picker_summary_reflects_selection(qapp):
     w.deleteLater()
 
 
+def test_dialog_routes_choose_button_to_picker(qapp, monkeypatch):
+    """End-to-end: adding a picker-mode dimension wires the facet's
+    Choose… click to :meth:`_open_facet_picker`. We stub the picker call
+    to record + skip the modal exec."""
+    # Inflate the camera inventory so camera_ids is in picker mode (> 12).
+    inv = CrossEventInventories.from_dict({
+        "camera_ids": [(f"cam{i}", 10) for i in range(15)],
+    })
+    d = NewCrossEventDcDialog(
+        inventories=inv, dc_probe=lambda _e, _f: 5)
+    calls = []
+    monkeypatch.setattr(
+        d, "_open_facet_picker", lambda key: calls.append(key))
+    d.add_filter_dimension("camera_ids")
+    facet = d._facets[0]
+    from mira.ui.pages.new_cross_event_dc_dialog import _MultiSelectFacet
+    assert isinstance(facet, _MultiSelectFacet)
+    assert facet.is_picker_mode()
+    facet._choose_btn.click()
+    assert calls == ["camera_ids"]
+    d.deleteLater()
+
+
+def test_open_facet_picker_writes_back_on_ok(qapp, monkeypatch):
+    """When the picker exits OK, the facet's selected set is updated."""
+    inv = CrossEventInventories.from_dict({
+        "camera_ids": [(f"cam{i}", 10) for i in range(15)],
+    })
+    d = NewCrossEventDcDialog(
+        inventories=inv, dc_probe=lambda _e, _f: 5)
+    d.add_filter_dimension("camera_ids")
+    facet = d._facets[0]
+
+    # Stub the FacetPickerDialog.exec to return Accepted + pre-populate
+    # selection.
+    from mira.ui.pages import new_cross_event_dc_dialog as mod
+    from PyQt6.QtWidgets import QDialog
+
+    class _StubPicker:
+        def __init__(self, **kwargs):
+            self._kw = kwargs
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def selected_values(self):
+            return ["cam3", "cam7"]
+
+    monkeypatch.setattr(mod, "FacetPickerDialog", _StubPicker)
+    d._open_facet_picker("camera_ids")
+    assert facet.value() == {"camera_ids": ["cam3", "cam7"]}
+    d.deleteLater()
+
+
 def test_multi_select_choose_button_emits_key(qapp):
     """The Choose… button fires :attr:`choose_requested` carrying the
     facet's filter key so the slice-5 picker can open over the right

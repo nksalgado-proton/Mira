@@ -56,6 +56,10 @@ from core import collection_resolver, cut_names
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import line_input, primary_button, ghost_button
 from mira.ui.i18n import tr
+from mira.ui.pages.facet_picker_dialog import (
+    FacetPickerDialog,
+    GearProfileSnapshot,
+)
 
 
 # spec/83 §3 — multi-select editor switches mode at this option count.
@@ -664,6 +668,7 @@ class NewCrossEventDcDialog(QDialog):
         dc_probe: Optional[Callable[[list, dict], int]] = None,
         existing: Optional[CrossEventDcInfo] = None,
         existing_tags: Sequence[str] = (),
+        gear: Optional[GearProfileSnapshot] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -672,6 +677,11 @@ class NewCrossEventDcDialog(QDialog):
         self._inventories = inventories
         self._dc_probe = dc_probe or (lambda _expr, _filters: 0)
         self._existing_tags = list(existing_tags)
+        # Gear snapshot drives the picker's main-vs-occasional split for
+        # camera / lens facets (spec/85 §5). ``None`` falls through to the
+        # count heuristic alone — tests + the event-scope dialog (slice 8)
+        # use that path.
+        self._gear: Optional[GearProfileSnapshot] = gear
         # ``_facets`` mirrors the order rows are added — tests walk it to
         # poke individual editors; the spec-32 ``_filters()`` aggregator
         # iterates it too.
@@ -931,6 +941,11 @@ class NewCrossEventDcDialog(QDialog):
         if dim is None:
             raise KeyError(f"unknown filter dimension: {dim_id!r}")
         facet = dim.factory()
+        # Picker-mode multi-selects (spec/83 §3, > threshold) route their
+        # Choose… click here so we can open the FacetPickerDialog over the
+        # right inventory + gear snapshot.
+        if isinstance(facet, _MultiSelectFacet) and facet.is_picker_mode():
+            facet.choose_requested.connect(self._open_facet_picker)
         row = _ActiveFilterRow(dim, facet, parent=self)
         row.remove_requested.connect(self.remove_filter_dimension)
         self._active_rows[dim_id] = row
@@ -958,6 +973,44 @@ class NewCrossEventDcDialog(QDialog):
     def active_dimension_ids(self) -> List[str]:
         """The currently-active dimensions in insertion order."""
         return list(self._active_rows.keys())
+
+    def _open_facet_picker(self, facet_key: str) -> None:
+        """Open the spec/83 §4 picker for a high-cardinality facet. Called
+        when the user clicks Choose… on a > threshold ``_MultiSelectFacet``;
+        on OK, writes the survivors back to the facet's selected set."""
+        row = self._active_rows.get(facet_key) if facet_key in self._dimensions \
+            else None
+        # The dimension id and the facet key happen to match for the four
+        # picker-bound dimensions (cameras / lenses / cities / countries)
+        # since each owns exactly one filter key. Lookup falls back to a
+        # walk for forward-compat.
+        if row is None:
+            for d_id, r in self._active_rows.items():
+                dim = self._dimensions.get(d_id)
+                if dim is not None and facet_key in dim.filter_keys:
+                    row = r
+                    break
+        if row is None:
+            return
+        facet = row.facet
+        if not isinstance(facet, _MultiSelectFacet):
+            return
+        dim = self._dimensions.get(row.dim_id())
+        label = dim.label if dim else facet_key
+        inventory = self._inventories.for_key(facet_key)
+        # Currently-selected values: round-trip through value() so we read
+        # the same encoded set the dialog will commit.
+        currently = facet.value().get(facet_key, [])
+        picker = FacetPickerDialog(
+            facet_key=facet_key,
+            facet_label=label,
+            inventory=inventory,
+            initially_selected=currently,
+            gear=self._gear,
+            parent=self,
+        )
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            facet.set_selected_values(picker.selected_values())
 
     def _register_facet(self, w: "_Facet") -> "_Facet":
         """Hook a freshly-built facet into the dialog: wire its ``changed``

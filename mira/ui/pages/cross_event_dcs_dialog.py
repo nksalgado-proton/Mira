@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 from core import collection_resolver, cut_names
 from mira.ui.design import ghost_button, primary_button
 from mira.ui.i18n import tr
+from mira.ui.pages.facet_picker_dialog import GearProfileSnapshot
 from mira.ui.pages.new_cross_event_dc_dialog import (
     CrossEventDcInfo,
     CrossEventInventories,
@@ -331,6 +332,7 @@ class CrossEventDcsDialog(QDialog):
             inventories=self._inventories,
             dc_probe=self._lg.dc_probe,
             existing_tags=tuple(d.tag for d in self._lg.dynamic_collections()),
+            gear=self._gear_snapshot(),
             parent=self,
         )
         dialog.saved.connect(self._create_from_info)
@@ -352,6 +354,7 @@ class CrossEventDcsDialog(QDialog):
             dc_probe=self._lg.dc_probe,
             existing=existing,
             existing_tags=other_tags,
+            gear=self._gear_snapshot(),
             parent=self,
         )
         dialog.saved.connect(lambda info: self._save_edit(dc, info))
@@ -430,6 +433,30 @@ class CrossEventDcsDialog(QDialog):
         not at dialog open. Today the dialog still iterates the catalogue
         at construction; slice 3 (two-tier shell) flips it to true lazy."""
         return CrossEventInventories(facet_inventory=self._lg.facet_inventory)
+
+    def _gear_snapshot(self) -> GearProfileSnapshot:
+        """Build a fresh :class:`GearProfileSnapshot` from the user-store at
+        dialog-open time (spec/85 §5). The slice-4 picker uses it to
+        partition main vs occasional for the camera and lens facets; non-
+        gear facets fall through to the count heuristic regardless."""
+        cameras_active: set = set()
+        cameras_occasional: set = set()
+        lenses_active: set = set()
+        lenses_occasional: set = set()
+        for row in self._lg.get_gear_profile():
+            if row.kind == "camera":
+                bucket = cameras_active if row.is_active else cameras_occasional
+            elif row.kind == "lens":
+                bucket = lenses_active if row.is_active else lenses_occasional
+            else:
+                continue
+            bucket.add(row.key)
+        return GearProfileSnapshot(
+            cameras_active=frozenset(cameras_active),
+            cameras_occasional=frozenset(cameras_occasional),
+            lenses_active=frozenset(lenses_active),
+            lenses_occasional=frozenset(lenses_occasional),
+        )
 
 
 __all__ = ["CrossEventDcsDialog"]

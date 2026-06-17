@@ -541,11 +541,6 @@ class MainWindow(QMainWindow):
             event_menu, tr("New event from existing &media…"),
             lambda: self._on_entry(ENTRY_CREATE_FROM_PAST),
             surface=self._SURFACE_EVENTS_LIST, shortcut="Ctrl+Shift+N")
-        event_menu.addSeparator()
-        self._add_menu_action(
-            event_menu, tr("&Restore from backup…"),
-            lambda: self._coming_next(tr("Restore from backup")),
-            surface=self._SURFACE_EVENTS_LIST)
         # Per-event entries.
         self._add_menu_action(
             event_menu, tr("Edit &info…"), self._open_edit_info,
@@ -559,6 +554,15 @@ class MainWindow(QMainWindow):
             event_menu, tr("&Back up event…"),
             lambda: self._coming_next(tr("Back up event")),
             surface=self._SURFACE_PER_EVENT)
+        # spec/82 §A.4 — manual restore (the trip-workflow "roll back
+        # to before yesterday's ingest" case). The corruption-driven
+        # auto-restore that already lives on event open (spec/79 §4)
+        # always picks the latest good snapshot; this entry lets the
+        # user pick an older one deliberately.
+        self._add_menu_action(
+            event_menu, tr("&Restore from backup…"),
+            self._open_restore_backup,
+            surface=self._SURFACE_PER_EVENT, modification=True)
         event_menu.addSeparator()
         # Close / Re-open is a label-swap on a single action.
         self._close_toggle_action = QAction(tr("&Close Event"), self)
@@ -1868,6 +1872,74 @@ class MainWindow(QMainWindow):
             ).exec()
             return False
         return True
+
+    def _open_restore_backup(self) -> None:
+        """spec/82 §A.4 — manual Restore from backup… for the current
+        event.
+
+        Shows the snapshot list with timestamp / reason / version (via
+        :func:`db_backup.list_snapshots`); the user picks one and
+        confirms. On accept, the dialog runs the restore + reports
+        the corrupt-original save path. Visible only on the per-event
+        surface, so ``_current_event_id`` is always set when this
+        runs.
+        """
+        from mira.ui.design.dialogs import MessageDialog
+        from mira.ui.pages.restore_backup_dialog import RestoreBackupDialog
+        event_id = self._current_event_id
+        if not event_id:
+            return
+        backups_dir = self.gateway.event_backups_dir(event_id)
+        entry = self.gateway.index.get(event_id)
+        if backups_dir is None or entry is None:
+            MessageDialog.error(
+                tr("Can't restore"),
+                tr(
+                    "Mira couldn't find the backups location for this "
+                    "event. Set the library's photos folder first."
+                ),
+                parent=self,
+            ).exec()
+            return
+        root = self.gateway.index.resolve_root(
+            entry, self.gateway.photos_base_path())
+        if root is None:
+            MessageDialog.error(
+                tr("Can't restore"),
+                tr(
+                    "Mira couldn't resolve this event's folder. "
+                    "Check the library's photos path."
+                ),
+                parent=self,
+            ).exec()
+            return
+        dlg = RestoreBackupDialog(
+            event_name=str(entry.get("name") or event_id),
+            backups_dir=backups_dir,
+            db_path=root / "event.db",
+            parent=self,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            saved = dlg.restored_corrupt_path()
+            saved_line = ""
+            if saved is not None:
+                saved_line = tr(
+                    "\n\nThe pre-restore copy is saved at:\n{path}"
+                ).replace("{path}", str(saved))
+            MessageDialog.success(
+                tr("Restore complete"),
+                tr(
+                    "{event}'s database is restored from the chosen "
+                    "snapshot.{saved}"
+                ).replace("{event}", str(entry.get("name") or event_id))
+                 .replace("{saved}", saved_line),
+                parent=self,
+            ).exec()
+            # Force a refresh: the on-disk db is now the snapshot's
+            # bytes; everything the UI has cached for this event is
+            # potentially stale.
+            self.gateway.refresh_index_entry(event_id)
+            self._refresh_menu_state()
 
     def _open_event_cuts_list(self, event_id: str) -> bool:
         """Closed event body click (spec/64 §2.4) → land on the Cuts list.
@@ -3756,6 +3828,17 @@ class MainWindow(QMainWindow):
         # ingest (spec/58 §1 — media sits in the system long before
         # Edit); quiet, off-thread, idempotent.
         self.gateway.refresh_index_entry(event_id)
+        # spec/82 §A.1 — per-day-add milestone snapshot. The trip
+        # workflow is "add a day, decide on it; add the next day,
+        # decide on it" — every added day is the natural rollback
+        # point. Snapshot failures are logged + ignored (the gateway
+        # helper never raises) so the import doesn't fail because
+        # the backup volume hiccuped.
+        snap = self.gateway.snapshot_event(event_id, reason="milestone")
+        if snap is not None:
+            log.info(
+                "spec/82 §A.1: per-day-add milestone snapshot saved at %s",
+                snap)
         self._spawn_classify_pass(event_id)
         warnings_line = ""
         if ingest_result.warnings:

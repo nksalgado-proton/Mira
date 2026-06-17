@@ -906,6 +906,51 @@ class Gateway:
             return None
         return base / BACKUPS_DIR_NAME / event_id
 
+    def snapshot_event(
+        self,
+        event_id: str,
+        *,
+        reason: str = "milestone",
+    ) -> Optional[Path]:
+        """Take a Part-A safety snapshot of an event's ``event.db``
+        (spec/82 §A). Returns the snapshot's path, or ``None`` when
+        the event has no resolvable root / db / backups dir. Failures
+        are logged + ``None`` — never raised — so a surrounding
+        action (post-ingest milestone trigger, periodic timer) is
+        never interrupted by a backup problem.
+
+        ``reason`` is the spec/82 §A.2 class
+        (``"milestone"`` / ``"periodic"``); milestone is the default
+        because every fixed trigger site (close-if-dirty,
+        pre-risky-op, per-day-add, manual) is a milestone — only the
+        slice-3 timer passes ``"periodic"``.
+        """
+        from core import db_backup
+        entry = self.index.get(event_id)
+        if entry is None:
+            return None
+        root = self.index.resolve_root(entry, self.photos_base_path())
+        if root is None:
+            return None
+        db_path = root / "event.db"
+        if not db_path.exists():
+            return None
+        backups_dir = self.event_backups_dir(event_id)
+        if backups_dir is None:
+            return None
+        try:
+            return db_backup.snapshot(
+                db_path, backups_dir,
+                reason=reason,
+                app_version=_live_app_version(),
+            )
+        except Exception as exc:                       # noqa: BLE001
+            log.warning(
+                "snapshot_event: snapshot FAILED for %s: %s",
+                event_id, exc,
+            )
+            return None
+
     # ----- materialise (restore from backup, charter §4 step 5) ---------- #
 
     def materialise_event(

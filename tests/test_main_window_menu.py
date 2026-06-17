@@ -163,10 +163,12 @@ def test_event_menu_events_list_has_creation_entries(main_window):
     labels = _action_labels("event", main_window)
     assert "New event" in labels
     assert "New event from existing media…" in labels
-    assert "Restore from backup…" in labels
     # Per-event entries hidden.
     assert "Delete event" not in labels
     assert "Stats…" not in labels
+    # spec/82 §A.4 — Restore from backup is per-event (needs a current
+    # event in context); not on the events list.
+    assert "Restore from backup…" not in labels
 
 
 def test_event_menu_per_event_has_lifecycle_entries(main_window):
@@ -177,6 +179,8 @@ def test_event_menu_per_event_has_lifecycle_entries(main_window):
     assert "Edit info…" in labels
     assert "Stats…" in labels
     assert "Back up event…" in labels
+    # spec/82 §A.4 — manual restore lives on the per-event surface.
+    assert "Restore from backup…" in labels
     assert "Close Event" in labels
     assert "Delete event" in labels
     # Cross-event creation hidden.

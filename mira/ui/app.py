@@ -343,6 +343,21 @@ def main(argv: list[str] | None = None) -> int:
     _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
     _LIBRARY_LOCK_HEARTBEAT.start()
 
+    # spec/76 §A.6 — release on clean exit. ``aboutToQuit`` fires
+    # before the event loop returns regardless of how the quit was
+    # triggered (window close, Quit menu, ``QApplication.quit()``), so
+    # this covers every normal-exit path. Crash recovery still rides
+    # the 5-minute staleness takeover in ``core.library_lock`` —
+    # ``release`` only runs when Qt gets to shut down cleanly.
+    # Idempotent: a second call after ``app.exec()`` returns finds the
+    # file already gone and the timer already stopped.
+    def _teardown_library_lock():
+        if _LIBRARY_LOCK_HEARTBEAT is not None:
+            _LIBRARY_LOCK_HEARTBEAT.stop()
+        if library_lock.release(library_root):
+            log.info("Library writer lock released at %s", library_root)
+    app.aboutToQuit.connect(_teardown_library_lock)
+
     theme = "dark" if force_dark else settings.theme
     if theme not in ("light", "dark"):
         log.warning("Unknown theme %r in settings — falling back to light", theme)
@@ -371,6 +386,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Event loop starting")
     code = app.exec()
     log.info("Event loop ended (exit code %d)", code)
+    # Belt-and-suspenders: ``aboutToQuit`` already released the lock
+    # in-event-loop, but if anything between ``acquire`` and ``exec()``
+    # raises (no event loop to fire ``aboutToQuit``) we still need to
+    # tear the lock down. Both calls are idempotent.
     if _LIBRARY_LOCK_HEARTBEAT is not None:
         _LIBRARY_LOCK_HEARTBEAT.stop()
     if library_lock.release(library_root):

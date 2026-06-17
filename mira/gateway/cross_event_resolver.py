@@ -183,6 +183,48 @@ def _filter_clauses(filters: Mapping[str, Any]) -> Tuple[List[str], list]:
         clauses.append(f"day_city IN ({_qs(len(cities))})")
         params.extend(cities)
 
+    # ---- event-level (spec/86) -------------------------------------------- #
+    # Pruning at the event predicate is the spec/86 §1 efficiency win: a
+    # ``event_type IN ('trip')`` clause discards every item from non-trip
+    # events before the rest of the filter chain runs.
+    event_types = _list_of_strings(filters.get("event_types"))
+    if event_types:
+        clauses.append(f"event_type IN ({_qs(len(event_types))})")
+        params.extend(event_types)
+    event_subtypes = _list_of_strings(filters.get("event_subtypes"))
+    if event_subtypes:
+        clauses.append(f"event_subtype IN ({_qs(len(event_subtypes))})")
+        params.extend(event_subtypes)
+    experience_types = _list_of_strings(filters.get("experience_types"))
+    if experience_types:
+        clauses.append(
+            f"experience_type IN ({_qs(len(experience_types))})")
+        params.extend(experience_types)
+    # Participants — JSON array; any-of overlap (spec/86 §8 lean). The
+    # EXISTS subquery uses json_each to expand the row's participants into
+    # rows, then matches against the selected set. NULL / '[]' participants
+    # produce zero rows, so they correctly fail the EXISTS and stay out.
+    participants = _list_of_strings(filters.get("participants"))
+    if participants:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(participants) AS pe "
+            f"WHERE pe.value IN ({_qs(len(participants))}))")
+        params.extend(participants)
+    # Event date range — overlap semantics (spec/86 §5): the requested
+    # window intersects the event's [event_start, event_end] span. Either
+    # bound can be omitted ("everything before X" / "everything after Y").
+    # Undated events have NULL event_start / event_end; the comparison
+    # against NULL is NULL/false, so they correctly fail the overlap (no
+    # date information to bound on).
+    event_from = _opt_str(filters.get("event_from"))
+    event_to = _opt_str(filters.get("event_to"))
+    if event_from is not None:
+        clauses.append("event_end >= ?")
+        params.append(event_from)
+    if event_to is not None:
+        clauses.append("event_start <= ?")
+        params.append(event_to)
+
     return clauses, params
 
 

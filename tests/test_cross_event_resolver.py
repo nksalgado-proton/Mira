@@ -577,3 +577,238 @@ def test_cut_operand_returns_empty_until_item_4(tmp_path):
          ["-", {"kind": "cut", "id": "future-cut"}]])
     assert {cev.unpack_key(k) for k in keys} == {("A", "a4"), ("B", "b1")}
     store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/86 — event-level qualifier filters
+# --------------------------------------------------------------------------- #
+
+
+def _seed_event_filter_universe(store: UserStore) -> None:
+    """Three events spanning every event-level dimension. Each event has
+    one captured row + every spec/86 qualifier set explicitly so the test
+    asserts what the predicate matches, not what happens to be default."""
+    rows = [
+        # Trip A — Costa Rica wildlife trip, 2024
+        um.GlobalItem(
+            event_uuid="A", item_id="a1", synced_at=NOW,
+            kind="photo", classification="macro",
+            event_type="trip", event_subtype="wildlife trip",
+            experience_type="expedition_discovery",
+            participants='["Solo","With Friends"]',
+            event_start="2024-08-10", event_end="2024-08-15",
+            has_export=True,
+        ),
+        um.GlobalItem(
+            event_uuid="A", item_id="a2", synced_at=NOW,
+            kind="photo", classification="wildlife",
+            event_type="trip", event_subtype="wildlife trip",
+            experience_type="expedition_discovery",
+            participants='["Solo","With Friends"]',
+            event_start="2024-08-10", event_end="2024-08-15",
+            has_export=True,
+        ),
+        # Occasion B — wedding, 2025
+        um.GlobalItem(
+            event_uuid="B", item_id="b1", synced_at=NOW,
+            kind="photo", classification="portrait",
+            event_type="occasion", event_subtype="wedding",
+            experience_type="milestones_traditions",
+            participants='["With Family","With Kids"]',
+            event_start="2025-05-12", event_end="2025-05-13",
+            has_export=True,
+        ),
+        # Trip C — city break, 2020, mid date for overlap tests
+        um.GlobalItem(
+            event_uuid="C", item_id="c1", synced_at=NOW,
+            kind="photo", classification="street",
+            event_type="trip", event_subtype="city break",
+            experience_type="urban_culture",
+            participants='["Couple"]',
+            event_start="2020-03-01", event_end="2020-03-08",
+            has_export=True,
+        ),
+        # Project D — undated, used to confirm overlap silently skips
+        # events that have no date information.
+        um.GlobalItem(
+            event_uuid="D", item_id="d1", synced_at=NOW,
+            kind="photo", classification="macro",
+            event_type="project", event_subtype=None,
+            experience_type=None,
+            participants='[]',
+            event_start=None, event_end=None,
+            has_export=True,
+        ),
+    ]
+    for r in rows:
+        store.upsert(r)
+
+
+def test_event_types_filter_prunes_whole_events(tmp_path):
+    """spec/86 §1 efficiency win: an event_type IN ('trip') discards every
+    item from non-trip events before the rest of the chain runs."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_types": ["trip"]})
+    # Trip A (a1+a2) + Trip C (c1) survive; B (occasion) + D (project)
+    # are pruned at the event predicate.
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("C", "c1"),
+    }
+    store.close()
+
+
+def test_event_subtypes_filter_narrows_within_a_type(tmp_path):
+    """A subtype filter complements an event_type narrowing — wildlife
+    trips only."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_subtypes": ["wildlife trip"]})
+    assert {cev.unpack_key(k) for k in keys} == {("A", "a1"), ("A", "a2")}
+    store.close()
+
+
+def test_experience_types_filter_multi_select(tmp_path):
+    """Scope is multi (spec/86 §8): both expedition_discovery and
+    urban_culture pulled in one query."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"experience_types":
+                 ["expedition_discovery", "urban_culture"]})
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("C", "c1"),
+    }
+    store.close()
+
+
+def test_participants_filter_any_of_overlap(tmp_path):
+    """spec/86 §8 lean — participants match is any-of: an event with
+    [Solo, With Friends] matches a filter for [Solo] because the JSON
+    array contains Solo."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"participants": ["Solo"]})
+    assert {cev.unpack_key(k) for k in keys} == {("A", "a1"), ("A", "a2")}
+    store.close()
+
+
+def test_participants_filter_overlaps_multiple_categories(tmp_path):
+    """Selecting two categories matches any item whose participants
+    overlap with EITHER (any-of). Trip A (Solo + Friends) + Occasion B
+    (Family + Kids) both match {With Friends, With Kids}."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"participants": ["With Friends", "With Kids"]})
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("B", "b1"),
+    }
+    store.close()
+
+
+def test_participants_filter_skips_null_and_empty(tmp_path):
+    """Items with NULL or '[]' participants don't match any participant
+    filter — the EXISTS(json_each) silently returns false."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"participants":
+                 ["Solo", "With Family", "With Kids",
+                  "With Friends", "Couple"]})
+    # Every dated event has SOMETHING; only project D ('[]') stays out.
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("B", "b1"), ("C", "c1"),
+    }
+    store.close()
+
+
+def test_event_date_range_overlap_both_bounds(tmp_path):
+    """spec/86 §5 overlap: an event qualifies if it intersects the
+    requested window. A 2024–2025 window catches Trip A (Aug 2024) and
+    Occasion B (May 2025) but not Trip C (March 2020) or undated D."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_from": "2024-01-01", "event_to": "2025-12-31"})
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("B", "b1"),
+    }
+    store.close()
+
+
+def test_event_date_range_overlap_only_lower_bound(tmp_path):
+    """``event_from`` alone means "events ending on or after this date"."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_from": "2024-01-01"})
+    # Trip A (2024-08) + Occasion B (2025-05); Trip C (2020) + undated D out.
+    assert {cev.unpack_key(k) for k in keys} == {
+        ("A", "a1"), ("A", "a2"), ("B", "b1"),
+    }
+    store.close()
+
+
+def test_event_date_range_overlap_only_upper_bound(tmp_path):
+    """``event_to`` alone means "events starting on or before this date"."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_to": "2021-12-31"})
+    # Trip C only (March 2020); A + B start after 2021; undated D out.
+    assert {cev.unpack_key(k) for k in keys} == {("C", "c1")}
+    store.close()
+
+
+def test_event_date_overlap_handles_straddling_boundary(tmp_path):
+    """A trip that straddles the boundary still matches — overlap, not
+    containment. Trip A runs Aug 10–15; a window of Aug 14 onward catches
+    it via event_end >= event_from."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_from": "2024-08-14", "event_to": "2024-12-31"})
+    assert {cev.unpack_key(k) for k in keys} == {("A", "a1"), ("A", "a2")}
+    store.close()
+
+
+def test_event_date_overlap_skips_undated_events(tmp_path):
+    """Undated events (NULL event_start / event_end) never match an
+    event-date filter — NULL comparisons are false, which is the right
+    behaviour: no information to bound on."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_from": "1900-01-01", "event_to": "2100-12-31"})
+    # Wide window catches every DATED event; undated D stays out.
+    keys_set = {cev.unpack_key(k) for k in keys}
+    assert ("D", "d1") not in keys_set
+    assert ("A", "a1") in keys_set and ("C", "c1") in keys_set
+    store.close()
+
+
+def test_event_filter_composes_with_item_filter(tmp_path):
+    """spec/86 — event-level + item-level predicates AND together. Trip A
+    (event_type=trip) ∩ macro (item classification) = a1 only."""
+    store = _open_user_store(tmp_path)
+    _seed_event_filter_universe(store)
+    keys = cev.resolve_cross_event(
+        store, [["+", cr.BASE_EXPORTED]],
+        filters={"event_types": ["trip"], "styles": ["macro"]})
+    assert {cev.unpack_key(k) for k in keys} == {("A", "a1")}
+    store.close()

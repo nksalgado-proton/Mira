@@ -53,8 +53,19 @@ from PyQt6.QtWidgets import (
 )
 
 from core import collection_resolver, cut_names
+from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import line_input, primary_button, ghost_button
 from mira.ui.i18n import tr
+
+
+# spec/83 §3 — multi-select editor switches mode at this option count.
+# Below it, every option is a checkbox laid out in a wrapping
+# ``FlowLayout`` (Style, color label, country in small collections render
+# this way). Above it, the editor collapses to a summary + Choose… button
+# that opens the spec/83 §4 ``FacetPickerDialog`` (slice 5). Tunable as a
+# build-time constant; the open-questions list in the brief asks Nelson
+# to confirm the value.
+INLINE_PICKER_THRESHOLD = 12
 
 
 # --------------------------------------------------------------------------- #
@@ -132,37 +143,125 @@ class _Facet(QWidget):
 
 
 class _MultiSelectFacet(_Facet):
-    """A row of pill-style checkboxes (multi-select). ``key`` is the
-    ``filters_json`` key (e.g. ``"styles"``, ``"camera_ids"``). Empty
-    selection means "no narrowing" — the value is dropped from the
+    """Adaptive multi-select editor (spec/83 §3).
+
+    Mode is decided by the vocabulary size at construction:
+
+    * **≤ :data:`INLINE_PICKER_THRESHOLD` options** → one checkbox per
+      option laid out in a wrapping :class:`FlowLayout`. Small facets
+      (style, color label, country in modest collections) wrap to the
+      next line instead of forcing the dialog wide — the spec/05 §4c
+      "surfaces reflow down to the 1280×720 floor" rule.
+    * **above the threshold** → a summary line plus a Choose… button.
+      The button emits :attr:`choose_requested` carrying the filter
+      key so the slice-5 :class:`FacetPickerDialog` can open. Selected
+      values live in :attr:`_selected` — :meth:`set_selected_values`
+      is the cross-cutting setter used by both the picker and tests.
+
+    ``key`` is the ``filters_json`` key (e.g. ``"styles"``,
+    ``"camera_ids"``). Empty selection drops the key from the value
     fragment (forward-compat-friendly)."""
+
+    #: Emitted by the > threshold editor when the user clicks Choose…
+    #: Slice 5 connects the slot.
+    choose_requested = pyqtSignal(str)
 
     def __init__(self, key: str, options: Sequence[str],
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._key = key
+        self._options: List[str] = list(options)
+        self._selected: List[str] = []
+        # Mode-specific widgets — only one is populated.
         self._boxes: List[QCheckBox] = []
+        self._summary_label: Optional[QLabel] = None
+        self._choose_btn: Optional[QPushButton] = None
+
+        if len(self._options) <= INLINE_PICKER_THRESHOLD:
+            self._build_inline()
+        else:
+            self._build_picker_shell()
+
+    # ----- mode A: inline FlowLayout of checkboxes ---------------------- #
+
+    def _build_inline(self) -> None:
+        layout = FlowLayout(self, margin=0, spacing=8)
+        for opt in self._options:
+            cb = QCheckBox(opt, self)
+            cb.toggled.connect(self._on_inline_toggled)
+            self._boxes.append(cb)
+            layout.addWidget(cb)
+
+    def _on_inline_toggled(self, _checked: bool = False) -> None:
+        self._selected = [cb.text() for cb in self._boxes if cb.isChecked()]
+        self.changed.emit()
+
+    # ----- mode B: summary + Choose… picker shell ----------------------- #
+
+    def _build_picker_shell(self) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        for opt in options:
-            cb = QCheckBox(opt, self)
-            cb.toggled.connect(lambda _=False: self.changed.emit())
-            self._boxes.append(cb)
-            layout.addWidget(cb)
-        layout.addStretch()
+        self._summary_label = QLabel("", self)
+        self._summary_label.setObjectName("CrossEventDcFacetSummary")
+        self._summary_label.setWordWrap(True)
+        layout.addWidget(self._summary_label, 1)
+        self._choose_btn = ghost_button(tr("Choose…"))
+        self._choose_btn.setObjectName("CrossEventDcFacetChoose")
+        self._choose_btn.setToolTip(tr(
+            "Open the {n}-item picker").format(n=len(self._options)))
+        self._choose_btn.clicked.connect(
+            lambda: self.choose_requested.emit(self._key))
+        layout.addWidget(self._choose_btn)
+        self._refresh_summary()
+
+    def _refresh_summary(self) -> None:
+        if self._summary_label is None:
+            return
+        if not self._selected:
+            text = tr("No selection — {n} options").format(
+                n=len(self._options))
+        elif len(self._selected) <= 3:
+            text = tr("{n} selected: {labels}").format(
+                n=len(self._selected),
+                labels=", ".join(self._selected))
+        else:
+            text = tr("{n} selected").format(n=len(self._selected))
+        self._summary_label.setText(text)
+
+    # ----- _Facet interface --------------------------------------------- #
 
     def value(self) -> Dict[str, Any]:
-        picked = [cb.text() for cb in self._boxes if cb.isChecked()]
-        return {self._key: picked} if picked else {}
+        return {self._key: list(self._selected)} if self._selected else {}
 
     def set_value(self, fragment: Dict[str, Any]) -> None:
-        picked = set(fragment.get(self._key, []) or [])
-        for cb in self._boxes:
-            cb.blockSignals(True)
-            cb.setChecked(cb.text() in picked)
-            cb.blockSignals(False)
+        picked = list(fragment.get(self._key, []) or [])
+        self.set_selected_values(picked)
+
+    def set_selected_values(self, values: Sequence[str]) -> None:
+        """Replace the selected set (both modes). The picker calls this
+        when it commits; rehydrate calls it through :meth:`set_value`.
+        Preserves the catalogue's order so deterministic round-trips
+        survive."""
+        target = set(values)
+        self._selected = [opt for opt in self._options if opt in target]
+        if self._boxes:
+            for cb in self._boxes:
+                cb.blockSignals(True)
+                cb.setChecked(cb.text() in target)
+                cb.blockSignals(False)
+        self._refresh_summary()
         self.changed.emit()
+
+    def options(self) -> Sequence[str]:
+        """The full vocabulary, in catalogue order. The picker (slice 5)
+        reads this to render its row list without re-querying."""
+        return tuple(self._options)
+
+    def is_picker_mode(self) -> bool:
+        """``True`` when the editor uses the summary + Choose… shell
+        (above the threshold), ``False`` for the inline FlowLayout."""
+        return self._choose_btn is not None
 
 
 class _SingleSelectFacet(_Facet):

@@ -558,6 +558,130 @@ def test_dimension_catalogue_covers_every_spec32_filter_key(qapp):
     d.deleteLater()
 
 
+# --------------------------------------------------------------------------- #
+# Adaptive multi-select editor (spec/83 §3) — slice 4
+# --------------------------------------------------------------------------- #
+
+
+def test_multi_select_below_threshold_uses_inline_flow(qapp):
+    """spec/83 §3 — at or below the threshold the editor uses an inline
+    :class:`FlowLayout` with one checkbox per option (wraps, never
+    overflows the row)."""
+    from mira.ui.base.flow_layout import FlowLayout
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    options = [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD)]
+    w = _MultiSelectFacet("k", options)
+    assert isinstance(w.layout(), FlowLayout)
+    assert len(w._boxes) == INLINE_PICKER_THRESHOLD
+    assert not w.is_picker_mode()
+    w.deleteLater()
+
+
+def test_multi_select_above_threshold_uses_picker_shell(qapp):
+    """Above the threshold the editor collapses to a summary + Choose…
+    button — no checkboxes are built (the picker materialises them)."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    options = [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD + 1)]
+    w = _MultiSelectFacet("k", options)
+    assert w.is_picker_mode()
+    assert w._boxes == []
+    assert w._summary_label is not None
+    assert w._choose_btn is not None
+    w.deleteLater()
+
+
+def test_multi_select_picker_summary_reflects_selection(qapp):
+    """The summary line shows '0 selection — N options' empty, named
+    values for 1–3 selected, then a numeric collapse above that."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    options = [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD + 5)]
+    w = _MultiSelectFacet("k", options)
+    # Empty.
+    assert str(INLINE_PICKER_THRESHOLD + 5) in w._summary_label.text()
+    # 2 selected → names listed.
+    w.set_selected_values(["opt1", "opt2"])
+    assert "opt1" in w._summary_label.text()
+    assert "opt2" in w._summary_label.text()
+    # 5 selected → numeric collapse.
+    w.set_selected_values(["opt1", "opt2", "opt3", "opt4", "opt5"])
+    assert "5" in w._summary_label.text()
+    w.deleteLater()
+
+
+def test_multi_select_choose_button_emits_key(qapp):
+    """The Choose… button fires :attr:`choose_requested` carrying the
+    facet's filter key so the slice-5 picker can open over the right
+    inventory."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    options = [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD + 1)]
+    w = _MultiSelectFacet("camera_ids", options)
+    fired = []
+    w.choose_requested.connect(lambda k: fired.append(k))
+    w._choose_btn.click()
+    assert fired == ["camera_ids"]
+    w.deleteLater()
+
+
+def test_multi_select_set_selected_values_works_in_both_modes(qapp):
+    """set_selected_values is the cross-cutting setter — drives the inline
+    checkboxes when present and the summary line otherwise."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    # Inline mode: checkboxes follow.
+    short = [f"opt{i}" for i in range(5)]
+    w_in = _MultiSelectFacet("k", short)
+    w_in.set_selected_values(["opt2", "opt4"])
+    checked = [cb.text() for cb in w_in._boxes if cb.isChecked()]
+    assert set(checked) == {"opt2", "opt4"}
+    assert w_in.value() == {"k": ["opt2", "opt4"]}
+    w_in.deleteLater()
+    # Picker mode: summary follows.
+    long_ = [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD + 3)]
+    w_out = _MultiSelectFacet("k", long_)
+    w_out.set_selected_values(["opt7"])
+    assert "opt7" in w_out._summary_label.text()
+    assert w_out.value() == {"k": ["opt7"]}
+    w_out.deleteLater()
+
+
+def test_multi_select_picker_round_trips_through_set_value(qapp):
+    """rehydrate uses :meth:`_Facet.set_value` — round-trip
+    {key: [...]} fragments cleanly across the > threshold editor too."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    options = [f"camera_{i}" for i in range(INLINE_PICKER_THRESHOLD + 1)]
+    w = _MultiSelectFacet("camera_ids", options)
+    w.set_value({"camera_ids": ["camera_3", "camera_7"]})
+    assert w.value() == {"camera_ids": ["camera_3", "camera_7"]}
+    w.deleteLater()
+
+
+def test_multi_select_threshold_is_inclusive(qapp):
+    """Exactly threshold options is still INLINE — the > comparison
+    excludes equality so 12 options render inline, 13 collapse."""
+    from mira.ui.pages.new_cross_event_dc_dialog import (
+        INLINE_PICKER_THRESHOLD, _MultiSelectFacet,
+    )
+    at = _MultiSelectFacet("k",
+                           [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD)])
+    over = _MultiSelectFacet("k",
+                             [f"opt{i}" for i in range(INLINE_PICKER_THRESHOLD + 1)])
+    assert not at.is_picker_mode()
+    assert over.is_picker_mode()
+    at.deleteLater()
+    over.deleteLater()
+
+
 def test_add_menu_disables_already_active_dimension(qapp):
     """spec/83 §2: adding the same dimension twice makes no sense — the
     Add-filter menu disables entries whose dimension is already active."""

@@ -140,37 +140,66 @@ class EventGateway:
         )
 
     def close(self) -> None:
+        # Did this session write to event.db? Both the spec/79 §7.2
+        # backup snapshot AND the spec/81 Phase 2 cross-event sync hook
+        # gate on this — a read-only open (e.g. the events dashboard
+        # walking each card to read trip_days / day_tree) leaves the
+        # event.db identical to its on-disk state, so neither a fresh
+        # snapshot nor a re-projection of its slice into
+        # ``mira.db.global_items`` adds any information. Skipping them
+        # cuts a 10-event dashboard refresh from 10 sync log lines +
+        # 10 re-projections to zero.
+        #
+        # The except catches both ``AttributeError`` (Python store
+        # stubs in unit tests that don't carry a real ``conn``) and
+        # ``sqlite3.ProgrammingError`` (a second ``close()`` after the
+        # first already shut the connection — many tests close eg in
+        # the test body and again in fixture teardown; close() must
+        # stay idempotent).
+        try:
+            dirty = self.store.conn.total_changes > self._changes_at_open
+        except (AttributeError, sqlite3.ProgrammingError):
+            dirty = False
         # spec/79 §7.2 — snapshot before close-if-dirty. Runs while
         # the source connection is still open (the online backup API
-        # needs both sides) and only when this session wrote at least
-        # one row. Snapshot failure is logged but never blocks close
-        # — a stuck close would be worse than a missed snapshot.
+        # needs both sides). Snapshot failure is logged but never
+        # blocks close — a stuck close would be worse than a missed
+        # snapshot.
         if (
-            self._backups_dir is not None
+            dirty
+            and self._backups_dir is not None
             and self._db_path is not None
             and self._db_path.exists()
         ):
             try:
-                dirty = self.store.conn.total_changes > self._changes_at_open
-            except AttributeError:
-                dirty = False
-            if dirty:
-                try:
-                    from core import db_backup
-                    db_backup.snapshot(
-                        self._db_path,
-                        self._backups_dir,
-                        app_version=self._app_version,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(
-                        "db_backup: snapshot on close failed for %s: %s",
-                        self._db_path, exc,
-                    )
+                from core import db_backup
+                db_backup.snapshot(
+                    self._db_path,
+                    self._backups_dir,
+                    app_version=self._app_version,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "db_backup: snapshot on close failed for %s: %s",
+                    self._db_path, exc,
+                )
         # spec/81 Phase 2 Item 1 — cross-event projection sync hook.
-        # Runs BEFORE store.close() so the hook sees a live connection.
+        # Same dirty gate: a read-only open never changes what would
+        # be projected, so re-running ``LibraryGateway.sync_event``
+        # writes identical rows to ``mira.db.global_items``. Runs
+        # BEFORE store.close() so the hook sees a live connection.
         # Failure is logged but never blocks close.
-        if self._on_close is not None:
+        #
+        # Caveat (spec/81 Phase 2 + v3→v4 schema migration): the
+        # ``export_relpath`` column lands NULL after migration and
+        # only gets populated by a sync. With this gate, a freshly
+        # migrated event stays NULL until the user edits it; the
+        # cross-event commit path falls back to a per-event fanout
+        # for un-synced rows so correctness holds — only performance
+        # degrades until edits naturally re-sync, or until
+        # :meth:`Gateway.reconcile_global_items` is wired into the
+        # startup catchup.
+        if dirty and self._on_close is not None:
             try:
                 self._on_close(self)
             except Exception as exc:                       # noqa: BLE001

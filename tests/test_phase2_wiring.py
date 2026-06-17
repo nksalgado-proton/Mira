@@ -42,9 +42,20 @@ def _bare_event_store(tmp_path, *, eid="evt") -> EventStore:
     return store
 
 
-def test_event_gateway_close_invokes_on_close(tmp_path):
+def _mark_dirty(eg: EventGateway) -> None:
+    """Force the session's dirty bit by writing a no-op UPDATE that
+    still advances ``connection.total_changes``. The on_close sync
+    hook + the snapshot are both gated on ``total_changes >
+    _changes_at_open``, so tests covering the hook firing need an
+    in-session write."""
+    eg.store.conn.execute(
+        "UPDATE event SET updated_at = updated_at WHERE id = 1")
+
+
+def test_event_gateway_close_invokes_on_close_when_dirty(tmp_path):
     """The on_close callable fires once on close, BEFORE the store is
-    closed — the hook sees a live connection."""
+    closed — the hook sees a live connection. Dirty-gated: a session
+    that wrote something gets its hook called."""
     store = _bare_event_store(tmp_path)
     fired = []
 
@@ -54,20 +65,40 @@ def test_event_gateway_close_invokes_on_close(tmp_path):
         fired.append(rows[0]["name"])
 
     eg = EventGateway(store, now=lambda: NOW, on_close=_hook)
+    _mark_dirty(eg)
     eg.close()
     assert fired == ["Test"]
+
+
+def test_event_gateway_close_skips_on_close_when_clean(tmp_path):
+    """A read-only open (no writes via the session) → on_close hook
+    does NOT fire. The cross-event projection is already correct for
+    the on-disk state; re-projecting would write identical rows. This
+    is the fix that quietens the events-dashboard log noise — every
+    card-data open + close was firing sync_event for no benefit."""
+    store = _bare_event_store(tmp_path)
+    fired = []
+
+    def _hook(_eg):
+        fired.append(True)
+
+    eg = EventGateway(store, now=lambda: NOW, on_close=_hook)
+    # No mutator called → total_changes unchanged → dirty=False.
+    eg.close()
+    assert fired == []
 
 
 def test_event_gateway_close_hook_failure_does_not_block_close(tmp_path):
     """A hook that raises does not propagate — close still succeeds, the
     store still closes (charter: a stuck close is worse than a missed
-    sync)."""
+    sync). Mark dirty so the hook actually runs."""
     store = _bare_event_store(tmp_path)
 
     def _angry(_eg):
         raise RuntimeError("nope")
 
     eg = EventGateway(store, now=lambda: NOW, on_close=_angry)
+    _mark_dirty(eg)
     eg.close()                                         # should not raise
     # The store was actually closed.
     import sqlite3
@@ -76,7 +107,8 @@ def test_event_gateway_close_hook_failure_does_not_block_close(tmp_path):
 
 
 def test_event_gateway_close_without_hook_works_unchanged(tmp_path):
-    """No hook → no behaviour change (legacy paths)."""
+    """No hook → no behaviour change (legacy paths). Dirty or clean,
+    same outcome — the store closes."""
     store = _bare_event_store(tmp_path)
     eg = EventGateway(store, now=lambda: NOW)
     eg.close()
@@ -165,13 +197,16 @@ def _register_event(gw, photos_base: Path, root: Path,
 
 def test_open_event_installs_sync_hook(tmp_path):
     """``open_event`` builds an EventGateway whose close re-projects the
-    event's items into ``global_items``."""
+    event's items into ``global_items`` — when the session was dirty.
+    A read-only open skips the projection (see the dirty-gate test
+    below)."""
     gw, photos_base = _make_umbrella(tmp_path)
     root = _seed_event(photos_base, name="Test event", eid="evt-1")
     _register_event(gw, photos_base, root, eid="evt-1", name="Test event")
 
-    # Open + close.
+    # Open + write + close.
     eg = gw.open_event("evt-1")
+    _mark_dirty(eg)
     eg.close()
 
     # global_items was populated by the close hook.
@@ -182,9 +217,30 @@ def test_open_event_installs_sync_hook(tmp_path):
     gw.close()
 
 
+def test_open_event_read_only_session_skips_sync(tmp_path):
+    """A read-only open (events-dashboard card-data walk) does NOT
+    fire sync_event on close — quietens the per-event sync log lines
+    the dashboard was emitting on every refresh."""
+    gw, photos_base = _make_umbrella(tmp_path)
+    root = _seed_event(photos_base, name="Quiet", eid="evt-quiet")
+    _register_event(gw, photos_base, root, eid="evt-quiet", name="Quiet")
+
+    eg = gw.open_event("evt-quiet")
+    # Pure reads — no _mark_dirty().
+    _ = eg.trip_days()
+    _ = eg.day_tree()
+    eg.close()
+
+    # Sync never ran — global_items has no rows for this event.
+    rows = gw.user_store.query_by(um.GlobalItem, event_uuid="evt-quiet")
+    assert rows == []
+    gw.close()
+
+
 def test_open_event_sync_hook_handles_missing_event_row(tmp_path):
     """An event.db without an ``event`` singleton row → sync hook returns
-    silently (the close path never raises)."""
+    silently (the close path never raises). Mark dirty so the hook
+    actually runs and exercises the missing-row branch."""
     gw, photos_base = _make_umbrella(tmp_path)
     root = photos_base / "Empty"
     root.mkdir()
@@ -195,6 +251,10 @@ def test_open_event_sync_hook_handles_missing_event_row(tmp_path):
     store.close()
     _register_event(gw, photos_base, root, eid="evt-empty", name="Empty")
     eg = gw.open_event("evt-empty")
+    # Force the dirty gate so the hook actually runs and we test its
+    # missing-event-row resilience (not just that dirty=False short-
+    # circuited it).
+    eg.store.conn.execute("UPDATE schema_info SET app_version = app_version")
     eg.close()                                              # must not raise
     # No global_items row was written (no event row → no projection).
     rows = gw.user_store.query_by(um.GlobalItem, event_uuid="evt-empty")

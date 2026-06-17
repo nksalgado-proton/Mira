@@ -340,3 +340,156 @@ def test_no_qt_imports_in_event_bundle():
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "PyQt6" not in src
     assert "QtCore" not in src
+
+
+# ── inspect_bundle (slice 6) ──────────────────────────────────────
+
+
+def _export_bundle(tmp_path: Path) -> Path:
+    """Helper: build a fresh event tree and export it. Returns the
+    bundle's final directory."""
+    src = tmp_path / "RoundTripEvent"
+    _seed_event_tree(src)
+    dest = tmp_path / "bundles"
+    export_event(src, src / "event.db", dest, created_at=NOW,
+                 app_version="3.0.0")
+    return dest / "RoundTripEvent"
+
+
+def test_inspect_passes_on_a_fresh_export(tmp_path):
+    """Round-trip: a freshly-exported bundle inspects clean against
+    its own schema version. version_status == "ok"; can_proceed."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    assert plan.integrity.ok is True
+    assert plan.version_status == event_bundle.VERSION_OK
+    assert plan.can_proceed is True
+    assert plan.manifest.event_uuid == "evt-uuid-1234"
+
+
+def test_inspect_flags_schema_newer_than_local(tmp_path):
+    """spec/82 §B.3 step 3 — refuse a bundle whose schema is ahead
+    of this build."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(
+        bundle, target_schema_version=5)   # bundle is 7, local is 5
+    assert plan.version_status == event_bundle.VERSION_NEWER_THAN_LOCAL
+    assert plan.can_proceed is False
+
+
+def test_inspect_classifies_older_schema_as_installable(tmp_path):
+    """An older bundle can be copied in; the next open's migration
+    catches it up. Verify status reflects this without blocking."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(
+        bundle, target_schema_version=10)  # bundle is 7, local is 10
+    assert plan.version_status == event_bundle.VERSION_OLDER_THAN_LOCAL
+    assert plan.can_proceed is True
+
+
+def test_inspect_rejects_a_tampered_file(tmp_path):
+    """spec/82 §B.3 step 2 — integrity gate. Splat bytes through a
+    bundled media file → can_proceed is False."""
+    bundle = _export_bundle(tmp_path)
+    victim = (
+        bundle / "Original Media" / "_cameras" / "IMG_0001.jpg")
+    victim.write_bytes(b"\x00\x00\x00\x00")
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    assert plan.integrity.ok is False
+    assert plan.can_proceed is False
+
+
+def test_inspect_handles_missing_manifest(tmp_path):
+    """A directory that isn't a Mira bundle inspects cleanly: empty
+    manifest, can_proceed=False (integrity failed)."""
+    bogus = tmp_path / "not-a-bundle"
+    bogus.mkdir()
+    (bogus / "trash.bin").write_bytes(b"hi")
+    plan = event_bundle.inspect_bundle(bogus, target_schema_version=7)
+    assert plan.integrity.ok is False
+    assert plan.manifest.event_uuid == ""
+    assert plan.can_proceed is False
+
+
+# ── install_bundle (slice 6) ──────────────────────────────────────
+
+
+def test_install_round_trips_a_full_event(tmp_path):
+    """Export → install into a different library_base → the new
+    event_root carries every file with byte-identical content."""
+    src = tmp_path / "RoundTripEvent"
+    _seed_event_tree(src)
+    export_dest = tmp_path / "bundles"
+    export_event(src, src / "event.db", export_dest, created_at=NOW)
+    bundle = export_dest / "RoundTripEvent"
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    assert plan.can_proceed
+
+    library_base = tmp_path / "library"
+    new_root = event_bundle.install_bundle(plan, library_base)
+
+    assert new_root == library_base / "RoundTripEvent"
+    assert new_root.is_dir()
+    # Every file the manifest names is at the destination.
+    for f in plan.manifest.files:
+        assert (new_root / f.relpath).exists()
+    # Media bytes survived end-to-end.
+    src_jpg = src / "Original Media" / "_cameras" / "IMG_0001.jpg"
+    new_jpg = new_root / "Original Media" / "_cameras" / "IMG_0001.jpg"
+    assert new_jpg.read_bytes() == src_jpg.read_bytes()
+
+
+def test_install_refuses_when_plan_failed_pre_flight(tmp_path):
+    """install_bundle must never proceed when can_proceed=False —
+    the caller is responsible for showing the version / integrity
+    error to the user instead."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(
+        bundle, target_schema_version=5)   # version-newer
+    assert not plan.can_proceed
+    library_base = tmp_path / "library"
+    with pytest.raises(RuntimeError):
+        event_bundle.install_bundle(plan, library_base)
+
+
+def test_install_atomic_finalisation(tmp_path):
+    """No ``.partial`` left behind on a successful install; the
+    final event_root appears in one shot."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    library_base = tmp_path / "library"
+    event_bundle.install_bundle(plan, library_base)
+    assert not (
+        library_base / f"RoundTripEvent{PARTIAL_SUFFIX}").exists()
+    assert (library_base / "RoundTripEvent").is_dir()
+
+
+def test_install_replace_target_overwrites_existing(tmp_path):
+    """The Replace path: the existing event_root is present at the
+    final name; install_bundle wipes it and lands the fresh bytes.
+    Caller is responsible for taking a Part-A snapshot of the
+    existing one first."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    library_base = tmp_path / "library"
+    # First install to set up an "existing" event_root.
+    event_bundle.install_bundle(plan, library_base)
+    # Mutate the existing copy so we can detect that the install
+    # actually replaced it.
+    (library_base / "RoundTripEvent" / "spurious.txt").write_bytes(
+        b"left over from a previous Mira install")
+    # Second install — must replace, not error.
+    event_bundle.install_bundle(plan, library_base)
+    assert not (
+        library_base / "RoundTripEvent" / "spurious.txt").exists()
+
+
+def test_install_carries_the_manifest_into_the_event_root(tmp_path):
+    """The destination event_root keeps mira-event.json so the
+    provenance trail (event_uuid + bundle creation time) lives
+    alongside the event for future debugging."""
+    bundle = _export_bundle(tmp_path)
+    plan = event_bundle.inspect_bundle(bundle, target_schema_version=7)
+    library_base = tmp_path / "library"
+    new_root = event_bundle.install_bundle(plan, library_base)
+    assert (new_root / MANIFEST_FILENAME).exists()

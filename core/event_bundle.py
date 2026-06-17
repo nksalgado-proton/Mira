@@ -480,15 +480,188 @@ def verify_bundle(bundle_dir: Path) -> VerifyResult:
     return VerifyResult(ok=True)
 
 
+# ── Import (spec/82 §B.3) ─────────────────────────────────────────
+
+
+# Version-gate verdicts surfaced by :func:`inspect_bundle`.
+VERSION_OK = "ok"
+VERSION_NEWER_THAN_LOCAL = "newer"     # bundle schema > local → refuse
+VERSION_OLDER_THAN_LOCAL = "older"     # bundle schema < local → ok, copy + warn
+
+
+@dataclass(frozen=True)
+class ImportPlan:
+    """Pre-flight read of a bundle: did the integrity gate pass,
+    and how does its schema compare to this build's target?
+
+    The caller — the Gateway — decides next steps from here:
+
+    * ``integrity.ok=False`` → refuse (the bundle is tampered or
+      corrupt).
+    * ``version_status == "newer"`` → refuse (spec/82 §B.3 step 3
+      — "Update Mira on this PC first").
+    * ``version_status == "older"`` → install + warn (the next
+      ``UserStore.open`` migrates).
+    * ``version_status == "ok"`` → install.
+
+    The identity gate (does this event_uuid already live in the
+    library?) sits in the Gateway, not here — the library index
+    lives in ``mira/`` and cannot be imported from ``core/``.
+    """
+    bundle_dir: Path
+    manifest: BundleManifest
+    integrity: VerifyResult
+    version_status: str
+
+    @property
+    def can_proceed(self) -> bool:
+        return self.integrity.ok and self.version_status != VERSION_NEWER_THAN_LOCAL
+
+
+def inspect_bundle(
+    bundle_dir: Path,
+    *,
+    target_schema_version: int,
+) -> ImportPlan:
+    """Read + verify a bundle, classify its schema version against
+    the local target. No side effects — never writes a byte to
+    disk. Used by the importer to gate the destructive step.
+
+    Raises ``FileNotFoundError`` only when ``bundle_dir`` is not a
+    directory at all; manifest-missing / SHA mismatches surface
+    through the returned :class:`ImportPlan` so the UI can show
+    "this isn't a Mira bundle" vs "the bundle is damaged" with the
+    same code path.
+    """
+    bundle_dir = Path(bundle_dir)
+    if not bundle_dir.is_dir():
+        raise FileNotFoundError(f"bundle_dir {bundle_dir} not a directory")
+
+    integrity = verify_bundle(bundle_dir)
+    # We need the manifest regardless of integrity — even a bundle
+    # whose files don't hash clean has a manifest the caller may
+    # want to display (event_uuid for the dialog title, etc.). If
+    # the manifest itself is missing / malformed, surface as an
+    # ``empty`` manifest and let the caller key off
+    # ``integrity.ok=False``.
+    try:
+        manifest = read_manifest(bundle_dir)
+    except (FileNotFoundError, ValueError):
+        manifest = BundleManifest(
+            manifest_version=MANIFEST_VERSION,
+            event_uuid="", event_name="",
+            app_version="", schema_version=0,
+            created_at="",
+            total_file_count=0, total_bytes=0,
+            files=[],
+        )
+
+    if manifest.schema_version > target_schema_version:
+        version_status = VERSION_NEWER_THAN_LOCAL
+    elif manifest.schema_version < target_schema_version:
+        version_status = VERSION_OLDER_THAN_LOCAL
+    else:
+        version_status = VERSION_OK
+
+    return ImportPlan(
+        bundle_dir=bundle_dir,
+        manifest=manifest,
+        integrity=integrity,
+        version_status=version_status,
+    )
+
+
+def install_bundle(
+    plan: ImportPlan,
+    library_base: Path,
+    *,
+    target_event_root: Optional[Path] = None,
+) -> Path:
+    """Copy ``plan.bundle_dir`` into the local library under
+    ``library_base``. Returns the final event_root path.
+
+    By default the destination directory name matches the bundle's
+    folder name so a round-trip preserves the original event-folder
+    name (spec/57). Pass ``target_event_root`` explicitly for the
+    Replace path where the existing event may live at a different
+    name than the bundle's.
+
+    Refuses when :attr:`ImportPlan.can_proceed` is False — the caller
+    must handle the rejection upstream. **Does not** consult the
+    library index or register the new event: identity gate +
+    register are the Gateway's job (the library index lives in
+    ``mira/``, not ``core/``).
+
+    Atomic finalisation: the copy lands at
+    ``<library_base>/<name>.partial/`` and only becomes
+    ``<target_event_root>`` on success via ``os.replace``. An
+    interrupted copy leaves ``.partial/`` behind — never a half-
+    finished event_root.
+    """
+    if not plan.can_proceed:
+        raise RuntimeError(
+            "refusing to install a bundle that failed pre-flight: "
+            f"integrity_ok={plan.integrity.ok} "
+            f"version_status={plan.version_status!r}")
+
+    library_base = Path(library_base)
+    library_base.mkdir(parents=True, exist_ok=True)
+
+    final_dir = (
+        Path(target_event_root)
+        if target_event_root is not None
+        else library_base / plan.bundle_dir.name
+    )
+    partial_dir = final_dir.with_name(f"{final_dir.name}{PARTIAL_SUFFIX}")
+
+    if partial_dir.exists():
+        log.warning(
+            "event_bundle: stale partial dir at %s — wiping it first",
+            partial_dir)
+        shutil.rmtree(partial_dir)
+
+    # Copy every file (the manifest already lists them) through the
+    # same _hash_and_copy primitive the export uses. Streaming +
+    # atomic per file; if any single file fails, the partial dir is
+    # left behind for the user to retry.
+    for f in plan.manifest.files:
+        src = plan.bundle_dir / f.relpath
+        target = partial_dir / f.relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _hash_and_copy(src, target)
+
+    # Also copy the manifest itself so the destination event_root
+    # carries the provenance trail (event_uuid + bundle creation
+    # time, schema_version at export). Useful for debugging future
+    # version-gate misses.
+    shutil.copy2(
+        str(plan.bundle_dir / MANIFEST_FILENAME),
+        str(partial_dir / MANIFEST_FILENAME))
+
+    # If the target already exists (Replace path), it must be moved
+    # aside FIRST — the caller is responsible for snapshotting it
+    # before calling install_bundle. Wipe the leftover.
+    if final_dir.exists():
+        shutil.rmtree(final_dir)
+    os.replace(str(partial_dir), str(final_dir))
+    return final_dir
+
+
 __all__ = [
     "BundleManifest",
     "BundleResult",
+    "ImportPlan",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
     "ManifestFile",
     "PARTIAL_SUFFIX",
+    "VERSION_NEWER_THAN_LOCAL",
+    "VERSION_OK",
+    "VERSION_OLDER_THAN_LOCAL",
     "VerifyResult",
     "export_event",
+    "inspect_bundle",
+    "install_bundle",
     "read_manifest",
     "verify_bundle",
 ]

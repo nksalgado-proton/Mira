@@ -37,6 +37,7 @@ from core import collection_resolver, cut_names
 from mira.ui.design import ghost_button, primary_button
 from mira.ui.i18n import tr
 from mira.ui.pages.facet_picker_dialog import GearProfileSnapshot
+from mira.ui.pages.gear_profile_wizard import GearProfileWizard
 from mira.ui.pages.new_cross_event_dc_dialog import (
     CrossEventDcInfo,
     CrossEventInventories,
@@ -254,6 +255,12 @@ class CrossEventDcsDialog(QDialog):
         title.setFont(f)
         top.addWidget(title)
         top.addStretch()
+        self._manage_gear_btn = ghost_button(tr("Manage my gear…"))
+        self._manage_gear_btn.setToolTip(tr(
+            "Tag which cameras and lenses you actively use — the picker "
+            "and the classifier read these flags"))
+        self._manage_gear_btn.clicked.connect(self._on_manage_gear)
+        top.addWidget(self._manage_gear_btn)
         self._view_cuts_btn = ghost_button(tr("View Cuts"))
         self._view_cuts_btn.clicked.connect(self.view_cuts_requested.emit)
         top.addWidget(self._view_cuts_btn)
@@ -392,6 +399,13 @@ class CrossEventDcsDialog(QDialog):
         actually happens) is its own surface, deferred to a follow-up; until
         then the host can show a "coming soon" message."""
         self.pin_requested.emit(dc)
+
+    def _on_manage_gear(self) -> None:
+        """Launch the spec/85 gear-profile wizard. The wizard owns its
+        commit path (writes directly through the gateway); on dismissal
+        the picker reads the updated snapshot the next time it opens."""
+        wizard = GearProfileWizard(self._lg, parent=self)
+        wizard.exec()
 
     # ----- helpers ------------------------------------------------------- #
 

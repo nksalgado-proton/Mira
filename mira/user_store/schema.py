@@ -28,7 +28,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -204,6 +204,20 @@ CREATE TABLE global_items (
   stars             INTEGER CHECK (stars IS NULL OR (stars >= 1 AND stars <= 5)),
   color_label       TEXT,
   flag              INTEGER CHECK (flag IS NULL OR flag IN (0,1)),
+  -- event-level qualifiers (spec/86) — denormalised onto every item of the
+  -- event so cross-event resolvers can filter on the event's own attributes
+  -- without fanning out to N event.db files. ``event_type`` is the closed
+  -- spec/52 enum (trip/session/occasion/project/unclassified); the others
+  -- echo the corresponding ``event`` table columns verbatim.
+  -- ``event_start``/``event_end`` are DERIVED at sync time = min/max of the
+  -- event's trip_day.date values (spec/86 §5), so the date-range overlap
+  -- filter prunes whole events without joining trip_day.
+  event_type        TEXT,
+  event_subtype     TEXT,
+  experience_type   TEXT,
+  participants      TEXT,                     -- JSON array; nullable
+  event_start       TEXT,                     -- ISO date or NULL
+  event_end         TEXT,                     -- ISO date or NULL
   -- bookkeeping
   synced_at         TEXT NOT NULL,
   PRIMARY KEY (event_uuid, item_id)
@@ -227,6 +241,14 @@ CREATE INDEX ix_global_items_city        ON global_items(day_city)        WHERE 
 CREATE INDEX ix_global_items_stars       ON global_items(stars)           WHERE stars IS NOT NULL;
 CREATE INDEX ix_global_items_color_label ON global_items(color_label)     WHERE color_label IS NOT NULL;
 CREATE INDEX ix_global_items_flag        ON global_items(flag)            WHERE flag = 1;
+-- spec/86 event-qualifier indexes — every cross-event filter that
+-- partitions by event predicate hits these. Participants is JSON; queried
+-- via json_each (no partial index possible).
+CREATE INDEX ix_global_items_event_type      ON global_items(event_type)      WHERE event_type IS NOT NULL;
+CREATE INDEX ix_global_items_event_subtype   ON global_items(event_subtype)   WHERE event_subtype IS NOT NULL;
+CREATE INDEX ix_global_items_experience_type ON global_items(experience_type) WHERE experience_type IS NOT NULL;
+CREATE INDEX ix_global_items_event_start     ON global_items(event_start)     WHERE event_start IS NOT NULL;
+CREATE INDEX ix_global_items_event_end       ON global_items(event_end)       WHERE event_end IS NOT NULL;
 
 -- ===== saved_filter (D) — cross-event DC home (spec/32 §4 + spec/81 §2.1) ===
 -- The cross-event DC IS a ``saved_filter`` row (no separate user-level
@@ -525,11 +547,40 @@ CREATE TABLE gear_profile (
         "WHERE is_active = 1")
 
 
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """spec/86 — push the event-level qualifiers into ``global_items`` so the
+    cross-event filter system can prune by event predicate without joining
+    back to N event.db files. Adds six columns (event_type, event_subtype,
+    experience_type, participants, event_start, event_end) and the partial
+    indexes the resolver uses.
+
+    Additive — ALTER TABLE ADD COLUMN. Every existing row lands NULL; the
+    next ``sync_event`` / startup reconcile populates the columns from the
+    event row + the derived span (min/max of ``trip_day.date``). No data
+    moves at migration time."""
+    for col in (
+        "event_type", "event_subtype", "experience_type",
+        "participants",        # JSON array; nullable
+        "event_start", "event_end",
+    ):
+        conn.execute(f"ALTER TABLE global_items ADD COLUMN {col} TEXT")
+    # Partial indexes mirror the fresh-install DDL.
+    for sql in (
+        "CREATE INDEX ix_global_items_event_type      ON global_items(event_type)      WHERE event_type IS NOT NULL",
+        "CREATE INDEX ix_global_items_event_subtype   ON global_items(event_subtype)   WHERE event_subtype IS NOT NULL",
+        "CREATE INDEX ix_global_items_experience_type ON global_items(experience_type) WHERE experience_type IS NOT NULL",
+        "CREATE INDEX ix_global_items_event_start     ON global_items(event_start)     WHERE event_start IS NOT NULL",
+        "CREATE INDEX ix_global_items_event_end       ON global_items(event_end)       WHERE event_end IS NOT NULL",
+    ):
+        conn.execute(sql)
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
     _migrate_v3_to_v4,
     _migrate_v4_to_v5,
+    _migrate_v5_to_v6,
 ]
 
 

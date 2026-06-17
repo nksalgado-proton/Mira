@@ -208,6 +208,18 @@ class GlobalItem:
     stars: Optional[int] = None
     color_label: Optional[str] = None
     flag: Optional[int] = None                # 0/1; NULL = unset
+    # Event-level qualifiers (spec/86) — denormalised onto every item of the
+    # event. ``participants`` is the same JSON envelope as
+    # ``event.participants``. ``event_start`` / ``event_end`` are DERIVED at
+    # sync time = min/max of the event's ``trip_day.date`` values, so the
+    # cross-event date-range filter prunes whole events without joining
+    # back to ``trip_day``. NULL = unset (or no dated days for the span).
+    event_type: Optional[str] = None
+    event_subtype: Optional[str] = None
+    experience_type: Optional[str] = None
+    participants: Optional[str] = None        # JSON array of strings
+    event_start: Optional[str] = None         # ISO date
+    event_end: Optional[str] = None           # ISO date
 
 
 @dataclass

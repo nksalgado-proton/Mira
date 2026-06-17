@@ -134,6 +134,43 @@ def _split_day_location(td_location: Optional[str],
     return country, country_code, day_city, day_sublocation
 
 
+def _read_event_qualifiers(event_store: EventStore) -> tuple:
+    """Pull the spec/86 event-level qualifiers off the singleton ``event``
+    row (the schema enforces ``id = 1``). Returns
+    ``(event_type, event_subtype, experience_type, participants_json)``.
+
+    ``participants`` round-trips as the raw JSON envelope — the resolver
+    expands it via ``json_each`` and the inventory query treats it as a JSON
+    array. Empty arrays survive intact so the user-store NULL semantics
+    distinguish "no participants set" (NULL) from "explicitly empty" (``[]``).
+    """
+    row = event_store.conn.execute(
+        "SELECT event_type, event_subtype, experience_type, participants "
+        "FROM event WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return (None, None, None, None)
+    return (
+        row["event_type"], row["event_subtype"],
+        row["experience_type"], row["participants"],
+    )
+
+
+def _derive_event_span(event_store: EventStore) -> tuple:
+    """Derive ``(event_start, event_end)`` from min/max of ``trip_day.date``
+    (spec/86 §5). ``trip_day.date`` is nullable (undated days), so the MIN /
+    MAX skip NULLs. An event with zero dated days lands ``(None, None)`` —
+    the resolver's overlap then never fires for an event_date filter against
+    that event, which is the right behaviour (no information to bound on)."""
+    row = event_store.conn.execute(
+        "SELECT MIN(date) AS start_date, MAX(date) AS end_date "
+        "FROM trip_day WHERE date IS NOT NULL"
+    ).fetchone()
+    if row is None:
+        return (None, None)
+    return (row["start_date"], row["end_date"])
+
+
 def project_event(
     *,
     event_store: EventStore,
@@ -147,6 +184,12 @@ def project_event(
     consistency-audit tooling that wants the projection without persisting it.
     """
     stamp = now()
+    # spec/86 — event-level qualifiers + derived span read ONCE; every
+    # projection row carries the same values (the projection is denormalised
+    # on purpose: the resolver filters without joining trip_day or event).
+    event_type, event_subtype, experience_type, participants = \
+        _read_event_qualifiers(event_store)
+    event_start, event_end = _derive_event_span(event_store)
     rows: List[um.GlobalItem] = []
     cur = event_store.conn.execute(_PROJECTION_SQL)
     for r in cur.fetchall():
@@ -182,6 +225,12 @@ def project_event(
             stars=r["stars"],
             color_label=r["color_label"],
             flag=r["flag"],
+            event_type=event_type,
+            event_subtype=event_subtype,
+            experience_type=experience_type,
+            participants=participants,
+            event_start=event_start,
+            event_end=event_end,
         ))
     return rows
 

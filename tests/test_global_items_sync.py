@@ -250,6 +250,137 @@ def test_project_event_pulls_day_location_from_extras_then_legacy(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Event-level qualifiers + derived span (spec/86)
+# --------------------------------------------------------------------------- #
+
+
+def _seed_event_with_qualifiers(store: EventStore, *,
+                                event_type="trip",
+                                event_subtype="wildlife trip",
+                                experience_type="expedition_discovery",
+                                participants_json='["Solo","With Friends"]',
+                                day_dates=("2024-08-10", "2024-08-15")):
+    """A minimal one-item event with full spec/86 qualifiers + a multi-day
+    span. The participants JSON is the EXACT envelope ``event.participants``
+    stores."""
+    NOW = "2026-06-17T00:00:00+00:00"
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO event (id, uuid, name, event_type, event_subtype, "
+            "                   experience_type, participants, "
+            "                   created_at, updated_at) "
+            "VALUES (1, 'evt-q', 'Q', ?, ?, ?, ?, ?, ?)",
+            (event_type, event_subtype, experience_type,
+             participants_json, NOW, NOW),
+        )
+        for i, d in enumerate(day_dates, start=1):
+            conn.execute(
+                "INSERT INTO trip_day (day_number, date, location, tz_minutes) "
+                "VALUES (?, ?, ?, ?)",
+                (i, d, "Somewhere", -360),
+            )
+        conn.execute(
+            "INSERT INTO camera (camera_id) VALUES ('Panasonic+DC-G9M2')")
+        _insert_item(conn, "i-q", day_number=1, classification="macro")
+
+
+def test_project_event_carries_event_qualifiers(tmp_path):
+    """spec/86 §4 — the event-level qualifiers are denormalised onto every
+    projected row so the cross-event resolver can filter without joining
+    back to ``event``."""
+    store = _open_event_store(tmp_path)
+    _seed_event_with_qualifiers(store)
+    rows = gis.project_event(
+        event_store=store, event_uuid="evt-q", event_name="Q")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.event_type == "trip"
+    assert r.event_subtype == "wildlife trip"
+    assert r.experience_type == "expedition_discovery"
+    # participants stays in its JSON envelope; downstream consumers (the
+    # spec/86 inventory + resolver) expand it via json_each.
+    assert json.loads(r.participants) == ["Solo", "With Friends"]
+    store.close()
+
+
+def test_project_event_derives_event_span_from_trip_day(tmp_path):
+    """spec/86 §5 — event_start / event_end = min/max of trip_day.date."""
+    store = _open_event_store(tmp_path)
+    _seed_event_with_qualifiers(
+        store, day_dates=("2024-08-10", "2024-08-13", "2024-08-15"))
+    rows = gis.project_event(
+        event_store=store, event_uuid="evt-q", event_name="Q")
+    r = rows[0]
+    assert r.event_start == "2024-08-10"
+    assert r.event_end == "2024-08-15"
+    store.close()
+
+
+def test_project_event_span_is_null_when_no_dated_days(tmp_path):
+    """An event whose days are all undated → ``(None, None)`` span. The
+    overlap filter then never matches; that's the correct behaviour —
+    no information to bound on."""
+    store = _open_event_store(tmp_path)
+    NOW = "2026-06-17T00:00:00+00:00"
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO event (id, uuid, name, created_at, updated_at) "
+            "VALUES (1, 'evt-u', 'U', ?, ?)", (NOW, NOW))
+        conn.execute(
+            "INSERT INTO trip_day (day_number, date, location, tz_minutes) "
+            "VALUES (1, NULL, 'Undated', -360)")
+        conn.execute("INSERT INTO camera (camera_id) VALUES ('Panasonic+DC-G9M2')")
+        _insert_item(conn, "i-u", day_number=1, classification="macro")
+    rows = gis.project_event(
+        event_store=store, event_uuid="evt-u", event_name="U")
+    r = rows[0]
+    assert r.event_start is None
+    assert r.event_end is None
+    store.close()
+
+
+def test_project_event_default_qualifiers_are_safe(tmp_path):
+    """The original seed creates an event with the DDL defaults — every
+    spec/86 qualifier still reads cleanly off the projection (no NULL
+    KeyError, no crash)."""
+    store = _open_event_store(tmp_path)
+    _seed_minimal_event(store)
+    rows = gis.project_event(
+        event_store=store, event_uuid="evt-1", event_name="X")
+    r = rows[0]
+    # DDL defaults: event_type='unclassified', participants='[]'.
+    assert r.event_type == "unclassified"
+    assert r.event_subtype is None
+    assert r.experience_type is None
+    assert json.loads(r.participants) == []
+    # Span = min/max of the two trip_day dates.
+    assert r.event_start == "2026-04-01"
+    assert r.event_end == "2026-04-02"
+    store.close()
+
+
+def test_sync_event_writes_qualifiers_to_global_items(tmp_path):
+    """End-to-end: a synced row carries the spec/86 qualifiers + span and
+    survives a second sync (replace-the-slice keeps consistency)."""
+    event_store = _open_event_store(tmp_path)
+    _seed_event_with_qualifiers(event_store)
+    user_store = _open_user_store(tmp_path)
+    gis.sync_event(
+        event_store=event_store, user_store=user_store,
+        event_uuid="evt-q", event_name="Q")
+    rows = user_store.query_by(um.GlobalItem, event_uuid="evt-q")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.event_type == "trip"
+    assert r.event_subtype == "wildlife trip"
+    assert r.experience_type == "expedition_discovery"
+    assert json.loads(r.participants) == ["Solo", "With Friends"]
+    assert r.event_start == "2024-08-10"
+    assert r.event_end == "2024-08-15"
+    event_store.close(); user_store.close()
+
+
+# --------------------------------------------------------------------------- #
 # sync_event — write semantics: replace-the-event's-slice
 # --------------------------------------------------------------------------- #
 

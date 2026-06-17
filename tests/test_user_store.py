@@ -639,8 +639,25 @@ def test_migrate_v4_to_v5_adds_gear_profile(tmp_path):
     callers can't slip non-JSON in."""
     store = _make_store(tmp_path)
     conn = store.conn
-    # Reconstruct the v4 shape: drop gear_profile, pin the version to 4.
+    # Reconstruct the v4 shape: drop gear_profile, pin the version to 4. The
+    # v6 (spec/86) event-qualifier columns also retire here so the v5→v6
+    # ALTER ADD COLUMN re-creates them on the way back up. The partial
+    # indexes have to drop first — SQLite refuses to drop a column an
+    # index still references.
     conn.execute("DROP TABLE gear_profile")
+    for idx in (
+        "ix_global_items_event_type",
+        "ix_global_items_event_subtype",
+        "ix_global_items_experience_type",
+        "ix_global_items_event_start",
+        "ix_global_items_event_end",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+    for col in (
+        "event_type", "event_subtype", "experience_type",
+        "participants", "event_start", "event_end",
+    ):
+        conn.execute(f"ALTER TABLE global_items DROP COLUMN {col}")
     conn.execute("UPDATE schema_info SET schema_version = 4 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -667,4 +684,67 @@ def test_migrate_v4_to_v5_adds_gear_profile(tmp_path):
     # Pre-existing row untouched.
     pre = conn.execute("SELECT value_json FROM setting WHERE key='marker'").fetchone()
     assert pre is not None and pre["value_json"] == '"v4-pre"'
+    store.close()
+
+
+def test_migrate_v5_to_v6_adds_event_qualifier_columns(tmp_path):
+    """v5→v6 (spec/86) extends ``global_items`` with six event-qualifier
+    columns + their partial indexes. ALTER ADD COLUMN — every existing row
+    lands NULL on the new columns, then the next sync repopulates.
+    Pre-existing data must survive the migration verbatim."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Drop the v6 event columns + indexes; pin the version to 5. Partial
+    # indexes have to drop before their columns can.
+    for idx in (
+        "ix_global_items_event_type",
+        "ix_global_items_event_subtype",
+        "ix_global_items_experience_type",
+        "ix_global_items_event_start",
+        "ix_global_items_event_end",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+    for col in (
+        "event_type", "event_subtype", "experience_type",
+        "participants", "event_start", "event_end",
+    ):
+        conn.execute(f"ALTER TABLE global_items DROP COLUMN {col}")
+    conn.execute("UPDATE schema_info SET schema_version = 5 WHERE id = 1")
+    # Seed a pre-migration global_items row that should survive.
+    conn.execute(
+        "INSERT INTO global_items (event_uuid, item_id, synced_at, "
+        "                          classification, stars) "
+        "VALUES ('e1', 'i1', 't', 'macro', 5)")
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(global_items)")}
+    assert {
+        "event_type", "event_subtype", "experience_type",
+        "participants", "event_start", "event_end",
+    } <= cols
+    # The pre-existing row survived, with NULL on the new columns.
+    row = conn.execute(
+        "SELECT classification, stars, event_type, event_subtype, "
+        "       experience_type, participants, event_start, event_end "
+        "FROM global_items WHERE event_uuid = 'e1' AND item_id = 'i1'"
+    ).fetchone()
+    assert row["classification"] == "macro"
+    assert row["stars"] == 5
+    for k in ("event_type", "event_subtype", "experience_type",
+              "participants", "event_start", "event_end"):
+        assert row[k] is None
+    # Partial indexes landed.
+    idx = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='global_items'")}
+    assert {
+        "ix_global_items_event_type",
+        "ix_global_items_event_subtype",
+        "ix_global_items_experience_type",
+        "ix_global_items_event_start",
+        "ix_global_items_event_end",
+    } <= idx
     store.close()

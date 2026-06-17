@@ -3809,10 +3809,13 @@ class MainWindow(QMainWindow):
         """Small modal after Collect's plan capture with 3 buttons:
         Copy all / Quick Sweep first / Cancel (Nelson 2026-06-08).
 
-        Returns True only when an ingest ran to completion (the copy
-        engine's success tail navigated); False on every cancel/abort
-        path. The backfill wizard (spec/57 §4.3.1) uses False to fall
-        back to a dashboard landing; Collect ignores the return.
+        Returns True when an ingest was *enqueued* on the shared batch
+        queue (spec/84 — the success tail runs later in
+        :meth:`_finish_collect_ingest`); False on every cancel/abort
+        path AND on the "nothing to import" pre-flight bail. The
+        backfill wizard (spec/57 §4.3.1) uses False to fall back to a
+        dashboard landing immediately; True callers leave the
+        navigation to the queue's ``finished_result``.
         ``offer_quick_sweep=False`` drops the sweep button (the wizard's
         pre-filtered picked/edited levels). ``post_record`` and
         ``land_phase`` are forwarded to :meth:`_run_collect_copy_all`."""
@@ -4118,20 +4121,32 @@ class MainWindow(QMainWindow):
         keep_only_paths=None, calibration_decisions=None,
         post_record=None, land_phase=None,
     ) -> bool:
-        """End-to-end Copy-all ingest:
+        """End-to-end Copy-all ingest — enqueue + return immediately
+        (spec/84):
 
         1. Persist event-info edits (if changed).
         2. Assign day_numbers (existing keep theirs; fresh get max+1, +2, …).
         3. Build IngestPhotoJob list — only checked dates' photos.
-        4. Run ``ingest_pipeline.run_ingest`` off-thread with progress.
-        5. Write cameras, trip_days, and items to event.db — then call
+        4. Wrap the copy as an :class:`IngestJob` and enqueue it on the
+           shared :attr:`batch_queue`. OK returns IMMEDIATELY; the copy
+           runs on the job's QThread, the progress line shows it, and
+           Step 5 runs in :meth:`_finish_collect_ingest` on the UI
+           thread once the queue's ``finished_result`` fires
+           (spec/84 §3 — one SQLite connection per thread).
+        5. (Deferred to ``_finish_collect_ingest`` on the UI thread.)
+           Write cameras, trip_days, and items to event.db; call
            ``post_record()`` (the backfill wizard's level state writes,
-           spec/57 §4.3) while still inside the progress dialog, so every
-           surface that opens afterwards already sees the written states.
-        6. Refresh dashboards + navigate to the event — then straight to
-           ``land_phase``'s surface when given (the backfill wizard's
-           landing, spec/57 §4.3). Returns True only when this success
-           tail ran; False on every earlier abort.
+           spec/57 §4.3); refresh dashboards + spec/82 day-add snapshot;
+           navigate to the event — then straight to ``land_phase``'s
+           surface when given (the backfill wizard's landing, spec/57
+           §4.3).
+
+        Returns True when the ingest was *enqueued* (the success tail
+        will run when the queue finishes the job); False on every
+        pre-flight abort — no jobs to ingest, info-persist failure.
+        Callers that need to land the user somewhere on False (the
+        backfill wizard) still do so immediately; True callers leave
+        the navigation to the queue's ``finished_result``.
 
         ``calibration_decisions`` is the per-``(camera_id, event_day_number)``
         declared TZ map from :meth:`_collect_run_tz_calibration`. The bake
@@ -4143,7 +4158,8 @@ class MainWindow(QMainWindow):
         from pathlib import Path
         from PyQt6.QtWidgets import QMessageBox
         from core.ingest_pipeline import IngestPhotoJob, destination_for, run_ingest
-        from mira.ui.base.progress import run_with_progress
+        from mira.ui.ingest.ingest_job import IngestJob
+        from mira.ui.shell.batch_queue import JOB_TYPE_IMPORT
 
         calibration_decisions = dict(calibration_decisions or {})
 
@@ -4241,74 +4257,123 @@ class MainWindow(QMainWindow):
             )
             return False
 
-        # 4. Run the copy AND the event.db writes inside one progress
-        # dialog. The db writes need sha256 per file, which is heavy and
-        # would freeze the UI if it ran after the progress dialog closed
-        # (Nelson 2026-06-08 eyeball: "progress disappeared but cursor
-        # still busy and the program became non-responsive").
-        #
-        # ``run_with_progress`` runs work on the GUI thread but pumps
-        # ``processEvents`` whenever the callback is invoked; emitting
-        # per-photo from both phases keeps the UI alive.
-        #
-        # Signature adapter — run_with_progress is ``(done, total, message)``;
-        # ingest_pipeline emits ``(message, current, total)``.
-        ingest_result_holder: list = []
-
-        def _do_full_ingest(report):
-            def _adapter(message, current=0, total=0):
-                report(current, total, message)
-            # ``bake_corrections=False`` — CLAUDE.md invariant #7 + spec/52
-            # §8.1: the captured tree is NEVER mutated. TZ correction is
-            # correction-on-read via item.capture_time_corrected in
-            # event.db, NOT via EXIF rewrite in the copies. The legacy
-            # bake step (still the default in ``run_ingest``) is a
-            # pre-rebuild holdover. Skipping it also halves the import
-            # wall-clock (Nelson 2026-06-09 eyeball: "the process was
-            # very slow … two passes").
-            ir = run_ingest(
+        # 4. Enqueue the copy as a background ingest job on the shared
+        # batch queue (spec/84). OK returns IMMEDIATELY; the copy runs
+        # on the IngestJob's QThread, per-file progress flows through
+        # the under-menubar progress line, and the `item` rows are
+        # written on the UI thread in ``_finish_collect_ingest`` once
+        # the job emits ``finished_result`` (spec/84 §3 — one SQLite
+        # connection per thread; the copy thread never writes event.db).
+        # ``bake_corrections=False`` — CLAUDE.md invariant #7 + spec/52
+        # §8.1: the captured tree is NEVER mutated. TZ correction is
+        # correction-on-read via item.capture_time_corrected in event.db,
+        # NOT via EXIF rewrite in the copies. The legacy bake step
+        # (still the default in ``run_ingest``) is a pre-rebuild holdover.
+        # Skipping it also halves the import wall-clock (Nelson 2026-06-09).
+        def _copy_work(progress_cb, should_cancel):
+            def _engine_progress(message, current=0, total=0):
+                progress_cb(int(current), int(total), str(message))
+            # spec/84 slice 5 will thread ``should_cancel`` into
+            # ``run_ingest``; until then a Cancel mid-copy is observed
+            # by the wrapper only AT the end (the copy still runs to
+            # completion), and the result carries ``cancelled=True``.
+            return run_ingest(
                 jobs, event_root,
-                bake_corrections=False, progress=_adapter,
+                bake_corrections=False, progress=_engine_progress,
             )
-            ingest_result_holder.append(ir)
-            self._record_collect_in_event_db(
+
+        def _on_done(result):
+            self._finish_collect_ingest(
+                result=result,
                 event_id=event_id, event_root=event_root,
                 jobs=jobs, edited_rows=edited_rows,
                 date_to_day_num=date_to_day_num,
                 existing_day_nums=existing_day_nums,
-                per_job_info=ir.per_job_info,
                 calibration_decisions=calibration_decisions,
-                progress=_adapter,
+                post_record=post_record, land_phase=land_phase,
             )
-            if post_record is not None:
-                _adapter(tr("Writing phase states…"))
-                post_record()
-            return ir
 
-        # "media", not "photos" — videos are first-class collect content
-        # (Nelson 2026-06-10).
-        ok, result = run_with_progress(
-            self, tr("Importing media files…"), _do_full_ingest,
-            label=tr("Copying {n} file(s)…").replace("{n}", str(len(jobs))),
-        )
-        if not ok:
+        job = IngestJob(_copy_work)
+        # The line owns the verb ("Importing"); the label is the
+        # descriptive tail. Event-name + count is the same pattern the
+        # export caller uses.
+        label = tr("{name} — {n} file(s)") \
+            .replace("{name}", event_root.name) \
+            .replace("{n}", str(len(jobs)))
+        job.finished.connect(job.deleteLater)
+        self.batch_queue.enqueue(
+            job, label, _on_done, job_type=JOB_TYPE_IMPORT)
+        log.info(
+            "Collect: enqueued ingest job for %s (%d file(s)); UI returns",
+            event_id, len(jobs))
+        return True
+
+    def _finish_collect_ingest(
+        self, *, result, event_id, event_root, jobs, edited_rows,
+        date_to_day_num, existing_day_nums, calibration_decisions,
+        post_record, land_phase,
+    ) -> None:
+        """spec/84 §3 — Collect-OK ingest's UI-thread tail.
+
+        The batch queue runs this on the UI thread once the
+        :class:`IngestJob` emits ``finished_result``. Writes ``item``
+        rows + cameras + trip_days against the gateway (one SQLite
+        connection per thread — the copy thread never touches event.db),
+        fires the spec/82 day-add milestone snapshot, refreshes the
+        Events index, and surfaces the result + navigation tail the
+        user expects when the import finishes.
+
+        Crash inside the worker → log + warn dialog, no DB writes. A
+        partial cancel still writes whatever copied so far; spec/57's
+        re-run-resumes rule picks up the remainder on the next attempt.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        if result.error is not None:
+            log.error("Collect ingest crashed: %s", result.error)
             QMessageBox.critical(
                 self, tr("Import failed"),
-                tr("The import crashed:\n\n{err}").replace("{err}", str(result)),
+                tr("The import crashed:\n\n{err}")
+                .replace("{err}", str(result.error)),
             )
-            return False
-        ingest_result = result
+            return
+
+        ingest_result = result.payload
+        if ingest_result is None:
+            # No payload but no error either — defensive guard; the job
+            # contract returns the engine's IngestResult unless it
+            # crashed (which would have set ``error``).
+            log.warning(
+                "Collect ingest finished with no payload (cancelled=%s)",
+                result.cancelled)
+            return
+
+        self._record_collect_in_event_db(
+            event_id=event_id, event_root=event_root,
+            jobs=jobs, edited_rows=edited_rows,
+            date_to_day_num=date_to_day_num,
+            existing_day_nums=existing_day_nums,
+            per_job_info=ingest_result.per_job_info,
+            calibration_decisions=calibration_decisions,
+            progress=None,
+        )
+        if post_record is not None:
+            try:
+                post_record()
+            except Exception:  # noqa: BLE001
+                log.exception("Collect: post_record failed for %s", event_id)
 
         # 6. Refresh + navigate. The classification pass rides every
         # ingest (spec/58 §1 — media sits in the system long before
         # Edit); quiet, off-thread, idempotent.
         self.gateway.refresh_index_entry(event_id)
-        # spec/82 §A.1 — per-day-add milestone snapshot. The trip
-        # workflow is "add a day, decide on it; add the next day,
-        # decide on it" — every added day is the natural rollback
-        # point. Snapshot failures are logged + ignored (the gateway
-        # helper never raises) so the import doesn't fail because
-        # the backup volume hiccuped.
+        # spec/82 §A.1 — per-day-add milestone snapshot fires on the
+        # *done* signal (spec/84 §5), not at OK. The trip workflow is
+        # "add a day, decide on it; add the next day, decide on it" —
+        # every added day is the natural rollback point. Snapshot
+        # failures are logged + ignored (the gateway helper never
+        # raises) so the import doesn't fail because the backup volume
+        # hiccuped.
         snap = self.gateway.snapshot_event(event_id, reason="milestone")
         if snap is not None:
             log.info(
@@ -4320,6 +4385,8 @@ class MainWindow(QMainWindow):
             warnings_line = tr(
                 "\n\n{w} warning(s) — check the log."
             ).replace("{w}", str(len(ingest_result.warnings)))
+        cancel_line = (
+            tr(" · cancelled mid-run") if result.cancelled else "")
         ok_msg = QMessageBox(self)
         ok_msg.setWindowTitle(tr("Import complete"))
         ok_msg.setIcon(QMessageBox.Icon.NoIcon)
@@ -4337,11 +4404,12 @@ class MainWindow(QMainWindow):
                 " · {d} duplicate(s) ingested once"
             ).replace("{d}", str(ingest_result.photos_duplicates))
         ok_msg.setText(tr(
-            "{copied} photo(s) copied · {quar} quarantined{dups}{warns}"
+            "{copied} photo(s) copied · {quar} quarantined{dups}{cancel}{warns}"
         )
         .replace("{copied}", str(ingest_result.photos_copied))
         .replace("{quar}", str(ingest_result.photos_quarantined))
         .replace("{dups}", dup_line)
+        .replace("{cancel}", cancel_line)
         .replace("{warns}", warnings_line))
         ok_msg.exec()
         self._on_event_created(event_id)
@@ -4349,7 +4417,6 @@ class MainWindow(QMainWindow):
             # Backfill wizard landing (spec/57 §4.3) — straight to the
             # level's phase surface, the dashboard beneath for Back.
             self._on_phase_activated(land_phase)
-        return True
 
     def _record_collect_in_event_db(
         self, *, event_id, event_root, jobs, edited_rows,

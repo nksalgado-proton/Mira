@@ -242,6 +242,16 @@ class MainWindow(QMainWindow):
         # is the list the viewer walks.
         self._quick_sweep: Optional[dict] = None
 
+        # spec/84 §5 — events currently being ingested via the shared
+        # batch queue (the IngestJob hasn't fired ``finished_result``
+        # yet). The event RECORD exists from OK time so the queue's
+        # commit closure can write rows against the gateway, but the
+        # tile is HIDDEN from the Events screen (and Pick rejects the
+        # entry, and a second same-event enqueue is blocked) until the
+        # ingest finishes. Cleared by :meth:`_mark_ingest_finished` from
+        # :meth:`_finish_collect_ingest`.
+        self._ingesting_event_ids: set[str] = set()
+
         # (Surface 08 + Surface 12 page-stack entries were registered
         # alongside the redesigned Picker above — spec/70 Phase 3 §3.)
 
@@ -4163,6 +4173,18 @@ class MainWindow(QMainWindow):
 
         calibration_decisions = dict(calibration_decisions or {})
 
+        # 0. spec/84 §4 — block a second concurrent ingest for the same
+        # event. The queue serialises across events; this gate protects
+        # against the same user accidentally double-enqueuing one event
+        # from two paths (Quick Sweep ⇆ Copy-all, dashboard ⇆ wizard).
+        if self.is_ingesting(event_id):
+            QMessageBox.warning(
+                self, tr("Already importing"),
+                tr("This event is still importing — wait for it to "
+                   "finish before queuing another copy."),
+            )
+            return False
+
         # 1. Persist info edits if the user changed anything (skip the
         # 'name' key — folder rename is a separate, future operation).
         if {k: edited_info.get(k) for k in edited_info if k != "name"} \
@@ -4301,12 +4323,49 @@ class MainWindow(QMainWindow):
             .replace("{name}", event_root.name) \
             .replace("{n}", str(len(jobs)))
         job.finished.connect(job.deleteLater)
+        # spec/84 §5 — flag this event as "ingest in progress" so the
+        # Events screen hides its tile, Pick rejects entry, and the
+        # second-enqueue gate fires for a duplicate attempt. The flag
+        # clears in ``_mark_ingest_finished`` from
+        # :meth:`_finish_collect_ingest`.
+        self._mark_ingest_started(event_id)
         self.batch_queue.enqueue(
             job, label, _on_done, job_type=JOB_TYPE_IMPORT)
         log.info(
             "Collect: enqueued ingest job for %s (%d file(s)); UI returns",
             event_id, len(jobs))
         return True
+
+    # ── spec/84 §5 — per-event ingest-in-progress bookkeeping ───────
+
+    def is_ingesting(self, event_id: str) -> bool:
+        """True while an ingest for ``event_id`` is sitting on the
+        shared queue (queued or running). Drives the second-enqueue
+        gate (:meth:`_run_collect_copy_all`), the Pick-entry guard
+        (:meth:`_on_phase_activated`), and the Events-screen tile
+        hide (:class:`EventsPage` filter)."""
+        return event_id in self._ingesting_event_ids
+
+    def _mark_ingest_started(self, event_id: str) -> None:
+        self._ingesting_event_ids.add(event_id)
+        self._notify_ingest_in_progress_changed()
+
+    def _mark_ingest_finished(self, event_id: str) -> None:
+        self._ingesting_event_ids.discard(event_id)
+        self._notify_ingest_in_progress_changed()
+
+    def _notify_ingest_in_progress_changed(self) -> None:
+        """Push the current in-progress set to surfaces that filter on
+        it. Today: the Events screen. Future: Days Lists / Phases tile
+        badges could read the same set."""
+        try:
+            self.events_page.set_ingest_in_progress_ids(
+                self._ingesting_event_ids)
+        except AttributeError:
+            # Older EventsPage build (placeholder, preview path) without
+            # the setter; safe to ignore — only the live tile filter
+            # is affected.
+            pass
 
     def _finish_collect_ingest(
         self, *, result, event_id, event_root, jobs, edited_rows,
@@ -4329,94 +4388,145 @@ class MainWindow(QMainWindow):
         """
         from PyQt6.QtWidgets import QMessageBox
 
-        if result.error is not None:
-            log.error("Collect ingest crashed: %s", result.error)
-            QMessageBox.critical(
-                self, tr("Import failed"),
-                tr("The import crashed:\n\n{err}")
-                .replace("{err}", str(result.error)),
+        # Either path below MUST clear the "ingest in progress" flag
+        # before returning — leaving it set would strand the tile and
+        # keep blocking re-entry. Wrap the body so even an unexpected
+        # raise inside it finally clears the flag.
+        try:
+            if result.error is not None:
+                log.error("Collect ingest crashed: %s", result.error)
+                QMessageBox.critical(
+                    self, tr("Import failed"),
+                    tr("The import crashed:\n\n{err}")
+                    .replace("{err}", str(result.error)),
+                )
+                return
+
+            ingest_result = result.payload
+            if ingest_result is None:
+                # No payload but no error either — defensive guard; the
+                # job contract returns the engine's IngestResult unless
+                # it crashed (which would have set ``error``).
+                log.warning(
+                    "Collect ingest finished with no payload (cancelled=%s)",
+                    result.cancelled)
+                return
+
+            # spec/84 §5 + spec/57 §4.3.1 — zero-media cancel = clean
+            # no-op. No file made it into Original Media/, so the event
+            # never effectively existed; drop the record + the (empty)
+            # folder so the user sees the same state they had before
+            # OK.
+            zero_media = (
+                int(getattr(ingest_result, "photos_copied", 0)) == 0
+                and int(getattr(ingest_result, "photos_quarantined", 0)) == 0
             )
-            return
+            if result.cancelled and zero_media:
+                log.info(
+                    "Collect: zero-media cancel for %s → removing event "
+                    "record + folder", event_id)
+                try:
+                    self.gateway.delete_event(
+                        event_id, delete_files=True)
+                except Exception:                            # noqa: BLE001
+                    log.exception(
+                        "zero-media cancel cleanup failed for %s",
+                        event_id)
+                # Even on cleanup failure refresh the screen — the index
+                # may have removed the row.
+                try:
+                    self.events_page.refresh()
+                except Exception:                            # noqa: BLE001
+                    log.exception("events_page refresh failed")
+                QMessageBox.information(
+                    self, tr("Import cancelled"),
+                    tr("No files were imported — the event was "
+                       "removed."),
+                )
+                return
 
-        ingest_result = result.payload
-        if ingest_result is None:
-            # No payload but no error either — defensive guard; the job
-            # contract returns the engine's IngestResult unless it
-            # crashed (which would have set ``error``).
-            log.warning(
-                "Collect ingest finished with no payload (cancelled=%s)",
-                result.cancelled)
-            return
+            self._record_collect_in_event_db(
+                event_id=event_id, event_root=event_root,
+                jobs=jobs, edited_rows=edited_rows,
+                date_to_day_num=date_to_day_num,
+                existing_day_nums=existing_day_nums,
+                per_job_info=ingest_result.per_job_info,
+                calibration_decisions=calibration_decisions,
+                progress=None,
+            )
+            if post_record is not None:
+                try:
+                    post_record()
+                except Exception:  # noqa: BLE001
+                    log.exception(
+                        "Collect: post_record failed for %s", event_id)
 
-        self._record_collect_in_event_db(
-            event_id=event_id, event_root=event_root,
-            jobs=jobs, edited_rows=edited_rows,
-            date_to_day_num=date_to_day_num,
-            existing_day_nums=existing_day_nums,
-            per_job_info=ingest_result.per_job_info,
-            calibration_decisions=calibration_decisions,
-            progress=None,
-        )
-        if post_record is not None:
-            try:
-                post_record()
-            except Exception:  # noqa: BLE001
-                log.exception("Collect: post_record failed for %s", event_id)
-
-        # 6. Refresh + navigate. The classification pass rides every
-        # ingest (spec/58 §1 — media sits in the system long before
-        # Edit); quiet, off-thread, idempotent.
-        self.gateway.refresh_index_entry(event_id)
-        # spec/82 §A.1 — per-day-add milestone snapshot fires on the
-        # *done* signal (spec/84 §5), not at OK. The trip workflow is
-        # "add a day, decide on it; add the next day, decide on it" —
-        # every added day is the natural rollback point. Snapshot
-        # failures are logged + ignored (the gateway helper never
-        # raises) so the import doesn't fail because the backup volume
-        # hiccuped.
-        snap = self.gateway.snapshot_event(event_id, reason="milestone")
-        if snap is not None:
-            log.info(
-                "spec/82 §A.1: per-day-add milestone snapshot saved at %s",
-                snap)
-        self._spawn_classify_pass(event_id)
-        warnings_line = ""
-        if ingest_result.warnings:
-            warnings_line = tr(
-                "\n\n{w} warning(s) — check the log."
-            ).replace("{w}", str(len(ingest_result.warnings)))
-        cancel_line = (
-            tr(" · cancelled mid-run") if result.cancelled else "")
-        ok_msg = QMessageBox(self)
-        ok_msg.setWindowTitle(tr("Import complete"))
-        ok_msg.setIcon(QMessageBox.Icon.NoIcon)
-        ok_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        # Capture-time correction lives on item.capture_time_corrected
-        # in event.db (spec/52 §8.1); the original EXIF is never mutated,
-        # so the "EXIF time(s) corrected" line that used to live here was
-        # misleading (Nelson 2026-06-09).
-        dup_line = ""
-        if ingest_result.photos_duplicates:
-            # Backfill sources often carry the same file in several
-            # subtrees (legacy captured + selected copies) — say so
-            # plainly instead of burying it in the log (spec/57 §4.3).
-            dup_line = tr(
-                " · {d} duplicate(s) ingested once"
-            ).replace("{d}", str(ingest_result.photos_duplicates))
-        ok_msg.setText(tr(
-            "{copied} photo(s) copied · {quar} quarantined{dups}{cancel}{warns}"
-        )
-        .replace("{copied}", str(ingest_result.photos_copied))
-        .replace("{quar}", str(ingest_result.photos_quarantined))
-        .replace("{dups}", dup_line)
-        .replace("{cancel}", cancel_line)
-        .replace("{warns}", warnings_line))
-        ok_msg.exec()
-        self._on_event_created(event_id)
-        if land_phase and self._current_event_id == event_id:
-            # Backfill wizard landing (spec/57 §4.3) — straight to the
-            # level's phase surface, the dashboard beneath for Back.
-            self._on_phase_activated(land_phase)
+            # 6. Refresh + navigate. The classification pass rides every
+            # ingest (spec/58 §1 — media sits in the system long before
+            # Edit); quiet, off-thread, idempotent.
+            self.gateway.refresh_index_entry(event_id)
+            # spec/82 §A.1 — per-day-add milestone snapshot fires on the
+            # *done* signal (spec/84 §5), not at OK. The trip workflow
+            # is "add a day, decide on it; add the next day, decide on
+            # it" — every added day is the natural rollback point.
+            # Snapshot failures are logged + ignored (the gateway
+            # helper never raises) so the import doesn't fail because
+            # the backup volume hiccuped.
+            snap = self.gateway.snapshot_event(
+                event_id, reason="milestone")
+            if snap is not None:
+                log.info(
+                    "spec/82 §A.1: per-day-add milestone snapshot "
+                    "saved at %s", snap)
+            self._spawn_classify_pass(event_id)
+            warnings_line = ""
+            if ingest_result.warnings:
+                warnings_line = tr(
+                    "\n\n{w} warning(s) — check the log."
+                ).replace("{w}", str(len(ingest_result.warnings)))
+            cancel_line = (
+                tr(" · cancelled mid-run")
+                if result.cancelled else "")
+            ok_msg = QMessageBox(self)
+            ok_msg.setWindowTitle(tr("Import complete"))
+            ok_msg.setIcon(QMessageBox.Icon.NoIcon)
+            ok_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            # Capture-time correction lives on
+            # item.capture_time_corrected in event.db (spec/52 §8.1);
+            # the original EXIF is never mutated, so the "EXIF time(s)
+            # corrected" line that used to live here was misleading
+            # (Nelson 2026-06-09).
+            dup_line = ""
+            if ingest_result.photos_duplicates:
+                # Backfill sources often carry the same file in several
+                # subtrees (legacy captured + selected copies) — say so
+                # plainly instead of burying it in the log
+                # (spec/57 §4.3).
+                dup_line = tr(
+                    " · {d} duplicate(s) ingested once"
+                ).replace("{d}", str(ingest_result.photos_duplicates))
+            ok_msg.setText(tr(
+                "{copied} photo(s) copied · {quar} quarantined"
+                "{dups}{cancel}{warns}"
+            )
+            .replace("{copied}", str(ingest_result.photos_copied))
+            .replace("{quar}", str(ingest_result.photos_quarantined))
+            .replace("{dups}", dup_line)
+            .replace("{cancel}", cancel_line)
+            .replace("{warns}", warnings_line))
+            ok_msg.exec()
+            self._on_event_created(event_id)
+            if land_phase and self._current_event_id == event_id:
+                # Backfill wizard landing (spec/57 §4.3) — straight to
+                # the level's phase surface, the dashboard beneath for
+                # Back.
+                self._on_phase_activated(land_phase)
+        finally:
+            # spec/84 §5 — clear the per-event ingest-in-progress flag
+            # in EVERY path (success / crash / partial-cancel / zero-
+            # media-cleanup), so the tile reappears + Pick unlocks +
+            # the second-enqueue gate releases.
+            self._mark_ingest_finished(event_id)
 
     def _record_collect_in_event_db(
         self, *, event_id, event_root, jobs, edited_rows,
@@ -5477,6 +5587,20 @@ class MainWindow(QMainWindow):
             self._open_collect(self._current_event_id)
             return
         if phase == "pick" and self._current_event_id is not None:
+            # spec/84 §5 — Pick is gated while a background ingest is
+            # still copying files into this event: the `item` rows
+            # aren't written until the queue's commit closure runs, so
+            # Pick would show zero (or partial) decisions and confuse
+            # the user. Warn + stay on Phases; the queue's progress
+            # line above already shows the import.
+            if self.is_ingesting(self._current_event_id):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, tr("Still importing"),
+                    tr("This event is still importing — try Pick again "
+                       "when the import finishes."),
+                )
+                return
             # spec/65 §3.5 — Pick lands on the Days Lists "pick where to
             # start" dashboard first. Building the per-day snapshots is
             # cheap (two GROUP BYs + one bucket_cache read per day).

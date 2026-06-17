@@ -36,16 +36,31 @@ from mira.ui.shell.main_window import MainWindow
 
 @pytest.fixture
 def collect_main_window(qapp, tmp_path, monkeypatch):
-    """``MainWindow`` against a tmp gateway, with a photos base under
-    the temp dir so the first-run prompt stays quiet (mirrors
-    test_main_window_menu's fixture)."""
+    """``MainWindow`` against a tmp gateway with explicit settings +
+    index paths. Prime the user-store first so the legacy import
+    retires the empty defaults before tests add real data (otherwise
+    the lazy import retires the test's just-written
+    events_index.json mid-flow)."""
+    from mira.gateway.index import EventsIndex
+    from mira.settings.repo import SettingsRepo
+    user_data = tmp_path / "user_data"
+    user_data.mkdir()
     base = tmp_path / "lib"
     base.mkdir()
     monkeypatch.setattr(
-        "mira.paths.user_data_dir", lambda: tmp_path / "user_data")
+        "mira.paths.user_data_dir", lambda: user_data)
     monkeypatch.setattr(
-        "core.settings.user_data_dir", lambda: tmp_path / "user_data")
-    gw = Gateway()
+        "core.settings.user_data_dir", lambda: user_data)
+    monkeypatch.setattr(
+        "mira.gateway.index.user_data_dir", lambda: user_data)
+    monkeypatch.setattr(
+        "mira.settings.repo.user_data_dir", lambda: user_data)
+    gw = Gateway(
+        settings=SettingsRepo(user_data / "settings.json"),
+        index=EventsIndex(user_data / "events_index.json"),
+        user_store_path=user_data / "mira.db",
+    )
+    _ = gw.user_store
     gw.settings.update(photos_base_path=str(base))
     w = MainWindow(gateway=gw)
     yield w

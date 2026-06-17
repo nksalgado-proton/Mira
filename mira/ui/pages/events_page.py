@@ -94,6 +94,13 @@ class EventsPage(QWidget):
         super().__init__(parent)
         self.gateway = gateway
         self._card_data_by_id: Dict[str, EventCardData] = {}
+        # spec/84 §5 — events with a background ingest still copying
+        # don't surface a tile here; the record exists (the queue's
+        # commit closure needs to write `item` rows against it) but
+        # the user shouldn't see a half-imported tile. MainWindow
+        # pushes the set in/out via :meth:`set_ingest_in_progress_ids`
+        # when the IngestJob lands on / leaves the shared batch queue.
+        self._ingest_in_progress_ids: set[str] = set()
         self._build_ui()
         self.refresh()
 
@@ -599,6 +606,14 @@ class EventsPage(QWidget):
             log.exception("EventsPage.refresh failed; keeping prior list")
         self._apply_filter()
 
+    def set_ingest_in_progress_ids(self, ids) -> None:
+        """spec/84 §5 — events with an active background ingest stay
+        OFF the tile grid until the ingest finishes. MainWindow pushes
+        the current set in whenever it changes; the page re-filters so
+        the change is visible immediately."""
+        self._ingest_in_progress_ids = set(ids or ())
+        self._apply_filter()
+
     def setEventsForPreview(
         self,
         cards: List[EventCardData],
@@ -644,6 +659,12 @@ class EventsPage(QWidget):
         )
         filtered = []
         for cd in self._card_data_by_id.values():
+            # spec/84 §5 — a background ingest is still copying into
+            # this event; hide the tile until the queue's
+            # ``finished_result`` fires and ``set_ingest_in_progress_ids``
+            # removes the id.
+            if cd.event_id in self._ingest_in_progress_ids:
+                continue
             if query and query not in (cd.name or "").lower():
                 continue
             if status_idx == 1 and cd.is_closed:
@@ -672,15 +693,19 @@ class EventsPage(QWidget):
             filtered.sort(key=lambda c: (c.name or "").lower())
         elif sort_idx == 3:
             filtered.sort(key=lambda c: c.total_days, reverse=True)
-        # Toolbar chips — totals across ALL events (not the filtered
-        # subset). The "showing N of M" label carries the filtered-subset
-        # truth, so the chips stay stable as the user toggles filters.
-        total = len(self._card_data_by_id)
-        open_n = sum(1 for c in self._card_data_by_id.values() if not c.is_closed)
+        # Toolbar chips — totals across ALL visible events (not the
+        # search/status-filtered subset). spec/84 §5 — events that are
+        # mid-ingest aren't visible, so exclude them from the chips too
+        # (else "5 open" while the grid shows 4 reads as wrong). The
+        # "showing N of M" label carries the search/status-filter truth.
+        visible_cards = [
+            c for c in self._card_data_by_id.values()
+            if c.event_id not in self._ingest_in_progress_ids
+        ]
+        total = len(visible_cards)
+        open_n = sum(1 for c in visible_cards if not c.is_closed)
         closed_n = total - open_n
-        days_n = sum(
-            c.total_days or 0 for c in self._card_data_by_id.values()
-        )
+        days_n = sum(c.total_days or 0 for c in visible_cards)
         self._stat_open.setText(f"{open_n} open")
         self._stat_closed.setText(f"{closed_n} closed")
         self._stat_days.setText(f"{days_n} days")

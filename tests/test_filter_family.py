@@ -61,10 +61,12 @@ class _StubHost:
 # --------------------------------------------------------------------------- #
 
 
-def test_cross_event_catalogue_has_15_dimensions_in_order(qapp):
+def test_cross_event_catalogue_has_20_dimensions_in_order(qapp):
+    """spec/83 §2 + spec/86 — 15 base dimensions + 5 event-level
+    (event_type / event_subtype / scope / participants / event_date)."""
     cat = build_cross_event_catalogue(_StubHost())
     assert tuple(cat.keys()) == CROSS_EVENT_DIM_IDS
-    assert len(cat) == 15
+    assert len(cat) == 20
 
 
 def test_cross_event_catalogue_covers_every_filter_key(qapp):
@@ -85,7 +87,34 @@ def test_cross_event_catalogue_covers_every_filter_key(qapp):
         "focal_min", "focal_max",
         "capture_from", "capture_to",
         "country_codes", "cities",
+        # spec/86 — event-level qualifiers + derived span.
+        "event_types", "event_subtypes", "experience_types",
+        "participants",
+        "event_from", "event_to",
     }
+
+
+def test_event_group_lands_between_curatorial_and_camera_lens(qapp):
+    """spec/86 §6 — Event group slots between Curatorial and Camera & lens
+    in the menu order so the event predicate appears as a natural narrowing
+    pass before the EXIF / hardware facets."""
+    from mira.ui.pages._filter_family import GROUP_EVENT
+    cat = build_cross_event_catalogue(_StubHost())
+    event_dims = [d for d in cat.values() if d.group == GROUP_EVENT]
+    assert {d.dim_id for d in event_dims} == {
+        "event_type", "event_subtype", "scope",
+        "participants", "event_date",
+    }
+    # GROUP_ORDER places Event after Curatorial, before Camera & lens.
+    assert GROUP_ORDER.index(GROUP_EVENT) == GROUP_ORDER.index(GROUP_CURATORIAL) + 1
+    assert GROUP_ORDER.index(GROUP_EVENT) < GROUP_ORDER.index(GROUP_CAMERA_LENS)
+
+
+def test_event_scope_catalogue_stays_thin(qapp):
+    """spec/86 §2 — the Event group is added to the cross-event catalogue
+    ONLY. The event-scope dialog stays at Style + media type (spec/81 §2.1)."""
+    cat = build_event_scope_catalogue(_StubHost())
+    assert set(cat.keys()) == {"styles", "media_type"}
 
 
 def test_event_scope_catalogue_is_thin(qapp):
@@ -115,9 +144,11 @@ def test_build_catalogue_subset_skips_unknown_ids(qapp):
 # --------------------------------------------------------------------------- #
 
 
-def test_group_order_has_four_buckets(qapp):
+def test_group_order_has_five_buckets(qapp):
+    """spec/86 §6 — Event group sits between Curatorial and Camera & lens."""
+    from mira.ui.pages._filter_family import GROUP_EVENT
     assert GROUP_ORDER == (
-        GROUP_CURATORIAL, GROUP_CAMERA_LENS,
+        GROUP_CURATORIAL, GROUP_EVENT, GROUP_CAMERA_LENS,
         GROUP_SETTINGS, GROUP_WHEN_WHERE,
     )
 

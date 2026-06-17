@@ -307,6 +307,155 @@ def test_color_label_facet(qapp):
 
 
 # --------------------------------------------------------------------------- #
+# spec/86 — Event group dimensions
+# --------------------------------------------------------------------------- #
+
+
+_EVENT_INVENTORIES = CrossEventInventories.from_dict({
+    "event_types":      [("trip", 5), ("occasion", 2), ("project", 1)],
+    "event_subtypes":   [("wildlife trip", 4), ("wedding", 2),
+                         ("city break", 1)],
+    "experience_types": [("expedition_discovery", 4),
+                         ("milestones_traditions", 2),
+                         ("urban_culture", 1)],
+    "participants":     [("Solo", 3), ("With Family", 2),
+                         ("With Friends", 2), ("With Kids", 2),
+                         ("Couple", 1)],
+})
+
+
+def test_event_type_filter_lands_event_types_list(qapp):
+    """The Event type dim writes ``event_types`` (plural) — matches the
+    spec/86 resolver key."""
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("event_type")
+    _multi_check(d, "event_types", "trip", "occasion")
+    assert d.info().filters == {"event_types": ["trip", "occasion"]}
+    d.deleteLater()
+
+
+def test_event_subtype_filter_lands_event_subtypes_list(qapp):
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("event_subtype")
+    _multi_check(d, "event_subtypes", "wildlife trip")
+    assert d.info().filters == {"event_subtypes": ["wildlife trip"]}
+    d.deleteLater()
+
+
+def test_scope_filter_lands_experience_types_list(qapp):
+    """The Scope dim writes ``experience_types`` — the user-facing label
+    is Scope per the brief; the column / key is the spec/64
+    experience_type."""
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("scope")
+    _multi_check(d, "experience_types",
+                 "expedition_discovery", "urban_culture")
+    f = d.info().filters
+    assert f["experience_types"] == ["expedition_discovery", "urban_culture"]
+    d.deleteLater()
+
+
+def test_participants_filter_lands_participants_list(qapp):
+    """spec/86 §8 lean — participants is any-of overlap. The dialog
+    writes the selected list; the resolver does the json_each expansion."""
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("participants")
+    _multi_check(d, "participants", "With Family", "With Kids")
+    assert d.info().filters == {
+        "participants": ["With Family", "With Kids"],
+    }
+    d.deleteLater()
+
+
+def test_event_date_filter_lands_event_from_to(qapp):
+    """spec/86 §5 — event-date keys are ``event_from`` / ``event_to``,
+    distinct from capture-date's ``capture_from`` / ``capture_to``."""
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("event_date")
+    from mira.ui.pages.new_cross_event_dc_dialog import _DateRangeFacet
+    facet = [f for f in d._facets if isinstance(f, _DateRangeFacet)][0]
+    facet._from.setText("2024-01-01")
+    facet._to.setText("2025-12-31")
+    f = d.info().filters
+    assert f["event_from"] == "2024-01-01"
+    assert f["event_to"] == "2025-12-31"
+    assert "capture_from" not in f                 # distinct from capture date
+    d.deleteLater()
+
+
+def test_capture_date_still_present_alongside_event_date(qapp):
+    """spec/86 §5 — capture date stays. Both facets live in their own
+    dimensions and answer different questions."""
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    d._name.setText("x")
+    d.add_filter_dimension("capture_date")
+    d.add_filter_dimension("event_date")
+    assert "capture_date" in d.active_dimension_ids()
+    assert "event_date" in d.active_dimension_ids()
+    # Two separate _DateRangeFacet instances on the dialog.
+    from mira.ui.pages.new_cross_event_dc_dialog import _DateRangeFacet
+    date_facets = [f for f in d._facets if isinstance(f, _DateRangeFacet)]
+    assert len(date_facets) == 2
+    d.deleteLater()
+
+
+def test_event_group_dimensions_rehydrate(qapp):
+    """An existing DC with event filters opens one row per dim; values
+    round-trip through the editor."""
+    existing = CrossEventDcInfo(
+        name="my_event_dc",
+        expr=[["+", cr.BASE_EXPORTED]],
+        filters={
+            "event_types": ["trip"],
+            "experience_types": ["expedition_discovery"],
+            "participants": ["Solo"],
+            "event_from": "2024-01-01",
+            "event_to": "2024-12-31",
+        },
+    )
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES,
+        dc_probe=lambda _e, _f: 0,
+        existing=existing,
+    )
+    active = d.active_dimension_ids()
+    # Catalogue order: event_type → scope → participants → event_date.
+    assert active == ["event_type", "scope", "participants", "event_date"]
+    info = d.info()
+    assert info.filters["event_types"] == ["trip"]
+    assert info.filters["experience_types"] == ["expedition_discovery"]
+    assert info.filters["participants"] == ["Solo"]
+    assert info.filters["event_from"] == "2024-01-01"
+    assert info.filters["event_to"] == "2024-12-31"
+    d.deleteLater()
+
+
+def test_event_group_dimensions_in_menu_after_curatorial(qapp):
+    """spec/86 §6 — Event group sits between Curatorial and Camera & lens."""
+    from mira.ui.pages._filter_family import GROUP_EVENT
+    d = NewCrossEventDcDialog(
+        inventories=_EVENT_INVENTORIES, dc_probe=lambda _e, _f: 0)
+    event_dims = [dim for dim in d._dimensions.values()
+                  if dim.group == GROUP_EVENT]
+    assert {d.dim_id for d in event_dims} == {
+        "event_type", "event_subtype", "scope",
+        "participants", "event_date",
+    }
+    d.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
 # Composition — multiple facets fold into one dict
 # --------------------------------------------------------------------------- #
 
@@ -543,8 +692,8 @@ def test_dimension_catalogue_covers_every_spec32_filter_key(qapp):
         for k in dim.filter_keys:
             assert k not in keys_to_dims, f"{k} owned by two dimensions"
             keys_to_dims[k] = dim_id
-    # spec/32 §2 catalogue — every filter the dialog speaks.
-    spec32 = {
+    # spec/32 §2 + spec/86 catalogue — every filter the dialog speaks.
+    spec32_plus_86 = {
         "styles", "media_type", "stars_min", "color_labels", "flag",
         "camera_ids", "lens_models", "flash_fired",
         "iso_min", "iso_max",
@@ -553,8 +702,12 @@ def test_dimension_catalogue_covers_every_spec32_filter_key(qapp):
         "focal_min", "focal_max",
         "capture_from", "capture_to",
         "country_codes", "cities",
+        # spec/86 — event-level qualifiers + derived span.
+        "event_types", "event_subtypes", "experience_types",
+        "participants",
+        "event_from", "event_to",
     }
-    assert set(keys_to_dims.keys()) == spec32
+    assert set(keys_to_dims.keys()) == spec32_plus_86
     d.deleteLater()
 
 

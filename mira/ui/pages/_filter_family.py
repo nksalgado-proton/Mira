@@ -41,20 +41,26 @@ from mira.ui.design import ghost_button
 from mira.ui.i18n import tr
 
 
-# spec/83 §2 / spec/32 §2 — the four groups in the Add-filter menu.
+# spec/83 §2 / spec/32 §2 — the groups in the Add-filter menu. spec/86 §6
+# slots GROUP_EVENT between Curatorial and Camera & lens — event-level
+# predicates are a natural narrowing pass before the EXIF / hardware
+# facets, and they prune whole events first (spec/86 §1 efficiency).
 GROUP_CURATORIAL  = "curatorial"
+GROUP_EVENT       = "event"
 GROUP_CAMERA_LENS = "camera_lens"
 GROUP_SETTINGS    = "settings"
 GROUP_WHEN_WHERE  = "when_where"
 
 GROUP_ORDER: Tuple[str, ...] = (
-    GROUP_CURATORIAL, GROUP_CAMERA_LENS, GROUP_SETTINGS, GROUP_WHEN_WHERE,
+    GROUP_CURATORIAL, GROUP_EVENT,
+    GROUP_CAMERA_LENS, GROUP_SETTINGS, GROUP_WHEN_WHERE,
 )
 
 
 def group_label(group_id: str) -> str:
     return {
         GROUP_CURATORIAL:  tr("Curatorial"),
+        GROUP_EVENT:       tr("Event"),
         GROUP_CAMERA_LENS: tr("Camera & lens"),
         GROUP_SETTINGS:    tr("Settings"),
         GROUP_WHEN_WHERE:  tr("When & where"),
@@ -167,6 +173,37 @@ def build_cross_event_catalogue(host: Any) -> Dict[str, FilterDimension]:
             (tr("Not flagged"), False),
         ]))))
 
+    # Event-level qualifiers (spec/86). Inventory comes from
+    # ``available_event_types`` etc. (slice 2) — fixed-vocab dims still go
+    # through the adaptive editor so a vocabulary that grows past
+    # INLINE_PICKER_THRESHOLD picks up the picker automatically.
+    # Filter-key naming is plural (event_types) to match the
+    # camera_ids / lens_models / country_codes pattern.
+    reg(FilterDimension(
+        "event_type", tr("Event type"),
+        GROUP_EVENT, ("event_types",),
+        lambda: host._register_facet(host._make_multi("event_types"))))
+    reg(FilterDimension(
+        "event_subtype", tr("Event subtype"),
+        GROUP_EVENT, ("event_subtypes",),
+        lambda: host._register_facet(host._make_multi("event_subtypes"))))
+    reg(FilterDimension(
+        "scope", tr("Scope"),
+        GROUP_EVENT, ("experience_types",),
+        lambda: host._register_facet(host._make_multi("experience_types"))))
+    reg(FilterDimension(
+        "participants", tr("Participants"),
+        GROUP_EVENT, ("participants",),
+        lambda: host._register_facet(host._make_multi("participants"))))
+    # spec/86 §5 — event-date overlap range. Kept BESIDE the existing
+    # spec/32 §2b capture-date facet (they answer different questions);
+    # the parameterized _make_date_range writes the right key pair.
+    reg(FilterDimension(
+        "event_date", tr("Event date"),
+        GROUP_EVENT, ("event_from", "event_to"),
+        lambda: host._register_facet(
+            host._make_date_range("event_from", "event_to"))))
+
     # Camera & lens
     reg(FilterDimension(
         "camera_ids", tr("Camera"),
@@ -232,9 +269,11 @@ def build_cross_event_catalogue(host: Any) -> Dict[str, FilterDimension]:
 
 
 # The dim_ids of the cross-event catalogue, in display order — useful for
-# tests + future widgets to assert / iterate.
+# tests + future widgets to assert / iterate. spec/86 adds the Event group
+# after Curatorial.
 CROSS_EVENT_DIM_IDS: Tuple[str, ...] = (
     "styles", "media_type", "stars", "color_labels", "flag",
+    "event_type", "event_subtype", "scope", "participants", "event_date",
     "camera_ids", "lens_models", "flash",
     "iso", "aperture", "shutter", "focal",
     "capture_date", "country_codes", "cities",

@@ -456,12 +456,25 @@ class _StarsMinFacet(_Facet):
 
 
 class _DateRangeFacet(_Facet):
-    """Capture date range — two ISO-date text inputs. Empty = no constraint
-    on that end. Validation is light (any non-empty string passes through;
-    the SQL layer's ``BETWEEN`` does the real work)."""
+    """ISO date range — two text inputs. Empty = no constraint on that end.
+    Validation is light (any non-empty string passes through; the SQL
+    layer's ``BETWEEN`` / overlap clauses do the real work).
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    ``min_key`` / ``max_key`` parameterize the ``filters_json`` keys so
+    the same widget drives both the spec/32 §2b capture-date facet
+    (``capture_from`` / ``capture_to``) and the spec/86 §5 event-date
+    facet (``event_from`` / ``event_to``)."""
+
+    def __init__(
+        self,
+        *,
+        min_key: str = "capture_from",
+        max_key: str = "capture_to",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._min_key = min_key
+        self._max_key = max_key
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -478,16 +491,16 @@ class _DateRangeFacet(_Facet):
         f = self._from.text().strip()
         t = self._to.text().strip()
         if f:
-            out["capture_from"] = f
+            out[self._min_key] = f
         if t:
-            out["capture_to"] = t
+            out[self._max_key] = t
         return out
 
     def set_value(self, fragment: Dict[str, Any]) -> None:
         self._from.blockSignals(True)
         self._to.blockSignals(True)
-        self._from.setText(fragment.get("capture_from", "") or "")
-        self._to.setText(fragment.get("capture_to", "") or "")
+        self._from.setText(fragment.get(self._min_key, "") or "")
+        self._to.setText(fragment.get(self._max_key, "") or "")
         self._from.blockSignals(False)
         self._to.blockSignals(False)
         self.changed.emit()
@@ -867,8 +880,12 @@ class NewCrossEventDcDialog(QDialog):
     def _make_stars_min(self) -> _StarsMinFacet:
         return _StarsMinFacet()
 
-    def _make_date_range(self) -> _DateRangeFacet:
-        return _DateRangeFacet()
+    def _make_date_range(
+        self,
+        min_key: str = "capture_from",
+        max_key: str = "capture_to",
+    ) -> _DateRangeFacet:
+        return _DateRangeFacet(min_key=min_key, max_key=max_key)
 
     # ----- live updates --------------------------------------------------- #
 

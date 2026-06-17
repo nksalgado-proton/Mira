@@ -12,6 +12,7 @@ mirrors it. Setting it rewrites both together so they never drift.
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 from core.path_builder import ensure_event_tree
 from dataclasses import dataclass, field
@@ -189,6 +190,12 @@ class Gateway:
         )
         self._installation_profile = installation_profile
         self._user_store: Optional[UserStore] = None
+        # spec/82 §A.3 — dirty bit for the user-store snapshot at
+        # app close. Captured on first access so we know whether
+        # this session wrote anything to mira.db; ``-1`` flags "the
+        # store was never opened" so the close-if-dirty path
+        # short-circuits without a snapshot.
+        self._user_store_changes_at_open: int = -1
 
     # ----- the user-level data store (spec/53) -------------------------- #
 
@@ -219,18 +226,44 @@ class Gateway:
         from mira.user_store.import_legacy import import_legacy_state
 
         if self._user_store_path.is_file():
+            # spec/82 §A.3 — pre-migration milestone snapshot. Read
+            # the on-disk schema version BEFORE :meth:`UserStore.open`
+            # (which runs ``migrate`` as a side-effect); if it's
+            # behind our build, a safety snapshot lets the user roll
+            # back if the migration breaks something. Failure here
+            # is logged + ignored — open continues regardless because
+            # blocking on a backup miss would be worse than a missing
+            # snapshot.
+            try:
+                from core.db_backup import _read_schema_version
+                from mira.user_store.schema import SCHEMA_VERSION as _TARGET
+                current_version = _read_schema_version(self._user_store_path)
+                if current_version is not None and current_version < _TARGET:
+                    self._snapshot_user_store_path(
+                        self._user_store_path,
+                        reason="milestone",
+                        why="pre-migration",
+                    )
+            except Exception as exc:                       # noqa: BLE001
+                log.warning(
+                    "spec/82 §A.3 pre-migration snapshot probe failed: "
+                    "%s", exc)
             self._user_store = UserStore.open(self._user_store_path)
-            return self._user_store
-
-        # Fresh-create path. The importer's step-4 retire is idempotent — a
-        # missing legacy file is a no-op.
-        self._user_store = UserStore.create(self._user_store_path)
-        import_legacy_state(
-            self._user_store,
-            settings_path=self.settings.path,
-            events_index_path=self.index.path,
-            profile_name=self._installation_profile,
-        )
+        else:
+            # Fresh-create path. The importer's step-4 retire is idempotent — a
+            # missing legacy file is a no-op.
+            self._user_store = UserStore.create(self._user_store_path)
+            import_legacy_state(
+                self._user_store,
+                settings_path=self.settings.path,
+                events_index_path=self.index.path,
+                profile_name=self._installation_profile,
+            )
+        try:
+            self._user_store_changes_at_open = (
+                self._user_store.conn.total_changes)
+        except (AttributeError, sqlite3.ProgrammingError):
+            self._user_store_changes_at_open = 0
         return self._user_store
 
     def close(self) -> None:
@@ -905,6 +938,87 @@ class Gateway:
         if base is None:
             return None
         return base / BACKUPS_DIR_NAME / event_id
+
+    def user_store_backups_dir(self) -> Optional[Path]:
+        """``<library_root>/.mira-backups/user-store/`` — spec/82 §A.3.
+
+        The user-data store gets the same ``db_backup`` snapshot
+        primitive as the event dbs; it lives alongside them under
+        the library root so a NAS RAID/snapshot covers both layers.
+        Returns ``None`` when the library has no anchor yet
+        (pre-wizard) — callers treat that as "skip the snapshot".
+        """
+        base = self.photos_base_path()
+        if base is None:
+            return None
+        return base / BACKUPS_DIR_NAME / "user-store"
+
+    def _snapshot_user_store_path(
+        self,
+        db_path: Path,
+        *,
+        reason: str,
+        why: str,
+    ) -> Optional[Path]:
+        """Inner helper: actually run :func:`core.db_backup.snapshot`
+        against ``db_path``. Split out so the pre-migration probe
+        (which runs BEFORE :attr:`user_store` finishes opening) can
+        snapshot without recursing back into the property."""
+        backups_dir = self.user_store_backups_dir()
+        if backups_dir is None:
+            return None
+        try:
+            from core import db_backup
+            snap = db_backup.snapshot(
+                db_path, backups_dir,
+                reason=reason,
+                app_version=_live_app_version(),
+            )
+            log.info(
+                "spec/82 §A.3 user-store snapshot saved at %s (%s)",
+                snap, why)
+            return snap
+        except Exception as exc:                           # noqa: BLE001
+            log.warning(
+                "spec/82 §A.3 user-store snapshot FAILED (%s): %s",
+                why, exc)
+            return None
+
+    def snapshot_user_store(
+        self,
+        *,
+        reason: str = "milestone",
+        only_if_dirty: bool = False,
+    ) -> Optional[Path]:
+        """Take a Part-A safety snapshot of the user-data store
+        (spec/82 §A.3). Returns the snapshot's path, or ``None`` when
+        the library has no anchor / no user_store has been opened /
+        the dirty gate blocked it.
+
+        ``only_if_dirty=True`` is the app-close path: skip the
+        snapshot if no writes happened this session (the on-disk
+        mira.db is identical to the previous snapshot's source, so a
+        new snapshot would be redundant). ``False`` is the manual /
+        pre-risky-op path.
+        """
+        if self._user_store is None or not self._user_store_path.exists():
+            return None
+        if only_if_dirty:
+            try:
+                if (
+                    self._user_store.conn.total_changes
+                    <= self._user_store_changes_at_open
+                ):
+                    return None
+            except (AttributeError, sqlite3.ProgrammingError):
+                # If we can't read total_changes, default to snapshotting —
+                # a redundant snapshot is cheap; a missed one isn't.
+                pass
+        return self._snapshot_user_store_path(
+            self._user_store_path,
+            reason=reason,
+            why="app-close" if only_if_dirty else "manual",
+        )
 
     def snapshot_event(
         self,

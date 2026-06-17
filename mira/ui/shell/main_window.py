@@ -305,6 +305,18 @@ class MainWindow(QMainWindow):
         )
         self._periodic_snapshotter.start()
 
+        # spec/82 §A.3 — snapshot the user-data store on quit if it
+        # changed this session. mira.db carries settings, the library
+        # index and templates; the same db_backup primitive that
+        # protects event.db protects it. Ride the existing aboutToQuit
+        # signal (already used by the writer-lock teardown) — the
+        # gateway is still alive at this point so the dirty check has
+        # a live connection.
+        from PyQt6.QtWidgets import QApplication as _QApp
+        _qapp = _QApp.instance()
+        if _qapp is not None:
+            _qapp.aboutToQuit.connect(self._snapshot_user_store_on_quit)
+
         row.addWidget(self.page_stack, stretch=1)
         self.setCentralWidget(central)
         self._build_menu_bar()
@@ -527,6 +539,16 @@ class MainWindow(QMainWindow):
             app_menu, tr("&Settings…"), self._open_settings,
             shortcut="Ctrl+,",
             tooltip=tr("Open the app settings dialog."))
+        # spec/82 §A.3 — restore the user-data store (settings,
+        # library index, templates) from a snapshot. Lives next to
+        # Settings because the two share a topic; the per-event
+        # restore lives on the Event menu.
+        self._add_menu_action(
+            app_menu, tr("Restore &user data…"),
+            self._open_restore_user_store,
+            tooltip=tr(
+                "Roll back settings, library index and templates "
+                "to an earlier snapshot."))
         app_menu.addSeparator()
         self._add_menu_action(
             app_menu, tr("A&udit…"),
@@ -1885,6 +1907,80 @@ class MainWindow(QMainWindow):
             ).exec()
             return False
         return True
+
+    def _snapshot_user_store_on_quit(self) -> None:
+        """spec/82 §A.3 close-if-dirty hook for the user-data store.
+
+        Connected to :attr:`QApplication.aboutToQuit` — runs while
+        the gateway is still alive so the dirty check has a live
+        ``UserStore`` connection. Failures are logged + swallowed;
+        a snapshot miss is far less bad than aborting shutdown.
+        """
+        try:
+            snap = self.gateway.snapshot_user_store(only_if_dirty=True)
+            if snap is not None:
+                log.info(
+                    "spec/82 §A.3 user-store snapshot on quit: %s",
+                    snap)
+        except Exception as exc:                           # noqa: BLE001
+            log.warning(
+                "spec/82 §A.3 user-store snapshot on quit FAILED: %s",
+                exc)
+
+    def _open_restore_user_store(self) -> None:
+        """spec/82 §A.3 — Restore user data… handler.
+
+        Opens the standard :class:`RestoreBackupDialog` but pointed
+        at the user-store backups dir (one tier above per-event
+        backups). The user-data store is the settings + library
+        index + templates; restoring it rolls THE APP back, not a
+        single event.
+
+        The chosen snapshot is swapped in over the LIVE mira.db
+        path (``Gateway._user_store_path``); the user is told the
+        app must restart to re-open against the restored file —
+        the live ``UserStore`` connection still points at the
+        replaced bytes until then.
+        """
+        from mira.ui.design.dialogs import MessageDialog
+        from mira.ui.pages.restore_backup_dialog import RestoreBackupDialog
+        backups_dir = self.gateway.user_store_backups_dir()
+        if backups_dir is None:
+            MessageDialog.error(
+                tr("Can't restore"),
+                tr(
+                    "Mira couldn't find a library folder yet. Finish "
+                    "the wizard first so user-data backups have a "
+                    "home."
+                ),
+                parent=self,
+            ).exec()
+            return
+        # Reach the live mira.db path via the gateway (private but
+        # stable since spec/53).
+        db_path = self.gateway._user_store_path
+        dlg = RestoreBackupDialog(
+            event_name=tr("user data"),
+            backups_dir=backups_dir,
+            db_path=db_path,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            saved = dlg.restored_corrupt_path()
+            saved_line = ""
+            if saved is not None:
+                saved_line = tr(
+                    "\n\nThe pre-restore copy is saved at:\n{path}"
+                ).replace("{path}", str(saved))
+            MessageDialog.info(
+                tr("User data restored"),
+                tr(
+                    "User data restored from the chosen snapshot. "
+                    "Restart Mira so it re-opens against the "
+                    "restored file.{saved}"
+                ).replace("{saved}", saved_line),
+                parent=self,
+            ).exec()
 
     def _open_restore_backup(self) -> None:
         """spec/82 §A.4 — manual Restore from backup… for the current

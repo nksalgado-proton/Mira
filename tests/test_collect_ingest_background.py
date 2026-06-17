@@ -250,6 +250,63 @@ def test_collect_copy_all_enqueues_ingest_job_and_does_not_block(
 # --------------------------------------------------------------------------- #
 
 
+def test_copy_work_threads_should_cancel_through_to_run_ingest(
+    collect_main_window, tmp_path, monkeypatch,
+):
+    """spec/84 §6 — the IngestJob's cancel flag MUST reach
+    ``run_ingest``'s ``should_cancel`` parameter so the engine's copy
+    loop can bail at the next file. Pin the wiring; without this hook
+    Cancel would only be observed at the end of the run."""
+    w = collect_main_window
+    event_id = "evt-84-6-wire"
+    event_root = Path(
+        w.gateway.settings.load().photos_base_path) / "wire-event"
+    _make_event_with_one_day(w.gateway, event_id, event_root)
+
+    source = tmp_path / "src" / "IMG.JPG"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"\xff\xd8\xff\xe0FAKEJPG")
+    scan = _make_scan(source)
+
+    captured: dict = {}
+
+    def _spy_run_ingest(jobs, event_root, *, bake_corrections,
+                        progress, should_cancel):
+        captured["should_cancel"] = should_cancel
+        captured["initial_cancel"] = should_cancel()
+        # Return an empty-but-valid result so _finish_collect_ingest
+        # has a payload to commit on.
+        from core.ingest_pipeline import IngestResult as PR
+        return PR()
+
+    monkeypatch.setattr(
+        "core.ingest_pipeline.run_ingest", _spy_run_ingest)
+    monkeypatch.setattr(
+        "mira.ui.ingest.ingest_job.IngestJob", _SyncIngestJob)
+    monkeypatch.setattr(w, "_on_event_created", lambda _eid: None)
+    monkeypatch.setattr(w, "_spawn_classify_pass", lambda _eid: None)
+    monkeypatch.setattr(
+        QMessageBox, "exec",
+        lambda self: QMessageBox.StandardButton.Ok,
+    )
+
+    w._run_collect_copy_all(
+        event_id=event_id, event_root=event_root, scan=scan,
+        edited_rows=_edited_rows(), edited_info={"name": "Test"},
+        existing_info={"name": "Test"},
+        existing_days=[m.TripDay(
+            day_number=1, date="2026-04-01",
+            tz_minutes=0, extras_json='{}')],
+        keep_only_paths=None, calibration_decisions={},
+        post_record=None, land_phase=None,
+    )
+
+    assert captured.get("should_cancel") is not None
+    # The flag starts False; the IngestJob's _is_cancelled callable
+    # threads through to the engine's poll.
+    assert captured["initial_cancel"] is False
+
+
 def test_finish_collect_ingest_skips_db_write_on_worker_crash(
     collect_main_window, tmp_path, monkeypatch,
 ):

@@ -265,6 +265,7 @@ def run_ingest(
     *,
     bake_corrections: bool = True,
     progress: Optional[ProgressCallback] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> IngestResult:
     """Execute one full ingest run for the new event-creation flow.
 
@@ -281,6 +282,15 @@ def run_ingest(
     ``progress`` follows the same shape as
     :data:`core.reconcile_pipeline.ProgressCallback`. The function
     emits one message per 10 photos plus one for the bake batch.
+
+    ``should_cancel`` is polled at the top of every job iteration
+    (and once before the bake batch); when it returns ``True`` the
+    loop breaks at the next file (spec/84 §6). Whatever already
+    landed on disk stays — spec/57 §4.3.1 keeps the partial copies
+    and a re-run picks up the remainder via the same-destination
+    handling below. The host detects the bail via the
+    :data:`per_job_info` size + the warning ``"cancelled mid-run"``
+    pushed onto :attr:`IngestResult.warnings`.
     """
     result = IngestResult()
 
@@ -303,6 +313,18 @@ def run_ingest(
     claimed: Dict[Path, str] = {}
 
     for idx, job in enumerate(jobs, start=1):
+        # spec/84 §6 — Cancel from the UI thread sets a flag the host
+        # polls here. Bail at the next file, leave already-copied bytes
+        # in place; the spec/57 re-run-resumes rule + the same-
+        # destination handling below pick them up on a fresh attempt.
+        if should_cancel is not None and should_cancel():
+            result.warnings.append(IngestWarning(
+                severity="info",
+                message=f"cancelled mid-run after {idx - 1}/{total}",
+            ))
+            log.info(
+                "ingest_pipeline: cancelled mid-run at job %d/%d", idx, total)
+            break
         if idx % 10 == 0 or idx == total:
             _emit(
                 f"Copying {job.source_path.name} ({idx}/{total})",

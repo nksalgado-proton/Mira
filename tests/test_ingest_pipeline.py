@@ -506,3 +506,102 @@ def test_quarantine_name_collisions_divert_too(tmp_path):
     dests = {result.per_job_info[f_a].destination.name,
              result.per_job_info[f_b].destination.name}
     assert dests == {"X.JPG", "X (2).JPG"}
+
+
+# --------------------------------------------------------------------------- #
+# spec/84 §6 — cancel mid-run
+# --------------------------------------------------------------------------- #
+
+
+def test_should_cancel_bails_at_next_job_and_keeps_already_copied(tmp_path):
+    """``should_cancel=True`` after the first file → the loop breaks
+    at the next iteration; the file that already landed survives, and
+    the result reports cancellation via a warning + a smaller
+    ``per_job_info``."""
+    sources = _make_source(tmp_path, "IMG_A.JPG", "IMG_B.JPG", "IMG_C.JPG")
+    jobs = [_job(p) for p in sources]
+    poll_count = {"n": 0}
+
+    def _cancel_after_first():
+        poll_count["n"] += 1
+        # First job runs (n == 1 before its check then break check is
+        # for the second iteration). We want to cancel BEFORE the
+        # second iteration's copy, so return True from the 2nd call.
+        return poll_count["n"] >= 2
+
+    result = run_ingest(
+        jobs, tmp_path / "event",
+        should_cancel=_cancel_after_first,
+    )
+
+    # Exactly one file landed; the other two never got copied.
+    assert result.photos_copied == 1
+    assert len(result.per_job_info) == 1
+    # The cancel warning is recorded for the host to pick up.
+    cancel_warnings = [
+        w for w in result.warnings if "cancelled" in w.message]
+    assert len(cancel_warnings) == 1
+    # The file that DID land is still on disk (spec/57 §4.3.1 — a
+    # re-run will keep it via same-destination handling).
+    landed = next(iter(result.per_job_info.values())).destination
+    assert landed.is_file()
+
+
+def test_should_cancel_called_at_top_of_each_iteration(tmp_path):
+    """``should_cancel`` is polled at the TOP of each iteration —
+    pin the contract so the host can rely on "at most one extra file
+    after Cancel was clicked" rather than per-byte stops."""
+    sources = _make_source(tmp_path, "IMG_A.JPG", "IMG_B.JPG", "IMG_C.JPG")
+    polls = []
+
+    def _record_poll():
+        polls.append(len(polls) + 1)
+        return False
+
+    run_ingest(
+        [_job(p) for p in sources], tmp_path / "event",
+        should_cancel=_record_poll,
+    )
+    # One poll per planned job (3 jobs → 3 polls before the loop body).
+    assert polls == [1, 2, 3]
+
+
+def test_should_cancel_none_is_a_silent_skip(tmp_path):
+    """The default ``should_cancel=None`` keeps the legacy contract —
+    a full run, no polling, no warning."""
+    [source] = _make_source(tmp_path, "IMG.JPG")
+    result = run_ingest([_job(source)], tmp_path / "event")
+    assert result.photos_copied == 1
+    assert not any("cancelled" in w.message for w in result.warnings)
+
+
+def test_resume_after_cancel_keeps_first_copy_finishes_remainder(tmp_path):
+    """spec/57 §4.3.1 — re-running the SAME source after a mid-run
+    cancel keeps the already-copied file in place AND finishes the
+    rest. Tests the full "Import cancelled — re-run to finish" flow."""
+    sources = _make_source(tmp_path, "IMG_A.JPG", "IMG_B.JPG", "IMG_C.JPG")
+    jobs = [_job(p) for p in sources]
+    event_root = tmp_path / "event"
+
+    poll_count = {"n": 0}
+
+    def _cancel_after_first():
+        poll_count["n"] += 1
+        return poll_count["n"] >= 2
+
+    first = run_ingest(
+        jobs, event_root, should_cancel=_cancel_after_first)
+    assert first.photos_copied == 1
+    landed_first_run = first.per_job_info[sources[0]].destination
+
+    # Re-run with no cancel — the first file should be detected as
+    # already-in-place (kept, no divert), the remaining two should
+    # copy fresh.
+    second = run_ingest(jobs, event_root)
+    assert second.photos_copied == 3                    # all three accounted
+    assert second.per_job_info[sources[0]].destination == landed_first_run
+    # No suffix-divert (a brand-new "(2)" sibling would be the symptom
+    # of a broken resume).
+    assert not landed_first_run.with_name(
+        landed_first_run.stem + " (2)" + landed_first_run.suffix
+    ).exists()

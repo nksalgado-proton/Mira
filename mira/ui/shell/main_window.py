@@ -4295,13 +4295,16 @@ class MainWindow(QMainWindow):
         def _copy_work(progress_cb, should_cancel):
             def _engine_progress(message, current=0, total=0):
                 progress_cb(int(current), int(total), str(message))
-            # spec/84 slice 5 will thread ``should_cancel`` into
-            # ``run_ingest``; until then a Cancel mid-copy is observed
-            # by the wrapper only AT the end (the copy still runs to
-            # completion), and the result carries ``cancelled=True``.
+            # spec/84 §6 — the IngestJob's ``cancel()`` flips a flag
+            # the queue's Cancel button raises (BatchProgressLine →
+            # queue.cancel_current() → IngestJob.cancel()). Threading
+            # ``should_cancel`` into ``run_ingest`` lets the copy loop
+            # bail at the next file; already-copied bytes survive on
+            # disk for the spec/57 re-run-resumes rule.
             return run_ingest(
                 jobs, event_root,
                 bake_corrections=False, progress=_engine_progress,
+                should_cancel=should_cancel,
             )
 
         def _on_done(result):
@@ -4485,7 +4488,11 @@ class MainWindow(QMainWindow):
                     "\n\n{w} warning(s) — check the log."
                 ).replace("{w}", str(len(ingest_result.warnings)))
             cancel_line = (
-                tr(" · cancelled mid-run")
+                # spec/84 §6 — partial-cancel hint: the same Collect
+                # OK on the same source will resume against the
+                # already-copied files (spec/57 §4.3.1 same-destination
+                # handling) and finish the rest.
+                tr(" · cancelled mid-run — re-run to finish")
                 if result.cancelled else "")
             ok_msg = QMessageBox(self)
             ok_msg.setWindowTitle(tr("Import complete"))

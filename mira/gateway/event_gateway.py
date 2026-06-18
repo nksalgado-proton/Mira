@@ -3317,6 +3317,33 @@ class EventGateway:
             self.store.upsert(pair)
             self._touch()
 
+    def set_video_duration(
+        self, video_item_id: str, duration_ms: int,
+    ) -> None:
+        """Stamp ``duration_ms`` onto a source video item — for callers
+        who probed the duration after ingest (the workshop bar runs
+        ffprobe + reads Qt's ``durationChanged`` when it lands on a
+        video; ingest can leave the row NULL when ExifTool can't read
+        ``duration_seconds`` for the format). No-op if the row already
+        has a positive duration or the caller's value is non-positive.
+
+        Without this backfill, every gateway mutator that REQUIRES
+        ``video.duration_ms`` — ``add_video_marker``, ``move_video_marker``,
+        ``segment_bounds`` — raises silently and the workshop's
+        Marker / Snapshot / Remove / Toggle Status / Reset all feel
+        dead to the user."""
+        video = self._require_source_video(video_item_id)
+        dur = int(duration_ms or 0)
+        if dur <= 0:
+            return
+        if video.duration_ms and int(video.duration_ms) > 0:
+            return
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE item SET duration_ms = ? WHERE id = ?",
+                (dur, video_item_id))
+            self._touch()
+
     def backfill_video_durations(self) -> int:
         """Probe ``duration_ms`` for every captured video item that still has NULL.
 

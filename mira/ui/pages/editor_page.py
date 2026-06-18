@@ -1781,6 +1781,10 @@ class EditorPage(QWidget):
         # Probe duration + fps once per path. The viewport's
         # arm-on-landing kicks in independently to display the player.
         self._seed_video_metadata(ci.path)
+        # If ingest left this row's duration_ms NULL (ExifTool can't
+        # read it for some formats), backfill it now from the ffprobe
+        # result so the gateway mutators that REQUIRE it succeed.
+        self._persist_video_duration_if_needed()
         # Make segments exist for the current marker set (lazy birth,
         # default Skip per spec/56 §1 — segments do NOT inherit the
         # ``edit_default_state`` "born green" setting that governs
@@ -1866,6 +1870,23 @@ class EditorPage(QWidget):
         if fps > 0:
             self._video_fps = fps
 
+    def _persist_video_duration_if_needed(self) -> None:
+        """Write the probed duration_ms back to the source-video row
+        when ingest left it NULL. Without this, every gateway mutator
+        that requires ``video.duration_ms`` — ``add_video_marker``,
+        ``segment_bounds`` — raises silently and the workshop bar's
+        Marker / Snapshot / Remove / Toggle Status / Reset feel dead
+        even though every signal is wired."""
+        if (self._eg is None or self._video_id is None
+                or self._video_duration_ms <= 0):
+            return
+        try:
+            self._eg.set_video_duration(
+                self._video_id, self._video_duration_ms)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "set_video_duration failed for %s", self._video_id)
+
     def _reload_workshop_rows(self) -> None:
         """Re-read markers / segments / snapshots from the gateway —
         call after every mutator that changes the row sets."""
@@ -1876,11 +1897,6 @@ class EditorPage(QWidget):
             self._segments = list(self._eg.video_segments(self._video_id))
             self._segment_items = list(self._eg.segment_items(self._video_id))
             self._snapshots = list(self._eg.video_snapshots(self._video_id))
-            if self._video_duration_ms > 0:
-                self._segment_bounds = list(
-                    self._eg.segment_bounds(self._video_id))
-            else:
-                self._segment_bounds = []
         except Exception:                                          # noqa: BLE001
             log.exception("workshop rows reload failed")
             self._markers = []
@@ -1888,6 +1904,27 @@ class EditorPage(QWidget):
             self._segment_items = []
             self._segment_bounds = []
             self._snapshots = []
+            return
+        # ``segment_bounds`` raises when the DB row's duration_ms is
+        # NULL — split off so a duration miss doesn't wipe the rows we
+        # just loaded successfully (the silent-dead-buttons bug). When
+        # the gateway can't help, derive bounds locally from our own
+        # probed duration.
+        try:
+            if self._video_duration_ms > 0:
+                self._segment_bounds = list(
+                    self._eg.segment_bounds(self._video_id))
+            else:
+                self._segment_bounds = []
+        except Exception:                                          # noqa: BLE001
+            log.exception("segment_bounds failed — deriving locally")
+            if self._video_duration_ms > 0 and self._markers is not None:
+                from core.video_segments import segment_bounds as _db
+                self._segment_bounds = list(_db(
+                    [int(mk.at_ms) for mk in self._markers],
+                    int(self._video_duration_ms)))
+            else:
+                self._segment_bounds = []
 
     def _segment_state(self, seg_item_id: str) -> str:
         """Return 'picked' or 'skipped' for a segment item — reads
@@ -2429,6 +2466,10 @@ class EditorPage(QWidget):
         if self._video_id is None:
             return
         self._workshop_bar.set_duration(self._video_duration_ms)
+        # ffprobe at landing may have failed (binary missing, weird
+        # container) — Qt's late-arriving duration is the second
+        # chance to backfill the DB row so the workshop tools work.
+        self._persist_video_duration_if_needed()
         # Segment bounds depend on duration — re-derive if it just
         # became known.
         if self._video_id is not None and self._video_duration_ms > 0 and \

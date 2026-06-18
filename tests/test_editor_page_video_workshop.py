@@ -812,3 +812,69 @@ def test_jump_stop_walks_markers_and_snapshots(
     page._jump_stop(-1)
     assert seeks[-1] == 5_000
     page.close_event()
+
+
+def test_landing_backfills_null_duration_on_db_row(
+        qapp, tmp_path, monkeypatch):
+    """The bug behind "almost all video processing buttons are not
+    wired": when ingest leaves the row's ``duration_ms`` NULL
+    (ExifTool can't read ``duration_seconds`` for the container),
+    every workshop mutator that needs ``video.duration_ms`` raises
+    silently and the tools row feels dead.
+
+    The workshop now backfills from the ffprobe / Qt-discovered
+    duration on landing so the gateway calls succeed. After landing,
+    Marker / Snapshot / Toggle Status / segment_bounds all work."""
+    class _Meta:
+        duration_ms = 10_000
+        fps = 30.0
+    import core.video_extract as ve
+    monkeypatch.setattr(ve, "probe_video", lambda path: _Meta())
+    import core.exif_reader as er
+    monkeypatch.setattr(er, "read_exif_single", lambda path: None)
+    monkeypatch.setattr(er, "read_exif_batch", lambda paths: [])
+
+    # Event with a source video whose duration_ms is NULL.
+    p = tmp_path / "Original Media" / "v1.mp4"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x00" * 16)
+    doc = m.EventDocument(event=m.Event(
+        uuid="evt-null", name="null duration fixture",
+        created_at=FIXED_NOW, updated_at=FIXED_NOW))
+    doc.trip_days = [m.TripDay(day_number=1, date="2026-04-01")]
+    doc.cameras = [m.Camera(camera_id="G9")]
+    doc.items.append(m.Item(
+        id="v1", kind="video", provenance="captured",
+        created_at=FIXED_NOW,
+        origin_relpath="Original Media/v1.mp4",
+        sha256="v" * 64, byte_size=16,
+        materialized_at=FIXED_NOW, materialized_phase="ingest",
+        duration_ms=None,                            # ← the bug seed
+        camera_id="G9", day_number=1,
+        capture_time_raw="2026-04-01T08:01:00",
+        capture_time_corrected="2026-04-01T08:01:00",
+    ))
+    store = EventStore.create(tmp_path / "event.db", event_id="evt-null")
+    store.save_document(doc)
+    counter = itertools.count(1)
+    eg = EventGateway(
+        store, event_root=tmp_path, now=_now,
+        new_id=lambda: f"app-{next(counter)}")
+    assert eg.item("v1").duration_ms is None
+
+    gw = Gateway()
+    monkeypatch.setattr(gw, "open_event", lambda _eid: eg)
+    page = EditorPage(gw)
+    assert page.open_to_item("evt-null", 1, "v1")
+
+    # After landing, the row carries the probed duration AND the
+    # gateway-derived bounds are populated. The mutators that were
+    # dead before now succeed.
+    assert eg.item("v1").duration_ms == 10_000
+    assert page._segment_bounds == [(0, 10_000)]
+
+    page._video_pos_ms = 4_000
+    page._add_marker_at_playhead()
+    assert len(page._markers) == 1
+    assert page._markers[0].at_ms == 4_000
+    page.close_event()

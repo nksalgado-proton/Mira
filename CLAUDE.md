@@ -39,9 +39,10 @@ captured (review completeness); Edit = developed ÷ picked; Export = exported
 ÷ picked.
 
 Decision verbs: **Pick / Skip**. Internal state value `'picked'`. The
-app-wide keyboard map is LOCKED (Nelson 2026-06-12, spec/63 §4):
+app-wide keyboard map is LOCKED (Nelson 2026-06-12, spec/63 §4 —
+**cycle direction updated 2026-06-18**):
 **P Pick / X Skip / Space toggles Pick⇄Skip / C cycles
-Pick→Skip→Compare**; **Tab = play/pause** (clips; never focus traversal
+Skip→Pick→Compare**; **Tab = play/pause** (clips; never focus traversal
 on photo surfaces), **Enter = cluster sweep play/pause**, **F10 = the
 truth key** (full-res real pixels; in Edit, the developed Preview),
 F/F11 fullscreen, Esc one level back, Ctrl+Z undo. Transport and

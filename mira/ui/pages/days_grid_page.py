@@ -18,7 +18,7 @@ LOCKED §5a colour grammar (PALETTE, never the accent palette):
     cluster count       bottom-right ×N or split chip 3✓·2✗ for mixed
 
 LOCKED §63 keymap (universal on every photo surface):
-    P=Pick  X=Skip  Space=toggle Pick⇄Skip  C=cycle Pick→Skip→Compare
+    P=Pick  X=Skip  Space=toggle Pick⇄Skip  C=cycle Skip→Pick→Compare
     Esc=back (in cluster mode, closes the cluster; on the day grid,
         emits back_requested)
 
@@ -542,7 +542,7 @@ class DaysGridPage(QWidget):
         # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
         # state border + blurred-fill canvas are the same paint as the
         # Cuts surfaces. Two-zone clicks (BUGS.md B-006, Nelson 2026-06-17):
-        # a click in the cell BORDER changes status (cycle Pick→Skip→Compare,
+        # a click in the cell BORDER changes status (cycle Skip→Pick→Compare,
         # matching the §63 single-photo border-click grammar), a click in
         # the CENTER opens — drills into the Picker (Pick/Edit) or toggles
         # green/red (Export mode). Mirrors the legacy DayGridCell rule.
@@ -1447,7 +1447,7 @@ class DaysGridPage(QWidget):
         * Cluster covers have no state of their own — a border click
           expands them, same as a center click would.
         * Export mode: toggle green↔red (the locked Export grammar).
-        * Pick: cycle Pick→Skip→Compare, matching the §63 single-photo
+        * Pick: cycle Skip→Pick→Compare, matching the §63 single-photo
           border-click verb.
         * Edit: creative-only (spec/66 §1.1) — no per-cell decision,
           so the border click drills into the editor (BUGS.md B-010),
@@ -1834,7 +1834,10 @@ class DaysGridPage(QWidget):
     @staticmethod
     def _next_state(item_kind: str, cur: Optional[str], verb: str) -> Optional[str]:
         """spec/63 §4: P=Pick, X=Skip, Space=binary toggle,
-        C=cycle Pick→Skip→Compare→Pick.
+        C=cycle Skip→Pick→Compare→Skip (Nelson 2026-06-18; was
+        Pick→Skip→Compare). The default-Skip starting state goes to
+        Pick on first click — match the user's "red→green" mental
+        model.
 
         Videos are a binary ledger (§4 rule): C degrades to Space. The
         same rule applies to the page when a video Thumb has focus.
@@ -1849,8 +1852,11 @@ class DaysGridPage(QWidget):
             if item_kind == "video":
                 # Binary degradation
                 return STATE_SKIPPED if cur == STATE_PICKED else STATE_PICKED
-            ladder = (STATE_PICKED, STATE_SKIPPED, STATE_CANDIDATE)
+            ladder = (STATE_SKIPPED, STATE_PICKED, STATE_CANDIDATE)
             if cur not in ladder:
+                # No explicit state yet (default-Skip on a fresh cell)
+                # → first click goes green (Pick). Matches the user's
+                # "red→green→compare" expectation.
                 return STATE_PICKED
             return ladder[(ladder.index(cur) + 1) % len(ladder)]
         return None

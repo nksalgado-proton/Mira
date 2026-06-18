@@ -3091,9 +3091,49 @@ class MainWindow(QMainWindow):
         self.page_stack.show_page(self._PROCESS_PAGE_KEY)
 
     def _on_days_lists_new_pass_stub(self) -> None:
-        """+ Start a new pass… — out of scope for the route-swap. Logs
-        + leaves a hint until the Pick surface gains the new-pass flow."""
-        log.info("Days Lists 'new pass' clicked (stub; not yet wired)")
+        """+ Start a new pass… — clear every ✓ visited tick for the active
+        phase so the user gets a fresh review of the same items
+        (spec/05 §5.6 + spec/57 §239). Pick/Edit/Export all use the same
+        clear primitive on their respective phase ledger. The button used
+        to be a log-only stub (Nelson 2026-06-18)."""
+        event_id = self._current_event_id
+        if event_id is None:
+            log.info("new pass: no current event id; ignoring click")
+            return
+        phase = (
+            "edit" if (self._edit_phase_active or self._export_phase_active)
+            else "pick"
+        )
+        try:
+            eg = self.gateway.open_event(event_id)
+            try:
+                deleted = eg.clear_visited_for_phase(phase)
+            finally:
+                eg.close()
+            log.info(
+                "new pass: cleared %d visited tick(s) for phase=%s",
+                deleted, phase,
+            )
+        except Exception:                                       # noqa: BLE001
+            log.exception("clear_visited_for_phase failed")
+            return
+        # Refresh whichever surface the user clicked from so the cleared
+        # ticks become visible immediately.
+        current = self.page_stack.current_key
+        if current == self._DAYS_GRID_PAGE_KEY:
+            try:
+                self.days_grid_page._refresh_from_gateway()
+            except Exception:                                   # noqa: BLE001
+                log.exception(
+                    "days_grid_page refresh after new-pass clear failed")
+        else:
+            # Days Lists / activity dashboard surface — recompute the
+            # day snapshots so the visited counts redraw.
+            try:
+                self._open_days_lists_for(event_id)
+            except Exception:                                   # noqa: BLE001
+                log.exception(
+                    "days_lists refresh after new-pass clear failed")
 
     def _on_days_lists_pick_all_stub(self) -> None:
         self._apply_days_lists_bulk("picked")

@@ -484,12 +484,17 @@ class DaysGridPage(QWidget):
         legend.addWidget(_state_swatch("skipped", "Skipped"))
         legend.addWidget(_state_swatch("compare", "Compare"))
         legend.addWidget(_state_swatch("mixed", "Mixed cluster"))
+        # Nelson 2026-06-18 — the legend reminder text used to hardcode
+        # ``#8b94a7`` (mid-grey) on the surrounding text and ``#eef1f7``
+        # (near-white) on the bold ``= state`` / ``= cluster`` /
+        # ``= visited`` runs. On light theme those bold tokens vanished
+        # into the white background. Drop the inline colours — the
+        # ``Sub`` QSS role already colours the label per-theme, and
+        # ``<b>`` carries the weight contrast without a colour shift.
         reminder = QLabel(
-            "<span style='color:#8b94a7'>"
-            "border <b style='color:#eef1f7'>= state</b>"
-            " · badge <b style='color:#eef1f7'>= cluster</b>"
-            " · eye <b style='color:#eef1f7'>= visited</b>"
-            "</span>"
+            "border <b>= state</b>"
+            " · badge <b>= cluster</b>"
+            " · eye <b>= visited</b>"
         )
         reminder.setObjectName("Sub")
         reminder.setTextFormat(Qt.TextFormat.RichText)
@@ -497,11 +502,7 @@ class DaysGridPage(QWidget):
         legend.addStretch()
         # Locked-keymap hint at the right edge of the legend — the
         # user never has to leave the surface to remember the verbs.
-        keys = QLabel(
-            "<span style='color:#8b94a7'>"
-            "P Pick · X Skip · Space toggle · C Compare"
-            "</span>"
-        )
+        keys = QLabel("P Pick · X Skip · Space toggle · C Compare")
         keys.setObjectName("Sub")
         keys.setTextFormat(Qt.TextFormat.RichText)
         legend.addWidget(keys)

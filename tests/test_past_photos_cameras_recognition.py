@@ -435,6 +435,94 @@ def test_try_recognition_uses_recognition_items_when_no_source_index(
         dlg.deleteLater()
 
 
+def test_switching_combo_to_unknown_auto_fires_pick_pair(
+    qapp, tmp_path, monkeypatch,
+):
+    """Spec/88 wire-in (Nelson 2026-06-18): the recognition flow should
+    open *automatically* when the user switches a row to "I don't know"
+    mode — no chase-the-button second click."""
+    from mira.ui.pages.past_photos_cameras import PastPhotosCamerasDialog
+
+    pick_pair_called = []
+    monkeypatch.setattr(
+        PastPhotosCamerasDialog, "_pick_pair",
+        lambda self, cid: pick_pair_called.append(cid),
+    )
+
+    idx = _good_overlap_index(tmp_path)
+    dlg = _build_dialog(qapp, idx, tmp_path)
+    try:
+        row = dlg._rows["G9"]
+        # Find the "unknown" item index in the combo.
+        unknown_idx = row.mode_combo.findData("unknown")
+        assert unknown_idx >= 0
+        row.mode_combo.setCurrentIndex(unknown_idx)
+        assert pick_pair_called == ["G9"]
+    finally:
+        dlg.deleteLater()
+
+
+def test_switching_combo_back_to_know_does_not_fire_pick_pair(
+    qapp, tmp_path, monkeypatch,
+):
+    """Auto-fire only triggers when entering "unknown" mode. Switching
+    back to "I know" must not re-open anything."""
+    from mira.ui.pages.past_photos_cameras import PastPhotosCamerasDialog
+
+    pick_pair_called = []
+    monkeypatch.setattr(
+        PastPhotosCamerasDialog, "_pick_pair",
+        lambda self, cid: pick_pair_called.append(cid),
+    )
+
+    idx = _good_overlap_index(tmp_path)
+    dlg = _build_dialog(qapp, idx, tmp_path)
+    try:
+        row = dlg._rows["G9"]
+        unknown_idx = row.mode_combo.findData("unknown")
+        know_idx = row.mode_combo.findData("know")
+        row.mode_combo.setCurrentIndex(unknown_idx)
+        row.mode_combo.setCurrentIndex(know_idx)
+        # Just the initial unknown — no second fire on switch-back.
+        assert pick_pair_called == ["G9"]
+    finally:
+        dlg.deleteLater()
+
+
+def test_switching_combo_to_unknown_skips_pick_pair_when_pair_already_set(
+    qapp, tmp_path, monkeypatch,
+):
+    """If the row already has a pair (e.g. user switched away to "know"
+    then back), don't re-open the recognition surface — the pair stands
+    and the existing button click is the retry path."""
+    from core.clock_calibration import CalibrationPair
+    from mira.ui.pages.past_photos_cameras import PastPhotosCamerasDialog
+
+    pick_pair_called = []
+    monkeypatch.setattr(
+        PastPhotosCamerasDialog, "_pick_pair",
+        lambda self, cid: pick_pair_called.append(cid),
+    )
+
+    idx = _good_overlap_index(tmp_path)
+    dlg = _build_dialog(qapp, idx, tmp_path)
+    try:
+        row = dlg._rows["G9"]
+        row.set_pair(CalibrationPair(
+            camera_path=Path("c10.rw2"),
+            reference_path=Path("p10.jpg"),
+            camera_time=datetime(2025, 5, 12, 10, 0, 0),
+            reference_time=datetime(2025, 5, 12, 10, 0, 0),
+        ))
+        unknown_idx = row.mode_combo.findData("unknown")
+        row.mode_combo.setCurrentIndex(unknown_idx)
+        # Pair already set → no auto-fire (user's manual click on the
+        # button is still available for changing the pair).
+        assert pick_pair_called == []
+    finally:
+        dlg.deleteLater()
+
+
 def test_pick_pair_on_reference_camera_warns_and_skips_both_paths(
     qapp, tmp_path, monkeypatch,
 ):

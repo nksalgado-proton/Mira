@@ -312,8 +312,27 @@ class PastPhotosCamerasDialog(QDialog):
             )
             row.pair_button.clicked.connect(
                 lambda _checked=False, c=cam: self._pick_pair(c))
+            # spec/88 — switching the mode combo to "I don't know" fires
+            # the recognition flow immediately, no extra click on the
+            # stale "Pick a pair" button. We pass the cam_id through the
+            # default-arg trick so each row's lambda binds the right
+            # camera (Python closure-in-loop trap).
+            row.mode_combo.currentIndexChanged.connect(
+                lambda _idx, c=cam, r=row: self._on_mode_changed(c, r))
             self._rows[cam] = row
         self._build_ui()
+
+    def _on_mode_changed(self, camera_id: str, row: "_CamRow") -> None:
+        """Auto-open the pair-pick flow when the row enters "I don't know"
+        mode for the first time. Re-clicks of the same mode (or going
+        back to "I know") do nothing — the button stays available for
+        rebinding the pair later, but the user shouldn't have to chase a
+        second click to start picking."""
+        if row.mode() != "unknown":
+            return
+        if row.pair() is not None:
+            return                      # already has a pair — don't re-open
+        self._pick_pair(camera_id)
 
     # ── UI ─────────────────────────────────────────────────────
 
@@ -476,7 +495,13 @@ class PastPhotosCamerasDialog(QDialog):
         when supplied, else from the SourceIndex (Past Photos EXIF-scan path).
         Without either, recognition is UNAVAILABLE and the caller falls back
         to the manual picker."""
+        log.info("spec/88 recognition: enter for %r (ref=%r, recog_items=%d, "
+                 "source_index=%s)",
+                 camera_id, self._reference_id,
+                 len(self._recognition_items),
+                 "set" if self._source_index is not None else "None")
         if not self._reference_id:
+            log.info("spec/88 recognition: UNAVAILABLE — no reference_id")
             return self._REC_UNAVAILABLE
 
         if self._recognition_items:
@@ -484,21 +509,39 @@ class PastPhotosCamerasDialog(QDialog):
         elif self._source_index is not None:
             items = self._source_index.items
         else:
+            log.info("spec/88 recognition: UNAVAILABLE — no recognition data")
             return self._REC_UNAVAILABLE
 
         cam_items = [it for it in items if it.camera_id == camera_id]
         phone_items = [
             it for it in items if it.camera_id == self._reference_id
         ]
+        log.info("spec/88 recognition: cam_items=%d phone_items=%d "
+                 "(distinct camera_ids in pool: %s)",
+                 len(cam_items), len(phone_items),
+                 sorted({it.camera_id for it in items}))
         if not cam_items or not phone_items:
+            log.info("spec/88 recognition: UNAVAILABLE — empty cam or phone "
+                     "items (cam_id %r vs ref_id %r)",
+                     camera_id, self._reference_id)
             return self._REC_UNAVAILABLE
 
         from core.clock_recognition import find_candidate_pairs
         clusters = find_candidate_pairs(cam_items, phone_items)
+        log.info("spec/88 recognition: %d cluster(s) generated", len(clusters))
         if not clusters:
+            phone_with_tz = sum(
+                1 for it in phone_items
+                if it.tz_offset_minutes is not None
+            )
+            log.info("spec/88 recognition: UNAVAILABLE — no clusters formed "
+                     "(phone items with tz_offset_minutes: %d/%d)",
+                     phone_with_tz, len(phone_items))
             # Sparse overlap / no plausible cluster — spec/88 §5 routes to
             # manual rather than show the user an empty recognition page.
             return self._REC_UNAVAILABLE
+        log.info("spec/88 recognition: opening RecognitionDialog with "
+                 "%d cluster(s)", len(clusters))
 
         from mira.ui.pages.clock_recognition_dialog import (
             ApplyImpact,

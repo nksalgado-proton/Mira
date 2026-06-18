@@ -420,9 +420,16 @@ class PastPhotosCamerasDialog(QDialog):
 
     # ── Sync-pair handler ─────────────────────────────────────
 
+    # Recognition-flow outcomes (spec/88).
+    _REC_CONFIRMED = "confirmed"   # user recognized a pair → row.set_pair done
+    _REC_FALLBACK = "fallback"     # user opted into the manual picker
+    _REC_CANCEL = "cancel"         # user dismissed the dialog
+    _REC_UNAVAILABLE = "unavailable"  # no source EXIF / no phone overlap
+
     def _pick_pair(self, camera_id: str) -> None:
-        """Open the SyncPairPickerDialog for ``camera_id`` paired
-        against the auto-detected reference camera.
+        """Open the recognition flow first (spec/88), falling back to the
+        legacy hand-picked :class:`SyncPairPickerDialog` when recognition
+        is unavailable or the user opts out.
 
         When ``picker_factory`` is configured (Collect flow), the
         factory is called with each camera_id to build a custom picker
@@ -437,6 +444,86 @@ class PastPhotosCamerasDialog(QDialog):
                    "directly (or change the Mode column)."),
             )
             return
+
+        outcome = self._try_recognition(camera_id)
+        if outcome in (self._REC_CONFIRMED, self._REC_CANCEL):
+            # Recognition handled the call — either the user confirmed a
+            # pair or they explicitly cancelled. Don't show the manual
+            # picker behind their back.
+            return
+
+        # Either recognition wasn't available (no EXIF source / no phone
+        # overlap — spec/88 §5) or the user clicked "Use manual pair…":
+        # last-resort manual picker.
+        self._pick_pair_manual(camera_id)
+
+    def _try_recognition(self, camera_id: str) -> str:
+        """spec/88 propose-and-confirm flow. Returns one of
+        :data:`_REC_CONFIRMED` / :data:`_REC_FALLBACK` / :data:`_REC_CANCEL` /
+        :data:`_REC_UNAVAILABLE` — the caller decides whether to open the
+        legacy manual picker based on the outcome."""
+        if self._source_index is None or not self._reference_id:
+            return self._REC_UNAVAILABLE
+
+        cam_items = [
+            it for it in self._source_index.items
+            if it.camera_id == camera_id
+        ]
+        phone_items = [
+            it for it in self._source_index.items
+            if it.camera_id == self._reference_id
+        ]
+        if not cam_items or not phone_items:
+            return self._REC_UNAVAILABLE
+
+        from core.clock_recognition import find_candidate_pairs
+        clusters = find_candidate_pairs(cam_items, phone_items)
+        if not clusters:
+            # Sparse overlap / no plausible cluster — spec/88 §5 routes to
+            # manual rather than show the user an empty recognition page.
+            return self._REC_UNAVAILABLE
+
+        from mira.ui.pages.clock_recognition_dialog import (
+            ApplyImpact,
+            RecognitionDialog,
+        )
+
+        def impact_for(pair) -> ApplyImpact:
+            shift = pair.to_calibration_pair().offset
+            moves = sum(
+                1 for it in cam_items
+                if it.timestamp is not None
+                and (it.timestamp + shift).date() != it.timestamp.date()
+            )
+            return ApplyImpact(
+                photo_count=len(cam_items),
+                shift=shift,
+                day_moves=moves,
+            )
+
+        dlg = RecognitionDialog(
+            camera_id=camera_id,
+            reference_id=self._reference_id,
+            clusters=clusters,
+            impact_for=impact_for,
+            parent=self,
+        )
+        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+        cal_pair = dlg.selected_pair()
+        fallback = dlg.fallback_to_manual
+        dlg.deleteLater()
+
+        if accepted and cal_pair is not None and not fallback:
+            self._rows[camera_id].set_pair(cal_pair)
+            return self._REC_CONFIRMED
+        if fallback:
+            return self._REC_FALLBACK
+        return self._REC_CANCEL
+
+    def _pick_pair_manual(self, camera_id: str) -> None:
+        """The legacy hand-picked sync-pair picker — kept as the
+        last-resort fallback per spec/88 §1 ("Manual is the last resort").
+        Sibling to :meth:`_try_recognition`."""
         from mira.ui.base.sync_pair_picker import SyncPairPickerDialog
 
         row = self._rows[camera_id]

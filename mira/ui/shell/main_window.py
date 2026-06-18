@@ -3139,6 +3139,7 @@ class MainWindow(QMainWindow):
         # Pull the name + item count from the gateway (the activity dashboard
         # doesn't expose a current_event property; one open of the event.db is
         # cheap and keeps the dialog text accurate).
+        files_missing = False
         try:
             eg = self.gateway.open_event(event_id)
             try:
@@ -3146,32 +3147,63 @@ class MainWindow(QMainWindow):
                 n_items: Optional[int] = len(eg.items(include_hidden=True))
             finally:
                 eg.close()
-        except (KeyError, RuntimeError):
-            name = tr("(unnamed event)")
+        except KeyError:
+            # No index row — nothing to delete; bail silently.
+            return
+        except Exception:                                       # noqa: BLE001
+            # Folder / event.db missing (sqlite3.OperationalError, etc.)
+            # OR root unresolvable: the tile is stale. Fall back to the
+            # index row's name and offer a one-click "Remove from list".
+            log.exception(
+                "_on_delete_event: cannot open %s — offering stale-tile "
+                "removal", event_id)
+            files_missing = True
+            entry = self.gateway.index.get(event_id)
+            name = (entry or {}).get("name") or tr("(unnamed event)")
             n_items = None
 
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(tr("Delete event"))
-        box.setText(tr("Delete “{name}”?").replace("{name}", name))
-        box.setInformativeText(tr(
-            "“Remove from Mira” drops only the app's record — your photos and folders "
-            "on disk stay, and you can re-add the event later with “Import plan from folder”.\n\n"
-            "“Delete photos too” also permanently deletes this event's entire folder on disk "
-            "(its photos + folders). Your camera card / original source is not touched."
-        ))
-        keep_btn = box.addButton(
-            tr("Remove from Mira"), QMessageBox.ButtonRole.AcceptRole)
-        delete_btn = box.addButton(
-            tr("Delete photos too"), QMessageBox.ButtonRole.DestructiveRole)
-        cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(keep_btn)
+        if files_missing:
+            # The folder is gone — there's nothing on disk to delete, so
+            # we ONLY offer "Remove from list" (no "Delete photos too").
+            box.setText(tr(
+                "Can't find “{name}” on disk anymore. Remove from "
+                "the list?"
+            ).replace("{name}", name))
+            box.setInformativeText(tr(
+                "The event's folder isn't where Mira expected it. "
+                "Removing from the list drops Mira's record — nothing on "
+                "disk is touched (there's nothing there to touch). You "
+                "can re-add the event later via "
+                "“Import plan from folder”."
+            ))
+            keep_btn = box.addButton(
+                tr("Remove from list"), QMessageBox.ButtonRole.AcceptRole)
+            delete_btn = None
+            cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(keep_btn)
+        else:
+            box.setText(tr("Delete “{name}”?").replace("{name}", name))
+            box.setInformativeText(tr(
+                "“Remove from Mira” drops only the app's record — your photos and folders "
+                "on disk stay, and you can re-add the event later with “Import plan from folder”.\n\n"
+                "“Delete photos too” also permanently deletes this event's entire folder on disk "
+                "(its photos + folders). Your camera card / original source is not touched."
+            ))
+            keep_btn = box.addButton(
+                tr("Remove from Mira"), QMessageBox.ButtonRole.AcceptRole)
+            delete_btn = box.addButton(
+                tr("Delete photos too"), QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(keep_btn)
         box.exec()
         clicked = box.clickedButton()
         if clicked is cancel_btn or clicked is None:
             return
 
-        delete_files = clicked is delete_btn
+        delete_files = (delete_btn is not None) and (clicked is delete_btn)
         if delete_files:
             count = tr("{n} photo/video file(s)").replace("{n}", str(n_items)) \
                 if n_items is not None else tr("all this event's files")

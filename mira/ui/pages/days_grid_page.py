@@ -151,13 +151,17 @@ _THUMB_TIMER_MS = 20
 # well against the §3.6 punch list ("blurred-fill never shines —
 # smokes used gradient placeholders").
 _TILE_SIZE = QSize(196, 146)
-# Slider bounds (Nelson 2026-06-18). 140 wide is the smallest still
-# usable for face recognition; 320 wide is generous on a 4K monitor.
-# Height tracks via the locked aspect ratio so a hit-test rectangle
-# stays proportional and the cycle-click target doesn't drift.
+# Slider bounds (Nelson 2026-06-18, narrowed). Minimum sits just below
+# the default so the user can shrink a touch without flipping to
+# tiny-thumbnail territory; maximum is 2× the default for the "make
+# it big" case (~4K-friendly). Height tracks via the locked aspect
+# ratio so the cycle-click hit rectangle stays proportional.
 _TILE_ASPECT = _TILE_SIZE.height() / _TILE_SIZE.width()
-_TILE_SIZE_MIN = QSize(140, int(round(140 * _TILE_ASPECT)))
-_TILE_SIZE_MAX = QSize(320, int(round(320 * _TILE_ASPECT)))
+_TILE_SIZE_MIN = QSize(180, int(round(180 * _TILE_ASPECT)))
+_TILE_SIZE_MAX = QSize(
+    _TILE_SIZE.width() * 2,
+    int(round(_TILE_SIZE.width() * 2 * _TILE_ASPECT)),
+)
 
 
 @dataclass

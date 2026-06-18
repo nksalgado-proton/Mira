@@ -188,6 +188,15 @@ class Thumb(QWidget):
             self.clicked.emit()
         super().mousePressEvent(event)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt override
+        """Invalidate the cached blurred backdrop when the Thumb's size
+        changes (Nelson 2026-06-18). The cache was sized to ``width+24,
+        height+24`` at first paint, so without this the blur stayed at
+        the original tile dimensions and a slider-driven enlargement
+        showed a small blurred patch in the centre of a larger cell."""
+        self._blurred_cache = None
+        super().resizeEvent(event)
+
     # ── painting ────────────────────────────────────────────────────────
 
     def _blurred_backdrop(self) -> QPixmap | None:

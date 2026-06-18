@@ -481,6 +481,12 @@ class EditorPage(QWidget):
         videos surface (the Surface 12 fold, 2026-06-15) — the viewport
         sweeps both kinds and EditorPage reveals the spec/56 workshop
         in place when a video lands.
+
+        spec/66 §1.1: Edit's pool is "all picked keepers" — pass the
+        Pick-filtered ``item_ids`` set to ``day_grid_cells`` so the
+        Editor's prev/next navigation never lands on a photo the user
+        discarded during Pick (Nelson 2026-06-18, the recurring "I
+        see discarded photos in Edit" complaint).
         """
         if self._eg is None:
             return []
@@ -493,6 +499,7 @@ class EditorPage(QWidget):
         cells = day_grid_cells(
             self._eg, day_number, phase=self._phase,
             default_state=default_state,
+            item_ids=self._picked_keepers_filter(),
         )
         ordered_ids: list[str] = []
         for c in cells:
@@ -542,14 +549,46 @@ class EditorPage(QWidget):
         """Open the Editor on a cluster sub-grid member click. Loads the
         REAL cluster bucket so intra-cluster ← → works.
 
-        Returns ``True`` on success.
+        spec/66 §1.1: Edit's pool is "all picked keepers" — cluster
+        members the user discarded during Pick are dropped so the
+        Editor's intra-cluster ← → never lands on them.
+
+        Returns ``True`` on success. ``False`` when filtering leaves
+        the cluster empty (every member was discarded in Pick).
         """
         if not self._open_event(event_id):
             return False
+        keepers = self._picked_keepers_filter()
+        if keepers is not None:
+            kept_members = tuple(
+                m for m in cluster.members if m.item_id in keepers
+            )
+            if not kept_members:
+                # The user clicked a cluster cover whose members are all
+                # Pick-discarded — refuse to open rather than show a
+                # surface with nothing to edit. Callers can leave the
+                # user on the Days Grid.
+                self._close_event()
+                return False
+            # Re-clamp entry_idx onto the filtered member list. When the
+            # originally-clicked member survives, we restart on it;
+            # otherwise default to the first kept member.
+            original_id = (
+                cluster.members[entry_idx].item_id
+                if 0 <= entry_idx < len(cluster.members) else None
+            )
+            entry_idx = next(
+                (i for i, m in enumerate(kept_members)
+                 if m.item_id == original_id),
+                0,
+            )
+            members = kept_members
+        else:
+            members = cluster.members
         try:
-            if 0 <= entry_idx < len(cluster.members):
+            if 0 <= entry_idx < len(members):
                 self._eg.set_item_visited(
-                    cluster.members[entry_idx].item_id, self._phase)
+                    members[entry_idx].item_id, self._phase)
         except Exception:                                          # noqa: BLE001
             log.exception("cluster set_item_visited failed")
         phase_states = self._eg.phase_states(self._phase)
@@ -557,9 +596,9 @@ class EditorPage(QWidget):
             bucket_key=cluster.bucket_key,
             kind=cluster.kind,
             title=cluster.title,
-            items=cluster.members,
+            items=members,
             status=project_status(
-                [mem.item_id for mem in cluster.members],
+                [mem.item_id for mem in members],
                 phase_states,
                 self._eg.bucket(cluster.bucket_key, self._phase),
             ),
@@ -568,9 +607,59 @@ class EditorPage(QWidget):
         )
         self._day_number = day_number
         self._day_index = entry_idx + 1
-        self._day_total = len(cluster.members)
+        self._day_total = len(members)
         self._load_bucket(bucket, entry_idx=entry_idx)
         return True
+
+    def _picked_keepers_filter(self) -> Optional[frozenset]:
+        """spec/66 §1.1 — the set of item_ids the user kept at Pick.
+        Edit's surfaces only ever pull from this pool: items with an
+        explicit ``phase_state(pick).state == "picked"`` row, plus
+        (when ``pick_default_state == "picked"``) every captured item
+        with no row. Returns ``None`` when there's no gateway open or
+        the page isn't in pure Edit mode (callers fall back to the
+        unfiltered list — Pick / Export keep the full pool by design).
+
+        Mirrors ``DaysGridPage._picked_item_ids_filter`` — keeping the
+        two in sync is cheap relative to the cost of leaking discarded
+        photos into Edit. Consolidate to a shared helper next time the
+        Edit pool rule changes."""
+        if self._eg is None:
+            return None
+        if self._phase != "edit":
+            return None
+        try:
+            pick_states = self._eg.phase_states("pick")
+        except Exception:                                          # noqa: BLE001
+            log.exception("EditorPage: phase_states('pick') failed")
+            return None
+        try:
+            pick_default = default_state_for(
+                self.gateway.settings, "pick")
+        except Exception:                                          # noqa: BLE001
+            log.exception("EditorPage: default_state_for(pick) failed")
+            pick_default = STATE_SKIPPED
+        explicit_picked = {
+            iid for iid, ps in pick_states.items()
+            if ps.state == STATE_PICKED
+        }
+        if pick_default != STATE_PICKED:
+            return frozenset(explicit_picked)
+        try:
+            non_picked_explicit = {
+                iid for iid, ps in pick_states.items()
+                if ps.state != STATE_PICKED
+            }
+            implicit_picked = {
+                it.id for it in self._eg.items()
+                if (it.provenance == "captured"
+                    and it.id not in non_picked_explicit)
+            }
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "EditorPage: captured-items walk for Edit filter failed")
+            return frozenset(explicit_picked)
+        return frozenset(explicit_picked | implicit_picked)
 
     def close_event(self) -> None:
         """Release any open event gateway. Idempotent."""

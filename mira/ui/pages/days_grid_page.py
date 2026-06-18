@@ -1264,8 +1264,21 @@ class DaysGridPage(QWidget):
         # BUGS.md B-010 — Edit is creative-only (spec/66 §1.1): cluster
         # members inherit the no-border treatment of the day-mode cells.
         edit_neutral = (self._phase == "edit" and not self._export_mode)
+        # spec/66 §1.1: Edit's pool is "all picked keepers". The DAY grid
+        # already filters via ``_picked_item_ids_filter`` in
+        # ``_refresh_from_gateway``, but drilling into a cluster used to
+        # iterate every member regardless of Pick state — so a bracket
+        # with mixed picks showed its skipped frames too. Apply the same
+        # filter here when the page is in pure Edit mode (Nelson
+        # 2026-06-18, the recurring "Edit shows photos discarded in Pick"
+        # complaint).
+        edit_pool: Optional[frozenset] = None
+        if edit_neutral:
+            edit_pool = self._picked_item_ids_filter()
         members: list[GridItem] = []
         for ci in cluster.members:
+            if edit_pool is not None and ci.item_id not in edit_pool:
+                continue
             path = ci.path if ci.path.is_absolute() else event_root / ci.path
             if edit_neutral:
                 thumb_state = None

@@ -795,6 +795,14 @@ class EditorPage(QWidget):
             self._day_index = self._index + 1
         ci = self._current_item()
         self._refresh_position_label()
+        # spec/32 §2.10 — every landing stamps the item's visited tick, not
+        # just the entry point. Without this, prev/next through a day only
+        # ticked the first photo when the user returned to the Days Grid.
+        if self._eg is not None and ci is not None:
+            try:
+                self._eg.set_item_visited(ci.item_id, self._phase)
+            except Exception:                                      # noqa: BLE001
+                log.exception("set_item_visited failed for %s", ci.item_id)
         is_video = ci is not None and (getattr(ci, "kind", "photo") == "video")
 
         if is_video:

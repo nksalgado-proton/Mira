@@ -210,6 +210,47 @@ def test_open_to_cluster_builds_real_bucket(qapp, app_gateway, event_dir):
     page.close_event()
 
 
+def test_prev_next_navigation_stamps_visited_on_each_landing(
+        qapp, app_gateway, store_and_gateway, event_dir):
+    """spec/32 §2.10 — every nav landing stamps the visited tick, not just
+    the entry point. Regression for the bug where prev/next-ing through a
+    day in Edit only left an eye on the first photo when the user returned
+    to the Days Grid."""
+    from mira.picked import CullCluster, CullItem
+    from mira.picked.status import CellColor
+    _, source_eg = store_and_gateway
+    page = EditorPage(app_gateway)
+    members = tuple(
+        CullItem(
+            item_id=f"e{i}",
+            path=event_dir / "Original Media" / f"e{i}.jpg",
+            kind="photo",
+            capture_time_corrected=f"2026-04-01T08:0{i}:00",
+        )
+        for i in range(1, N_PHOTOS + 1)
+    )
+    cluster = CullCluster(
+        bucket_key="1|focus_bracket|nav-stamp",
+        kind="focus_bracket",
+        title="Nav stamp",
+        members=members,
+        color=CellColor.UNTOUCHED,
+        camera="G9",
+        detection_source="test",
+    )
+    assert page.open_to_cluster("evt-e", 1, cluster, entry_idx=0)
+    # Entry stamped e1.
+    visited = source_eg.items_visited_for_day(1, "edit")
+    assert "e1" in visited
+    # Walk forward through the rest of the cluster — same path the user
+    # takes pressing → or clicking the Next arrow.
+    page._viewport.show_index(1)
+    page._viewport.show_index(2)
+    visited = source_eg.items_visited_for_day(1, "edit")
+    assert {"e1", "e2", "e3"} <= visited
+    page.close_event()
+
+
 def test_locked_keymap_edit_extras_routed_to_surface(
         qapp, app_gateway, monkeypatch):
     """The Edit-specific extras (L / G / [ / ] / R / \\) route to the

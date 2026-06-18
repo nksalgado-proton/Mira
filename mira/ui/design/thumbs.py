@@ -47,7 +47,15 @@ from mira.ui.palette import PALETTE
 _STATE_KEY = {
     "picked": "picked",
     "skipped": "skipped",
+    # ``"compare"`` is the visual-colour name; ``"candidate"`` is the
+    # persisted phase_state value (mira/picked/status.py). Some call
+    # sites (the Pick cycle in DaysGridPage) call ``setState`` with the
+    # raw phase value rather than mapping it through
+    # ``cell_color_for_item`` first. Accept both so the cycle's
+    # ``"candidate"`` landing doesn't KeyError mid-paintEvent
+    # (Nelson 2026-06-18 — uncaught in the peek/border-click cycle).
     "compare": "compare",
+    "candidate": "compare",
     "mixed": "mixed",
     None: "line",
 }

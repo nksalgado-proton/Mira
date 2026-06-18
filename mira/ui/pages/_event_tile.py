@@ -506,6 +506,23 @@ class EventTile(Card):
                 lambda _evt: self.plan_requested.emit(self._data.event_id)
             )
         text_col.addWidget(meta)
+        # Nelson 2026-06-18 — duration broke off the meta line onto its
+        # own row in friendly units ("2 days" / "3 weeks" / …) so the
+        # meta line stays type / year / subtype without the trailing "Xd"
+        # cipher.
+        duration_text = self._compose_duration()
+        if duration_text:
+            duration = QLabel(duration_text)
+            duration.setObjectName("TileMeta")
+            duration.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            duration.setCursor(Qt.CursorShape.PointingHandCursor)
+            duration.setToolTip("Open the event's Days Table")
+            duration.mousePressEvent = (
+                lambda _evt: self.plan_requested.emit(self._data.event_id)
+            )
+            text_col.addWidget(duration)
         h.addLayout(text_col, 1)
 
         # The ⋮ is the only affordance in the title row now that the
@@ -524,6 +541,8 @@ class EventTile(Card):
         return host
 
     def _compose_meta(self) -> str:
+        """Type · year · subtype. Duration moved off this line — see
+        :meth:`_compose_duration` (Nelson 2026-06-18)."""
         bits: list[str] = []
         et = (self._data.event_type or "").strip()
         if et and et.lower() != "unclassified":
@@ -533,9 +552,32 @@ class EventTile(Card):
             bits.append(year)
         if self._data.event_subtype:
             bits.append(self._data.event_subtype)
-        if self._data.total_days:
-            bits.append(f"{self._data.total_days}d")
         return " · ".join(bits) or " "
+
+    def _compose_duration(self) -> str:
+        """Friendly duration string for the tile's third row — ``"1 day"``,
+        ``"5 days"``, ``"3 weeks"``, ``"2 months"``, ``"1 year"``. Empty
+        when the event has no day count (the row is dropped).
+
+        Unit thresholds: days while ``n`` < 14, weeks while < 60, months
+        while ≤ 365, years above. Rounding within each band is plain
+        ``round()`` for weeks/months and floor for years (so 730 reads
+        ``"2 years"`` rather than rounding past 2)."""
+        n = int(self._data.total_days or 0)
+        if n <= 0:
+            return ""
+        if n == 1:
+            return "1 day"
+        if n < 14:
+            return f"{n} days"
+        if n < 60:
+            weeks = int(round(n / 7))
+            return f"{weeks} week{'s' if weeks != 1 else ''}"
+        if n <= 365:
+            months = int(round(n / 30))
+            return f"{months} month{'s' if months != 1 else ''}"
+        years = n // 365
+        return f"{years} year{'s' if years != 1 else ''}"
 
     def _open_more_menu(self) -> None:
         """⋮ menu — Close/Reopen + Header + Days table + Delete.

@@ -188,43 +188,51 @@ def test_close_then_reopen_export_less_preserves_pipeline(
 
 
 # ──────────────────────────────────────────────────────────────────
-# From / To dates mandatory in Event Header dialog
+# From / To removed from Event Header dialog (BUGS.md B-012, supersedes
+# the spec/77 §5 mandatory-dates floor). The dates live in the DB but
+# are derived purely from the trip_days table by
+# ``Gateway.recompute_event_date_range`` after every trip_day batch.
 # ──────────────────────────────────────────────────────────────────
 
 
-def test_header_dialog_save_disabled_until_dates_set(qapp):
-    """spec/77 §5 — Save stays disabled until both From and To are
-    real dates (the em-dash placeholder = un-set)."""
+def test_header_dialog_save_gates_on_name_type_subtype_only(qapp):
+    """Save is enabled the moment Name + Type + Subtype are set. From/To
+    fields are gone from the UI; the gateway derives them from
+    trip_days.dates after every batch write."""
     from mira.ui.pages.event_header_dialog import EventHeaderDialog
 
     dlg = EventHeaderDialog()
-    # Name + type + subtype filled, but dates left on their minimum
-    # (em-dash) → Save MUST stay disabled.
+    # Nothing filled → Save off.
+    dlg._refresh_save_enabled()
+    assert dlg._save_btn.isEnabled() is False
+
+    # Just the name → still off (type + subtype missing).
     dlg._name_edit.setText("Sample event")
+    dlg._refresh_save_enabled()
+    assert dlg._save_btn.isEnabled() is False
+
+    # Name + type → still off (subtype missing).
     dlg._type_combo.setCurrentIndex(
         max(0, dlg._type_combo.findData("trip"))
     )
-    dlg._subtype_combo.setEditText("wildlife")
     dlg._refresh_save_enabled()
     assert dlg._save_btn.isEnabled() is False
 
-    # Set From only — still disabled (both required).
-    dlg._from_edit.setDate(QDate(2026, 5, 1))
-    dlg._refresh_save_enabled()
-    assert dlg._save_btn.isEnabled() is False
-
-    # Set To, but earlier than From — Save still disabled because the
-    # gate also requires end ≥ start. The dialog snaps From back to
-    # To in that path; we set To first then a later From to force the
-    # invalid-window check rather than the auto-snap.
-    dlg._to_edit.setDate(QDate(2026, 5, 7))
+    # Name + type + subtype → Save on. No dates required.
+    dlg._subtype_combo.setEditText("Wildlife")
     dlg._refresh_save_enabled()
     assert dlg._save_btn.isEnabled() is True
 
-    # And the output dict carries the ISO strings.
+    # The output dict still carries start_date / end_date keys for
+    # callers that read them, but they are always None — the gateway
+    # fills them from trip_days after creation.
     info = dlg.header_info()
-    assert info["start_date"] == "2026-05-01"
-    assert info["end_date"] == "2026-05-07"
+    assert info["start_date"] is None
+    assert info["end_date"] is None
+
+    # And the QDateEdit fields aren't on the dialog at all anymore.
+    assert not hasattr(dlg, "_from_edit")
+    assert not hasattr(dlg, "_to_edit")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -283,3 +291,44 @@ def test_tile_width_is_fixed(qapp):
     b = EventTile(_open_card())
     assert a.size() == b.size()
     assert a.width() == TILE_WIDTH
+
+
+# ──────────────────────────────────────────────────────────────────
+# Duration row (Nelson 2026-06-18) — duration moved off the meta line
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_meta_line_omits_duration_after_split(qapp):
+    """Meta line stays type · year · subtype; the trailing ``"Xd"``
+    moved to its own row."""
+    tile = EventTile(_open_card(total_days=14))
+    meta = tile._compose_meta()
+    assert "14d" not in meta
+    assert "14" not in meta
+    # Identity still includes type / year / subtype.
+    assert "Trip" in meta
+    assert "2026" in meta
+    assert "wildlife" in meta
+
+
+@pytest.mark.parametrize("days,expected", [
+    (0, ""),                       # no plan dates → no row
+    (1, "1 day"),
+    (2, "2 days"),
+    (7, "7 days"),
+    (13, "13 days"),
+    (14, "2 weeks"),
+    (21, "3 weeks"),
+    (28, "4 weeks"),
+    (59, "8 weeks"),
+    (60, "2 months"),
+    (90, "3 months"),
+    (180, "6 months"),
+    (365, "12 months"),
+    (366, "1 year"),
+    (730, "2 years"),
+    (1095, "3 years"),
+])
+def test_compose_duration_humanises_total_days(qapp, days, expected):
+    tile = EventTile(_open_card(total_days=days))
+    assert tile._compose_duration() == expected

@@ -119,6 +119,48 @@ def _install_qt_message_handler() -> None:
     qInstallMessageHandler(handler)
 
 
+def _install_excepthook(log: logging.Logger, log_path: Path) -> None:
+    """Route uncaught Python exceptions to the log + a dialog.
+
+    Without this, an unhandled exception — including one raised inside a Qt
+    slot (PyQt6 funnels those through ``sys.excepthook`` and then aborts) —
+    writes its traceback only to stderr. In the packaged build
+    (``--windows-console-mode=disable``) there is no stderr, so the app dies
+    silently and the crash is undiagnosable. This is exactly what hid the
+    2026-06-17 ``database disk image is malformed`` crash. We log the full
+    traceback to ``mira.log`` and, if a QApplication exists, show a dialog
+    pointing at the log, then chain to the previous hook.
+    """
+    import traceback
+
+    prev_hook = sys.excepthook
+
+    def hook(exc_type, exc, tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            prev_hook(exc_type, exc, tb)
+            return
+        log.critical(
+            "UNCAUGHT EXCEPTION\n%s",
+            "".join(traceback.format_exception(exc_type, exc, tb)),
+        )
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            if QApplication.instance() is not None:
+                QMessageBox.critical(
+                    None,
+                    "Mira — unexpected error",
+                    f"Mira hit an unexpected error and may be unstable. "
+                    f"Please restart it.\n\n"
+                    f"{exc_type.__name__}: {exc}\n\n"
+                    f"Full details were written to:\n{log_path}",
+                )
+        except Exception:  # noqa: BLE001 — a dialog failure must not mask the crash
+            pass
+        prev_hook(exc_type, exc, tb)
+
+    sys.excepthook = hook
+
+
 def _silence_libav_stderr() -> None:
     """Set FFmpeg's own log level to QUIET so the bundled libav stops
     writing demuxer chatter straight to the process's stderr.
@@ -245,6 +287,20 @@ def main(argv: list[str] | None = None) -> int:
     from core.proc import install_window_suppression
     install_window_suppression()
 
+    # Windows taskbar icon: without an explicit AppUserModelID, Windows
+    # groups the app under the host interpreter and shows the generic
+    # Python icon in the taskbar even when setWindowIcon() is set. Setting
+    # an explicit AUMID makes Windows treat Mira as its own app and use the
+    # window icon (from source) / the .exe icon (packaged). Must run before
+    # any window is created. Harmless no-op off Windows / on failure.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "NelsonSalgado.Mira")
+        except Exception:  # noqa: BLE001
+            pass
+
     from mira.paths import migrate_legacy_user_data, user_data_dir
     from mira.settings.repo import SettingsRepo
     from mira.ui.theme import apply_theme
@@ -259,6 +315,10 @@ def main(argv: list[str] | None = None) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     log = _setup_logging(data_dir)
     log.info("Mira (new UI) starting up")
+
+    # Capture uncaught exceptions (incl. Qt-slot crashes) to the log + a
+    # dialog, instead of dying silently in the windowed build.
+    _install_excepthook(log, data_dir / "logs" / "mira.log")
 
     # Quieten the multimedia backend's per-clip console chatter (see
     # each helper's docstring). Both must run before the QApplication
@@ -285,6 +345,21 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(qt_argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
+
+    # Window/taskbar icon (shown in the title bar, taskbar, and Alt-Tab).
+    # This is the RUNTIME icon and is separate from the .exe file icon,
+    # which Nuitka stamps via --windows-icon-from-ico. Resolved the same
+    # way as the themes (parents[2]/assets) so it works from source AND
+    # from the Nuitka onefile (assets are bundled at the same relpath).
+    from PyQt6.QtGui import QIcon
+    _icon_path = (
+        Path(__file__).resolve().parents[2]
+        / "assets" / "icons" / "mira.ico"
+    )
+    if _icon_path.is_file():
+        app.setWindowIcon(QIcon(str(_icon_path)))
+    else:
+        log.warning("App icon not found at %s", _icon_path)
 
     # Qt 6 caps image allocations at 256 MB by default — too small for high-res
     # camera files (e.g. a 45 MP RAW thumbnail can exceed that uncompressed).
@@ -366,22 +441,60 @@ def main(argv: list[str] | None = None) -> int:
         _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
         _LIBRARY_LOCK_HEARTBEAT.start()
 
-    # spec/76 §A.6 — release on clean exit. ``aboutToQuit`` fires
-    # before the event loop returns regardless of how the quit was
-    # triggered (window close, Quit menu, ``QApplication.quit()``), so
-    # this covers every normal-exit path. Crash recovery still rides
-    # the 5-minute staleness takeover in ``core.library_lock`` —
-    # ``release`` only runs when Qt gets to shut down cleanly.
-    # Idempotent: a second call after ``app.exec()`` returns finds the
-    # file already gone and the timer already stopped. Read-only
-    # sessions never released a lock they didn't own — release() is a
-    # no-op for them because the lock holder doesn't match us.
-    def _teardown_library_lock():
-        if _LIBRARY_LOCK_HEARTBEAT is not None:
-            _LIBRARY_LOCK_HEARTBEAT.stop()
-        if library_lock.release(library_root):
-            log.info("Library writer lock released at %s", library_root)
-    app.aboutToQuit.connect(_teardown_library_lock)
+    # spec/76 §A.6 — release on EVERY exit path, not just the clean one.
+    # The historical implementation hooked only ``aboutToQuit`` + the
+    # post-``app.exec()`` belt-and-suspenders, both of which need a clean
+    # Qt shutdown. A Python exception in a slot dies through
+    # ``sys.excepthook → prev_hook`` and the lock leaks. Layer the
+    # teardown so every shutdown path releases:
+    #
+    # 1. ``aboutToQuit`` — clean Qt quit (window close, Quit menu).
+    # 2. ``atexit`` — fires on any interpreter exit, including uncaught
+    #    Python exceptions and ``sys.exit`` (Nelson 2026-06-18 — the
+    #    "library in use" problem after a paintEvent KeyError).
+    # 3. ``sys.excepthook`` — release BEFORE the crash dialog so even
+    #    if the user force-closes that dialog, the lock is gone.
+    # 4. ``try/finally`` around ``app.exec()`` — defense in depth.
+    #
+    # ``release()`` is idempotent: it no-ops when the file is gone or
+    # the holder doesn't match us, so duplicate calls are safe.
+    _teardown_done = False
+
+    def _teardown_library_lock(source: str = "aboutToQuit"):
+        nonlocal _teardown_done
+        if _teardown_done:
+            return
+        _teardown_done = True
+        try:
+            if _LIBRARY_LOCK_HEARTBEAT is not None:
+                _LIBRARY_LOCK_HEARTBEAT.stop()
+        except Exception:                                          # noqa: BLE001
+            pass
+        try:
+            if library_lock.release(library_root):
+                log.info(
+                    "Library writer lock released at %s (%s)",
+                    library_root, source)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "library_lock release failed during %s teardown", source)
+
+    app.aboutToQuit.connect(lambda: _teardown_library_lock("aboutToQuit"))
+
+    if not read_only_mode:
+        import atexit
+        atexit.register(_teardown_library_lock, "atexit")
+        # Chain the excepthook so an uncaught exception releases the
+        # lock BEFORE the crash dialog appears (so a force-close of the
+        # dialog still leaves a clean lock state).
+        _prev_excepthook = sys.excepthook
+
+        def _release_on_excepthook(exc_type, exc, tb):
+            if not issubclass(exc_type, KeyboardInterrupt):
+                _teardown_library_lock("excepthook")
+            _prev_excepthook(exc_type, exc, tb)
+
+        sys.excepthook = _release_on_excepthook
 
     theme = "dark" if force_dark else settings.theme
     if theme not in ("light", "dark"):
@@ -409,27 +522,28 @@ def main(argv: list[str] | None = None) -> int:
         QTimer.singleShot(50, window._open_wizard)
 
     log.info("Event loop starting")
-    code = app.exec()
-    log.info("Event loop ended (exit code %d)", code)
-    # 2026-06-18 corruption fix — run the clean-close path BEFORE the
-    # QApplication + gateway are destroyed: drain the snapshot workers, then
-    # WAL-checkpoint the user store, write its integrity sidecar, and rotate
-    # a verified rolling backup. Historically NOTHING did this at exit, so
-    # the protection layer never ran and the user store accumulated no
-    # backups; an interrupted checkpoint of the hot ``global_items`` table
-    # then corrupted it with nothing to restore from.
+    code = 0
     try:
-        window.shutdown()
-    except Exception:                                          # noqa: BLE001
-        log.exception("clean shutdown failed")
-    # Belt-and-suspenders: ``aboutToQuit`` already released the lock
-    # in-event-loop, but if anything between ``acquire`` and ``exec()``
-    # raises (no event loop to fire ``aboutToQuit``) we still need to
-    # tear the lock down. Both calls are idempotent.
-    if _LIBRARY_LOCK_HEARTBEAT is not None:
-        _LIBRARY_LOCK_HEARTBEAT.stop()
-    if library_lock.release(library_root):
-        log.info("Library writer lock released at %s", library_root)
+        code = app.exec()
+        log.info("Event loop ended (exit code %d)", code)
+        # 2026-06-18 corruption fix — run the clean-close path BEFORE the
+        # QApplication + gateway are destroyed: drain the snapshot workers, then
+        # WAL-checkpoint the user store, write its integrity sidecar, and rotate
+        # a verified rolling backup. Historically NOTHING did this at exit, so
+        # the protection layer never ran and the user store accumulated no
+        # backups; an interrupted checkpoint of the hot ``global_items`` table
+        # then corrupted it with nothing to restore from.
+        try:
+            window.shutdown()
+        except Exception:                                          # noqa: BLE001
+            log.exception("clean shutdown failed")
+    finally:
+        # Nelson 2026-06-18: the lock release MUST run no matter how
+        # we leave the event loop — clean exit, exception bubbling
+        # through ``app.exec()``, ``sys.exit`` inside a slot, anything.
+        # ``_teardown_library_lock`` is idempotent so a double-release
+        # via ``aboutToQuit`` + this ``finally`` is safe.
+        _teardown_library_lock("finally")
     return code
 
 

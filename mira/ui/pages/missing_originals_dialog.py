@@ -54,6 +54,10 @@ from mira.ui.palette import PALETTE
 OUTCOME_KEPT = "kept"
 OUTCOME_RELINK = "relink"
 OUTCOME_PRUNE = "prune"
+# Drop the index row entirely — the user knows the event's files are gone
+# for good and wants Mira to forget the event so the stale tile disappears.
+# No on-disk side effects; the host calls ``Gateway.delete_event(delete_files=False)``.
+OUTCOME_FORGET = "forget"
 
 
 def _palette_mode() -> str:
@@ -62,10 +66,11 @@ def _palette_mode() -> str:
 
 
 class MissingOriginalsDialog(QDialog):
-    """Three-mode modal driven by an :class:`OriginalsCheck` verdict.
+    """Modal driven by an :class:`OriginalsCheck` verdict.
 
     After ``exec()``:
-      * :attr:`outcome` is one of ``"kept" | "relink" | "prune"``
+      * :attr:`outcome` is one of
+        ``"kept" | "relink" | "prune" | "forget"``
       * :attr:`chosen_path` is the user-picked folder when outcome is
         ``"relink"``, else ``None``
     """
@@ -225,17 +230,37 @@ class MissingOriginalsDialog(QDialog):
         f.setSpacing(8)
 
         if self._check.state == OriginalsHealth.ORIGINALS_MOVED:
-            # The destructive "gone for good" sits on the LEFT — a
-            # danger-ghost so the resting state stays calm; the red
-            # hover signals what the click costs. Only the
-            # destructive confirm sub-dialog actually fires the prune.
-            prune_btn = danger_ghost_button(tr("These files are gone…"))
-            prune_btn.setToolTip(tr(
-                "Permanently delete the missing items and everything "
-                "decided about them (picks, edits, markers, snapshots)."
-            ))
-            prune_btn.clicked.connect(self._on_prune_clicked)
-            f.addWidget(prune_btn)
+            # When the whole event folder is gone, prune is uselsss
+            # (there's no event.db to enumerate missing items from) — drop
+            # the index row instead so the stale tile disappears.
+            # ``check_originals`` returns ``ORIGINALS_MOVED`` for both
+            # "Original Media is gone" and "whole event folder is gone";
+            # we tell them apart via ``event_root.exists()``.
+            whole_event_gone = (
+                self._check.event_root is None
+                or not self._check.event_root.exists()
+            )
+            if whole_event_gone:
+                forget_btn = danger_ghost_button(tr("Remove from list"))
+                forget_btn.setToolTip(tr(
+                    "Drop Mira's record of this event. Nothing on disk "
+                    "is touched (there's nothing there to touch)."
+                ))
+                forget_btn.clicked.connect(self._on_forget_clicked)
+                f.addWidget(forget_btn)
+            else:
+                # Per-item prune — needs a healthy event.db. The
+                # destructive "gone for good" sits on the LEFT — a
+                # danger-ghost so the resting state stays calm; the red
+                # hover signals what the click costs. Only the
+                # destructive confirm sub-dialog actually fires the prune.
+                prune_btn = danger_ghost_button(tr("These files are gone…"))
+                prune_btn.setToolTip(tr(
+                    "Permanently delete the missing items and everything "
+                    "decided about them (picks, edits, markers, snapshots)."
+                ))
+                prune_btn.clicked.connect(self._on_prune_clicked)
+                f.addWidget(prune_btn)
             f.addStretch()
             cancel = ghost_button(tr("Not now"))
             cancel.clicked.connect(self._on_cancel)
@@ -316,6 +341,12 @@ class MissingOriginalsDialog(QDialog):
             return  # cancelled the picker — stay in the dialog
         self._chosen_path = Path(picked)
         self._outcome = OUTCOME_RELINK
+        self.accept()
+
+    def _on_forget_clicked(self) -> None:
+        """User confirmed the whole event is gone for good. Accept with
+        OUTCOME_FORGET so the host drops the index row."""
+        self._outcome = OUTCOME_FORGET
         self.accept()
 
     def _on_prune_clicked(self) -> None:

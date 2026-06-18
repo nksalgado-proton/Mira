@@ -2504,6 +2504,7 @@ class MainWindow(QMainWindow):
         from mira.gateway import OriginalsHealth
         from mira.ui.pages.missing_originals_dialog import (
             MissingOriginalsDialog,
+            OUTCOME_FORGET,
             OUTCOME_PRUNE,
             OUTCOME_RELINK,
         )
@@ -2570,6 +2571,21 @@ class MainWindow(QMainWindow):
                 return False
             self.events_page.refresh()
             return True
+
+        if dlg.outcome == OUTCOME_FORGET:
+            # The whole event folder is gone. Drop the index row so the
+            # stale tile disappears; nothing on disk to touch.
+            try:
+                self.gateway.delete_event(event_id, delete_files=False)
+                log.info(
+                    "_gate_missing_originals: removed stale index row "
+                    "for %s (folder missing)", event_id)
+            except Exception:                                   # noqa: BLE001
+                log.exception(
+                    "could not drop stale index row for %s", event_id)
+                return False
+            self.events_page.refresh()
+            return False                # tile is gone, no navigation
 
         # Outcome == kept. Block navigation only on STORAGE_OFFLINE —
         # the dashboard wouldn't have any media to render.

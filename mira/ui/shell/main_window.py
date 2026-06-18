@@ -2867,10 +2867,26 @@ class MainWindow(QMainWindow):
             grid_phase = "edit"
         else:
             grid_phase = "pick"
-        if not self.days_grid_page.open_for_day(
-            self._current_event_id, day_number,
-            title=title, date_iso=date_iso, phase=grid_phase,
-        ):
+        # First open of a day's grid does a fair bit of work synchronously
+        # on the GUI thread (gateway open + cells engine + state lookups +
+        # first paint of the placeholder grid). On a 2k-item day that's a
+        # ~20s silent stall (Nelson 2026-06-18). Wrap with run_with_progress
+        # so the user sees an immediate "Loading day…" dialog. The bar is
+        # indeterminate (the work itself doesn't report progress) but the
+        # earlier paint-now fix in run_with_progress guarantees the label
+        # and busy frame render before the freeze.
+        from mira.ui.base.progress import run_with_progress
+        ok, opened = run_with_progress(
+            self,
+            tr("Opening day {n}…").replace("{n}", str(day_number)),
+            lambda _p: self.days_grid_page.open_for_day(
+                self._current_event_id, day_number,
+                title=title, date_iso=date_iso, phase=grid_phase,
+            ),
+            label=tr("Loading day grid — {title}").replace(
+                "{title}", title or date_iso or str(day_number)),
+        )
+        if not ok or not opened:
             log.warning(
                 "DaysGridPage.open_for_day(%s, %s, phase=%s) failed; "
                 "staying on Days Lists. (The legacy PickPage fallback "

@@ -175,3 +175,65 @@ Two workflows, one grammar (Nelson, closed live):
   across cores — while the foreground app stays lag-free (process
   isolation, yield-to-foreground). The queue + line above are its
   consumer and do not change.
+
+## 9. The Edit metric — *edited ÷ picked* (Nelson 2026-06-18)
+
+The Edit-phase progress number is **edited ÷ picked**, and "edited" has a
+strict meaning: a picked photo is **edited** the moment it moves **off the
+unedited baseline**. Until then every picked photo reads as *Original* —
+unprocessed, so a day full of keepers nobody has touched reads **0%
+edited**, not 100%.
+
+**The predicate (the one definition).** A photo counts as edited when its
+adjustment carries any of three INDEPENDENT reasons:
+
+- **Look** — a look other than ``original``,
+- **Filter** — a creative filter, or
+- **Crop** — an explicit crop box, a non-``Original`` aspect, a straighten
+  angle, or a rotation.
+
+This is **not** "an adjustment row exists." A row written but left at the
+baseline (Original look, no filter, no crop) is **not** edited. The
+denominator is the day's (or event's) **picked** keepers — "among what you
+kept, how much have you actually worked."
+
+**The baseline is Original only (Nelson 2026-06-18).** ``original`` is the
+sole unedited look — identity, no processing. ``natural`` is **a deliberate
+Look choice** ("the default one"), so a photo at Natural is edited. To make
+this real the **editor now defaults new adjustments to Original** (the
+model/schema default, the AdjustmentSurface entry look, and Reset all flip
+from Natural → Original): an unedited photo loads RAW until the user picks a
+Look, applies a filter, or crops. ``core.photo_auto`` renders
+``look="original"`` as ``Params()`` (identity), so this is a real,
+renderable state.
+
+**One source of truth in code.** ``core/edit_status.py`` owns it three
+ways, kept in lock-step: ``edit_reasons(adj)`` (the ordered tuple of active
+reasons — ``look``/``filter``/``crop``), ``is_adjustment_edited`` (=
+``bool(edit_reasons)``), and ``EDITED_SQL`` (the GROUP-BY twin). The
+per-object test, the badge, and the bulk count cannot drift. Consumers:
+
+- **Events-tile Edit donut** — ``edited_count / picked_count`` via the
+  gateway's ``edited_count()`` (replacing the old bare ``len(adjustments())``
+  "developed-row" count; ``developed_count`` survives only as the
+  row-exists number, not a progress signal).
+- **Days-Lists Edit row** — ``phase_day_progress()['edit']`` now counts
+  ``EDITED_SQL`` rows / picked. The shared Days Lists, under the **Edit**
+  identity, swaps the Pick/Skip read for the two **halves of the picked
+  keepers**: **As shot (green** — ``picked − edited``, still at the
+  unedited baseline) + **Edited (amber** — off the baseline). Both are
+  taken **over picked**, so **As shot + Edited always sum to 100%** — the
+  As-shot percentage is derived as ``100 − Edited%`` so rounding can never
+  break the complement. The per-row *Pick all / Skip all* and the header
+  *Pick/Skip all days* verbs are **hidden** under Edit (no day-level Skip
+  there).
+- **Days Grid (Edit phase)** — two signals per photo cell. The **border**
+  encodes edited: **green = unedited / amber = edited** (repurposing the
+  Edit grid's free border — decision state is stripped there per BUGS.md
+  B-010). The **reason badge** is one bottom-left **amber pill** carrying a
+  small dark glyph per active reason (Look · Filter · Crop, in order), so
+  the colour says *whether* it's edited and the pill says *why* / which
+  template(s). It stacks above the Exported badge when both apply; the full
+  reason names ride the cell tooltip. Driven by ``adjustments_for_day`` +
+  ``edit_reasons`` (Edit grid only; Pick has nothing edited, Export shares
+  the edit storage and keeps showing it).

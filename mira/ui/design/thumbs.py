@@ -96,6 +96,13 @@ class Thumb(QWidget):
                         the count chip with a 3✓·2✗ split chip per §5a.
         visited         bool — adds the top-right eye chip
         exported        bool — adds the bottom-left accent badge
+        edit_reasons    tuple[str,...] — reasons the photo is edited
+                        ('look'/'filter'/'crop'); rendered as one amber
+                        bottom-left pill of small glyphs, stacking above
+                        the exported badge when both apply
+        border_token    str | None — overrides the state border colour with
+                        a PALETTE token (Edit grid: 'green' unedited /
+                        'amber' edited). None → the state border is used.
         stamp           "clip" | "snapshot" | None — type stamp shown on
                         Export-mode child cells (a clip / snapshot inside a
                         video cluster). Same top-left chip slot as the
@@ -115,6 +122,8 @@ class Thumb(QWidget):
         cluster_split: tuple[int, int] | None = None,
         visited: bool = False,
         exported: bool = False,
+        edit_reasons: tuple[str, ...] = (),
+        border_token: str | None = None,
         stamp: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -126,6 +135,8 @@ class Thumb(QWidget):
         self._cluster_split = cluster_split
         self._visited = visited
         self._exported = exported
+        self._edit_reasons = tuple(edit_reasons or ())
+        self._border_token = border_token
         self._stamp = stamp
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
@@ -146,6 +157,14 @@ class Thumb(QWidget):
 
     def setExported(self, exported: bool) -> None:
         self._exported = exported
+        self.update()
+
+    def setEditReasons(self, reasons) -> None:
+        self._edit_reasons = tuple(reasons or ())
+        self.update()
+
+    def setBorderToken(self, token: str | None) -> None:
+        self._border_token = token
         self.update()
 
     def setStamp(self, stamp: str | None) -> None:
@@ -196,7 +215,14 @@ class Thumb(QWidget):
         app = QApplication.instance()
         mode = (app.property("theme") if app else None) or "dark"
         palette = PALETTE[mode]
-        state_color = QColor(palette[_STATE_KEY[self._state]])
+        # The border colour is normally the decision STATE; an explicit
+        # border_token overrides it (Edit grid: 'green' unedited / 'amber'
+        # edited — the load-bearing edited signal, Nelson 2026-06-18).
+        if self._border_token:
+            state_color = QColor(
+                palette.get(self._border_token, palette[_STATE_KEY[self._state]]))
+        else:
+            state_color = QColor(palette[_STATE_KEY[self._state]])
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -258,6 +284,7 @@ class Thumb(QWidget):
 
         # Overlays
         self._paint_visited(painter, palette)
+        self._paint_edit_reasons(painter, palette)
         self._paint_exported(painter, palette)
         self._paint_cluster_badge(painter, palette)
         self._paint_type_stamp(painter, palette)
@@ -322,6 +349,64 @@ class Thumb(QWidget):
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
             "Exported",
         )
+
+    # Glyph order matches core.edit_status.REASON_ORDER (look, filter, crop).
+    _EDIT_GLYPHS = ("look", "filter", "crop")
+
+    def _paint_edit_reasons(
+        self, painter: QPainter, palette: dict[str, str]
+    ) -> None:
+        """Bottom-left **amber** edit badge — one pill carrying a small dark
+        glyph per reason the photo is edited (Look / Filter / Crop, in
+        order). Amber matches the edited border + the Days-Lists Edited bar.
+        Stacks one row above the exported badge when both are present
+        (Nelson 2026-06-18). The full reason names ride the cell tooltip,
+        set by the host."""
+        reasons = [r for r in self._EDIT_GLYPHS if r in self._edit_reasons]
+        if not reasons:
+            return
+        glyph_w, pad, gap = 14, 7, 4
+        chip_w = pad * 2 + len(reasons) * glyph_w + (len(reasons) - 1) * gap
+        bottom = self.height() - (52 if self._exported else 28)
+        chip_rect = QRectF(8, bottom, chip_w, 20)
+        self._paint_chip(
+            painter, chip_rect, QColor(palette.get("amber", "#fbbf24")), None)
+        ink = QColor("#241a02")    # dark ink — readable on amber
+        cy = chip_rect.y() + chip_rect.height() / 2
+        x = chip_rect.x() + pad
+        for r in reasons:
+            self._paint_edit_glyph(painter, r, x + glyph_w / 2, cy, ink)
+            x += glyph_w + gap
+
+    def _paint_edit_glyph(
+        self, painter: QPainter, reason: str, cx: float, cy: float,
+        ink: QColor,
+    ) -> None:
+        """One ~12px reason glyph centred at (cx, cy), drawn in ``ink``."""
+        painter.setPen(QPen(ink, 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if reason == "look":
+            # Tonal disc — circle outline with the left half filled.
+            r = 5.0
+            ring = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+            painter.drawEllipse(ring)
+            path = QPainterPath()
+            path.moveTo(cx, cy - r)
+            path.arcTo(ring, 90, 180)   # left semicircle
+            path.closeSubpath()
+            painter.fillPath(path, ink)
+        elif reason == "filter":
+            # Funnel — wide top, converging to a short stem.
+            painter.drawLine(int(cx - 5), int(cy - 4), int(cx + 5), int(cy - 4))
+            painter.drawLine(int(cx - 5), int(cy - 4), int(cx - 1), int(cy + 1))
+            painter.drawLine(int(cx + 5), int(cy - 4), int(cx + 1), int(cy + 1))
+            painter.drawLine(int(cx - 1), int(cy + 1), int(cx - 1), int(cy + 5))
+            painter.drawLine(int(cx + 1), int(cy + 1), int(cx + 1), int(cy + 5))
+        else:  # crop — two overlapping corner brackets
+            painter.drawLine(int(cx - 5), int(cy - 2), int(cx - 5), int(cy + 5))
+            painter.drawLine(int(cx - 5), int(cy + 5), int(cx + 2), int(cy + 5))
+            painter.drawLine(int(cx + 5), int(cy + 2), int(cx + 5), int(cy - 5))
+            painter.drawLine(int(cx + 5), int(cy - 5), int(cx - 2), int(cy - 5))
 
     def _paint_cluster_badge(
         self, painter: QPainter, palette: dict[str, str]

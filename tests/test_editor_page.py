@@ -276,14 +276,15 @@ def test_decision_keys_p_x_space_c_inert_on_editor(
     page.close_event()
 
 
-def test_unpack_adjustment_defaults_to_natural(qapp):
-    """spec/59 §3 — standard-correction baseline applies on entry: an
-    unedited photo starts on the Natural look."""
+def test_unpack_adjustment_defaults_to_original(qapp):
+    """spec/59 §3/§9 — the baseline applies on entry: an unedited photo
+    starts on the **Original** look (no processing), not Natural
+    (Nelson 2026-06-18)."""
     page = EditorPage()
     style, look, cflt, crop, angle, aspect = page._unpack_adjustment(
         None, default_style="general")
     assert style == "general"
-    assert look == "natural"
+    assert look == "original"
     assert cflt is None
     assert crop is None
     assert angle == 0.0

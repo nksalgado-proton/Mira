@@ -502,22 +502,28 @@ class EventGateway:
                 dn, {"total": t, "decided": 0, "committed": 0, "picked": 0})
         out["pick"] = pick_map
 
-        # ---- Edit: developed (has an adjustment) / picked ----
-        developed_by_day = {
+        # ---- Edit: edited (off the unedited baseline) / picked ----
+        # "Edited" is the non-default predicate (core.edit_status): a look
+        # other than Original/Natural, a creative filter, or a crop — NOT
+        # merely "an adjustment row exists" (Nelson 2026-06-18). The bare
+        # row count lives on as ``developed_count`` for the closed tile.
+        from core.edit_status import EDITED_SQL
+        edited_by_day = {
             r["dn"]: r["n"] for r in conn.execute(
                 "SELECT item.day_number AS dn, COUNT(DISTINCT a.item_id) AS n "
                 "FROM adjustment a JOIN visible_item item ON item.id = a.item_id "
+                f"WHERE {EDITED_SQL} "
                 "GROUP BY item.day_number"
             )
         }
         out["edit"] = {
             dn: {
                 "total": picked_by_day.get(dn, 0),
-                "decided": developed_by_day.get(dn, 0),
-                "committed": developed_by_day.get(dn, 0),
-                "picked": developed_by_day.get(dn, 0),
+                "decided": edited_by_day.get(dn, 0),
+                "committed": edited_by_day.get(dn, 0),
+                "picked": edited_by_day.get(dn, 0),
             }
-            for dn in set(picked_by_day) | set(developed_by_day)
+            for dn in set(picked_by_day) | set(edited_by_day)
         }
 
         # ---- Export: exported files (edit_exported) / picked ----
@@ -801,6 +807,19 @@ class EventGateway:
         """Every row in ``adjustment`` — the bulk read Curate discovery needs to
         find Process-exported items (``edit_exported=True`` is the SoT)."""
         return self.store.all(m.Adjustment)
+
+    def edited_count(self) -> int:
+        """Items whose adjustment is **off the unedited baseline** — a look
+        other than Original/Natural, a creative filter, or a crop
+        (``core.edit_status.EDITED_SQL``). This is the Edit-metric numerator
+        the events-tile donut and the Days-Lists Edit rows read as
+        *edited ÷ picked* (Nelson 2026-06-18) — strictly ``<=`` the bare
+        ``len(adjustments())`` developed-row count."""
+        from core.edit_status import EDITED_SQL
+        row = self.store.conn.execute(
+            f"SELECT COUNT(*) AS n FROM adjustment a WHERE {EDITED_SQL}"
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def exported_item_ids(self) -> set:
         """Item ids with at least one **SHIPPED** lineage row — items

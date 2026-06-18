@@ -967,10 +967,11 @@ class EditorPage(QWidget):
             result.full_array, result.preview_array,
             result.natural_params, style=style)
         self._cached_path = ci.path
-        # spec/59 §3 — the standard-correction baseline applies on
-        # entry: the AdjustmentSurface defaults to the Natural look
-        # (the A-routed correction); set_state pushes the saved choice
-        # on top so an unedited photo lands ON its Natural baseline.
+        # spec/59 §3 / §9 — the baseline applies on entry: the
+        # AdjustmentSurface defaults to the **Original** look (identity, no
+        # correction); set_state pushes the saved choice on top so an
+        # unedited photo lands raw at Original until the user picks a Look
+        # (Natural included) — Nelson 2026-06-18.
         self._surface.set_state(
             look=look, crop_norm=crop, box_angle=angle or 0.0,
             style=style, aspect_label=aspect, rotation=rotation,
@@ -996,10 +997,10 @@ class EditorPage(QWidget):
         """Decompose an Adjustment row into the surface's load shape.
 
         Returns ``(style, look, creative_filter, crop_norm, crop_angle,
-        aspect_label)``. No row means the spec/54 defaults: Natural, no
-        filter, no crop."""
+        aspect_label)``. No row means the baseline: **Original** (no look
+        applied), no filter, no crop (Nelson 2026-06-18)."""
         style = default_style or "general"
-        look = "natural"
+        look = "original"
         creative_filter: Optional[str] = None
         crop: Optional[tuple[float, float, float, float]] = None
         angle = 0.0
@@ -1008,7 +1009,7 @@ class EditorPage(QWidget):
             return style, look, creative_filter, crop, angle, aspect
         if adj.style:
             style = adj.style
-        look = adj.look or "natural"
+        look = adj.look or "original"
         creative_filter = adj.creative_filter
         if all(v is not None for v in (
                 adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)):
@@ -1118,11 +1119,12 @@ class EditorPage(QWidget):
 
         if kind == "reset":
             # Reset clears choice + crop/angle/aspect/rotation on THIS
-            # item — back to Natural, no filter, no rotation.
+            # item — back to the unedited baseline: Original (no look),
+            # no filter, no rotation (Nelson 2026-06-18).
             adj.crop_x = adj.crop_y = adj.crop_w = adj.crop_h = None
             adj.crop_angle = 0.0
             adj.rotation = 0
-            adj.look = "natural"
+            adj.look = "original"
             adj.creative_filter = None
             adj.style = None
             adj.aspect_label = None

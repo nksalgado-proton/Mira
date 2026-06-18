@@ -383,7 +383,9 @@ CREATE TABLE adjustment (
   -- so future Looks don't need a table rebuild. ``style`` NULL = use the
   -- item's classification.
   style        TEXT,
-  look         TEXT NOT NULL DEFAULT 'natural',
+  -- Baseline Look is Original = identity / no processing (Nelson
+  -- 2026-06-18). Natural is a deliberate Look choice, not the default.
+  look         TEXT NOT NULL DEFAULT 'original',
   creative_filter TEXT,        -- spec/54 §8: Mira filter key; NULL = none
   crop_x       REAL CHECK (crop_x IS NULL OR (crop_x >= 0 AND crop_x <= 1)),
   crop_y       REAL CHECK (crop_y IS NULL OR (crop_y >= 0 AND crop_y <= 1)),
@@ -714,6 +716,11 @@ def connect(path: Union[str, Path]) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # Wait up to 5s for a competing writer instead of raising "database is
+    # locked" immediately — a momentary overlap between the foreground
+    # gateway and the async ingest/export worker on the same event.db should
+    # queue rather than crash (2026-06-17 corruption/lock incident).
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

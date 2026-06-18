@@ -83,6 +83,8 @@ class ThumbGridItem:
     state: Optional[str] = None           # 'picked'/'skipped'/'compare'/'mixed'/None
     visited: bool = False
     exported: bool = False
+    edit_reasons: Tuple[str, ...] = ()    # 'look'/'filter'/'crop' → amber pill glyphs
+    border_token: Optional[str] = None    # 'green' unedited / 'amber' edited (Edit grid)
     cluster_type: Optional[str] = None    # 'repeated'/'burst'/'focus'/'exposure'/'video'
     cluster_count: int = 0
     cluster_split: Optional[Tuple[int, int]] = None
@@ -119,6 +121,8 @@ class _GridCell(Thumb):
             cluster_split=item.cluster_split,
             visited=item.visited,
             exported=item.exported,
+            edit_reasons=item.edit_reasons,
+            border_token=item.border_token,
             stamp=item.stamp,
             parent=parent,
         )
@@ -147,6 +151,8 @@ class _GridCell(Thumb):
         self.setState(item.state)
         self.setVisited(item.visited)
         self.setExported(item.exported)
+        self.setEditReasons(item.edit_reasons)
+        self.setBorderToken(item.border_token)
         self.setStamp(item.stamp)
         self.setClusterCount(item.cluster_count)
         # cluster_type + cluster_split aren't setter-exposed on Thumb;

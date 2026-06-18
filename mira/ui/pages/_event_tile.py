@@ -369,19 +369,20 @@ def _pick_slices(
 
 
 def _edit_slices(
-    developed: int, picked: int
+    edited: int, picked: int
 ) -> tuple[int, list[tuple[float, str]]]:
-    """Edit — amber → green progress. Numerator: keepers with a real
-    user adjustment row; denominator: picked. Zero-picked falls to a
+    """Edit — amber → green progress. Numerator: keepers that are **off
+    the unedited baseline** (non-default look/crop/filter, per
+    ``core.edit_status``); denominator: picked. Zero-picked falls to a
     faint track so the cell still reads as "nothing here yet" instead
     of "100%"."""
     picked = max(0, int(picked))
-    developed = max(0, min(picked, int(developed)))
+    edited = max(0, min(picked, int(edited)))
     if picked == 0:
         return 0, [(1.0, "track")]
-    percent = int(round(developed / picked * 100))
+    percent = int(round(edited / picked * 100))
     color = "green" if percent >= 100 else "amber"
-    return percent, [(developed, color), (picked - developed, "track")]
+    return percent, [(edited, color), (picked - edited, "track")]
 
 
 def _export_slices(
@@ -621,8 +622,11 @@ class EventTile(Card):
         )
         grid.addWidget(_PhaseDonut("pick", pct, slices), 0, 1)
 
+        # Edit donut = edited / picked, where "edited" is off the unedited
+        # baseline (non-default look/crop/filter), not the bare
+        # developed-row count (Nelson 2026-06-18).
         pct, slices = _edit_slices(
-            self._data.developed_count, self._data.picked_count,
+            self._data.edited_count, self._data.picked_count,
         )
         grid.addWidget(_PhaseDonut("edit", pct, slices), 1, 0)
 

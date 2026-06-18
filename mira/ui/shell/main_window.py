@@ -2730,6 +2730,9 @@ class MainWindow(QMainWindow):
             trip_days = eg.trip_days()
             progress = eg.phase_day_progress()
             pick_map = progress.get("pick", {})
+            # Edit bucket: edited (off the unedited baseline) / picked. The
+            # Edit-identity Days Lists row reads ``edited`` (Nelson 2026-06-18).
+            edit_map = progress.get("edit", {})
             snapshots: list[DaySnapshot] = []
             for d in trip_days:
                 cell = pick_map.get(d.day_number, {}) or {}
@@ -2737,6 +2740,8 @@ class MainWindow(QMainWindow):
                 decided = int(cell.get("decided", 0))
                 picked = int(cell.get("picked", 0))
                 skipped = max(0, decided - picked)
+                edited = int(
+                    (edit_map.get(d.day_number, {}) or {}).get("decided", 0))
                 try:
                     # The "Clusters · N" badge counts only real clusters
                     # (burst / focus_bracket / exposure_bracket / repeat)
@@ -2766,6 +2771,7 @@ class MainWindow(QMainWindow):
                     date_iso=(str(d.date) if d.date else ""),
                     picked=picked,
                     skipped=skipped,
+                    edited=edited,
                     buckets=buckets,
                     items=total,
                     location=(getattr(d, "location", "") or ""),

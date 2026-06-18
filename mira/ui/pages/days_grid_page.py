@@ -103,6 +103,18 @@ from mira.ui.palette import PALETTE
 log = logging.getLogger(__name__)
 
 
+def _edit_reason_tooltip(reasons: tuple[str, ...]) -> str:
+    """Human, translatable tooltip for the edit-reason pill — e.g.
+    "Edited · Look, Crop". Empty when unedited (Nelson 2026-06-18)."""
+    if not reasons:
+        return ""
+    labels = {
+        "look": tr("Look"), "filter": tr("Filter"), "crop": tr("Crop"),
+    }
+    names = ", ".join(labels.get(r, r) for r in reasons)
+    return f"{tr('Edited')} · {names}"
+
+
 # ── Cell-state ↔ Thumb-state mapping ─────────────────────────────────
 # CellColor wire values map onto the Thumb's _STATE_KEY directly; this
 # table makes the intent explicit for review.
@@ -208,6 +220,9 @@ class GridItem:
     state: str | None = None
     visited: bool = False
     exported: bool = False
+    edit_reasons: tuple[str, ...] = ()
+    border_token: str | None = None
+    edit_tooltip: str = ""
     cluster_type: str | None = None
     cluster_count: int = 0
     cluster_split: tuple[int, int] | None = None
@@ -458,7 +473,12 @@ class DaysGridPage(QWidget):
         outer.addLayout(toolbar)
 
         # ── Legend strip ──
-        legend = QHBoxLayout()
+        # Wrapped in a QWidget so the Edit phase (creative-only, spec/66
+        # §1.1 — no picked/skipped/compare decision) can hide it as a
+        # whole (BUGS.md B-010, Nelson 2026-06-17).
+        self._legend_host = QWidget()
+        legend = QHBoxLayout(self._legend_host)
+        legend.setContentsMargins(0, 0, 0, 0)
         legend.setSpacing(18)
         legend.addWidget(_state_swatch("picked", "Picked"))
         legend.addWidget(_state_swatch("skipped", "Skipped"))
@@ -485,21 +505,25 @@ class DaysGridPage(QWidget):
         keys.setObjectName("Sub")
         keys.setTextFormat(Qt.TextFormat.RichText)
         legend.addWidget(keys)
-        outer.addLayout(legend)
+        outer.addWidget(self._legend_host)
 
         # ── Scrolling grid ──
         # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
         # state border + blurred-fill canvas are the same paint as the
-        # Cuts surfaces. Single-zone clicks bubble through
-        # ``cell_activated`` → :meth:`_on_thumb_activated` which routes
-        # by item kind (cluster cover, photo/video, Export-mode toggle).
+        # Cuts surfaces. Two-zone clicks (BUGS.md B-006, Nelson 2026-06-17):
+        # a click in the cell BORDER changes status (cycle Pick→Skip→Compare,
+        # matching the §63 single-photo border-click grammar), a click in
+        # the CENTER opens — drills into the Picker (Pick/Edit) or toggles
+        # green/red (Export mode). Mirrors the legacy DayGridCell rule.
         self._grid = ThumbGrid(
             cell_size=_TILE_SIZE,
-            two_zone_clicks=False,
+            two_zone_clicks=True,
             flow_spacing=18,
             flow_margin=0,
         )
         self._grid.cell_activated.connect(self._on_grid_cell_activated)
+        self._grid.cell_border_clicked.connect(
+            self._on_grid_cell_border_clicked)
         outer.addWidget(self._grid, 1)
 
     # ── Public API (gateway path) ──────────────────────────────────────
@@ -639,11 +663,14 @@ class DaysGridPage(QWidget):
         * **Pick**: Pick all / Skip all / Start a new pass… visible.
         * **Edit**: bulk buttons hidden — Edit is creative-only
           (spec/66 §1.1), no Pick/Skip decision to make on the grid.
+          The picked/skipped/compare legend strip also disappears here
+          (BUGS.md B-010 — there is no border state to legend).
         * **Export**: Pick all + Skip all visible but **relabelled**
           to the ship verbs (Export all / Drop all), Start-a-new-pass
           hidden, and the Export-green primary action revealed.
         """
         is_pick = (self._phase == "pick" and not self._export_mode)
+        is_edit = (self._phase == "edit" and not self._export_mode)
         is_export = bool(self._export_mode)
         # Pick all / Skip all show in Pick and Export. Their wiring is
         # the same (bulk phase_state write); only the labels change.
@@ -670,6 +697,15 @@ class DaysGridPage(QWidget):
             else:
                 self._pick_all_btn.setText(tr("✓ Pick all"))
                 self._skip_all_btn.setText(tr("✗ Skip all"))
+        except Exception:                                          # noqa: BLE001
+            pass
+        # BUGS.md B-010 — Edit is creative-only per spec/66 §1.1; the
+        # picked/skipped/compare/mixed legend belongs to phases that
+        # carry a per-cell state decision. Hide it whenever the grid is
+        # in pure Edit mode (Export mode keeps it — the ship grammar
+        # still uses the green/red border).
+        try:
+            self._legend_host.setVisible(not is_edit)
         except Exception:                                          # noqa: BLE001
             pass
 
@@ -783,12 +819,33 @@ class DaysGridPage(QWidget):
             log.exception("DaysGridPage: exported_item_ids failed")
             return set()
 
+    def _edit_adjustments_for_grid(self) -> dict:
+        """Per-item ``{item_id: Adjustment}`` for the day, used to colour the
+        green/amber edit border and stamp the Look/Filter/Crop reason pill
+        (Nelson 2026-06-18). The edit decoration is an Edit-phase signal, so
+        it is computed ONLY on the Edit grid (Pick has nothing edited yet;
+        Export shares the edit storage and keeps showing it). Empty
+        otherwise. Safe without a gateway."""
+        if self._eg is None or self._phase != "edit":
+            return {}
+        try:
+            return self._eg.adjustments_for_day(self._day_number)
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: adjustments_for_day failed")
+            return {}
+
     def _refresh_from_gateway(self) -> None:
         """Rebuild ``self._day_items`` from the live gateway and render.
 
         Engine is :func:`day_grid_cells` (the spec/32 cell list); the
         page only maps the resulting :class:`CullCell` shape onto the
         Thumb-shaped :class:`GridItem` model.
+
+        Edit-only filter (BUGS.md B-010, spec/66 §1.1): in pure Edit
+        the grid surfaces ONLY the Pick survivors — the engine is
+        scoped to that subset via ``item_ids``. Export-mode (which
+        shares the ``edit`` storage but flips behaviour) keeps the
+        full pool — that's a separate decision pass.
 
         Export-mode reshape (spec/56): a video cell that owns picked
         segments / snapshots becomes a "video" cluster cover; drilling
@@ -798,9 +855,17 @@ class DaysGridPage(QWidget):
         """
         if self._eg is None:
             return
+        # BUGS.md B-010 — Edit grid pool is the Pick survivors (spec/66
+        # §1.1 "Edit pool = all picked keepers"). Restrict the engine
+        # via item_ids when the page is in pure Edit mode; Pick and
+        # Export keep the unfiltered day.
+        item_ids_filter = None
+        if self._phase == "edit" and not self._export_mode:
+            item_ids_filter = self._picked_item_ids_filter()
         cells = day_grid_cells(
             self._eg, self._day_number, phase=self._phase,
             default_state=self._phase_default,
+            item_ids=item_ids_filter,
             # spec/59 §8 / spec/66 §1.2 — shipped items wear the
             # corner exported badge (the redesign replaced the legacy
             # diagonal in grids). Gated by the app-wide
@@ -813,10 +878,69 @@ class DaysGridPage(QWidget):
         day_items = self._items_from_cells(cells, phase_states)
         if self._export_mode:
             day_items = self._reshape_for_export(day_items, phase_states)
+        elif self._phase == "edit":
+            # BUGS.md B-010 — pure Edit is creative-only (spec/66 §1.1):
+            # no picked/skipped/compare/mixed border. Strip the cell
+            # state so the Thumb renders the neutral (no-border) chrome.
+            for it in day_items:
+                it.state = None
         self._day_items = day_items
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+
+    def _picked_item_ids_filter(self) -> Optional[frozenset]:
+        """Return the frozenset of item ids the Edit grid should show
+        (BUGS.md B-010 — spec/66 §1.1 says Edit's pool is "all picked
+        keepers"). Reads the Pick phase ledger:
+
+        * Items with an explicit ``phase_state(phase="pick").state ==
+          "picked"`` are always in the pool.
+        * Items with no Pick row count as picked only when the
+          configured Pick default IS "picked" (spec locks default-Skip,
+          but a power user could flip it). In that case the pool also
+          includes every captured item whose row is missing — which we
+          expand by walking the gateway's captured items once.
+
+        Returns ``None`` if the gateway isn't open (caller falls back
+        to the unfiltered day, same as Pick mode)."""
+        if self._eg is None:
+            return None
+        try:
+            pick_states = self._eg.phase_states("pick")
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: phase_states('pick') failed")
+            return None
+        try:
+            pick_default = default_state_for(
+                self.gateway.settings, "pick")
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: default_state_for(pick) failed")
+            pick_default = STATE_SKIPPED
+        explicit_picked = {
+            iid for iid, ps in pick_states.items()
+            if ps.state == STATE_PICKED
+        }
+        if pick_default != STATE_PICKED:
+            return frozenset(explicit_picked)
+        # Default-Pick mode: items with no row are also picked. Walk
+        # the gateway's captured items once and add anything that
+        # doesn't carry a non-picked explicit row.
+        try:
+            non_picked_explicit = {
+                iid for iid, ps in pick_states.items()
+                if ps.state != STATE_PICKED
+            }
+            implicit_picked = {
+                it.id for it in self._eg.items()
+                if (it.provenance == "captured"
+                    and it.id not in non_picked_explicit)
+            }
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: captured-items walk for Edit filter failed")
+            return frozenset(explicit_picked)
+        return frozenset(explicit_picked | implicit_picked)
 
     def _reshape_for_export(
         self,
@@ -947,6 +1071,12 @@ class DaysGridPage(QWidget):
         if self._eg is None:
             return []
         event_root = Path(self._eg.event_root) if self._eg.event_root else Path(".")
+        # Per-item adjustments for the green/amber edit border + the
+        # Look/Filter/Crop reason pill — computed once per rebuild (Edit
+        # grid only; empty elsewhere; Nelson 2026-06-18).
+        from core.edit_status import edit_reasons as _edit_reasons
+        adj_map = self._edit_adjustments_for_grid()
+        is_edit_grid = self._phase == "edit"
         out: list[GridItem] = []
         for cell in cells:
             if cell.is_cluster and cell.cluster is not None:
@@ -959,12 +1089,20 @@ class DaysGridPage(QWidget):
             if it is None or not it.origin_relpath:
                 continue
             path = event_root / it.origin_relpath
+            reasons = _edit_reasons(adj_map.get(cell.item_id))
+            # Edit grid: every photo cell's border encodes edited (amber) vs
+            # unedited (green). Other grids keep the decision-state border.
+            border_token = (
+                ("amber" if reasons else "green") if is_edit_grid else None)
             out.append(GridItem(
                 item_id=cell.item_id,
                 item_kind=cell.item_kind,
                 state=_CELL_TO_THUMB_STATE.get(cell.color),
                 visited=bool(cell.visited),
                 exported=bool(cell.exported),
+                edit_reasons=reasons,
+                border_token=border_token,
+                edit_tooltip=_edit_reason_tooltip(reasons),
                 _path=path,
                 _sha256=getattr(it, "sha256", None) or None,
             ))
@@ -1092,13 +1230,20 @@ class DaysGridPage(QWidget):
         event_root = (
             Path(self._eg.event_root) if self._eg.event_root else Path(".")
         )
+        # BUGS.md B-010 — Edit is creative-only (spec/66 §1.1): cluster
+        # members inherit the no-border treatment of the day-mode cells.
+        edit_neutral = (self._phase == "edit" and not self._export_mode)
         members: list[GridItem] = []
         for ci in cluster.members:
             path = ci.path if ci.path.is_absolute() else event_root / ci.path
-            color = cell_color_for_item(
-                ci.item_id, ci.kind, self._phase, phase_states,
-                default_state=self._phase_default,
-            )
+            if edit_neutral:
+                thumb_state = None
+            else:
+                color = cell_color_for_item(
+                    ci.item_id, ci.kind, self._phase, phase_states,
+                    default_state=self._phase_default,
+                )
+                thumb_state = _CELL_TO_THUMB_STATE.get(color)
             stamp = None
             if is_video_cluster:
                 # Map provenance → stamp so the type chip reads
@@ -1112,7 +1257,7 @@ class DaysGridPage(QWidget):
             members.append(GridItem(
                 item_id=ci.item_id,
                 item_kind=ci.kind,
-                state=_CELL_TO_THUMB_STATE.get(color),
+                state=thumb_state,
                 visited=False,
                 exported=False,
                 stamp=stamp,
@@ -1215,12 +1360,15 @@ class DaysGridPage(QWidget):
                 state=item.state,
                 visited=item.visited,
                 exported=item.exported,
+                edit_reasons=item.edit_reasons,
+                border_token=item.border_token,
                 cluster_type=item.cluster_type,
                 cluster_count=item.cluster_count,
                 cluster_split=item.cluster_split,
                 stamp=item.stamp,
                 payload=item.item_id,
                 focusable=True,
+                tooltip=item.edit_tooltip,
             ))
         self._grid.set_items(grid_items)
         # ``_thumb_widgets`` is a live view of the grid's Thumb cells
@@ -1248,6 +1396,41 @@ class DaysGridPage(QWidget):
         if cell is None:
             return
         self._on_thumb_clicked(item_id, cell)
+
+    def _on_grid_cell_border_clicked(self, index: int) -> None:
+        """Border-zone click (two-zone grammar, BUGS.md B-006): change the
+        cell's status in place rather than drilling in.
+
+        * Cluster covers have no state of their own — a border click
+          expands them, same as a center click would.
+        * Export mode: toggle green↔red (the locked Export grammar).
+        * Pick: cycle Pick→Skip→Compare, matching the §63 single-photo
+          border-click verb.
+        * Edit: creative-only (spec/66 §1.1) — no per-cell decision,
+          so the border click drills into the editor (BUGS.md B-010),
+          same as a center click. The cell carries no picked/skipped
+          state to cycle through.
+        """
+        if not (0 <= index < len(self._items)):
+            return
+        item = self._items[index]
+        if item.item_kind == "cluster" and item._cull_cluster is not None:
+            self._open_cluster(item._cull_cluster)
+            return
+        cell = self._grid.cell_at(index)
+        if cell is not None:
+            cell.setFocus(Qt.FocusReason.MouseFocusReason)
+        # BUGS.md B-010 — pure Edit: border click is a drill-in (same
+        # as the center click). Pick/Export keep the state-changing
+        # verbs (cycle / toggle). The cluster-cover branch above
+        # already short-circuited; here we know the cell is a single
+        # photo or video, so the host's item_activated route opens the
+        # editor for it.
+        if self._phase == "edit" and not self._export_mode:
+            self.item_activated.emit(item.item_id)
+            return
+        self._apply_verb_at_index(
+            index, "toggle" if self._export_mode else "cycle")
 
     def _on_thumb_clicked(self, item_id: str, widget: Thumb) -> None:
         """A click on a Thumb.
@@ -1300,7 +1483,11 @@ class DaysGridPage(QWidget):
         page — a phase_state flip restores the previous state; an
         Export-mode X-on-shipped (the silent file unlink) restores
         the on-disk JPEG + its lineage row + the ``edit_exported``
-        flag from the in-memory snapshot captured at the verb."""
+        flag from the in-memory snapshot captured at the verb.
+
+        BUGS.md B-010 — pure Edit (spec/66 §1.1 creative-only) takes no
+        P/X/Space/C verbs: there is no per-cell decision on the Edit
+        grid. Esc + Ctrl+Z still work."""
         key = ev.key()
         mods = ev.modifiers()
         if key == Qt.Key.Key_Escape:
@@ -1315,22 +1502,25 @@ class DaysGridPage(QWidget):
             if self._undo_last_decision():
                 ev.accept()
                 return
-        if key == Qt.Key.Key_P:
-            if self._verb_on_focused("pick"):
-                ev.accept()
-                return
-        if key == Qt.Key.Key_X:
-            if self._verb_on_focused("skip"):
-                ev.accept()
-                return
-        if key == Qt.Key.Key_Space:
-            if self._verb_on_focused("toggle"):
-                ev.accept()
-                return
-        if key == Qt.Key.Key_C:
-            if self._verb_on_focused("cycle"):
-                ev.accept()
-                return
+        is_edit_creative = (
+            self._phase == "edit" and not self._export_mode)
+        if not is_edit_creative:
+            if key == Qt.Key.Key_P:
+                if self._verb_on_focused("pick"):
+                    ev.accept()
+                    return
+            if key == Qt.Key.Key_X:
+                if self._verb_on_focused("skip"):
+                    ev.accept()
+                    return
+            if key == Qt.Key.Key_Space:
+                if self._verb_on_focused("toggle"):
+                    ev.accept()
+                    return
+            if key == Qt.Key.Key_C:
+                if self._verb_on_focused("cycle"):
+                    ev.accept()
+                    return
         super().keyPressEvent(ev)
 
     def _verb_on_focused(self, verb: str) -> bool:

@@ -144,10 +144,14 @@ def _populate_body_data(
                              ``phase='pick'``).
     * ``decided_count``    — any explicit pick decision (picked OR
                              skipped OR compare).
-    * ``developed_count``  — real adjustment rows. Spec/77 §7 #1: the
-                             current pipeline doesn't pre-create
-                             baseline rows, so this number genuinely
-                             counts user-developed photos.
+    * ``developed_count``  — real adjustment rows (any row exists).
+    * ``edited_count``     — rows that are **off the unedited baseline**:
+                             a look other than Original/Natural, a
+                             creative filter, or a crop
+                             (``core.edit_status``). This is the Edit
+                             donut's numerator — *edited ÷ picked*
+                             (Nelson 2026-06-18) — so a photo opened in
+                             Edit but left at Original does NOT count.
     * ``exported_count``   — shipped lineage rows
                              (``adjustment.edit_exported = 1``).
     * ``days_with_captures`` — distinct day_numbers with any captured
@@ -169,10 +173,10 @@ def _populate_body_data(
         log.exception("decided count failed for %s", base.event_id)
     try:
         base.developed_count = len(eg.adjustments())
-        # Legacy alias — the closed-tile stat grid (still referenced by
-        # any external preview that builds an EventCardData by hand)
-        # reads ``edited_count``. Keep it in lock-step.
-        base.edited_count = base.developed_count
+        # Edited = off the unedited baseline (non-default look/crop/filter),
+        # NOT merely "a row exists". The Edit donut + the stat grids read
+        # this as edited / picked (Nelson 2026-06-18).
+        base.edited_count = eg.edited_count()
     except Exception:                                          # noqa: BLE001
         log.exception("developed count failed for %s", base.event_id)
     try:

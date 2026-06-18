@@ -156,7 +156,11 @@ class VideoSnapshot:
 class Adjustment:
     item_id: str
     style: Optional[str] = None
-    look: str = "natural"
+    # Default Look is **Original** = no processing applied (identity; raw
+    # capture). A photo only leaves the unedited baseline when the user
+    # deliberately picks a Look (Natural is "the default one", still a Look
+    # choice), applies a filter, or crops (Nelson 2026-06-18).
+    look: str = "original"
     creative_filter: Optional[str] = None
     crop_x: Optional[float] = None
     crop_y: Optional[float] = None

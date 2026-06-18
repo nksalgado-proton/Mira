@@ -179,7 +179,9 @@ class AdjustmentSurface(QWidget):
         # The A-routed Natural correction for the loaded image —
         # computed once per load; every Look compiles from it.
         self._natural_params = Params()
-        self._look = "natural"
+        # Baseline Look is Original = identity, no correction (Nelson
+        # 2026-06-18); Natural is a deliberate Look choice, not the default.
+        self._look = "original"
         self._creative_filter: Optional[str] = None        # spec/54 §8 slot
         self._aspect_label = "Original"
         self._crop_norm: Optional[tuple[float, float, float, float]] = None
@@ -626,7 +628,7 @@ class AdjustmentSurface(QWidget):
     def set_state(
         self,
         *,
-        look: str = "natural",
+        look: str = "original",
         crop_norm: Optional[tuple[float, float, float, float]],
         box_angle: float,
         style: str,
@@ -654,7 +656,7 @@ class AdjustmentSurface(QWidget):
             self._aspect_combo.blockSignals(False)
             if self._crop_overlay is not None:
                 self._crop_overlay.set_aspect_ratio(aspect_label)
-            self._look = look if look in available_looks() else "natural"
+            self._look = look if look in available_looks() else "original"
             self._creative_filter = creative_filter
             self._look_strength = max(0.0, min(2.0, float(look_strength)))
             self._sync_look_buttons()
@@ -981,14 +983,14 @@ class AdjustmentSurface(QWidget):
 
     def _on_reset_all(self) -> None:
         """Reset the loaded image's choice + crop + crop-box rotation +
-        90° image rotation: back to Natural, no filter, no crop. The
-        image rotation is part of reset because it's a destructive
-        per-item override — Reset is "back to the original file" and
-        the user expects rotation to undo too."""
+        90° image rotation: back to **Original** (no look), no filter, no
+        crop. The image rotation is part of reset because it's a
+        destructive per-item override — Reset is "back to the original
+        file" and the user expects rotation to undo too."""
         if self._preview_array is None:
             return
         with self._suppress():
-            self._look = "natural"
+            self._look = "original"
             self._creative_filter = None
             self._look_strength = 1.0
             self._sync_look_buttons()

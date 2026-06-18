@@ -81,6 +81,10 @@ class DaySnapshot:
     date_iso: str          # 'YYYY-MM-DD'
     picked: int = 0
     skipped: int = 0
+    # Edit-phase numerator: picked keepers that are off the unedited
+    # baseline (non-default look/crop/filter, per core.edit_status). Only
+    # read when the page renders under the Edit identity (Nelson 2026-06-18).
+    edited: int = 0
     buckets: int = 0
     items: int = 0
     location: str = ""
@@ -208,9 +212,18 @@ class DayRow(Card):
         self,
         snapshot: DaySnapshot,
         parent: QWidget | None = None,
+        phase: str = "pick",
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
+        # The host phase decides what each row MEASURES (spec/71 — the
+        # shared Days Lists takes its host's identity). Under "edit" the
+        # row swaps the Pick/Skip read for Picked (green, for continuity
+        # with the previous phase) + Edited (amber), and drops the
+        # per-row Pick/Skip verbs which don't apply in Edit
+        # (Nelson 2026-06-18).
+        self._phase = phase
+        self._is_edit = phase == "edit"
         self.setMinimumHeight(120)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # Mockup `.day{padding:14px 16px}` — quieter than the legacy 16/14.
@@ -253,44 +266,79 @@ class DayRow(Card):
         top.addLayout(title_block, 1)
         # Per-row Pick all / Skip all — mockup `.mini` quiet buttons
         # instead of the noisy ghost_button cluster the migration used.
-        pick_all = _mini_button(
-            "✓ Pick all", "green",
-            tr_pick := (
-                f"Pick every undecided item on day {snapshot.day_number}."
-            ),
-        )
-        pick_all.clicked.connect(
-            lambda: self.pick_all_requested.emit(snapshot.day_number)
-        )
-        top.addWidget(pick_all)
-        skip_all = _mini_button(
-            "✗ Skip all", "red",
-            f"Skip every undecided item on day {snapshot.day_number}.",
-        )
-        skip_all.clicked.connect(
-            lambda: self.skip_all_requested.emit(snapshot.day_number)
-        )
-        top.addWidget(skip_all)
+        # Pick verbs only: Edit has no per-day Skip, so the cluster is
+        # omitted there and the title block takes the full row width.
+        if not self._is_edit:
+            pick_all = _mini_button(
+                "✓ Pick all", "green",
+                tr_pick := (
+                    f"Pick every undecided item on day {snapshot.day_number}."
+                ),
+            )
+            pick_all.clicked.connect(
+                lambda: self.pick_all_requested.emit(snapshot.day_number)
+            )
+            top.addWidget(pick_all)
+            skip_all = _mini_button(
+                "✗ Skip all", "red",
+                f"Skip every undecided item on day {snapshot.day_number}.",
+            )
+            skip_all.clicked.connect(
+                lambda: self.skip_all_requested.emit(snapshot.day_number)
+            )
+            top.addWidget(skip_all)
         center.addLayout(top)
 
-        # Stacked Picked / Skipped progress bars — mockup `.bars`. The
-        # 64px label + flex track + 96px count value column matches the
-        # mockup's 54px / flex / 74px proportions at the wider card
-        # width Mira uses.
-        total = max(1, snapshot.items)
-        for label, count, state in (
-            ("Picked", snapshot.picked, "done"),
-            ("Skipped", snapshot.skipped, "skip"),
-        ):
+        # Stacked progress bars — mockup `.bars`. The 60px label + flex
+        # track + 96px count value column matches the mockup's
+        # proportions at the wider card width Mira uses.
+        #
+        # The two bars are PHASE-DRIVEN:
+        #   Pick → Picked (green) / Skipped (red), both over captured items
+        #          (they need NOT sum to 100% — undecided items exist).
+        #   Edit → As shot (green) + Edited (amber), the two HALVES of the
+        #          picked keepers: As shot = picked − edited (still at the
+        #          unedited baseline), Edited = off the baseline. Both over
+        #          picked, so the two ALWAYS sum to 100% — As-shot% is
+        #          derived as ``100 − Edited%`` so rounding can't break the
+        #          complement (Nelson 2026-06-18).
+        # ``token`` forces the fill colour live-per-theme via
+        # StageProgress.setColorToken so green/amber stay phase-stable
+        # regardless of the done/prog/skip state machine. Each spec carries
+        # its own pre-computed ``pct`` and a ``has_data`` flag.
+        if self._is_edit:
+            picked = max(0, snapshot.picked)
+            edited = max(0, min(picked, snapshot.edited))
+            as_shot = picked - edited
+            if picked > 0:
+                edited_pct = int(round(edited / picked * 100))
+                as_shot_pct = 100 - edited_pct
+            else:
+                edited_pct = as_shot_pct = 0
+            bar_specs = (
+                ("As shot", as_shot, as_shot_pct, picked > 0, "green"),
+                ("Edited", edited, edited_pct, picked > 0, "amber"),
+            )
+        else:
+            items = snapshot.items
+            total = max(1, items)
+            bar_specs = (
+                ("Picked", snapshot.picked,
+                 int(round(snapshot.picked / total * 100)) if items > 0 else 0,
+                 items > 0, "green"),
+                ("Skipped", snapshot.skipped,
+                 int(round(snapshot.skipped / total * 100)) if items > 0 else 0,
+                 items > 0, "red"),
+            )
+        for label, count, pct, has_data, token in bar_specs:
             bar_row = QHBoxLayout()
             lab = QLabel(label)
             lab.setObjectName("DayRowBarLabel")
             lab.setFixedWidth(60)
             bar_row.addWidget(lab)
             bar = StageProgress()
-            pct = int(round(count / total * 100)) if snapshot.items > 0 else 0
             bar.setValue(pct)
-            bar.setState(state if count > 0 else None)
+            bar.setColorToken(token if count > 0 else None)
             bar_row.addWidget(bar, 1)
             count_label = QLabel(
                 f"{count} ({pct}%)"
@@ -430,12 +478,15 @@ class DaysListsPage(QWidget):
         new_pass = primary_button("+ Start a new pass…")
         new_pass.clicked.connect(self.new_pass_requested.emit)
         head.addWidget(new_pass)
-        pick_all = ghost_button("✓ Pick all days")
-        pick_all.clicked.connect(self.pick_all_days_requested.emit)
-        head.addWidget(pick_all)
-        skip_all = danger_ghost_button("✗ Skip all days")
-        skip_all.clicked.connect(self.skip_all_days_requested.emit)
-        head.addWidget(skip_all)
+        # Global Pick-all / Skip-all are Pick verbs — hidden under the Edit
+        # identity, where there is no day-level Skip (Nelson 2026-06-18).
+        self._pick_all_days_btn = ghost_button("✓ Pick all days")
+        self._pick_all_days_btn.clicked.connect(self.pick_all_days_requested.emit)
+        head.addWidget(self._pick_all_days_btn)
+        self._skip_all_days_btn = danger_ghost_button("✗ Skip all days")
+        self._skip_all_days_btn.clicked.connect(self.skip_all_days_requested.emit)
+        head.addWidget(self._skip_all_days_btn)
+        self._apply_phase_chrome()
         outer.addLayout(head)
 
         # Day rows scroll
@@ -487,6 +538,18 @@ class DaysListsPage(QWidget):
         if phase in self._IDENTITY_SPEC and phase != self._identity_phase:
             self._identity_phase = phase
             self._refresh_identity()
+            self._apply_phase_chrome()
+            # Rows measure per-phase, so re-render if data is already loaded.
+            if self._snapshots:
+                self._render()
+
+    def _apply_phase_chrome(self) -> None:
+        """Show/hide phase-specific header verbs. The day-level Pick-all /
+        Skip-all are Pick concepts; Edit (and Export) have no day Skip, so
+        they are hidden there (Nelson 2026-06-18)."""
+        show_pick_verbs = self._identity_phase in ("pick", "collect")
+        self._pick_all_days_btn.setVisible(show_pick_verbs)
+        self._skip_all_days_btn.setVisible(show_pick_verbs)
 
     # ── data ────────────────────────────────────────────────────────────
 
@@ -510,7 +573,7 @@ class DaysListsPage(QWidget):
             if w is not None:
                 w.deleteLater()
         for snap in self._snapshots:
-            row = DayRow(snap)
+            row = DayRow(snap, phase=self._identity_phase)
             row.activated.connect(self.day_activated.emit)
             row.pick_all_requested.connect(self.day_pick_all_requested.emit)
             row.skip_all_requested.connect(self.day_skip_all_requested.emit)

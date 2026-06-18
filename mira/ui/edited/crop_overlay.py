@@ -581,8 +581,20 @@ class CropOverlay(QWidget):
                 cand_ph = cand_pw / target_ratio
                 cand_h = cand_ph / ih
 
-        cand_w = max(_MIN_RECT_NORM, cand_w)
-        cand_h = max(_MIN_RECT_NORM, cand_h)
+        # Cap to fit inside the image. The aspect-lock above always
+        # GROWS the un-anchored dimension to match the target ratio,
+        # which can push cand_w / cand_h past 1.0 on extreme aspects
+        # (e.g. portrait 9:16 with a wide drag). Scale BOTH down by
+        # the same factor so the locked ratio survives and the rect
+        # stays normalised — without this the adjustment row's
+        # schema CHECK (``crop_h > 0 AND crop_h <= 1``) fails on
+        # save and Mira crashes (Nelson 2026-06-18 eyeball).
+        if cand_w > 1.0 or cand_h > 1.0:
+            scale = min(1.0 / cand_w, 1.0 / cand_h)
+            cand_w *= scale
+            cand_h *= scale
+        cand_w = max(_MIN_RECT_NORM, min(1.0, cand_w))
+        cand_h = max(_MIN_RECT_NORM, min(1.0, cand_h))
 
         # New top-left depends on which corner is being dragged.
         if self._drag_mode == _DragMode.RESIZE_TL:

@@ -139,3 +139,42 @@ def test_drag_near_level_snaps_to_zero(qapp):
     assert ov.current_box_angle() == 0.0
     ov.mouseReleaseEvent(_mouse(QEvent.Type.MouseButtonRelease, target))
     assert committed == [0.0]
+
+
+def test_resize_with_mismatched_aspect_clamps_rect_in_unit_box(qapp):
+    """Regression: dragging a corner with an aspect lock that doesn't
+    match the image rect's own aspect — e.g. 16:9 on a portrait photo
+    — used to grow ``cand_w`` / ``cand_h`` past 1.0 because the lock
+    always GREW the un-anchored dimension to satisfy the ratio. The
+    OOB rect then tripped the adjustment row's schema CHECK
+    (``crop_h IS NULL OR (crop_h > 0 AND crop_h <= 1)``) when the
+    surface tried to save and Mira crashed.
+
+    Pin: a far-corner drag on a portrait image rect with 16:9 lock
+    commits a rect that still fits inside ``[0, 1]``."""
+    ov = CropOverlay()
+    ov.resize(400, 800)
+    # Portrait image rect (200 wide × 400 tall) inside a portrait widget.
+    ov.set_image_geometry(QRect(0, 0, 200, 400), (2000, 4000))
+    ov.set_aspect_ratio("16:9")
+    ov.set_rect((0.4, 0.4, 0.2, 0.2))
+
+    committed: list[tuple] = []
+    ov.rect_changed.connect(committed.append)
+
+    rect_widget = ov._norm_to_widget(ov.current_rect_norm())
+    br = QPointF(rect_widget.right(), rect_widget.bottom())
+    ov.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, br))
+    ov.mouseMoveEvent(_mouse(
+        QEvent.Type.MouseMove, QPointF(10_000.0, 10_000.0)))
+    ov.mouseReleaseEvent(_mouse(
+        QEvent.Type.MouseButtonRelease, QPointF(10_000.0, 10_000.0)))
+
+    assert committed, "release should commit a rect"
+    x, y, w, h = committed[-1]
+    assert 0.0 <= x <= 1.0
+    assert 0.0 <= y <= 1.0
+    assert 0.0 < w <= 1.0
+    assert 0.0 < h <= 1.0
+    assert x + w <= 1.0 + 1e-9
+    assert y + h <= 1.0 + 1e-9

@@ -3081,12 +3081,25 @@ class MainWindow(QMainWindow):
                  if m.item_id == item_id),
                 0,
             )
-            ok = self.picker_page.open_to_cluster(
-                event_id, day_number, cluster, entry_idx=entry_idx)
+            def _open(_p):
+                return self.picker_page.open_to_cluster(
+                    event_id, day_number, cluster, entry_idx=entry_idx)
         else:
-            ok = self.picker_page.open_to_item(
-                event_id, day_number, item_id)
-        if not ok:
+            def _open(_p):
+                return self.picker_page.open_to_item(
+                    event_id, day_number, item_id)
+        # First open of a photo (single or cluster member) loads it on the
+        # GUI thread — multi-second freeze with no feedback (Nelson
+        # 2026-06-18). Wrap with run_with_progress so the label + busy
+        # indicator paint immediately. The earlier paint-now hardening
+        # in run_with_progress guarantees the dialog body renders before
+        # the blocking work starts.
+        from mira.ui.base.progress import run_with_progress
+        ran, ok = run_with_progress(
+            self, tr("Opening photo…"), _open,
+            label=tr("Loading…"),
+        )
+        if not ran or not ok:
             log.warning(
                 "PickerPage open from Days Grid failed (%s, %s, %s)",
                 event_id, day_number, item_id)
@@ -3112,12 +3125,23 @@ class MainWindow(QMainWindow):
                  if m.item_id == item_id),
                 0,
             )
-            ok = self.edit_page.open_to_cluster(
-                event_id, day_number, cluster, entry_idx=entry_idx)
+            def _open(_p):
+                return self.edit_page.open_to_cluster(
+                    event_id, day_number, cluster, entry_idx=entry_idx)
         else:
-            ok = self.edit_page.open_to_item(
-                event_id, day_number, item_id)
-        if not ok:
+            def _open(_p):
+                return self.edit_page.open_to_item(
+                    event_id, day_number, item_id)
+        # Same shape as the Pick-phase open: load + first paint of the
+        # Editor surface block the GUI thread for seconds (Nelson
+        # 2026-06-18). Wrap with run_with_progress so the label and busy
+        # indicator land before the freeze.
+        from mira.ui.base.progress import run_with_progress
+        ran, ok = run_with_progress(
+            self, tr("Opening photo…"), _open,
+            label=tr("Loading…"),
+        )
+        if not ran or not ok:
             log.warning(
                 "EditorPage open from Days Grid failed (%s, %s, %s)",
                 event_id, day_number, item_id)

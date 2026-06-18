@@ -106,9 +106,9 @@ class _CamRow:
         self.mode_combo = QComboBox()
         self.mode_combo.addItem(tr("I know the timezone"), "know")
         if pair_pick_available:
-            self.mode_combo.addItem(
-                tr("I don't know — pick a sync pair"), "unknown",
-            )
+            # spec/88 — the "pick a sync pair" rider is gone, the
+            # recognition flow opens automatically on selection.
+            self.mode_combo.addItem(tr("I don't know"), "unknown")
         self.mode_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
         self.tz_picker = TzPicker()
@@ -527,8 +527,19 @@ class PastPhotosCamerasDialog(QDialog):
             return self._REC_UNAVAILABLE
 
         from core.clock_recognition import find_candidate_pairs
-        clusters = find_candidate_pairs(cam_items, phone_items)
-        log.info("spec/88 recognition: %d cluster(s) generated", len(clusters))
+        # Trip TZ as the fallback when phone EXIF lacks OffsetTimeOriginal
+        # (older iPhones / re-exported phones — Nelson 2026-06-18). Per
+        # spec/88 §2 this is the single-zone equivalence: phone_tz is
+        # constant, so clustering on raw off is equivalent. ``trip_tz`` is
+        # hours-east-of-UTC; convert to minutes for the API.
+        default_phone_tz = int(round(self._trip_tz * 60))
+        clusters = find_candidate_pairs(
+            cam_items, phone_items,
+            default_phone_tz_minutes=default_phone_tz,
+        )
+        log.info("spec/88 recognition: %d cluster(s) generated "
+                 "(fallback phone_tz=%d min)",
+                 len(clusters), default_phone_tz)
         if not clusters:
             phone_with_tz = sum(
                 1 for it in phone_items

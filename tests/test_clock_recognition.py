@@ -322,8 +322,8 @@ def test_items_without_timestamps_are_skipped():
 
 def test_phone_without_tz_offset_is_skipped():
     """A phone item that for some reason lacks ``tz_offset_minutes`` can't
-    be normalized — it's silently dropped. (The default ``phone_tz_for``
-    relies on this EXIF field.)"""
+    be normalized — it's silently dropped UNLESS the caller supplied a
+    fallback (see test_default_phone_tz_minutes_falls_back below)."""
     cam = _cam("c0", datetime(2025, 5, 12, 12, 0, 0))
     phone_no_tz = SourceItem(
         path=Path("phone/p_no_tz.jpg"),
@@ -332,6 +332,52 @@ def test_phone_without_tz_offset_is_skipped():
         tz_offset_minutes=None,
     )
     assert find_candidate_pairs([cam], [phone_no_tz]) == []
+
+
+def test_default_phone_tz_minutes_falls_back_for_phones_without_exif_tz():
+    """Spec/88 §2: "phone_tz is constant and clustering on off directly is
+    equivalent" — when phone items lack OffsetTimeOriginal (older iPhones
+    / re-exported phones, Nelson 2026-06-18: iPhone 6s case where 0/21
+    items carried the tag), the caller can supply a trip-wide default so
+    clusters still form."""
+    instants = [
+        datetime(2025, 5, 12, 13, 0, 0),
+        datetime(2025, 5, 12, 14, 0, 0),
+    ]
+    cams = [_cam(f"c{i}", t - timedelta(hours=3))
+            for i, t in enumerate(instants)]
+    phones = [
+        SourceItem(
+            path=Path(f"phone/p{i}.jpg"),
+            timestamp=t - timedelta(hours=3),
+            camera_id="iPhone 6s",
+            tz_offset_minutes=None,        # no EXIF TZ
+        )
+        for i, t in enumerate(instants)
+    ]
+    # No fallback → no clusters (the failure mode the user hit).
+    assert find_candidate_pairs(cams, phones) == []
+    # Fallback supplied → clusters form, snapping to the camera's set TZ.
+    clusters = find_candidate_pairs(
+        cams, phones, default_phone_tz_minutes=-180,
+    )
+    assert clusters
+    assert clusters[0].snapped_kappa_minutes == -180
+
+
+def test_default_phone_tz_minutes_yields_to_per_photo_tz_when_present():
+    """The default only kicks in when ``tz_offset_minutes`` is None; phone
+    items WITH a per-photo TZ keep using their own value (modern
+    iPhones with mixed travel days)."""
+    inst = datetime(2025, 5, 12, 13, 0, 0)
+    cam = _cam("c", inst - timedelta(hours=3))
+    phone_with_tz = _phone("p", inst - timedelta(hours=3), -180)
+    # Pass a different default; per-photo TZ wins, κ still snaps -180.
+    clusters = find_candidate_pairs(
+        [cam], [phone_with_tz], default_phone_tz_minutes=0,
+    )
+    assert clusters
+    assert clusters[0].snapped_kappa_minutes == -180
 
 
 # ── Outlier robustness ───────────────────────────────────────────────────

@@ -126,6 +126,7 @@ def find_candidate_pairs(
     phone_items: Sequence[SourceItem],
     *,
     phone_tz_for: Optional[Callable[[SourceItem], Optional[int]]] = None,
+    default_phone_tz_minutes: Optional[int] = None,
     tolerance: timedelta = TIGHTNESS_TOLERANCE,
     cards_per_cluster: int = DEFAULT_CARDS_PER_CLUSTER,
 ) -> List[CandidateCluster]:
@@ -133,16 +134,25 @@ def find_candidate_pairs(
 
     ``phone_tz_for(p)`` returns the phone's UTC offset (minutes east) on
     ``p``'s day. Defaults to ``p.tz_offset_minutes`` — the per-photo EXIF
-    answer is the most precise source. Phone items whose ``phone_tz_for``
-    returns ``None`` are skipped (no way to normalize them). Items with
-    missing timestamps are skipped on both sides.
+    answer is the most precise source. When that EXIF tag is absent on a
+    phone item (older iPhones, photos exported through a tool that
+    strips OffsetTimeOriginal — Nelson 2026-06-18 iPhone 6s case), the
+    per-photo result is ``None`` and ``default_phone_tz_minutes`` is used
+    as a fallback. For single-zone trips this is exactly spec/88 §2's
+    equivalence ("phone_tz is constant and clustering on off directly is
+    equivalent"). When neither a per-photo answer nor a default is
+    available, the phone item is skipped. Items with missing timestamps
+    are skipped on both sides.
 
     Returned clusters are sorted by ``size`` descending; ties broken by
     smallest top-pair tightness, then by κ closest to zero (the
     correctly-set-camera case wins ties — spec/88 §3 point 2).
     """
     if phone_tz_for is None:
-        phone_tz_for = lambda it: it.tz_offset_minutes
+        def phone_tz_for(it: SourceItem) -> Optional[int]:
+            if it.tz_offset_minutes is not None:
+                return it.tz_offset_minutes
+            return default_phone_tz_minutes
 
     cam_with_t = [c for c in camera_items if c.timestamp is not None]
     phone_with_tz: list[tuple[SourceItem, int]] = []

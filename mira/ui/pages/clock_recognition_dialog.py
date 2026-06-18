@@ -38,7 +38,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStackedLayout,
     QVBoxLayout,
@@ -53,11 +52,16 @@ from mira.ui.i18n import tr
 log = logging.getLogger(__name__)
 
 
-# Card visuals.
-_THUMB_SIZE = QSize(220, 165)
-# Spread the leading sample of cards horizontally; if there are more in
-# the cluster, the scroll area handles overflow.
-_CARD_GAP = 16
+# Card visuals — Nelson 2026-06-18 redesign: each card is one ROW with
+# camera on the left and phone on the right; cards stack vertically so
+# the user reads top-to-bottom comparing scenes pair by pair.
+_THUMB_SIZE = QSize(280, 210)
+_CARD_GAP = 12
+
+# How many pair rows are visible without "show another" — three per
+# spec/88 feedback (Nelson 2026-06-18): bigger thumbs, easier scene
+# recognition than the prior 6-cards horizontal strip.
+_DEFAULT_CARDS_VISIBLE = 3
 
 
 @dataclass(frozen=True)
@@ -100,10 +104,16 @@ def _format_shift(td: timedelta) -> str:
 
 
 class _PairCard(QFrame):
-    """One ``[camera | phone]`` card. Clicking the card emits
-    :pyattr:`pair_clicked` so the dialog can confirm the pair. No offset
-    label — recognition has to come from the photos themselves, never
-    from the math (spec/88 §2)."""
+    """One pair as a single ROW: camera thumbnail on the left, phone
+    thumbnail on the right, filenames underneath. Clicking anywhere in
+    the row confirms the pair.
+
+    No timestamps (spec/88 §2 ranking — "do not label each card with the
+    offset it implies; that biases the eye"). Even raw EXIF clock-times
+    can bias: within a cluster every pair has the same raw delta, and
+    a non-zero delta makes truly-simultaneous-but-clock-shifted scenes
+    *look* mismatched. Strip the clock; force scene recognition.
+    """
 
     pair_clicked = pyqtSignal(object)  # CandidatePair
 
@@ -114,36 +124,44 @@ class _PairCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(6)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(16)
 
-        thumbs = QHBoxLayout()
-        thumbs.setSpacing(6)
-        self._cam_thumb = self._make_thumb(pair.camera_item.path)
-        self._phone_thumb = self._make_thumb(pair.phone_item.path)
-        thumbs.addWidget(self._cam_thumb)
-        thumbs.addWidget(self._phone_thumb)
-        outer.addLayout(thumbs)
-
-        # Filename + EXIF time for each side — these help the user link
-        # the thumbnail back to a moment they remember (the spec is
-        # explicit: don't add an offset label, only context).
-        cam_caption = QLabel(self._caption_for(pair.camera_item))
-        cam_caption.setObjectName("PageHint")
-        cam_caption.setWordWrap(True)
-        cam_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(cam_caption)
-        phone_caption = QLabel(self._caption_for(pair.phone_item))
-        phone_caption.setObjectName("PageHint")
-        phone_caption.setWordWrap(True)
-        phone_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(phone_caption)
+        cam_side = self._make_side(pair.camera_item, tr("Camera"))
+        phone_side = self._make_side(pair.phone_item, tr("Phone"))
+        outer.addWidget(cam_side, stretch=1)
+        outer.addWidget(phone_side, stretch=1)
 
     def pair(self) -> CandidatePair:
         return self._pair
+
+    def _make_side(self, item, role_label: str) -> QWidget:
+        """Build one half of the row: small role caption, thumbnail,
+        filename. No timestamp."""
+        side = QWidget()
+        col = QVBoxLayout(side)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+
+        role = QLabel(role_label)
+        role.setObjectName("PageHint")
+        role.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(role)
+
+        col.addWidget(self._make_thumb(item.path),
+                      alignment=Qt.AlignmentFlag.AlignCenter)
+
+        name = getattr(item, "path", None)
+        caption = QLabel(name.name if name is not None else "")
+        caption.setObjectName("PageHint")
+        caption.setWordWrap(True)
+        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(caption)
+
+        return side
 
     def _make_thumb(self, path) -> QLabel:
         thumb = QLabel()
@@ -167,15 +185,6 @@ class _PairCard(QFrame):
             )
             thumb.setPixmap(scaled)
         return thumb
-
-    @staticmethod
-    def _caption_for(item) -> str:
-        ts = ""
-        if getattr(item, "timestamp", None) is not None:
-            ts = item.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        name = getattr(item, "path", None)
-        name = name.name if name is not None else ""
-        return f"<b>{name}</b><br>{ts}"
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -216,12 +225,16 @@ class RecognitionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("Confirm camera timezone"))
         self.setModal(True)
-        self.resize(1100, 740)
+        self.resize(820, 880)
         self._camera_id = camera_id
         self._reference_id = reference_id
         self._clusters: List[CandidateCluster] = list(clusters)
         self._impact_for = impact_for
-        self._cards_visible = cards_visible
+        # Default-3 matches the Nelson 2026-06-18 layout — 3 stacked pair
+        # rows, scene-by-scene. Callers can still override.
+        self._cards_visible = (
+            cards_visible if cards_visible != 6 else _DEFAULT_CARDS_VISIBLE
+        )
         self._cluster_index = 0
         self._confirmed_pair: Optional[CandidatePair] = None
         self._confirmed_impact: Optional[ApplyImpact] = None
@@ -256,27 +269,23 @@ class RecognitionDialog(QDialog):
         layout.addWidget(self._headline)
 
         hint = QLabel(tr(
-            "Click the pair you remember shooting at the same moment. "
-            "If nothing here looks right, try the next set — or fall back "
-            "to picking a pair by hand."
+            "Each row is one candidate pair: camera on the left, phone on "
+            "the right. Click the row you recognize as the same moment "
+            "(same scene, same people). If none looks right, show the "
+            "next set — or fall back to picking a pair by hand."
         ))
         hint.setObjectName("PageHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        # Horizontal scrollable strip of cards.
-        self._card_scroll = QScrollArea()
-        self._card_scroll.setWidgetResizable(True)
-        self._card_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._card_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Vertical stack of pair rows — three at a time per spec/88
+        # 2026-06-18 redesign. No horizontal scroll; "Show another" cycles
+        # clusters and re-populates this column.
         self._card_row = QWidget()
-        self._card_row_layout = QHBoxLayout(self._card_row)
+        self._card_row_layout = QVBoxLayout(self._card_row)
         self._card_row_layout.setContentsMargins(0, 0, 0, 0)
         self._card_row_layout.setSpacing(_CARD_GAP)
-        self._card_scroll.setWidget(self._card_row)
-        layout.addWidget(self._card_scroll, stretch=1)
+        layout.addWidget(self._card_row, stretch=1)
 
         # Bottom row of buttons.
         btn_row = QHBoxLayout()

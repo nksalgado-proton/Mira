@@ -21,6 +21,7 @@ python -m nuitka ^
     --onefile ^
     --windows-disable-console ^
     --enable-plugin=pyqt6 ^
+    --include-qt-plugins=sensible,multimedia ^
     --include-package=mira ^
     --include-package=core ^
     --include-data-dir=assets=assets ^
@@ -29,6 +30,7 @@ python -m nuitka ^
     @_dll_includes.txt ^
     --output-dir=%OUTPUT_DIR% ^
     --output-filename=Mira.exe ^
+    --windows-icon-from-ico=assets/icons/mira.ico ^
     --assume-yes-for-downloads ^
     mira\__main__.py
 

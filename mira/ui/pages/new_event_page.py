@@ -284,6 +284,15 @@ class NewEventPage(QWidget):
                     "{err}", str(exc)),
             )
             return
+        # BUGS.md B-012 — derive event.start_date / end_date from the
+        # trip_days table the doc just wrote (the dialog never asked
+        # for From/To).
+        try:
+            self.gateway.recompute_event_date_range(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range failed after new_event_page %s",
+                event_id)
 
         log.info(
             "Created event %s (id=%s) on %s with %d day(s) at %s",

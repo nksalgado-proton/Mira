@@ -642,6 +642,69 @@ class Gateway:
 
         self.refresh_index_entry(event_id)
 
+    def recompute_event_date_range(self, event_id: str) -> bool:
+        """Derive ``event.start_date`` / ``end_date`` purely from the
+        ``trip_days`` table and write them back to the event row.
+
+        BUGS.md B-012 (Nelson 2026-06-17): the Header dialog stopped
+        asking the user for From/To — dates live in the database
+        **extracted from the days table only**. ``start_date = min(d.date
+        for d in trip_days)`` / ``end_date = max(...)`` over every
+        trip_day with a non-empty date column. The recompute runs on
+        every trip_day batch write (creation, Collect, plan editor,
+        ingest), so whenever the days table is updated, the event range
+        follows immediately.
+
+        Pure derive — no extend-only logic. If a manual ``start_date`` /
+        ``end_date`` from an older session is wider than the current
+        data range, the recompute SHRINKS them back to the data. The
+        only source of truth is the trip_days table.
+
+        Returns ``True`` if either column was actually updated. Best-
+        effort: a gateway open failure is logged and swallowed (the
+        seam must never block the trip-day write that triggered it).
+        """
+        try:
+            eg = self.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range: cannot open event %s", event_id)
+            return False
+        try:
+            day_dates = [
+                td.date for td in eg.trip_days()
+                if td.date  # skip rows whose date column is empty
+            ]
+            ev = eg.event()
+            cur_start = (ev.start_date or "") or None
+            cur_end = (ev.end_date or "") or None
+        finally:
+            eg.close()
+
+        if day_dates:
+            new_start: Optional[str] = min(day_dates)
+            new_end: Optional[str] = max(day_dates)
+        else:
+            new_start = None
+            new_end = None
+        if new_start == cur_start and new_end == cur_end:
+            return False
+        # ``set_classification`` reads ``None`` as "leave unchanged" but
+        # accepts ``""`` as "clear to NULL", so map back when the new
+        # value is None (we want to wipe a stale manual range when the
+        # data went empty).
+        try:
+            self.set_classification(
+                event_id,
+                start_date=(new_start if new_start is not None else ""),
+                end_date=(new_end if new_end is not None else ""),
+            )
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range: write failed for %s", event_id)
+            return False
+        return True
+
     def recover_orphan_events(self) -> List[Dict[str, Any]]:
         """Scan ``photos_base_path`` for ``event.db`` files not tracked by the index.
 

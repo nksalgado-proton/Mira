@@ -79,6 +79,15 @@ QPlainTextEdit#DesignText:focus,
 QTextEdit#DesignText:focus {
     border: 1px solid {accent}; }
 QComboBox#DesignSelect::drop-down { border: none; width: 22px; }
+/* The dropdown chevron. Styling ``::drop-down`` strips Qt's native arrow,
+   so without an explicit ``::down-arrow`` rule the field reads as a plain
+   line input — Nelson 2026-06-17: "não tem a seta que abre no campo".
+   Image is the bundled chevron_down.svg; size pinned a hair smaller than
+   the 22px ::drop-down width so the glyph sits clear of the input's right
+   border. */
+QComboBox#DesignSelect::down-arrow {
+    image: url("{chevron_down_icon_url}");
+    width: 12px; height: 12px; }
 /* Editable QComboBox routes its display through an inner QLineEdit; without
    this rule the line-edit reads its own padding/background and the Subtype
    field drifts visibly from the Type field next to it (spec/65 §3.2). */
@@ -348,6 +357,9 @@ QComboBox#DaysCellSelect {
 QLineEdit#DaysCellInput:focus,
 QComboBox#DaysCellSelect:focus { border-color: {accent}; }
 QComboBox#DaysCellSelect::drop-down { border: none; width: 20px; }
+QComboBox#DaysCellSelect::down-arrow {
+    image: url("{chevron_down_icon_url}");
+    width: 11px; height: 11px; }
 QComboBox#DaysCellSelect QAbstractItemView {
     background: {card}; color: {ink};
     border: 1px solid {line}; border-radius: {radius_md}px;

@@ -74,18 +74,54 @@ def normalize_type(event_type: Optional[str]) -> str:
 #: ("Roadtrip"); duration and scope are now first-class event columns
 #: (see schema.py). The UI keeps the subtype combo EDITABLE so a user can
 #: still type a custom value the curated list doesn't cover.
+#:
+#: Expanded 2026-06-17 (Nelson): each type carries a wider activity-only
+#: vocabulary so the dropdown covers the common photo-event types without
+#: forcing the user to type. ``EVENT_TYPE_UNCLASSIFIED`` stays empty — the
+#: spec/64 §3.6 save gate (Name + Type + Subtype) only releases when the
+#: user has actually classified the event.
 SUBTYPE_PRESETS: Dict[str, Tuple[str, ...]] = {
     EVENT_TYPE_TRIP: (
-        "City", "Beach", "Nature", "Adventure", "Wildlife", "Cultural", "Road",
+        # Urban / cultural
+        "City", "Cultural", "Festival",
+        # Outdoor / nature
+        "Nature", "Mountain", "Adventure", "Wildlife", "Safari",
+        # Coastal / vehicular
+        "Beach", "Cruise", "Road",
+        # Themed / audience
+        "Family vacation", "Honeymoon", "Workshop",
     ),
     EVENT_TYPE_SESSION: (
-        "Portrait", "Product", "Event coverage", "Family", "Personal",
+        # People
+        "Portrait", "Family", "Newborn", "Pet",
+        # Commercial
+        "Product", "Event coverage",
+        # Outdoor subjects
+        "Wildlife", "Landscape", "Sports", "Street",
+        # Technical / close
+        "Macro", "Astrophotography",
+        # Settings
+        "Studio", "Personal",
     ),
     EVENT_TYPE_OCCASION: (
-        "Wedding", "Birthday", "Anniversary", "Graduation", "Memorial",
+        # Couple milestones
+        "Wedding", "Engagement", "Anniversary",
+        # Coming-of-age / personal milestones
+        "Birthday", "Graduation",
+        # Religious / family
+        "Baptism", "Baby shower",
+        # Gatherings
+        "Holiday", "Reunion", "Party",
+        # Closure
+        "Memorial",
     ),
     EVENT_TYPE_PROJECT: (
-        "Photo essay", "Documentary", "Time-lapse", "Series",
+        # Long-form storytelling
+        "Photo essay", "Documentary", "Series", "Time-lapse",
+        # Output formats
+        "Photobook", "Exhibition", "Portfolio",
+        # Ongoing / studies
+        "365 daily", "Self-portrait", "Stock library",
     ),
     EVENT_TYPE_UNCLASSIFIED: (),
 }

@@ -34,3 +34,34 @@ def test_wraps_to_more_rows_when_narrow(qapp):
     narrow = fl.heightForWidth(220)
     assert narrow > one_row
     host.deleteLater()
+
+
+def test_add_and_remove_mark_layout_dirty(qapp):
+    """Regression for BUGS.md B-001: tiles added/removed after the first
+    layout pass must invalidate the layout so Qt re-runs ``setGeometry``.
+    Without this, re-rendered tiles pile up unpositioned at (0,0) and only
+    a window resize reveals them ("only the last/closed tile shows")."""
+
+    class Spy(FlowLayout):
+        def __init__(self, *a, **k):
+            # Seed the counter BEFORE delegating to FlowLayout.__init__:
+            # the B-001 fix had ``addItem`` call ``invalidate``, and any
+            # children added during construction would fire the override
+            # before ``self.invalidations`` existed.
+            self.invalidations = 0
+            super().__init__(*a, **k)
+
+        def invalidate(self):  # noqa: N802
+            self.invalidations += 1
+            super().invalidate()
+
+    host = QWidget()
+    fl = Spy(host, spacing=6)
+
+    fl.addWidget(_btn(100))
+    assert fl.invalidations >= 1  # add marks dirty
+
+    before = fl.invalidations
+    fl.takeAt(0)
+    assert fl.invalidations > before  # remove marks dirty too
+    host.deleteLater()

@@ -81,6 +81,16 @@ def _redesign_qss_path() -> Path:
     )
 
 
+def _glyph_url(name: str) -> str:
+    """Absolute, forward-slashed path to ``assets/icons/glyphs/<name>``.
+    Qt's QSS ``url(...)`` is happiest with absolute paths in POSIX form,
+    so the same string works on Windows + the Nuitka onefile build."""
+    return (
+        Path(__file__).resolve().parents[2]
+        / "assets" / "icons" / "glyphs" / name
+    ).as_posix()
+
+
 def build_redesign_qss(theme: str = "dark") -> str:
     """Substitute design-system tokens into the redesign QSS template.
 
@@ -88,6 +98,11 @@ def build_redesign_qss(theme: str = "dark") -> str:
     the matching value from ``PALETTE[theme]`` or ``RADIUS``. Unlike the
     legacy templates, this is NOT a Python format string — literal CSS braces
     are not escaped.
+
+    Asset paths exposed: ``{chevron_down_icon_url}`` resolves to the absolute
+    POSIX path of ``assets/icons/glyphs/chevron_down.svg`` so the QSS rules
+    that draw QComboBox's dropdown chevron find the file from any working
+    directory (it ships next to the bundled binaries in the Nuitka onefile).
 
     Raises ``FileNotFoundError`` if ``assets/themes/redesign.qss`` is missing
     (the foundation install must have run).
@@ -98,4 +113,6 @@ def build_redesign_qss(theme: str = "dark") -> str:
         qss = qss.replace("{" + key + "}", value)
     for key, value in RADIUS.items():
         qss = qss.replace("{radius_" + key + "}", str(value))
+    qss = qss.replace(
+        "{chevron_down_icon_url}", _glyph_url("chevron_down.svg"))
     return qss

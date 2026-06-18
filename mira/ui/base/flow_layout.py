@@ -31,6 +31,13 @@ class FlowLayout(QLayout):
     # ── QLayout plumbing ────────────────────────────────────────────────
     def addItem(self, item: QLayoutItem) -> None:  # noqa: N802
         self._items.append(item)
+        # Adding an item must mark the layout dirty so Qt re-runs
+        # ``setGeometry`` (-> ``_do_layout``) and the new widget gets
+        # positioned. Without this, tiles added after the first layout
+        # pass pile up unpositioned at (0,0) until a window resize forces
+        # a relayout — the events-list "only the last tile shows until I
+        # resize" bug (BUGS.md B-001).
+        self.invalidate()
 
     def count(self) -> int:
         return len(self._items)
@@ -42,7 +49,11 @@ class FlowLayout(QLayout):
 
     def takeAt(self, index: int) -> Optional[QLayoutItem]:  # noqa: N802
         if 0 <= index < len(self._items):
-            return self._items.pop(index)
+            item = self._items.pop(index)
+            # Removing an item changes the wrap geometry; mark dirty so the
+            # remaining tiles reflow rather than keeping their stale slots.
+            self.invalidate()
+            return item
         return None
 
     def expandingDirections(self) -> Qt.Orientation:  # noqa: N802

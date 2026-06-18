@@ -325,6 +325,16 @@ def run_ingest(
     _report(total, total, "")  # copy done; writing the database (UI keeps its label)
     eg = gateway.create_event(doc, plan.event_root)
     eg.close()
+    # BUGS.md B-012 — derive event start/end from trip_days. The Header
+    # dialog no longer asks for From/To; whatever range the plan carried
+    # is replaced by ``min(day.date) .. max(day.date)`` over the
+    # trip_days the ingest just wrote.
+    try:
+        gateway.recompute_event_date_range(plan.event_id)
+    except Exception:
+        log.exception(
+            "recompute_event_date_range failed after ingest %s",
+            plan.event_id)
 
     # Pre-warm the photo thumb cache in the background. Captured photos are
     # immutable (charter §3) → each photo's thumb is written **once, ever**

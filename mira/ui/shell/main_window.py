@@ -1566,20 +1566,14 @@ class MainWindow(QMainWindow):
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         sorted_rows = sorted(edited_rows, key=lambda r: r.date)
 
-        # spec/77 §5 — dialog dates win over the photo-inferred span.
-        # The dialog now requires From / To; we trust them when set
-        # (info-only creates always carry them, and edit-existing
-        # flows post the dialog's updated range). Falls back to the
-        # photo-inferred span only for the legacy plan-from-photos
-        # path where the user never opened the new dialog.
-        start_date = (
-            info.get("start_date")
-            or (sorted_rows[0].date.isoformat() if sorted_rows else None)
-        )
-        end_date = (
-            info.get("end_date")
-            or (sorted_rows[-1].date.isoformat() if sorted_rows else None)
-        )
+        # BUGS.md B-012 (Nelson 2026-06-17) — From/To are no longer
+        # required on the dialog; ``extend_event_date_range`` fills
+        # them in from the trip_days after this batch lands. Trust
+        # whatever the dialog returned (None when blank); the helper
+        # below extends them to cover ``sorted_rows`` (and any later
+        # day-by-day additions). Supersedes spec/77 §5 floor.
+        start_date = info.get("start_date") or None
+        end_date = info.get("end_date") or None
 
         event = _m.Event(
             uuid=event_id,
@@ -1638,6 +1632,15 @@ class MainWindow(QMainWindow):
 
         eg = self.gateway.create_event(doc, event_root)
         eg.close()
+        # BUGS.md B-012 — derive From/To from whatever trip_days the
+        # doc carried (no-op when ``edited_rows`` was empty; the next
+        # Collect / ingest / plan-editor pass will run the same helper
+        # so the event range always tracks the days table).
+        try:
+            self.gateway.recompute_event_date_range(event_id)
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range failed after create %s", event_id)
         log.info("new-event flow created %s at %s", event_id, event_root)
         return event_id
 
@@ -2696,6 +2699,16 @@ class MainWindow(QMainWindow):
         # a fresh session, so without this every bar reads as 0/0).
         if self._quick_sweep is not None:
             snapshots = self._qs_apply_default_to_snapshots(snapshots)
+        elif not self._edit_phase_active and not self._export_phase_active:
+            # Pick phase: fold undecided into the pick default side so a
+            # fresh day reads in its default colour (default-Skip → 100%
+            # red) and the green grows as items are picked (BUGS.md B-004).
+            # Edit/Export bars mean developed/exported, so they are left
+            # untouched.
+            from mira.picked.status import default_state_for
+            snapshots = self._apply_default_to_snapshots(
+                snapshots,
+                default_state_for(self.gateway.settings, "pick"))
         event_name = self._lookup_event_name(event_id) or tr("Event")
         self.days_lists_page.setEventForPreview(event_name, snapshots)
         # spec/71 — the shared Days Lists takes the host phase's chrome.
@@ -2713,21 +2726,29 @@ class MainWindow(QMainWindow):
         self.days_lists_page.set_phase_identity(identity_phase)
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
 
-    def _qs_apply_default_to_snapshots(self, snapshots: list) -> list:
+    def _apply_default_to_snapshots(
+        self, snapshots: list, default_state: str,
+    ) -> list:
         """Fold each snapshot's undecided count (items - picked - skipped)
-        into the QS default side. Picked / skipped stay non-negative;
-        the total ``items`` is unchanged."""
+        into the given default side. Picked / skipped stay non-negative;
+        the total ``items`` is unchanged. Shared by the QS path and the
+        live Pick path (BUGS.md B-004 — a fresh Pick day must read in its
+        default colour: default-Skip → 100% red, green grows as you pick)."""
         from mira.picked.status import STATE_PICKED
-        default = self._qs_default_phase_state()
         for snap in snapshots:
             undecided = max(0, snap.items - snap.picked - snap.skipped)
             if undecided == 0:
                 continue
-            if default == STATE_PICKED:
+            if default_state == STATE_PICKED:
                 snap.picked = snap.picked + undecided
             else:
                 snap.skipped = snap.skipped + undecided
         return snapshots
+
+    def _qs_apply_default_to_snapshots(self, snapshots: list) -> list:
+        """QS-path wrapper — fold undecided into the QS default side."""
+        return self._apply_default_to_snapshots(
+            snapshots, self._qs_default_phase_state())
 
     def _build_day_snapshots(self, event_id: str) -> Optional[list]:
         """Compose ``DaySnapshot[]`` from the gateway for one event.
@@ -2856,6 +2877,13 @@ class MainWindow(QMainWindow):
             return
         self._edit_phase_active = False
         self._export_phase_active = False
+        # BUGS.md B-008 — the 2×2 Phases tiles cache their progress on the
+        # last set_event(); decisions made inside Days Lists / Days Grid
+        # would only reach the dashboard after an Events → re-enter round
+        # trip. Rebuild here so Pick/Edit/Export progress shows up the
+        # moment the user lands back on Phases.
+        if self._current_event_id is not None:
+            self.phases_page.set_event(self._current_event_id)
         self.page_stack.show_page(self._ACTIVITY_PAGE_KEY)
 
     def _on_days_lists_day_activated(self, day_number: int) -> None:
@@ -2947,6 +2975,13 @@ class MainWindow(QMainWindow):
         the QS chrome already (setEventForPreview / gateway-built
         snapshots) so we don't rebuild here."""
         self.days_grid_page.close_event()
+        # Rebuild the day cards so decisions made in the grid show
+        # immediately on return (BUGS.md B-004 — the list was stale until a
+        # full round-trip to Phases). QS sessions carry their own snapshots,
+        # so only the live (gateway) path rebuilds.
+        if self._quick_sweep is None and self._current_event_id is not None:
+            self._open_days_lists_for(self._current_event_id)
+            return
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
 
     def _on_days_grid_step_day(self, delta: int) -> None:
@@ -3278,7 +3313,33 @@ class MainWindow(QMainWindow):
             if confirm != QMessageBox.StandardButton.Yes:
                 return
 
-        self.gateway.delete_event(event_id, delete_files=delete_files)
+        # BUGS.md B-002 — deleting the folder runs a (possibly multi-second)
+        # shutil.rmtree over the originals; without feedback the window looks
+        # frozen. Route through the sanctioned long-op helper so a modal
+        # dialog + wait cursor + descriptive message appears. Index-only
+        # removal is instant, but the same path keeps one code route.
+        from mira.ui.base.progress import run_with_progress
+
+        if delete_files:
+            n_txt = str(n_items) if n_items is not None else "…"
+            label = tr("Deleting “{name}” and {n} file(s)…") \
+                .replace("{name}", name).replace("{n}", n_txt)
+        else:
+            label = tr("Removing “{name}” from Mira…").replace("{name}", name)
+
+        def _work(progress, _eid=event_id, _df=delete_files):
+            progress(0, 0, label)
+            return self.gateway.delete_event(_eid, delete_files=_df)
+
+        ok, _res = run_with_progress(
+            self, tr("Delete event"), _work, label=label,
+        )
+        if not ok:
+            QMessageBox.warning(
+                self, tr("Delete event"),
+                tr("The event could not be fully deleted. "
+                   "Some files may remain on disk."),
+            )
         self._current_event_id = None
         self._on_event_back()
 
@@ -4100,52 +4161,70 @@ class MainWindow(QMainWindow):
         from mira.ui.pages.days_lists_page import DaysListsPage
         from mira.ui.pages.quick_sweep_page import QuickSweepPage
 
-        # ── Items: checked days only + quarantine ─────────────────
+        # ── Heavy prep behind the sanctioned progress dialog (BUGS.md
+        # B-003): building SourceItems, fast-day bucketing, and the
+        # per-day chronological sort take a noticeable beat on a big card.
+        # Without feedback the app looks hung between the gate button and
+        # the days list, so route the prep through run_with_progress with
+        # step messages. ──
+        from mira.ui.base.progress import run_with_progress
+
         checked_dates = {r.date for r in edited_rows if r.checked}
-        items = []
-        for rec in scan.per_photo_records:
-            day_date = (
-                scan.day_date_lookup.get(rec.day_number)
-                if rec.day_number is not None else None
-            )
-            if day_date is not None and day_date not in checked_dates:
-                continue
-            items.append(SourceItem(
-                path=rec.source_path,
-                timestamp=rec.capture_time_raw,
-                camera_id=rec.camera_id or "",
-            ))
-        if not items:
-            return set()
-
-        # ── Ledger pre-populated with the QS default ──────────────
         default_state = self._qs_default_legacy_state()
-        state_ledger: dict[Path, str] = {
-            it.path: default_state for it in items
-        }
-        days = build_fast_days(
-            items, state_for=lambda p: state_ledger.get(p, default_state))
-        if not days:
-            return set()
 
-        # Sort each day chronologically so the grid order matches the
-        # viewer's own timestamp sort (see _open_quick_sweep_standalone
-        # for the same rule).
-        items_by_day: dict[int, list] = {}
-        for day in days:
-            wanted = {
-                Path(ci.item_id)
-                for b in day.buckets for ci in b.items
-            }
-            items_by_day[day.day_number] = sorted(
-                (it for it in items if it.path in wanted),
-                key=lambda it: (
-                    it.timestamp is None,
-                    it.timestamp.isoformat()
-                    if it.timestamp is not None else "",
-                    it.path.name,
-                ),
-            )
+        def _prep(progress):
+            progress(0, 0, tr("Reading photos…"))
+            items = []
+            for rec in scan.per_photo_records:
+                day_date = (
+                    scan.day_date_lookup.get(rec.day_number)
+                    if rec.day_number is not None else None
+                )
+                if day_date is not None and day_date not in checked_dates:
+                    continue
+                items.append(SourceItem(
+                    path=rec.source_path,
+                    timestamp=rec.capture_time_raw,
+                    camera_id=rec.camera_id or "",
+                ))
+            if not items:
+                return [], {}, [], {}
+            # Ledger pre-populated with the QS default.
+            state_ledger = {it.path: default_state for it in items}
+            progress(0, 0, tr("Grouping into days…"))
+            days = build_fast_days(
+                items,
+                state_for=lambda p: state_ledger.get(p, default_state))
+            # Sort each day chronologically so the grid order matches the
+            # viewer's own timestamp sort (see _open_quick_sweep_standalone
+            # for the same rule).
+            progress(0, 0, tr("Sorting days…"))
+            items_by_day: dict[int, list] = {}
+            for day in days:
+                wanted = {
+                    Path(ci.item_id)
+                    for b in day.buckets for ci in b.items
+                }
+                items_by_day[day.day_number] = sorted(
+                    (it for it in items if it.path in wanted),
+                    key=lambda it: (
+                        it.timestamp is None,
+                        it.timestamp.isoformat()
+                        if it.timestamp is not None else "",
+                        it.path.name,
+                    ),
+                )
+            return items, state_ledger, days, items_by_day
+
+        ok, res = run_with_progress(
+            self, tr("Quick Sweep"), _prep,
+            label=tr("Preparing Quick Sweep…"),
+        )
+        if not ok:
+            return None
+        items, state_ledger, days, items_by_day = res
+        if not items or not days:
+            return set()
 
         # The QS session helpers (`_qs_build_day_snapshots`,
         # `_qs_build_grid_items`) read from ``self._quick_sweep``. The
@@ -4988,6 +5067,16 @@ class MainWindow(QMainWindow):
                     )
         finally:
             eg.close()
+        # BUGS.md B-012 — Collect just upserted trip_days for this batch.
+        # Recompute the event range from the days table so a day past
+        # the previous end_date pushes end_date out (and a day before
+        # start_date pulls start_date back). Best-effort: log + swallow
+        # so the Collect path never aborts at the seam.
+        try:
+            self.gateway.recompute_event_date_range(event_id)
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range failed after Collect %s", event_id)
 
     @staticmethod
     def _sha256_of(path) -> str:
@@ -5568,6 +5657,14 @@ class MainWindow(QMainWindow):
             log.exception(
                 "Could not persist trip_days for %s", event_id)
             return False
+        # BUGS.md B-012 — plan-editor edits change the days table;
+        # recompute From/To so the event range follows.
+        try:
+            self.gateway.recompute_event_date_range(event_id)
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "recompute_event_date_range failed after plan edit %s",
+                event_id)
         return True
 
     def _open_edit_plan_for_event(self) -> None:
@@ -5795,19 +5892,43 @@ class MainWindow(QMainWindow):
             self._open_days_lists_for(self._current_event_id)
             return
         if phase == "edit" and self._current_event_id is not None:
-            # spec/57: entering Edit runs the external seams — scan for
-            # tool results (§3.3), then (re)build the links projection
-            # (§2.2) so the doorway is current the moment the parallel
-            # tracks begin. Quiet unless something user-relevant happened.
-            self._run_edit_entry_seams()
-            # spec/70 Phase 3 §3 — Edit phase now lands on the Days
-            # Lists dashboard, same shape as Pick. The user picks a day
-            # → Days Grid → EditorPage on a single click. The Edit
-            # bridge flag tells :meth:`_on_days_grid_item_activated` to
-            # route to the EditorPage instead of the Picker; it's
-            # consumed by :meth:`_on_process_closed`.
-            self._edit_phase_active = True
-            self._open_days_lists_for(self._current_event_id)
+            # BUGS.md B-009 — the Edit entry runs three slow steps on the
+            # GUI thread (external-returns scan + Picked Media links
+            # rebuild + per-day snapshot build). Wrap the lot in the
+            # sanctioned ``run_with_progress`` helper (spec/05 §4b) so
+            # the user sees a labelled modal dialog while Edit prepares,
+            # not a frozen window. The unmerged-brackets nudge / returns
+            # summary pops AFTER the dialog closes so it doesn't stack
+            # on top of the modal (the seam helper defers it for us when
+            # a ``progress`` callback is passed).
+            from mira.ui.base.progress import run_with_progress
+            event_id = self._current_event_id
+            seam_result: list = [None]
+
+            def _do_open_edit(report_cb):
+                # spec/57: scan + links refresh, then snapshots + page swap.
+                seam_result[0] = self._run_edit_entry_seams(
+                    progress=report_cb)
+                report_cb(0, 0, tr("Loading day list…"))
+                self._edit_phase_active = True
+                self._open_days_lists_for(event_id)
+
+            ok, _res = run_with_progress(
+                self, tr("Preparing Edit…"), _do_open_edit,
+                label=tr("Preparing Edit…"),
+            )
+            if not ok:
+                # Failure path — clear the bridge flag so a retry isn't
+                # routed as an Edit re-entry by accident.
+                self._edit_phase_active = False
+                return
+            # Post-modal: pop the returns box if the seam asked for it.
+            seam = seam_result[0]
+            if seam is not None:
+                report, show_nudge = seam
+                if report is not None and (
+                        not report.nothing_happened or show_nudge):
+                    self._show_returns_box(report)
             return
         if phase == "export" and self._current_event_id is not None:
             # spec/68 §3 — Export rides the Phases → Days Lists → Days
@@ -5890,15 +6011,30 @@ class MainWindow(QMainWindow):
         box.setText("\n".join(lines))
         box.exec()
 
-    def _run_edit_entry_seams(self) -> None:
+    def _run_edit_entry_seams(self, progress=None):
         """Entering Edit (spec/57): scan for external results (§3.3), then
         rebuild the links projection (§2.2). Silent when nothing happened;
         the unmerged-brackets reminder (§3.4 — derived, dismissible, never
-        a wall) shows at most once per event per app session."""
+        a wall) shows at most once per event per app session.
+
+        When called inside a ``run_with_progress`` job (BUGS.md B-009 —
+        the Edit-entry route shows a modal progress dialog), the caller
+        passes a ``progress(done, total, msg)`` callback. The seam emits
+        sub-step messages and DEFERS the returns box by returning
+        ``(report, show_nudge)`` so the dialog pops AFTER the modal
+        closes (otherwise it stacks over the progress dialog). With no
+        callback the original shape is kept: shows the box itself,
+        returns ``None``."""
+        deferred = progress is not None
+        def _step(msg: str) -> None:
+            if progress is not None:
+                progress(0, 0, msg)
+        _step(tr("Scanning for external returns…"))
         report = self._scan_external_returns(quiet=True)
+        _step(tr("Refreshing picked-media links…"))
         self._refresh_picked_media(quiet=True)
         if report is None:
-            return
+            return (None, False) if deferred else None
         show_nudge = False
         if report.unmerged_bracket_count > 0:
             if not hasattr(self, "_stack_nudge_shown"):
@@ -5906,9 +6042,12 @@ class MainWindow(QMainWindow):
             if self._current_event_id not in self._stack_nudge_shown:
                 self._stack_nudge_shown.add(self._current_event_id)
                 show_nudge = True
+        if deferred:
+            return report, show_nudge
         if report.nothing_happened and not show_nudge:
-            return
+            return None
         self._show_returns_box(report)
+        return None
 
     def _scan_external_returns(self, *, quiet: bool):
         """Run the spec/57 §3 return scan (stacker adoptions at the Picked

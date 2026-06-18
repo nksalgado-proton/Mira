@@ -55,3 +55,6 @@ tools/_*.png
 /_*.txt
 /_*.log
 /verify_*.txt
+
+# Scratch agent briefs (handoffs, not part of the spec tree).
+/BRIEF-*.md

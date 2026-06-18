@@ -884,6 +884,16 @@ class PreingestPlanConfirmDialog(QDialog):
             eg.save_trip_days(store_days)
         finally:
             eg.close()
+        # BUGS.md B-012 — recompute event.start_date / end_date from
+        # the trip_days table (the only source of truth for the event
+        # range since the Header dialog stopped asking).
+        try:
+            self._gateway.recompute_event_date_range(self._event_id)
+        except Exception:                                          # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception(
+                "recompute_event_date_range failed after preingest %s",
+                self._event_id)
 
     def _seed_classification_from_event(self) -> None:
         """Populate the classification panel from the event's current values.

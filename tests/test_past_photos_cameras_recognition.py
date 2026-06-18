@@ -391,6 +391,50 @@ def test_pick_pair_opens_manual_after_recognition_fallback(
         dlg.deleteLater()
 
 
+def test_try_recognition_uses_recognition_items_when_no_source_index(
+    qapp, tmp_path, monkeypatch,
+):
+    """The Collect flow opens the dialog with ``camera_ids`` (no source
+    index) but supplies ``recognition_items`` from its scan so recognition
+    can still propose pairs. The dialog must consult those items rather
+    than fall to UNAVAILABLE."""
+    from core.clock_calibration import CalibrationPair
+    from mira.ui.pages.past_photos_cameras import PastPhotosCamerasDialog
+
+    items = []
+    for h in (10, 11, 12, 13):
+        t = datetime(2025, 5, 12, h, 0, 0)
+        items.append(_cam_item(f"c{h}.rw2", t, "G9"))
+        items.append(_phone_item(f"p{h}.jpg", t, 0))
+
+    chosen = CalibrationPair(
+        camera_path=Path("c10.rw2"),
+        reference_path=Path("p10.jpg"),
+        camera_time=datetime(2025, 5, 12, 10, 0, 0),
+        reference_time=datetime(2025, 5, 12, 10, 0, 0),
+    )
+    _patch_recognition_dialog(
+        monkeypatch,
+        result=QDialog.DialogCode.Accepted,
+        fallback=False,
+        cal_pair=chosen,
+    )
+
+    dlg = PastPhotosCamerasDialog(
+        camera_ids=["G9", "iPhone"],
+        root_dir=str(tmp_path),
+        trip_tz=0.0,
+        phone_reference_id="iPhone",
+        recognition_items=items,
+    )
+    try:
+        outcome = dlg._try_recognition("G9")
+        assert outcome == dlg._REC_CONFIRMED
+        assert dlg._rows["G9"].pair() is chosen
+    finally:
+        dlg.deleteLater()
+
+
 def test_pick_pair_on_reference_camera_warns_and_skips_both_paths(
     qapp, tmp_path, monkeypatch,
 ):

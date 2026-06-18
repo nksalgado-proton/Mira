@@ -3773,6 +3773,24 @@ class MainWindow(QMainWindow):
         # day in that TZ. Phones are EXCLUDED from camera_ids — they
         # serve only as the pair-pick reference and never need
         # calibration themselves (Nelson 2026-06-09).
+        # spec/88 — package the scan's EXIF rows as SourceItems so the
+        # dialog's recognition flow can propose candidate sync pairs
+        # (we have the per-photo TZ/timestamps already — no need for a
+        # second pass through a SourceIndex). Computed once and reused
+        # across every TZ step.
+        from core.fresh_source import SourceItem as _SourceItem
+        from core.fresh_source import camera_id_for as _camera_id_for
+        _recognition_items = [
+            _SourceItem(
+                path=p.path,
+                timestamp=p.timestamp,
+                camera_id=_camera_id_for(p.raw or {}),
+                tz_offset_minutes=p.tz_offset_minutes,
+                gps_lat=p.gps_lat,
+                gps_lon=p.gps_lon,
+            )
+            for p in scan.photos
+        ]
         calibration_decisions: Dict[Tuple[str, int], int] = {}
         total_steps = len(candidate_tzs)
         for step_i, tz_min in enumerate(candidate_tzs, start=1):
@@ -3788,6 +3806,7 @@ class MainWindow(QMainWindow):
                 parent=self,
                 phone_reference_id=phone_reference,
                 picker_factory=_picker_factory if phone_reference else None,
+                recognition_items=_recognition_items,
             )
             accepted = dlg.exec() == QDialog.DialogCode.Accepted
             per_camera = dlg.per_camera() if accepted else {}

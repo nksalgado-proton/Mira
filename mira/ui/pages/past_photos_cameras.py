@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor
@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.clock_calibration import CalibrationPair
+from core.fresh_source import SourceItem
 from mira.ui.base.tz_picker import TzPicker
 from mira.ui.i18n import tr
 
@@ -202,6 +203,7 @@ class PastPhotosCamerasDialog(QDialog):
         parent: QWidget | None = None,
         phone_reference_id: Optional[str] = None,
         picker_factory=None,
+        recognition_items: Optional[Sequence[SourceItem]] = None,
     ) -> None:
         """Two entry points (Nelson 2026-05-21):
 
@@ -256,6 +258,13 @@ class PastPhotosCamerasDialog(QDialog):
         self._trip_tz = trip_tz
         self._root_dir = root_dir
         self._source_index = source_index
+        # Explicit per-photo items for the recognition flow (spec/88 §3).
+        # Callers with EXIF in hand but no full SourceIndex pass them here —
+        # the Collect flow does this so the recognition surface fires even
+        # though it opens this dialog without a SourceIndex.
+        self._recognition_items: list[SourceItem] = list(
+            recognition_items or []
+        )
         # ``_camera_meta[camera_id]`` → (file_count, date_range, is_phone)
         # for the row-label hint. Empty in the legacy camera_ids path.
         self._camera_meta: dict[str, tuple[int, object, bool]] = {}
@@ -461,17 +470,25 @@ class PastPhotosCamerasDialog(QDialog):
         """spec/88 propose-and-confirm flow. Returns one of
         :data:`_REC_CONFIRMED` / :data:`_REC_FALLBACK` / :data:`_REC_CANCEL` /
         :data:`_REC_UNAVAILABLE` — the caller decides whether to open the
-        legacy manual picker based on the outcome."""
-        if self._source_index is None or not self._reference_id:
+        legacy manual picker based on the outcome.
+
+        The per-photo data comes from ``recognition_items`` (Collect flow)
+        when supplied, else from the SourceIndex (Past Photos EXIF-scan path).
+        Without either, recognition is UNAVAILABLE and the caller falls back
+        to the manual picker."""
+        if not self._reference_id:
             return self._REC_UNAVAILABLE
 
-        cam_items = [
-            it for it in self._source_index.items
-            if it.camera_id == camera_id
-        ]
+        if self._recognition_items:
+            items = self._recognition_items
+        elif self._source_index is not None:
+            items = self._source_index.items
+        else:
+            return self._REC_UNAVAILABLE
+
+        cam_items = [it for it in items if it.camera_id == camera_id]
         phone_items = [
-            it for it in self._source_index.items
-            if it.camera_id == self._reference_id
+            it for it in items if it.camera_id == self._reference_id
         ]
         if not cam_items or not phone_items:
             return self._REC_UNAVAILABLE

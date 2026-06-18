@@ -97,98 +97,82 @@ def test_zero_offset_cluster_is_normal():
 def test_zero_cluster_wins_ties_against_other_kappas():
     """When two clusters tie on size + top-tightness, the one closer to
     κ=0 wins (the correctly-set-camera case is the common case)."""
-    # Construct a setup where two clusters end up the same size: one at
-    # κ=0 and one at κ=-60. Place them in distinct time windows so the
-    # cross-products don't blur the counts.
-    cams_a = [_cam(f"a{i}", datetime(2025, 5, 12, 10 + i, 0, 0))
-              for i in range(2)]
-    phones_a = [_phone(f"pa{i}", datetime(2025, 5, 12, 10 + i, 0, 0), 0)
-                for i in range(2)]
-    # κ=-60 cluster, placed days later so its cross with set A is far away
-    # (huge off → snaps to a wildly-off κ, still tightness 0, but lands in
-    # its own bucket and doesn't pollute the 0 or -60 buckets).
-    cams_b = [_cam(f"b{i}", datetime(2025, 6, 12, 10 + i, 0, 0))
-              for i in range(2)]
-    phones_b = [_phone(f"pb{i}", datetime(2025, 6, 12, 11 + i, 0, 0), 0)
-                for i in range(2)]
-    clusters = find_candidate_pairs(cams_a + cams_b, phones_a + phones_b)
+    # Two κ=0 pairs (truly simultaneous) plus two κ=-15 pairs (cam shot a
+    # few minutes after the phone on each occasion). All within the 15-min
+    # raw-delta gate.
+    cams = [
+        _cam("c0", datetime(2025, 5, 12, 10, 0, 0)),
+        _cam("c1", datetime(2025, 5, 12, 11, 0, 0)),
+        _cam("c2", datetime(2025, 5, 12, 12, 0, 0)),
+        _cam("c3", datetime(2025, 5, 12, 13, 0, 0)),
+    ]
+    phones = [
+        _phone("p0", datetime(2025, 5, 12, 10, 0, 0), 0),         # κ=0
+        _phone("p1", datetime(2025, 5, 12, 11, 0, 0), 0),         # κ=0
+        _phone("p2", datetime(2025, 5, 12, 12, 14, 0), 0),        # κ=-15
+        _phone("p3", datetime(2025, 5, 12, 13, 14, 0), 0),        # κ=-15
+    ]
+
+    clusters = find_candidate_pairs(cams, phones)
 
     by_kappa = {c.snapped_kappa_minutes: c for c in clusters}
     assert 0 in by_kappa
-    assert -60 in by_kappa
-    # The κ=0 cluster has size 4 (cams_a × phones_a). The κ=-60 cluster
-    # has size 4 too (cams_b × phones_b). Tie → κ=0 wins.
-    assert by_kappa[0].size == by_kappa[-60].size
+    assert -15 in by_kappa
+    assert by_kappa[0].size == by_kappa[-15].size
+    # Tie on size → κ=0 wins on |κ| closest to zero.
     assert clusters[0].snapped_kappa_minutes == 0
 
 
-# ── Cross-zone normalization (spec/88 §2 step 1) ─────────────────────────
+# ── Raw-delta gate (Nelson 2026-06-18 — the new hard rule) ───────────────
 
 
-def test_cross_zone_normalization_preserves_cluster():
-    """Camera at constant set-TZ = -180; phone moved through -180 on day 1
-    and -120 on day 2. Without normalization the clusters would split; with
-    κ = phone_tz − off they fall in one pile (the spec's whole point)."""
-    inst_day1 = datetime(2025, 5, 12, 13, 0, 0)
-    inst_day2 = datetime(2025, 5, 13, 14, 0, 0)
-    # Camera (set to -180) records T - 3h.
-    cams = [
-        _cam("c1", inst_day1 - timedelta(hours=3)),
-        _cam("c2", inst_day2 - timedelta(hours=3)),
-    ]
-    # Phone day 1 at -180 → records T - 3h, tz=-180.
-    # Phone day 2 at -120 → records T - 2h, tz=-120.
-    phones = [
-        _phone("p1", inst_day1 - timedelta(hours=3), -180),
-        _phone("p2", inst_day2 - timedelta(hours=2), -120),
-    ]
+def test_pairs_more_than_a_few_minutes_apart_are_filtered_out():
+    """Spec/88 update (Nelson 2026-06-18): pairs whose clocks read more
+    than 15 min apart can't be "the same moment" — the scenes won't match
+    visually and the user can't recognize them. The algorithm drops them
+    before clustering."""
+    cam_close = _cam("close", datetime(2025, 5, 12, 12, 0, 0))
+    phone_close = _phone("p_close", datetime(2025, 5, 12, 12, 0, 0), 0)
+    # Hours apart — even with κ math the scene would not match. Filtered.
+    cam_far = _cam("far", datetime(2025, 5, 12, 12, 0, 0))
+    phone_far = _phone("p_far", datetime(2025, 5, 12, 18, 0, 0), 0)
 
-    clusters = find_candidate_pairs(cams, phones)
+    clusters = find_candidate_pairs(
+        [cam_close, cam_far], [phone_close, phone_far],
+    )
 
     by_kappa = {c.snapped_kappa_minutes: c for c in clusters}
-    assert -180 in by_kappa, (
-        f"normalization should land both pairs at κ=-180; got {list(by_kappa)}"
-    )
-    top = by_kappa[-180]
-    # The two diagonal pairs are simultaneous (tightness=0).
-    diagonals = [
+    assert 0 in by_kappa
+    pair_paths = {
         (p.camera_item.path.name, p.phone_item.path.name)
-        for p in top.pairs if p.tightness == timedelta(0)
-    ]
-    assert ("c1.rw2", "p1.jpg") in diagonals
-    assert ("c2.rw2", "p2.jpg") in diagonals
-
-
-def test_cross_zone_without_normalization_would_split():
-    """Sanity: prove the normalization matters. With cross-zone phone TZs,
-    raw ``off`` clusters by day; normalized κ clusters by camera. Verified
-    by constructing a contrived case and asserting the normalized result
-    has a single bucket of size ≥ 2 (the two diagonals)."""
-    # Same setup as the previous test — the raw offs are 0 (day 1) and
-    # +1h (day 2), which would otherwise produce two κ-on-off clusters.
-    inst_day1 = datetime(2025, 5, 12, 13, 0, 0)
-    inst_day2 = datetime(2025, 5, 13, 14, 0, 0)
-    cams = [
-        _cam("c1", inst_day1 - timedelta(hours=3)),
-        _cam("c2", inst_day2 - timedelta(hours=3)),
-    ]
-    phones = [
-        _phone("p1", inst_day1 - timedelta(hours=3), -180),
-        _phone("p2", inst_day2 - timedelta(hours=2), -120),
-    ]
-
-    clusters = find_candidate_pairs(cams, phones)
-
-    # The two simultaneous pairs sit in the SAME normalized bucket — that
-    # bucket has at least size 2, and both diagonals are in it.
-    top = clusters[0]
-    diagonal_names = {
-        (p.camera_item.path.name, p.phone_item.path.name)
-        for p in top.pairs if p.tightness == timedelta(0)
+        for p in by_kappa[0].pairs
     }
-    assert {("c1.rw2", "p1.jpg"), ("c2.rw2", "p2.jpg")}.issubset(
-        diagonal_names
-    )
+    assert ("close.rw2", "p_close.jpg") in pair_paths
+    # The 6-hour-apart "same hour different time" pair never reaches a
+    # bucket — the user can't recognize photos that far apart in clock.
+    assert all(name != "p_far.jpg" for _, name in pair_paths)
+
+
+def test_cross_tz_camera_produces_no_clusters():
+    """Trade-off (Nelson 2026-06-18): a camera set to a different TZ than
+    the phone means every truly-simultaneous pair is hours apart by clock.
+    Those photos depict different scenes (different light, different
+    location) and aren't recognizable as "the same moment" — even though
+    they're mathematically simultaneous in UTC. The algorithm produces
+    nothing; the caller falls back to the manual picker."""
+    # Camera at UTC-3 (Brazil home), phone at UTC-9 (Alaska trip). All
+    # truly-simultaneous pairs are 6h apart by clock.
+    instants_utc = [
+        datetime(2025, 5, 12, 16, 0, 0),
+        datetime(2025, 5, 12, 17, 30, 0),
+        datetime(2025, 5, 12, 19, 0, 0),
+    ]
+    cams = [_cam(f"c{i}", t - timedelta(hours=3))
+            for i, t in enumerate(instants_utc)]
+    phones = [_phone(f"p{i}", t - timedelta(hours=9), -540)
+              for i, t in enumerate(instants_utc)]
+
+    assert find_candidate_pairs(cams, phones) == []
 
 
 # ── Tolerance gate (spec/88 §2 step 2) ──────────────────────────────────
@@ -252,37 +236,34 @@ def test_ambiguous_two_clusters_are_both_surfaced():
     """Two distinct clusters must BOTH be returned so the recognition UI
     can show ambiguity instead of silently picking the slightly-bigger
     pile (spec/88 §4 "ambiguity is surfaced, not hidden")."""
-    # Group A: two simultaneous pairs at κ=-180 (camera set to -180).
+    # Group A: two simultaneous pairs at κ=0 (camera matches the phone).
     cams_a = [
         _cam("a0", datetime(2025, 5, 12, 9, 0, 0)),
         _cam("a1", datetime(2025, 5, 12, 9, 45, 0)),
     ]
     phones_a = [
-        _phone("pa0", datetime(2025, 5, 12, 12, 0, 0), 0),
-        _phone("pa1", datetime(2025, 5, 12, 12, 45, 0), 0),
+        _phone("pa0", datetime(2025, 5, 12, 9, 0, 0), 0),
+        _phone("pa1", datetime(2025, 5, 12, 9, 45, 0), 0),
     ]
-    # Group B: two simultaneous pairs at κ=-120 (a *different* camera, but
-    # the proposer doesn't know that — they pollute the κ=-120 bucket).
-    # Placed far enough in time that cross-group pairs land in unrelated
-    # buckets.
+    # Group B: two pairs offset by 10 min (κ=-10 → snaps to -15). Placed
+    # far in time so cross-group pairs are filtered by the 15-min gate.
     cams_b = [
         _cam("b0", datetime(2025, 7, 12, 9, 0, 0)),
         _cam("b1", datetime(2025, 7, 12, 9, 45, 0)),
     ]
     phones_b = [
-        _phone("pb0", datetime(2025, 7, 12, 11, 0, 0), 0),
-        _phone("pb1", datetime(2025, 7, 12, 11, 45, 0), 0),
+        _phone("pb0", datetime(2025, 7, 12, 9, 10, 0), 0),
+        _phone("pb1", datetime(2025, 7, 12, 9, 55, 0), 0),
     ]
 
     clusters = find_candidate_pairs(cams_a + cams_b, phones_a + phones_b)
     by_kappa = {c.snapped_kappa_minutes: c for c in clusters}
 
     # Both clusters present.
-    assert -180 in by_kappa
-    assert -120 in by_kappa
-    # Both have at least the diagonal pairs.
-    assert by_kappa[-180].size >= 2
-    assert by_kappa[-120].size >= 2
+    assert 0 in by_kappa
+    assert -15 in by_kappa
+    assert by_kappa[0].size >= 2
+    assert by_kappa[-15].size >= 2
 
 
 # ── No overlap → empty (spec/88 §5 first bullet) ─────────────────────────
@@ -335,21 +316,19 @@ def test_phone_without_tz_offset_is_skipped():
 
 
 def test_default_phone_tz_minutes_falls_back_for_phones_without_exif_tz():
-    """Spec/88 §2: "phone_tz is constant and clustering on off directly is
-    equivalent" — when phone items lack OffsetTimeOriginal (older iPhones
-    / re-exported phones, Nelson 2026-06-18: iPhone 6s case where 0/21
-    items carried the tag), the caller can supply a trip-wide default so
-    clusters still form."""
+    """When phone items lack OffsetTimeOriginal (older iPhones / re-exported
+    phones — Nelson 2026-06-18 iPhone 6s case where 0/21 items carried the
+    tag), the caller can supply a trip-wide TZ default so the κ-labeling
+    still works. The pair-time gate is unchanged (still 15-min)."""
     instants = [
         datetime(2025, 5, 12, 13, 0, 0),
         datetime(2025, 5, 12, 14, 0, 0),
     ]
-    cams = [_cam(f"c{i}", t - timedelta(hours=3))
-            for i, t in enumerate(instants)]
+    cams = [_cam(f"c{i}", t) for i, t in enumerate(instants)]
     phones = [
         SourceItem(
             path=Path(f"phone/p{i}.jpg"),
-            timestamp=t - timedelta(hours=3),
+            timestamp=t,
             camera_id="iPhone 6s",
             tz_offset_minutes=None,        # no EXIF TZ
         )
@@ -357,7 +336,8 @@ def test_default_phone_tz_minutes_falls_back_for_phones_without_exif_tz():
     ]
     # No fallback → no clusters (the failure mode the user hit).
     assert find_candidate_pairs(cams, phones) == []
-    # Fallback supplied → clusters form, snapping to the camera's set TZ.
+    # Fallback supplied → cluster forms at κ = the supplied TZ
+    # (-180 here, the trip TZ — camera was set to match).
     clusters = find_candidate_pairs(
         cams, phones, default_phone_tz_minutes=-180,
     )
@@ -367,12 +347,11 @@ def test_default_phone_tz_minutes_falls_back_for_phones_without_exif_tz():
 
 def test_default_phone_tz_minutes_yields_to_per_photo_tz_when_present():
     """The default only kicks in when ``tz_offset_minutes`` is None; phone
-    items WITH a per-photo TZ keep using their own value (modern
-    iPhones with mixed travel days)."""
+    items WITH a per-photo TZ keep using their own value."""
     inst = datetime(2025, 5, 12, 13, 0, 0)
-    cam = _cam("c", inst - timedelta(hours=3))
-    phone_with_tz = _phone("p", inst - timedelta(hours=3), -180)
-    # Pass a different default; per-photo TZ wins, κ still snaps -180.
+    cam = _cam("c", inst)
+    phone_with_tz = _phone("p", inst, -180)
+    # Pass a different default; per-photo TZ wins, κ snaps -180.
     clusters = find_candidate_pairs(
         [cam], [phone_with_tz], default_phone_tz_minutes=0,
     )
@@ -478,13 +457,15 @@ def test_ranking_underfills_gracefully_for_small_clusters():
 def test_phone_tz_for_override_replaces_per_photo_default():
     """Callers with a per-day phone TZ map (rather than per-photo EXIF)
     can supply it via ``phone_tz_for`` — the candidate finder uses the
-    override and ignores the SourceItem field."""
+    override and ignores the SourceItem field. The pair itself must
+    still pass the 15-min gate."""
     inst = datetime(2025, 5, 12, 13, 0, 0)
-    cam = _cam("c", inst - timedelta(hours=3))
-    # Build a phone item with NO per-photo tz; the override supplies it.
+    cam = _cam("c", inst)
+    # Phone item with NO per-photo tz; the override supplies it. Both
+    # photos at the same instant so the pair passes the 15-min gate.
     phone = SourceItem(
         path=Path("phone/p.jpg"),
-        timestamp=inst - timedelta(hours=3),
+        timestamp=inst,
         camera_id="iPhone",
         tz_offset_minutes=None,
     )
@@ -503,9 +484,10 @@ def test_phone_tz_for_override_replaces_per_photo_default():
 def test_to_calibration_pair_carries_raw_timestamps():
     """The handoff to ``build_calibration`` uses raw EXIF timestamps so its
     own median rejection + cross-check sees real numbers (not pre-snapped
-    ones)."""
-    cam_t = datetime(2025, 5, 12, 10, 0, 0)
-    phone_t = datetime(2025, 5, 12, 13, 0, 0)  # off = +3h, κ = -180
+    ones). Within the 15-min gate the timestamps are necessarily close —
+    use a few-minute delta."""
+    cam_t = datetime(2025, 5, 12, 12, 0, 0)
+    phone_t = datetime(2025, 5, 12, 12, 5, 0)        # off = +5min
     cam = _cam("c", cam_t)
     phone = _phone("p", phone_t, 0)
     [cluster] = find_candidate_pairs([cam], [phone])
@@ -513,4 +495,4 @@ def test_to_calibration_pair_carries_raw_timestamps():
     cal_pair = pair.to_calibration_pair()
     assert cal_pair.camera_time == cam_t
     assert cal_pair.reference_time == phone_t
-    assert cal_pair.offset == timedelta(hours=3)
+    assert cal_pair.offset == timedelta(minutes=5)

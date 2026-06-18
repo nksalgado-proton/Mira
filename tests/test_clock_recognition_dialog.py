@@ -65,16 +65,17 @@ def _zero_cluster_clusters():
 
 
 def _two_cluster_clusters():
-    """A κ=-180 cluster and a κ=-120 cluster (ambiguous case)."""
+    """A κ=0 cluster (clocks agree) and a κ=-15 cluster (cam 10 min after
+    phone). Both within the 15-min gate; placed weeks apart so cross-group
+    pairs are filtered."""
     a_inst = [datetime(2025, 5, 12, 9, 0, 0),
               datetime(2025, 5, 12, 9, 45, 0)]
     cams_a = [_cam(f"a{i}", t) for i, t in enumerate(a_inst)]
-    phones_a = [_phone(f"pa{i}", t + timedelta(hours=3), 0)
-                for i, t in enumerate(a_inst)]
+    phones_a = [_phone(f"pa{i}", t, 0) for i, t in enumerate(a_inst)]
     b_inst = [datetime(2025, 7, 12, 9, 0, 0),
               datetime(2025, 7, 12, 9, 45, 0)]
     cams_b = [_cam(f"b{i}", t) for i, t in enumerate(b_inst)]
-    phones_b = [_phone(f"pb{i}", t + timedelta(hours=2), 0)
+    phones_b = [_phone(f"pb{i}", t + timedelta(minutes=10), 0)
                 for i, t in enumerate(b_inst)]
     return find_candidate_pairs(cams_a + cams_b, phones_a + phones_b)
 

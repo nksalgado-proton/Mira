@@ -70,6 +70,21 @@ log = logging.getLogger(__name__)
 # into a zone they don't actually belong to. spec/88 §2 step 3.
 TIGHTNESS_TOLERANCE = timedelta(minutes=7, seconds=30)
 
+# Maximum raw clock delta between cam_t and phone_t for a pair to even be
+# considered (Nelson 2026-06-18 — the hard rule). For two photos to be
+# RECOGNIZABLE as "the same moment", they must depict the same scene,
+# and scene changes meaningfully over hours. The spec/88 cross-TZ
+# normalization math is mathematically right but USELESS for human
+# recognition: pairs in a cross-TZ "true" cluster are still hours apart
+# by clock and depict different scenes (different light, different
+# location), so the user can't recognize them anyway. We accept the
+# trade-off: recognition only helps when the camera was set roughly
+# in line with the phone clock; otherwise produces no clusters and the
+# user falls back to the manual picker. 15 minutes is "a few minutes"
+# in any reasonable interpretation and lines up with the 15-min snap
+# step.
+MAX_PAIR_RAW_DELTA = timedelta(minutes=15)
+
 # Ranking inside a cluster: prefer pairs at least this far apart in camera
 # time so the small set shown to the user spans the trip (spec/88 §2 ranking:
 # "spread across the trip, not five frames from one minute").
@@ -168,9 +183,16 @@ def find_candidate_pairs(
         return []
 
     buckets: dict[int, list[CandidatePair]] = {}
+    filtered_too_far = 0
     for c in cam_with_t:
         for p, ptz in phone_with_tz:
             off = p.timestamp - c.timestamp
+            # Hours-apart pairs can't be "the same moment" — the user
+            # can't recognize matching scenes across that gap, regardless
+            # of what the cross-TZ math says. Filtered hard.
+            if abs(off) > MAX_PAIR_RAW_DELTA:
+                filtered_too_far += 1
+                continue
             raw_kappa_minutes = ptz - (off.total_seconds() / 60.0)
             raw_kappa_td = timedelta(minutes=raw_kappa_minutes)
             snapped_kappa_td = snap_to_tz_offset(raw_kappa_td)
@@ -195,6 +217,12 @@ def find_candidate_pairs(
                 )
             )
 
+    if filtered_too_far:
+        log.info(
+            "clock_recognition: dropped %d pair(s) more than %s apart "
+            "(unrecognizable as the same moment)",
+            filtered_too_far, MAX_PAIR_RAW_DELTA,
+        )
     clusters: list[CandidateCluster] = []
     for kappa, raw_pairs in buckets.items():
         ranked = _rank_pairs(raw_pairs, cards_per_cluster)

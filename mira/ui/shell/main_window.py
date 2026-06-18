@@ -2037,6 +2037,44 @@ class MainWindow(QMainWindow):
                 "spec/82 §A.3 user-store snapshot on quit FAILED: %s",
                 exc)
 
+    def shutdown(self) -> None:
+        """Clean teardown on application exit (the 2026-06-18 corruption fix).
+
+        Before this existed, NOTHING called ``Gateway.close()`` at exit, so
+        the user store's WAL was never checkpointed, its integrity sidecar
+        never written, and its rolling backup never rotated — the entire
+        protection layer was dead in production (the live ``mira.db`` had not
+        a single ``.bak`` or ``.sha256`` to show for months of use). Worse,
+        background snapshot jobs were torn down mid-run ("QThread: Destroyed
+        while thread is still running" on every exit), which could interrupt
+        a checkpoint of the hot ``global_items`` b-tree.
+
+        This method drains the snapshot workers, then runs the clean-close
+        path. Called from the app entry point AFTER ``app.exec()`` returns,
+        while the QApplication and gateway are still alive. Idempotent and
+        never raises — a failed teardown must not crash exit."""
+        # 1. Stop the periodic-snapshot timer and drain any in-flight
+        #    snapshot QRunnables so none is destroyed mid-run / races close.
+        try:
+            snapshotter = getattr(self, "_periodic_snapshotter", None)
+            if snapshotter is not None:
+                snapshotter.stop()
+        except Exception:                                  # noqa: BLE001
+            log.exception("shutdown: stopping periodic snapshotter failed")
+        try:
+            from PyQt6.QtCore import QThreadPool
+            QThreadPool.globalInstance().waitForDone(5000)
+        except Exception:                                  # noqa: BLE001
+            log.exception("shutdown: draining the thread pool failed")
+        # 2. Clean-close the user store: WAL checkpoint(TRUNCATE) + integrity
+        #    sidecar + verified rolling backup (Gateway.close → UserStore.close).
+        try:
+            self.gateway.close()
+            log.info("user store closed cleanly on exit "
+                     "(checkpoint + sidecar + rolling backup)")
+        except Exception:                                  # noqa: BLE001
+            log.exception("shutdown: gateway.close() failed")
+
     def _open_back_up_event(self) -> None:
         """spec/82 §B.2 — manual Back up event… for the current event.
 

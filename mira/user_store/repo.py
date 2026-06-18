@@ -126,11 +126,35 @@ class UserStore:
 
         integrity = schema.integrity_check(conn)
         if integrity != "ok":
-            log.warning(
-                "mira.db integrity_check returned %r — "
-                "the file may be corrupt; the most recent backup is the natural restore point",
-                integrity,
+            # spec/53 §3.1 + 2026-06-17 corruption incident: a malformed
+            # mira.db otherwise crashes the app the moment a query hits a
+            # bad page (e.g. opening a day to Pick → unhandled
+            # ``sqlite3.DatabaseError: database disk image is malformed``).
+            # Auto-restore from the newest rolling backup that itself
+            # passes integrity_check, keeping the corrupt file aside for
+            # forensics. Only fall back to opening the corrupt file when no
+            # clean backup exists.
+            log.error(
+                "mira.db integrity_check FAILED (%r) — attempting "
+                "auto-restore from the newest clean backup", integrity,
             )
+            conn.close()
+            restored = protection.restore_from_backup(path)
+            conn = schema.connect(path)
+            if restored is not None:
+                post = schema.integrity_check(conn)
+                if post == "ok":
+                    log.warning(
+                        "mira.db auto-restored from %s and now passes "
+                        "integrity_check", restored.name)
+                else:
+                    log.error(
+                        "mira.db still fails integrity_check (%r) after "
+                        "restoring %s", post, restored.name)
+            else:
+                log.error(
+                    "mira.db has no clean backup to restore — opening the "
+                    "corrupt file; reads may fail")
 
         schema.migrate(conn)
         return cls(conn, path)
@@ -141,7 +165,7 @@ class UserStore:
         propagate — close() is called from ``__exit__`` and finally blocks
         where a raise would mask the real exception."""
         try:
-            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._checkpoint_truncate()
         except sqlite3.Error as exc:
             log.warning("WAL checkpoint failed on close: %s", exc)
 
@@ -159,6 +183,28 @@ class UserStore:
             protection.roll_backup(self.path)
         except OSError as exc:
             log.warning("rolling backup failed: %s", exc)
+
+    def _checkpoint_truncate(self, attempts: int = 3) -> None:
+        """Checkpoint and TRUNCATE the WAL, retrying a BUSY result.
+
+        ``wal_checkpoint(TRUNCATE)`` returns ``(busy, log_frames,
+        checkpointed)``; ``busy != 0`` means a reader (e.g. an in-flight
+        backup connection) blocked the truncation, leaving committed frames
+        in the ``-wal``. Previously a BUSY result was silently accepted, so
+        the WAL could grow without bound across sessions. Retry a few times;
+        if it still can't truncate, log it. Data is never at risk — the
+        rolling backup now reads committed state via the online backup API
+        regardless of WAL state (see ``protection._backup_db``)."""
+        import time
+        for _ in range(max(1, attempts)):
+            row = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            busy = row[0] if row else 1
+            if not busy:
+                return
+            time.sleep(0.05)
+        log.warning(
+            "WAL checkpoint(TRUNCATE) still BUSY after %d attempts; WAL left "
+            "in place (data is safe; rolling backup unaffected)", attempts)
 
     def __enter__(self) -> "UserStore":
         return self

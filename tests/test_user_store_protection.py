@@ -102,14 +102,17 @@ def test_open_logs_warning_on_sidecar_mismatch(tmp_path, caplog):
         store2.close()
 
 
-def test_open_warns_on_integrity_check_failure(tmp_path, caplog):
-    """If ``PRAGMA integrity_check`` returns something other than ``'ok'``,
-    the open path logs a visible warning. We synthesise the failure by
+def test_open_auto_restores_on_integrity_failure(tmp_path, caplog):
+    """If ``PRAGMA integrity_check`` fails on open, the open path auto-restores
+    from the newest clean rolling backup and keeps the corrupt file aside for
+    forensics (2026-06-17 corruption incident). We synthesise the failure by
     monkeypatching the helper, since corrupting a SQLite file deterministically
-    is fragile."""
+    is fragile; ``protection.integrity_ok`` runs a REAL check on the backup, so
+    the (genuinely valid) ``.bak.1`` is accepted as the restore point."""
     store = _make_store(tmp_path)
-    store.close()
+    store.close()  # rolls a clean mira.db.bak.1 — the restore point
     db_path = tmp_path / "mira.db"
+    assert (tmp_path / "mira.db.bak.1").is_file()
 
     original_integrity_check = schema.integrity_check
     try:
@@ -117,14 +120,38 @@ def test_open_warns_on_integrity_check_failure(tmp_path, caplog):
         with caplog.at_level(logging.WARNING):
             store2 = UserStore.open(db_path)
         try:
+            # The failure was surfaced and an auto-restore was attempted.
             assert any(
-                "integrity_check returned" in record.message
+                "integrity_check FAILED" in record.message
                 for record in caplog.records
             )
+            # The corrupt live DB was moved aside (forensics copy kept).
+            assert list(tmp_path.glob("mira.db.corrupt-*"))
+            # A clean backup was copied back into place.
+            assert db_path.is_file()
         finally:
             store2.close()
     finally:
         schema.integrity_check = original_integrity_check  # type: ignore[assignment]
+
+
+def test_restore_from_backup_picks_newest_clean(tmp_path):
+    """``restore_from_backup`` swaps a corrupt live DB for the newest backup
+    that passes its own integrity_check, leaving a ``.corrupt-*`` forensics
+    copy behind."""
+    store = _make_store(tmp_path)
+    store.close()                       # mira.db.bak.1 (clean)
+    db_path = tmp_path / "mira.db"
+    good_sha = _read_file_sha256_via_protect(tmp_path / "mira.db.bak.1")  # noqa: SLF001
+
+    # Clobber the live DB so it is no longer a valid SQLite file.
+    db_path.write_bytes(b"not a database at all")
+
+    used = protection.restore_from_backup(db_path)
+    assert used is not None and used.name == "mira.db.bak.1"
+    # Live DB now matches the clean backup, and the corrupt copy was kept.
+    assert _read_file_sha256_via_protect(db_path) == good_sha  # noqa: SLF001
+    assert list(tmp_path.glob("mira.db.corrupt-*"))
 
 
 # --------------------------------------------------------------------------- #
@@ -145,31 +172,76 @@ def test_roll_backup_creates_bak_1_on_first_call(tmp_path):
         store.close()
 
 
+def _theme_in(path) -> "object":
+    """Read the ``theme`` setting straight from a DB file (read-only)."""
+    c = sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)
+    try:
+        row = c.execute(
+            "SELECT value_json FROM setting WHERE key='theme'").fetchone()
+        return row[0] if row else None
+    finally:
+        c.close()
+
+
 def test_roll_backup_rotates_newest_first(tmp_path):
-    """Successive rolls shift everything one slot older — ``.bak.1`` is
-    always the freshest copy."""
+    """Successive rolls shift everything one slot older — ``.bak.1`` is always
+    the freshest copy. Backups are now online-backup-API copies (logically
+    equivalent, NOT byte-identical to the live file — that was the unsafe
+    ``shutil.copy2`` behaviour), so rotation is checked by CONTENT."""
+    from mira.user_store import models as m
     store = _make_store(tmp_path)
     try:
-        # First roll: .bak.1 only.
+        # First roll: .bak.1 reflects the initial state (no 'theme' setting).
         protection.roll_backup(store.path)
-        # Tag the file so we can identify which slot it ends up in.
-        first_sha = protection.recompute_sidecar(store.path)
-        # Mutate the live DB (add a setting row, recompute sidecar).
-        from mira.user_store import models as m
+        # Mutate the live DB and checkpoint so the change lands in the main file.
         store.upsert(m.Setting(
             key="theme", value_json='"light"',
             updated_at="2026-06-08T01:00:00+00:00",
         ))
         store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        second_sha = protection.recompute_sidecar(store.path)
-        assert second_sha != first_sha, "DB content must differ between rolls"
-
-        # Second roll: live → .bak.1, previous .bak.1 → .bak.2.
+        # Second roll: live (state B) → .bak.1; previous .bak.1 (state A) → .bak.2.
         protection.roll_backup(store.path)
-        bak1_sha = _read_file_sha256_via_protect(store.path.with_suffix(".db.bak.1"))  # noqa: SLF001
-        bak2_sha = _read_file_sha256_via_protect(store.path.with_suffix(".db.bak.2"))  # noqa: SLF001
-        assert bak1_sha == second_sha           # freshest copy
-        assert bak2_sha == first_sha            # older
+        assert _theme_in(store.path.with_suffix(".db.bak.1")) == '"light"'  # newest
+        assert _theme_in(store.path.with_suffix(".db.bak.2")) is None       # older
+    finally:
+        store.close()
+
+
+def test_roll_backup_is_consistent_with_a_second_opener(tmp_path):
+    """The 2026-06-18 regression: with the live WAL db held open by a SECOND
+    connection (so a checkpoint can't truncate) and a pending ``-wal``, the
+    rolling backup must STILL be internally consistent — the online backup
+    API guarantees this where ``shutil.copy2`` would capture a torn image."""
+    from mira.user_store import models as m
+    store = _make_store(tmp_path)
+    second = sqlite3.connect(str(store.path))     # the blocking second opener
+    try:
+        store.upsert(m.Setting(
+            key="theme", value_json='"dark"',
+            updated_at="2026-06-08T02:00:00+00:00"))
+        second.execute("SELECT COUNT(*) FROM setting").fetchone()
+        wal = store.path.parent / (store.path.name + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0   # un-checkpointed WAL
+        bak = protection.roll_backup(store.path)
+        assert bak is not None
+        assert protection.integrity_ok(bak)              # verified clean
+        assert _theme_in(bak) == '"dark"'                # captured the commit
+    finally:
+        second.close()
+        store.close()
+
+
+def test_roll_backup_discards_a_copy_that_fails_integrity(tmp_path, monkeypatch):
+    """A backup that does not pass ``integrity_check`` is discarded with no
+    file left behind — a torn copy can never enter the rolling set (and so
+    can never be promoted back onto the live DB by the restore path)."""
+    store = _make_store(tmp_path)
+    try:
+        monkeypatch.setattr(protection, "integrity_ok", lambda p: False)
+        out = protection.roll_backup(store.path)
+        assert out is None
+        assert not store.path.with_suffix(".db.bak.1").exists()
+        assert not store.path.with_suffix(".db.bak.1.tmp").exists()
     finally:
         store.close()
 

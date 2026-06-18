@@ -411,6 +411,17 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Event loop starting")
     code = app.exec()
     log.info("Event loop ended (exit code %d)", code)
+    # 2026-06-18 corruption fix — run the clean-close path BEFORE the
+    # QApplication + gateway are destroyed: drain the snapshot workers, then
+    # WAL-checkpoint the user store, write its integrity sidecar, and rotate
+    # a verified rolling backup. Historically NOTHING did this at exit, so
+    # the protection layer never ran and the user store accumulated no
+    # backups; an interrupted checkpoint of the hot ``global_items`` table
+    # then corrupted it with nothing to restore from.
+    try:
+        window.shutdown()
+    except Exception:                                          # noqa: BLE001
+        log.exception("clean shutdown failed")
     # Belt-and-suspenders: ``aboutToQuit`` already released the lock
     # in-event-loop, but if anything between ``acquire`` and ``exec()``
     # raises (no event loop to fire ``aboutToQuit``) we still need to

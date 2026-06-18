@@ -339,7 +339,19 @@ def connect(path: Union[str, Path]) -> sqlite3.Connection:
     conn.isolation_level = None
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    # FULL (not NORMAL) for the user store: it is small and written
+    # infrequently, so the extra fsync cost is negligible, and it tightens
+    # the durability window around a checkpoint interrupted by an abrupt
+    # process kill — the 2026-06-18 ``global_items`` corruption (the app
+    # never closed cleanly; checkpoints raced teardown). The real fix is the
+    # clean-close path now wired at exit; this is defence-in-depth.
+    conn.execute("PRAGMA synchronous = FULL")
+    # Wait up to 5s for a competing writer to release its lock instead of
+    # raising "database is locked" immediately. A momentary overlap (the
+    # async ingest worker + the foreground store touching mira.db) should
+    # queue, not error out — an unhandled OperationalError here crashes the
+    # app (2026-06-17 incident).
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

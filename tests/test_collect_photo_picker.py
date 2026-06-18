@@ -296,3 +296,88 @@ def test_cancel_leaves_selected_path_none(qapp, tmp_path):
         assert dlg.selected_path is None
     finally:
         dlg.deleteLater()
+
+
+# ── Wait-feedback during preview decode (Nelson 2026-06-18) ──────────────
+
+
+def test_show_preview_displays_loading_message_before_blocking_decode(
+    qapp, tmp_path, monkeypatch,
+):
+    """``_show_preview`` runs ``load_pixmap`` synchronously on the GUI
+    thread; a multi-MB RAW takes 10-20s. Without feedback the user can't
+    tell their click registered. The fix: set "Loading {name}…" in the
+    preview pane + a wait cursor BEFORE the load. This test confirms the
+    label is set when the decode begins."""
+    from PyQt6.QtGui import QPixmap
+    a = tmp_path / "raw_photo.rw2"
+    a.write_bytes(b"\x00")
+
+    captured_text_during_load: list[str] = []
+
+    def fake_load(path, target_size=None):
+        # By the time the decode starts, the label should already say
+        # "Loading {name}…" — captured here so the test can verify the
+        # pre-decode UI update landed.
+        dlg_ref = the_dialog
+        captured_text_during_load.append(dlg_ref._preview.text())
+        return QPixmap()  # null pixmap → triggers the unavailable path
+
+    monkeypatch.setattr(
+        "mira.ui.pages.collect_photo_picker.load_pixmap", fake_load,
+    )
+
+    the_dialog = CollectPhotoPicker(
+        camera_id="G9M2",
+        photos_by_day={date(2026, 4, 1): [a]},
+    )
+    try:
+        the_dialog._show_preview(a)
+        assert captured_text_during_load, "fake_load was not called"
+        assert "raw_photo.rw2" in captured_text_during_load[0]
+        # The pre-load message uses the i18n "Loading {name}…" template;
+        # the substring "raw_photo.rw2" plus *some* status word (Loading
+        # / Carregando — pt-BR is the other locale) is the load-bearing
+        # signal. The filename + a non-empty label proves the user got
+        # feedback before the 20-second freeze.
+        assert captured_text_during_load[0].strip() != ""
+    finally:
+        the_dialog.deleteLater()
+
+
+def test_show_preview_discards_stale_result_when_user_clicks_another_thumb(
+    qapp, tmp_path, monkeypatch,
+):
+    """A 20-second RAW decode can be interrupted by the user clicking
+    another (faster) thumb. The late-arriving slow decode must NOT enable
+    the Use button or render its pixmap — the monotonic request id
+    discards stale results. Forward-compatible with a later off-thread
+    load; right now decodes are sync but the guard is cheap and correct."""
+    from PyQt6.QtGui import QPixmap
+    slow_path = tmp_path / "slow.rw2"
+    fast_path = tmp_path / "fast.jpg"
+    for p in (slow_path, fast_path):
+        p.write_bytes(b"\x00")
+
+    def fake_load(path, target_size=None):
+        # Simulate the user clicking another thumb while we were
+        # "decoding" by bumping the request id mid-call.
+        the_dialog._preview_request_id += 1
+        return QPixmap()
+
+    monkeypatch.setattr(
+        "mira.ui.pages.collect_photo_picker.load_pixmap", fake_load,
+    )
+
+    the_dialog = CollectPhotoPicker(
+        camera_id="G9M2",
+        photos_by_day={date(2026, 4, 1): [slow_path, fast_path]},
+    )
+    try:
+        the_dialog._show_preview(slow_path)
+        # The stale-discard branch returns early before the success-side
+        # enables the Use button. If the guard misfired, _use_btn would be
+        # enabled (the unavailable-preview path still enables it).
+        assert not the_dialog._use_btn.isEnabled()
+    finally:
+        the_dialog.deleteLater()

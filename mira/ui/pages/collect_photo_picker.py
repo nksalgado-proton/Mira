@@ -48,6 +48,7 @@ from typing import Dict, List, Optional
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QCursor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -460,8 +461,40 @@ class CollectPhotoPicker(QDialog):
 
     def _show_preview(self, path: Path) -> None:
         """Render the highlighted photo at the preview pane size + display
-        filename and EXIF DateTimeOriginal."""
-        pm = load_pixmap(path)
+        filename and EXIF DateTimeOriginal.
+
+        ``load_pixmap`` is synchronous and on a large RAW costs 10–20s
+        (Nelson 2026-06-18). We can't move it off the GUI thread without
+        a bigger refactor, but we CAN make the wait legible: show a
+        "Loading…" message + wait cursor BEFORE the call so the user
+        sees their click registered. A monotonic request id discards
+        stale results when the user keeps clicking thumbs during a slow
+        decode (a fast click on a JPEG mustn't be overwritten by the
+        late-arriving RW2 the user already moved past)."""
+        self._preview_request_id = getattr(self, "_preview_request_id", 0) + 1
+        request_id = self._preview_request_id
+
+        # Wait state — visible *before* the blocking decode starts. The
+        # processEvents call forces the paint to land; without it the
+        # label change queues behind the (next) blocking work.
+        self._preview.setPixmap(QPixmap())
+        self._preview.setText(
+            tr("Loading {name}…").replace("{name}", path.name)
+        )
+        self._preview_meta.setText("")
+        self._use_btn.setEnabled(False)
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        QApplication.processEvents()
+
+        try:
+            pm = load_pixmap(path)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        # User moved on while we were decoding — drop the stale result.
+        if request_id != self._preview_request_id:
+            return
+
         if pm is None or pm.isNull():
             self._preview.setPixmap(QPixmap())
             self._preview.setText(tr("(preview unavailable)\n{name}")

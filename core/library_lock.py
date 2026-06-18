@@ -177,17 +177,75 @@ def read_holder(root: Path) -> Optional[LockInfo]:
         return None
 
 
+def _is_same_host_dead_pid(info: LockInfo) -> bool:
+    """``True`` when the lock claims THIS host (same ``hostname``) but
+    the listed ``pid`` is not running anymore. Nelson 2026-06-18 — a
+    Mira crash leaves a fresh heartbeat behind; without this check the
+    next launch would wait the full ``STALENESS_TIMEOUT_SECONDS`` before
+    taking over even though we KNOW the previous writer is dead.
+
+    Only fires when the hostname matches. A same-LAN remote writer with
+    a coincident PID could otherwise be misidentified as dead — we just
+    can't probe processes on a different host."""
+    try:
+        if info.hostname != socket.gethostname():
+            return False
+    except OSError:
+        return False
+    if info.pid <= 0:
+        return False
+    if info.pid == os.getpid():
+        # Lock belongs to THIS process (re-entry after a no-op restart);
+        # don't treat as dead — refresh() handles the live case.
+        return False
+    try:
+        # POSIX: kill(pid, 0) returns success iff the process exists.
+        # Windows: os.kill rejects pid 0 (signal-0) entirely, so use a
+        # different probe.
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            SYNCHRONIZE = 0x00100000
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, info.pid)
+            if not handle:
+                # Most failures mean "no such pid"; ERROR_ACCESS_DENIED
+                # would mean it exists but we can't open it — treat as
+                # alive for safety.
+                err = ctypes.get_last_error()
+                ERROR_ACCESS_DENIED = 5
+                return err != ERROR_ACCESS_DENIED
+            kernel32.CloseHandle(handle)
+            return False
+        else:
+            os.kill(info.pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        # Process exists but we can't probe it — treat as alive.
+        return False
+
+
 def is_stale(
     info: LockInfo,
     *,
     now: Optional[float] = None,
     timeout: int = STALENESS_TIMEOUT_SECONDS,
 ) -> bool:
-    """A lock is stale when its filesystem mtime is older than
-    ``timeout`` seconds ago. Filesystem mtime is preferred over the
-    in-file ``heartbeat_at`` because LAN machines may disagree on
-    wall-clock time but they all see the same NAS clock for file
-    metadata (spec/76 §A.2)."""
+    """A lock is stale when EITHER its filesystem mtime is older than
+    ``timeout`` seconds ago, OR it claims this host with a dead PID
+    (Nelson 2026-06-18 — same-host crashes shouldn't make the next
+    launch wait 5 min). Filesystem mtime is preferred over the in-file
+    ``heartbeat_at`` because LAN machines may disagree on wall-clock
+    time but they all see the same NAS clock for file metadata
+    (spec/76 §A.2)."""
+    if _is_same_host_dead_pid(info):
+        log.info(
+            "library_lock: holder pid %d on %s is no longer running — "
+            "treating lock as stale", info.pid, info.hostname,
+        )
+        return True
     current = now if now is not None else _now_unix()
     age = current - info.mtime
     return age > timeout

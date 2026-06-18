@@ -120,6 +120,85 @@ def test_is_stale_respects_timeout(root):
         info, now=info.mtime + STALENESS_TIMEOUT_SECONDS + 1) is True
 
 
+def test_is_stale_same_host_dead_pid_is_stale_immediately(root, monkeypatch):
+    """Spec/76 §A.2 (Nelson 2026-06-18 follow-up): when the lock claims
+    THIS host but the listed pid is no longer running, the lock is
+    treated as stale immediately — no 5-minute wait. Same-host crash
+    leaves a fresh heartbeat, which would otherwise block the next
+    launch."""
+    import socket
+    acquire(root)
+    info = read_holder(root)
+    assert info is not None
+    # Synthesize a holder claiming this host but a long-dead pid.
+    dead_pid = 0x7fffffff      # absurdly large, almost certainly unused
+    crashed = LockInfo(
+        hostname=socket.gethostname(),
+        pid=dead_pid,
+        app_version=info.app_version,
+        acquired_at=info.acquired_at,
+        heartbeat_at=info.heartbeat_at,
+        mtime=info.mtime,
+    )
+    assert is_stale(crashed, now=crashed.mtime + 1) is True
+
+
+def test_is_stale_other_host_fresh_lock_is_not_stale(root):
+    """A lock owned by a different host is NEVER probed for liveness —
+    we can't see processes on other machines. The mtime gate is the
+    only signal, so a fresh remote lock stays held."""
+    acquire(root)
+    info = read_holder(root)
+    assert info is not None
+    remote = LockInfo(
+        hostname="some-other-host",
+        pid=12345,
+        app_version=info.app_version,
+        acquired_at=info.acquired_at,
+        heartbeat_at=info.heartbeat_at,
+        mtime=info.mtime,
+    )
+    assert is_stale(remote, now=remote.mtime + 1) is False
+
+
+def test_is_stale_own_pid_is_not_stale(root):
+    """A lock claiming THIS pid is the live writer's own row — never
+    treat it as stale (Nelson 2026-06-18 — defensive: refresh() handles
+    the live case, but a stray re-entrant call to is_stale on our own
+    payload should agree)."""
+    acquire(root)
+    info = read_holder(root)
+    assert info is not None
+    # ``acquire`` writes our pid into the lock; is_stale should agree.
+    assert info.pid == os.getpid()
+    assert is_stale(info, now=info.mtime + 1) is False
+
+
+def test_acquire_takes_over_immediately_when_prior_pid_is_dead(
+    root, monkeypatch,
+):
+    """End-to-end: a fresh-mtime lock with a dead same-host pid is
+    taken over on the next ``acquire`` without waiting the timeout.
+    This is the failure mode Nelson hit on 2026-06-18 after a crash."""
+    import json
+    # Plant a "previous writer" lock with a same-host dead pid and a
+    # fresh mtime so the legacy timeout-only rule would refuse takeover.
+    import socket
+    lock_file = _lock_file(root)
+    lock_file.write_text(json.dumps({
+        "hostname": socket.gethostname(),
+        "pid": 0x7fffffff,
+        "app_version": "0.1.0",
+        "acquired_at": "2026-06-18T15:23:05Z",
+        "heartbeat_at": "2026-06-18T15:23:35Z",
+    }))
+    # mtime is "now" — non-stale by timeout, but dead pid takeover wins.
+    result = acquire(root)
+    assert result.acquired is True
+    assert result.holder is not None
+    assert result.holder.pid == os.getpid()
+
+
 # ── Release ───────────────────────────────────────────────────────
 
 

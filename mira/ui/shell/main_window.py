@@ -5217,9 +5217,23 @@ class MainWindow(QMainWindow):
             self._show_no_days_message()
             return
 
+        # Mirror the new-event paths: read the feature flag and surface
+        # the Save / Load plan buttons in the dialog footer. Without this
+        # the existing-event entry point silently dropped them
+        # (Nelson 2026-06-18).
+        from core.feature_flags import load_flags
+        try:
+            flags = load_flags(self.gateway.user_store)
+            can_save_load_csv = flags.plan_save_load_csv
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "Could not read feature flags; defaulting CSV gate off")
+            can_save_load_csv = False
+
         dlg = self._exec_event_days_table_dialog(
             self._build_days_table_dialog(
                 rows,
+                can_save_load_csv=can_save_load_csv,
                 browse_handler=self._make_days_table_browse_handler(event_id),
             ))
         if not dlg:

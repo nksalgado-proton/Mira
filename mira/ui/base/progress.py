@@ -53,7 +53,16 @@ def run_with_progress(
     dlg.setAutoClose(False)
     dlg.setAutoReset(False)
     dlg.setCancelButton(None)  # our jobs aren't safely interruptible mid-way
+    # ``setLabelText`` after ctor + ``setRange`` are belt-and-braces — when
+    # constructed with empty cancel-button text + ``setCancelButton(None)``
+    # the dialog's layout recomputes lazily, and on Windows 11 / Qt 6 the
+    # first show occasionally races the layout pass and renders blank
+    # body content (Nelson 2026-06-18). Re-applying the label/range tickles
+    # the layout into recomputing before the show.
+    dlg.setLabelText(label or tr("Working…"))
+    dlg.setRange(0, 0)
     dlg.show()
+    dlg.raise_()
 
     def report(done: int, total: int = 0, message: str = "") -> None:
         if total > 0:
@@ -64,7 +73,16 @@ def run_with_progress(
         QApplication.processEvents()
 
     QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
-    QApplication.processEvents()  # paint the dialog before the (possibly blocking) work
+    # Pump the event loop several times AND force a synchronous repaint so
+    # the dialog renders its label + busy indicator BEFORE the (possibly
+    # blocking) work starts — otherwise on Windows the user sees an empty
+    # frame for the entire scan. processEvents alone isn't enough: it
+    # processes ONE round of events; the show-event + layout + paint each
+    # post fresh events. Iterating + an explicit repaint covers it.
+    for _ in range(3):
+        QApplication.processEvents()
+    dlg.repaint()
+    QApplication.processEvents()
     try:
         return True, work(report)
     except Exception:  # noqa: BLE001 — surface, never crash/raise into the caller

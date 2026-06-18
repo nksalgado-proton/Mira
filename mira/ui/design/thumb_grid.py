@@ -66,9 +66,14 @@ DEFAULT_CELL_SIZE = QSize(196, 146)
 
 # Border-zone hit-test ratio: a click within ``BORDER_RATIO * min(w, h)``
 # of any edge is the border zone (mirrors the legacy DayGridCell rule).
-BORDER_RATIO = 0.10
-MIN_BORDER_PX = 6
-MAX_BORDER_PX = 22
+# Nelson 2026-06-18 — bumped from 0.10 / 6 / 22 to 0.15 / 10 / 32: the
+# painted border stays the same width, only the click-hit zone widens
+# inward so "near the boundary" reliably catches the cycle. Wide tile
+# (~280px) hit zone goes from ~22px to ~32px; small tile (~140px)
+# from ~14px to ~21px.
+BORDER_RATIO = 0.15
+MIN_BORDER_PX = 10
+MAX_BORDER_PX = 32
 
 
 @dataclass

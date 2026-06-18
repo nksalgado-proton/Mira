@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -150,6 +151,13 @@ _THUMB_TIMER_MS = 20
 # well against the §3.6 punch list ("blurred-fill never shines —
 # smokes used gradient placeholders").
 _TILE_SIZE = QSize(196, 146)
+# Slider bounds (Nelson 2026-06-18). 140 wide is the smallest still
+# usable for face recognition; 320 wide is generous on a 4K monitor.
+# Height tracks via the locked aspect ratio so a hit-test rectangle
+# stays proportional and the cycle-click target doesn't drift.
+_TILE_ASPECT = _TILE_SIZE.height() / _TILE_SIZE.width()
+_TILE_SIZE_MIN = QSize(140, int(round(140 * _TILE_ASPECT)))
+_TILE_SIZE_MAX = QSize(320, int(round(320 * _TILE_ASPECT)))
 
 
 @dataclass
@@ -457,6 +465,24 @@ class DaysGridPage(QWidget):
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)
         toolbar.addStretch()
+        # Cell-size slider (Nelson 2026-06-18). The slider value drives
+        # the grid's cell width in 10-px steps; height tracks via the
+        # cell's locked aspect ratio so a click still hits the right
+        # photo. Session-local — no settings persistence in this slice;
+        # add later if the user asks.
+        size_label = QLabel("Size")
+        size_label.setObjectName("Sub")
+        toolbar.addWidget(size_label)
+        self._size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._size_slider.setMinimum(_TILE_SIZE_MIN.width())
+        self._size_slider.setMaximum(_TILE_SIZE_MAX.width())
+        self._size_slider.setSingleStep(10)
+        self._size_slider.setPageStep(20)
+        self._size_slider.setValue(_TILE_SIZE.width())
+        self._size_slider.setFixedWidth(120)
+        self._size_slider.setToolTip("Resize the grid cells")
+        self._size_slider.valueChanged.connect(self._on_size_slider_changed)
+        toolbar.addWidget(self._size_slider)
         # Review progress on the right
         progress_block = QVBoxLayout()
         progress_block.setSpacing(2)
@@ -1314,6 +1340,18 @@ class DaysGridPage(QWidget):
             1 for it in self._items
             if it.state in ("picked", "skipped", "compare", "mixed")
         )
+
+    # ── Size slider ────────────────────────────────────────────────────
+
+    def _on_size_slider_changed(self, value: int) -> None:
+        """Resize every grid cell to the new width and re-derive height
+        from the locked aspect ratio. The hit-test border zone scales
+        with cell size automatically (see ``thumb_grid.BORDER_RATIO``)
+        so the click grammar keeps working as the tile shrinks/grows."""
+        width = max(_TILE_SIZE_MIN.width(),
+                    min(_TILE_SIZE_MAX.width(), int(value)))
+        height = int(round(width * _TILE_ASPECT))
+        self._grid.set_cell_size(QSize(width, height))
 
     # ── Render ─────────────────────────────────────────────────────────
 

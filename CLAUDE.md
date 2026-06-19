@@ -28,7 +28,7 @@ permanent divergence.
 | **Collect** | SD-card / past-photos ingest, day plan, Quick Sweep |
 | **Pick** | One unified decision pass across all captured content (default-Skip) |
 | **Edit** | Non-destructive tone + crop (develop) |
-| **Export** | Materialise developed/keeper frames to processed JPEGs |
+| **Export** | Materialise developed/keeper frames to processed JPEGs. The surface speaks **versions** (one item ⇒ 0..N lineage rows) + **provenance** (`mira_render` / `third_party`). Third-party returns from external editors hardlink into `Exported Media/` at scan time (spec/89 Model B); the `↑ Export now` batch trigger does the deletes-then-renders run. See [`spec/89-export-model-b.md`](spec/89-export-model-b.md). |
 
 The four working phases are **Collect → Pick → Edit → Export** (spec/66,
 revising spec/48's 4th phase). **Share is NOT a phase** — it is a permanent
@@ -61,8 +61,10 @@ Collect→Pick→Edit→Export; it is where Cuts are assembled (spec/66).
 A **Cut** = a time-budgeted, chronologically-ordered set of **exported
 files** the user assembles to hand off to an external slideshow tool.
 **Cuts are NOT final slideshows** — transitions, music sync, and rendering
-belong in PTE. Every event has the built-in **#exported** Cut (a live query,
-never stored); new Cuts are composed by pool algebra over existing Cuts
+belong in PTE. Every event has the built-in **#exported** Cut (a live query
+over every `Exported Media/` lineage row, never stored — Model B / spec/89
+expands what enters that set: Mira renders **AND** hardlinked third-party
+returns); new Cuts are composed by pool algebra over existing Cuts
 (`#exported − #cut_1 + #cut_2`), refined in a Picker session on a separate
 decision ledger, and consumed via flat-grid Play/Export with generated
 day-separator slides. Cuts are zero-byte until export materializes links.
@@ -92,6 +94,8 @@ Load-bearing specs:
 - **`spec/60-batch-export-engine.md`** — batch export engine (worker process, hardware ladder, zero foreground lag)
 - **`spec/62-navigation-performance-audit.md`** — the 2026-06-12 nav-sluggishness audit (measured numbers; the record behind spec/63)
 - **`spec/63-photo-viewport.md`** — ONE photo/video display engine + pixel tiers (thumb/proxy/original) + the LOCKED keyboard map
+- **`spec/72-third-party-roundtrips.md`** — Model B contract (parent): provenance signal, scan-time hardlink into `Exported Media/`
+- **`spec/89-export-model-b.md`** — Export-surface rebuild: versions cluster, provenance badges + scan chip, preview viewer, `↑ Export now` batch trigger, single-item `Export this` re-render-ask
 
 ## Critical invariants
 

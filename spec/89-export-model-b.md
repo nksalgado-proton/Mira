@@ -289,7 +289,7 @@ improvement on every slice.
 | 7 | **Watermark repurpose.** Diagonal stamp = "this flip will delete a real file." | **shipped 2026-06-19** |
 | 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | **shipped 2026-06-19** |
 | 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | **shipped 2026-06-19** |
-| 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | pending |
+| 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | **shipped 2026-06-19** |
 
 ---
 
@@ -372,15 +372,23 @@ no workshop-greened snapshots drops out of the Export grid entirely.
 The user has to return to the Workshop and green something to bring
 it back.
 
-**Slice 10 — Cleanup.** (a) Delete the `_strip_post_v6_lineage_cols`
-test-fixture helper if no longer needed (it strips both Slice-1 and
-Slice-5 columns on downgrade). (b) Update CLAUDE.md's four-phase
-table + Cut section to reference spec/89's vocabulary (the existing
-table is still spec/48/66-vocabulary). (c) Update spec/66 §1.2 and
-spec/72 §1 with "see spec/89 for the implementation framing"
-pointers. (d) Eyeball-test the visual: badge strip readability,
-scan-chip wording, cluster cover thumbnail (the live newest-version
-preview is in spec/89 §9 — only ship it now if needed).
+**Slice 10 — Cleanup** (shipped 2026-06-19). (a) The retired
+partition / `to_render` alias in
+[`submit_export_batch`](mira/ui/exported/batch.py) is gone, and the
+module-top docstring no longer describes a hardlink fork through
+this helper (spec/89 §1.5 — scanner does it at scan time). The
+`_strip_post_v6_lineage_cols` test fixture **stays** — it's still
+needed for the v6→v7 migration tests
+([`tests/test_store.py`](tests/test_store.py)) that start from a v6
+shape and need the post-v6 ADD COLUMN migrations to not collide.
+(b) CLAUDE.md's four-phase table now points at spec/89 from the
+Export row; the Cut section flags Model B's expanded `#exported`
+set (Mira renders + hardlinked third-party returns). (c) spec/66
+§1.2 and spec/72 §1 each carry the "implementation framing: see
+spec/89" pointer at the top. (d) **Eyeball check** (open question
+for the next session): badge strip readability, scan-chip wording,
+cluster cover thumbnail. The live newest-version cover preview is
+still the deferred polish in §9 first/second bullets.
 
 **Known stubs / deferred polish:**
 

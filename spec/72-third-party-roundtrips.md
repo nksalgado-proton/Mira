@@ -20,6 +20,16 @@ There are **two** external round trips and they must not be conflated:
 
 ## 1. External editor returns — Model B (pre-committed, keep-or-delete)
 
+> **Implementation framing: see [`spec/89`](89-export-model-b.md).** Model B
+> is shipped on `main` as of 2026-06-19 (spec/89 Slices 1–9). spec/89 owns
+> the schema (`lineage.provenance` enum, `intent_state` for versions
+> clusters), the surface (versions cluster cover, provenance badge strip,
+> scan chip, preview viewer, `↑ Export now` confirm modal, single-item
+> `Export this` re-render-ask, video cluster updates), and the run
+> contract (delete-first then submit through the spec/60 batch). This
+> section keeps the **why** + the user-facing decisions; spec/89 keeps the
+> **how**.
+
 The Editor (`Edited Media/` the **folder**) is just where LRC physically writes;
 it is **not** Mira's creative Edit **surface**. A finished LRC/Helicon photo is a
 done output — it **never appears in the creative Editor**.

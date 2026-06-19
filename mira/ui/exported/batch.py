@@ -1,26 +1,27 @@
-"""Export batch submission helper (spec/66 §1.1 + spec/68 §3).
+"""Export batch submission helper (spec/66 §1.1 + spec/68 §3 +
+spec/89 Model B).
 
 Lifted from the retired ``mira/ui/exported/export_page.py`` (the flat-
 grid MVP) so the redesigned per-day Export surface — the
 :class:`~mira.ui.pages.days_grid_page.DaysGridPage` running in
 ``phase="export"`` mode (spec/68 §3) — can submit one day's green cells
-to the spec/60 batch engine without duplicating the partition /
-hardlink / commit-closure plumbing.
+to the spec/60 batch engine without duplicating the commit-closure
+plumbing.
 
 The engine + the :class:`~mira.ui.shell.batch_queue.BatchJobQueue`
 contract are locked (spec/68 §4; spec/84 §2 renamed the queue from
 ``BatchExportQueue`` to ``BatchJobQueue`` so ingest can ride it too).
-This module only re-parents the *trigger* — it builds a manifest,
-partitions third-party returns into the hardlink path, and enqueues
-the rest with a commit closure that records ``edit-phase`` lineage rows
-under ``Exported Media/`` and flips ``Adjustment.edit_exported = True``
-for the units that actually landed.
+This module only re-parents the *trigger* — it builds a manifest and
+enqueues it with a commit closure that records ``edit-phase`` lineage
+rows under ``Exported Media/`` and flips
+``Adjustment.edit_exported = True`` for the units that actually landed.
 
-The hardlink + render contract is the same one the prior MVP
-established: a Pick-kept item with an ``Edited Media/`` return (a
-third-party tool's already-finished render, spec/57 §3) gets
-hardlinked into ``Exported Media/`` instead of going through Mira's
-tone pipeline; everything else renders.
+**spec/89 Model B (Slice 1).** Third-party returns no longer take a
+hardlink fork through this helper — the return scanner hardlinks each
+new ``Edited Media/`` file straight into ``Exported Media/`` at scan
+time (see :func:`mira.gateway.event_gateway.EventGateway.scan_for_returns`).
+By the time a batch reaches :func:`submit_export_batch` every cell is
+a Mira-render target.
 
 **Clips + snapshots (spec/56).** Picked SEGMENTS feed the spec/56
 slice-4 :func:`~core.edit_export_walker.build_clip_units` walker and
@@ -302,13 +303,9 @@ def submit_export_batch(
     event_root = Path(eg.event_root)
     default_dest = exported_media_dir(event_root)
 
-    # spec/72 Model B / spec/89 §1.5 — third-party returns enter the
-    # ship set at scan time (the return scanner hardlinks them straight
-    # into Exported Media/), so by the time a batch reaches this
-    # function every cell is a Mira-render target. The legacy
-    # partition (edit_candidate_relpath → hardlink fork) is gone with
-    # spec/89 slice 1.
-    to_render: List[ExportCell] = list(cells)
+    # spec/89 Slice 1 — third-party returns enter the ship set at scan
+    # time, so every cell here is a Mira-render target. The legacy
+    # partition (edit_candidate_relpath → hardlink fork) is gone.
 
     units: list[PhotoUnit] = []
     source_by_unit_id: Dict[str, Path] = {}
@@ -360,7 +357,7 @@ def submit_export_batch(
             aspect_label=aspect_label,
         )
 
-    for c in to_render:
+    for c in cells:
         dest_dir = str(default_dest / day_labels.get(c.day_number, ""))
         units.append(_photo_unit(c.item_id, c.path, dest_dir))
         source_by_unit_id[c.item_id] = c.path
@@ -425,15 +422,15 @@ def submit_export_batch(
         source_by_unit_id[cu.unit_id] = Path(cu.source)
 
     if not units and not clip_units:
-        # Every green cell was a third-party return; the hardlink path
-        # already shipped + committed lineage. Nothing left for the
-        # render queue.
+        # Empty manifest after snapshot-extract failures + walker drops.
+        # The caller short-circuits on empty input, so this only fires
+        # when every render lane lost its sources mid-build.
         return True
 
     manifest = ExportManifest(
         units=tuple(units), clips=tuple(clip_units), collision="unique")
     worker = BatchExportJob(manifest, source_by_unit_id)
-    render_cells = list(to_render) + list(snapshot_render_cells)
+    render_cells = list(cells) + list(snapshot_render_cells)
     clip_unit_lookup = {cu.unit_id: cu for cu in clip_units}
 
     def commit(result) -> None:

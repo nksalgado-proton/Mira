@@ -84,6 +84,13 @@ surfaces single-purpose.
 
 ### 1.2 On-disk: a dedicated `Exported Media/` (resolves spec/48 §5.2)
 
+> **Implementation framing: see [`spec/89`](89-export-model-b.md).** spec/89
+> §1.5 + Slice 1 amend the third-party-return path below: returns hardlink
+> from `Edited Media/` into `Exported Media/` at **scan time** (Model B),
+> not on Export. By the time a batch reaches the spec/60 engine every cell
+> is a Mira-render target. The rest of this section's folder rules + ship-
+> set invariant still hold.
+
 Three byte tiers under the event root, two-tier output (Nelson 2026-06-14):
 
 | Folder | Holds | Mutability |
@@ -98,11 +105,13 @@ Rules:
   exactly the green set, nothing more. This is the invariant Share/Cuts
   (spec/61) lean on.
 - On Export, Mira **renders** green in-app develops into `Exported Media/`
-  (spec/60 engine); green **third-party returns are hardlinked** from
-  `Edited Media/` into `Exported Media/` (zero byte cost — the same hardlink
-  mechanism the round-trip adoption already uses).
+  (spec/60 engine). Green **third-party returns are hardlinked** from
+  `Edited Media/` into `Exported Media/` **at scan time** under Model B
+  (spec/89 §1.5) — the older "hardlinked on Export" framing is retired.
 - **Provenance** (Mira-rendered vs external) is **lineage metadata**, not a
-  separate folder.
+  separate folder. The signal is the `lineage.provenance` enum
+  (`'mira_render'` / `'third_party'`); spec/89 §1.4 specifies the badge
+  wordmark inferred from the relpath.
 - **`lineage.export_relpath` is repointed** from `Edited Media/…` (today's
   conflation) to `Exported Media/…`. Edited-Media returns keep their own
   relpath as edit candidates; only promotion to the ship set writes an

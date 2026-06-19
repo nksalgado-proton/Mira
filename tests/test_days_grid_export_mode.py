@@ -419,6 +419,36 @@ def test_export_mode_default_state_is_red_when_no_versions(
     page.close_event()
 
 
+def test_export_mode_mira_only_intent_defaults_to_picked(
+        qapp, app_gateway, store_and_gateway):
+    """spec/89 §1.1 (Nelson 2026-06-19 lock) — a Mira-edited photo
+    with no lineage row counts as ONE ship intent and the flat cell
+    defaults to ``picked`` (Will export). Pre-fix, the grid only
+    checked ``has_shipped`` (lineage rows), so Mira-only edits painted
+    red on the grid even though the Days List bar already counted
+    them green — the two surfaces disagreed."""
+    _, eg = store_and_gateway
+    # x2: a non-baseline Adjustment (Look + filter) — no lineage row.
+    eg.save_adjustment(m.Adjustment(
+        item_id="x2", look="natural", creative_filter="vivid"))
+    # x4: a different shape of Mira intent — crop only.
+    eg.save_adjustment(m.Adjustment(
+        item_id="x4",
+        crop_x=0.05, crop_y=0.05, crop_w=0.9, crop_h=0.9))
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    by_id = {it.item_id: it for it in page._items}
+    # Both Mira-edited photos read as Will export by default.
+    assert by_id["x2"].state == "picked"
+    assert by_id["x4"].state == "picked"
+    # Untouched photos (no Adjustment, no lineage) stay Set aside.
+    assert by_id["x1"].state == "skipped"
+    assert by_id["x3"].state == "skipped"
+    page.close_event()
+
+
 # --------------------------------------------------------------------------- #
 # Click semantics — toggle in place, no item_activated emission
 # --------------------------------------------------------------------------- #

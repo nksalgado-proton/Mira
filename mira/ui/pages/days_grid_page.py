@@ -1038,8 +1038,20 @@ class DaysGridPage(QWidget):
                 if it.item_kind == "cluster":
                     continue
                 if phase_states.get(it.item_id) is None:
+                    # spec/89 §1.1 (Nelson 2026-06-19 lock) — flat-cell
+                    # default mirrors the gateway's per-source rule:
+                    # ANY ship intent (lineage row OR Mira-edit
+                    # intent) → Will export; 0 intents → Set aside.
+                    # The earlier check only looked at lineage rows,
+                    # which left Mira-edited-only photos painting red
+                    # on the grid even though the Days List bar
+                    # (phase_day_progress) was already counting them
+                    # green. Both surfaces now agree.
                     has_shipped = it.item_id in shipped_ids
-                    it.state = STATE_PICKED if has_shipped else STATE_SKIPPED
+                    has_mira_intent = it.item_id in mira_intent_ids
+                    it.state = (
+                        STATE_PICKED if (has_shipped or has_mira_intent)
+                        else STATE_SKIPPED)
                 if it.item_id in skipped_in_pick_ids:
                     it.skipped_in_pick = True
                 rows = shipped_rows_by_item.get(it.item_id, [])

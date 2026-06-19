@@ -588,15 +588,38 @@ with explicit reasons so a future session knows what's left.
 ## 12. Handoff — 2026-06-19 evening session
 
 **Working tree clean at
-[`f072999`](https://github.com/nksalgado-proton/Mira/commit/f072999).**
+[`00be826`](https://github.com/nksalgado-proton/Mira/commit/00be826).**
 This session locked the Export-surface vocabulary, fixed two
 default-state bugs, shipped the side-by-side Compare dialog,
 rebuilt the preview viewer on the canonical
-:class:`mira.ui.media.photo_viewport.PhotoViewport`, and made the
-F10 inspection lens always show the would-be-exported pixels.
-Three §11.3 polish items remain deferred (see §12.4) with the same
-reasons as before — they need design assets, design decisions, or
-your eyes.
+:class:`mira.ui.media.photo_viewport.PhotoViewport`, made the F10
+inspection lens always show the would-be-exported pixels, wired
+"Open in Editor" to actually open the Editor in Export mode, and
+fixed two production bugs surfaced by Nelson's Alaska run — a
+ThumbGrid zombie-cell crash and a silent set_edit_exported
+data-loss caused by the all-days Export-now handler closing the
+batch's gateway too early. Three §11.3 polish items remain
+deferred (see §12.4) with the same reasons as before — they need
+design assets, design decisions, or your eyes.
+
+### 12.0 First-thing-to-read for the next session
+
+1. **§12.6 commit chain** — every commit in this session, in order,
+   with a one-line scope each. Grep the messages for context.
+2. **§12.4 deferred items** — what's still on the polish surface
+   and why each is blocked.
+3. **§12.5 performance follow-up** — the develop pipeline is still
+   on the UI thread under a wait cursor; the four call sites are
+   listed in case a `QThreadPool` offload becomes worth doing.
+4. **Alaska data caveat** — see §12.5 last paragraph: items that
+   were shipped before commit
+   [`e5d239d`](https://github.com/nksalgado-proton/Mira/commit/e5d239d)
+   may have a stale `edit_exported` flag (the JPEGs are on disk
+   but the flag never flipped because the batch's commit closure
+   tried to write through a closed gateway). A re-press of P on
+   the affected cells, OR a one-shot repair script that sets
+   `edit_exported=True` for every item with a `lineage` row under
+   `Exported Media/`, would fix it.
 
 ### 12.1 State labels + per-source default rule (locked)
 
@@ -696,7 +719,7 @@ in this session unblocked them.
 * **Eyeball the scan chip wording end-to-end.** Side-by-side visual
   check on a real event. Unit-tested via `test_scan_chip_text`.
 
-### 12.5 Known performance follow-up
+### 12.5 Known performance follow-up + Alaska data note
 
 The develop pipeline still runs on the UI thread under a wait
 cursor — both for the preview-dialog lazy load and the F10
@@ -708,6 +731,30 @@ are already in
 [`_run_develop_for`](mira/ui/exported/preview_dialog.py),
 [`_CompareTile._run_develop`](mira/ui/exported/compare_dialog.py),
 and the two `_on_truth_requested` handlers.
+
+**Alaska data caveat.** Items shipped via the all-days Export-now
+button **before** commit
+[`e5d239d`](https://github.com/nksalgado-proton/Mira/commit/e5d239d)
+will have JPEGs on disk under `Exported Media/` AND lineage rows,
+but their `Adjustment.edit_exported` flag is **stale** (still
+False) because the batch's commit closure crashed when it tried to
+flip the flag through a closed gateway. Re-pressing P on those
+cells repairs them one at a time. A one-shot SQL repair across an
+event would be:
+
+```sql
+UPDATE adjustment SET edit_exported = 1
+WHERE EXISTS (
+    SELECT 1 FROM lineage l
+    WHERE l.source_item_id = adjustment.item_id
+      AND l.phase = 'edit'
+      AND l.export_relpath LIKE 'Exported Media/%'
+);
+```
+
+(Run from a Mira gateway connection so the `_touch()` fires, OR
+through the SQLite shell on the event's `event.db` followed by an
+explicit `gateway.touch()` on next open.)
 
 ### 12.6 Commit chain (session)
 

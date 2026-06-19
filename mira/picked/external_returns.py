@@ -67,20 +67,46 @@ def _link_stem(entry: PickedEntry) -> str:
 
 
 def _all_item_stems(gateway, event_root: Path) -> Dict[str, str]:
-    """``link-stem → item_id`` over EVERY byte-bearing root-level item —
-    pick-state-independent, so an item re-skipped after an external edit
-    still associates its return."""
+    """Stems usable as filename prefixes pointing back to a source item.
+
+    spec/89 §1.5 (Nelson eyeball 2026-06-19): export presets vary —
+    Lightroom Classic in particular often emits files keyed off the
+    ORIGINAL filename (``IMG_1234-Edit.jpg``) rather than the projection
+    name (``D01_GH5_IMG_1234.jpg``). To support both shapes we register
+    TWO stems per item:
+
+    * The full **link stem** (``D{day}_{camera}_{originalname}``) — the
+      strictest match, preserved when the export preset keeps the
+      Picked Media link name.
+    * The **bare origin filename stem** (``IMG_1234``) — relaxed
+      fallback. The longest-prefix-wins rule in :func:`_match_stem`
+      keeps the strict match preferred when both are present, so this
+      is purely additive.
+
+    Collision risk: two items in different days/cameras can share an
+    origin filename. The dict stores the FIRST item id seen — a
+    rare collision lands the return on whichever item the iteration
+    surfaced first; the user still sees their file land in
+    ``Exported Media/`` (the file was theirs anyway), the lineage
+    attaches to one of the candidates. Pick-state-independent, so an
+    item re-skipped after an external edit still associates its return.
+    """
     out: Dict[str, str] = {}
     for it in gateway.items():
         if not it.origin_relpath:
             continue
-        stem = _link_stem(PickedEntry(
+        full_stem = _link_stem(PickedEntry(
             source_path=event_root / it.origin_relpath,
             filename=Path(it.origin_relpath).name,
             day_number=it.day_number,
             camera_id=it.camera_id,
         ))
-        out[stem] = it.id
+        out[full_stem] = it.id
+        bare_stem = Path(it.origin_relpath).stem
+        # Register the bare stem only when it doesn't collide with an
+        # already-known full stem — the longest-prefix winner downstream
+        # already prefers the full match when both are present.
+        out.setdefault(bare_stem, it.id)
     return out
 
 
@@ -227,4 +253,15 @@ def scan_for_returns(
         len(report.adopted), len(report.associated), len(report.unmatched),
         report.unmerged_bracket_count, len(report.errors),
     )
+    # spec/89 §1.5 diagnostic — when the matcher rejects every file the
+    # scanner found, log a few examples so the user can see the prefix
+    # mismatch at a glance (the most common cause is an LRC export
+    # preset that rewrites the source filename instead of preserving
+    # the camera prefix).
+    if report.unmatched and not report.associated:
+        sample = report.unmatched[:5]
+        log.warning(
+            "external-returns scan: %d file(s) in Edited Media/ did not "
+            "match any source item stem; first examples: %s",
+            len(report.unmatched), sample)
     return report

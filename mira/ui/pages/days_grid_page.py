@@ -1415,7 +1415,12 @@ class DaysGridPage(QWidget):
         # grid only; empty elsewhere; Nelson 2026-06-18).
         from core.edit_status import edit_reasons as _edit_reasons
         adj_map = self._edit_adjustments_for_grid()
-        is_edit_grid = self._phase == "edit"
+        # Pure Edit grid only — Export mode shares the 'edit' storage
+        # phase but the cell border must show ship/drop intent (green
+        # / red), NOT the edited-vs-unedited baseline (Nelson eyeball
+        # 2026-06-19: every cell read amber on the user's Alaska event
+        # because every photo carried an Adjustment row).
+        is_edit_grid = self._phase == "edit" and not self._export_mode
         out: list[GridItem] = []
         for cell in cells:
             if cell.is_cluster and cell.cluster is not None:

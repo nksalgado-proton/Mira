@@ -91,17 +91,31 @@ def cell_origin_label(rows: list) -> str | None:
 def scan_chip_text(report) -> str:
     """spec/89 §2.2 (D5a.C + D5c.B) — the Export-surface scan chip's
     wording. The chip is a quiet status read; on no-change it says
-    "up to date"; on change it lists the **per-source breakdown**
-    so the user can see at a glance which external editor produced
-    the new returns.
+    "up to date"; on change it lists the **per-source breakdown** so
+    the user can see at a glance which external editor produced the
+    new returns; on a scan that found files but couldn't link them
+    back to any source item it surfaces the **unmatched count** so
+    the user knows the files are there but the filename prefix didn't
+    match any item stem (the most common reason: the LRC export
+    preset stripped or rewrote the original filename).
 
     ``report`` is a :class:`mira.picked.external_returns.ReturnsReport`
-    or any object with an ``associated: list[str]`` of newly-linked
-    relpaths. Passing ``None`` is safe — the chip reads as up-to-date.
+    or any object with ``associated: list[str]`` + ``unmatched:
+    list[str]``. Passing ``None`` is safe — the chip reads as
+    up-to-date.
     """
     associated = list(getattr(report, "associated", None) or [])
-    if not associated:
+    unmatched = list(getattr(report, "unmatched", None) or [])
+    if not associated and not unmatched:
         return "External edits: up to date"
+    if not associated and unmatched:
+        n = len(unmatched)
+        word = "file" if n == 1 else "files"
+        return (
+            f"{n} {word} in Edited Media/ didn't match any source — "
+            "check that the LRC export preset preserves the original "
+            "filename prefix"
+        )
     counts: dict[str, int] = {}
     for relpath in associated:
         label = lineage_origin_label("third_party", relpath)
@@ -115,7 +129,11 @@ def scan_chip_text(report) -> str:
         key=lambda kv: (-kv[1], kv[0]),
     )
     breakdown = " · ".join(f"{cnt} {label}" for label, cnt in parts)
-    return f"{n} {word} · {breakdown}"
+    text = f"{n} {word} · {breakdown}"
+    if unmatched:
+        unm = len(unmatched)
+        text += f" · {unm} unmatched"
+    return text
 
 
 __all__ = [

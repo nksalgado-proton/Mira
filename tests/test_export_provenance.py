@@ -118,3 +118,34 @@ def test_scan_chip_text_per_source_breakdown_on_change():
 def test_scan_chip_text_singular_form_for_one_change():
     rep = _Report(["Exported Media/p1-Helicon.dng"])
     assert scan_chip_text(rep) == "1 new external edit · 1 Helicon"
+
+
+@dataclass
+class _ReportFull:
+    """Report stand-in with both ``associated`` and ``unmatched`` so the
+    chip can report mismatches the user needs to fix."""
+
+    associated: list
+    unmatched: list
+
+
+def test_scan_chip_text_surfaces_unmatched_count_when_nothing_linked():
+    """spec/89 §2.2 (Nelson eyeball 2026-06-19): the scanner found 31
+    LRC exports but matched none — the chip used to read "up to date"
+    because the old check only looked at ``associated``. Now it tells
+    the user the count + the most common cause."""
+    rep = _ReportFull(associated=[], unmatched=[f"Edited Media/LRC/f{i}.jpg" for i in range(31)])
+    text = scan_chip_text(rep)
+    assert "31 files in Edited Media/" in text
+    assert "didn't match any source" in text
+
+
+def test_scan_chip_text_partial_match_lists_both():
+    rep = _ReportFull(
+        associated=["Exported Media/p1-LRC.jpg"],
+        unmatched=["Edited Media/LRC/orphan.jpg"],
+    )
+    text = scan_chip_text(rep)
+    assert "1 new external edit" in text
+    assert "1 LRC" in text
+    assert "1 unmatched" in text

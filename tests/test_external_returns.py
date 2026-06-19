@@ -211,6 +211,31 @@ def test_editor_return_unmatched_is_flagged(tmp_path):
         eg.close()
 
 
+def test_relaxed_matcher_accepts_bare_origin_filename(tmp_path):
+    """spec/89 §1.5 (Nelson eyeball 2026-06-19): Lightroom Classic's
+    default export preset emits files keyed off the ORIGINAL filename
+    (``IMG_1234-Edit.jpg``) rather than the Picked Media link name
+    (``D03_G9_p1-Edit.jpg``). The matcher accepts both stems so the
+    scanner doesn't reject every LRC export."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        ret_dir = tmp_path / "Edited Media" / "LRC"
+        ret_dir.mkdir(parents=True)
+        # Bare origin filename — what LRC produces by default.
+        (ret_dir / "p1-Edit.jpg").write_bytes(b"LRC JPEG")
+        report = scan_for_returns(eg, "skipped")
+        assert report.associated == ["Exported Media/p1-Edit.jpg"]
+        assert report.unmatched == []
+        # Hardlinked into the ship set; lineage row points there.
+        assert (tmp_path / "Exported Media" / "p1-Edit.jpg").exists()
+        row = eg.lineage()[0]
+        assert row.source_item_id == "i-solo"
+        assert row.provenance == "third_party"
+    finally:
+        eg.close()
+
+
 def test_longest_prefix_wins(tmp_path):
     """`D03_G9_p10-Edit` must associate to p10, not to p1 (its stem also
     starts with p1's stem)."""

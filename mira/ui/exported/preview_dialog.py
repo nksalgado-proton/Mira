@@ -248,26 +248,93 @@ class ExportPreviewDialog(QDialog):
     def _load_viewport(self) -> None:
         """Translate every :class:`PreviewItem` to a
         :class:`~mira.ui.media.photo_viewport.ViewportItem` and hand
-        the whole ordered list to the viewport. Develop-pipeline items
-        pre-render via :func:`core.preview_render.develop_photo_array`
-        and ride as ``pixmap``-bearing items so the viewport shows the
-        developed pixels for browse; F10 still inspects the on-disk
-        file (acceptable trade-off — the staleness chip warns when the
-        render is older than the recipe)."""
+        the whole ordered list to the viewport.
+
+        **Lazy develop (Nelson 2026-06-19).** Build all items with
+        ``pixmap=None`` so the viewport's normal source-decode path
+        runs — the dialog paints the raw source quickly and the user
+        sees a photo within a few hundred ms instead of waiting for
+        N sequential develop pipelines (one per neighbour). The
+        focused item's developed pixmap is rendered deferred, after
+        the dialog paints, via :meth:`_schedule_develop_current`; the
+        viewport's :meth:`set_rendered_pixmap` swaps the developed
+        pixels in over the raw source. The same happens on every
+        step (← / →), so neighbours only pay the develop cost when
+        the user actually visits them. F10 still inspects the on-disk
+        source file (acceptable trade-off — the staleness chip warns
+        when the render is older than the recipe)."""
         from mira.ui.media.photo_viewport import ViewportItem
 
         viewport_items: list = []
         for it in self._items:
-            pm: Optional[QPixmap] = None
-            if it.develop_for_preview:
-                pm = self._develop_pixmap(it)
             viewport_items.append(ViewportItem(
                 path=Path(it.path) if it.path else None,
                 kind="photo",
                 payload=it.item_id,
-                pixmap=pm,
+                pixmap=None,
             ))
+        # Cache of develop-pipeline pixmaps keyed by item_id so a
+        # second step back to the same neighbour re-uses the work
+        # instead of decoding again.
+        self._develop_cache: dict = {}
         self._viewport.set_items(viewport_items, current=self._index)
+        # Render the focused item's developed pixmap AFTER the dialog
+        # paints. ``QTimer.singleShot(0, ...)`` defers to the next
+        # event-loop pass so the user sees the raw source first.
+        self._schedule_develop_current()
+
+    def _schedule_develop_current(self) -> None:
+        """Kick the develop pipeline for the currently-focused item
+        after the dialog has painted. No-op for items that don't
+        need developing (on-disk versions render straight from
+        ``ViewportItem.path``)."""
+        if not (0 <= self._index < len(self._items)):
+            return
+        item = self._items[self._index]
+        if not item.develop_for_preview:
+            return
+        # Cache hit — paint immediately.
+        cached = self._develop_cache.get(item.item_id)
+        if cached is not None:
+            self._viewport.set_rendered_pixmap(cached)
+            return
+        # Defer the expensive decode + pipeline to the next event-
+        # loop pass so the dialog can paint the raw source first.
+        from PyQt6.QtCore import QTimer
+        target_id = item.item_id
+        QTimer.singleShot(
+            0, lambda: self._run_develop_for(target_id))
+
+    def _run_develop_for(self, item_id: str) -> None:
+        """Run the develop pipeline for ``item_id`` and, if the
+        viewport is still on that item, swap the developed pixmap
+        in over the raw source. A wait cursor signals the user the
+        render is in flight (the pipeline blocks the UI thread; a
+        proper QThreadPool offload is a follow-up if 1-3 s renders
+        feel sluggish in practice)."""
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QCursor, QGuiApplication
+
+        # Resolve back from the item_id (the dialog may have advanced
+        # while we were queued).
+        item = next(
+            (it for it in self._items if it.item_id == item_id), None)
+        if item is None or not item.develop_for_preview:
+            return
+        QGuiApplication.setOverrideCursor(QCursor(_Qt.CursorShape.WaitCursor))
+        try:
+            pm = self._develop_pixmap(item)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        if pm is None:
+            return
+        self._develop_cache[item_id] = pm
+        # Only paint over if the user hasn't stepped away in the
+        # meantime — otherwise the next _schedule_develop_current
+        # will repaint with the correct item's pixmap.
+        if (0 <= self._index < len(self._items)
+                and self._items[self._index].item_id == item_id):
+            self._viewport.set_rendered_pixmap(pm)
 
     @classmethod
     def _develop_pixmap(cls, item: "PreviewItem") -> Optional[QPixmap]:
@@ -397,10 +464,14 @@ class ExportPreviewDialog(QDialog):
 
     def _on_viewport_step(self, new_index: int) -> None:
         """Viewport advanced (← → keys, prev/next buttons, etc.) —
-        sync the dialog's index + repaint chrome for the new item."""
+        sync the dialog's index, repaint chrome for the new item, and
+        kick the lazy develop pipeline for it (no-op for items that
+        don't need developing or for cache-hits from a previous
+        visit)."""
         if 0 <= new_index < len(self._items):
             self._index = new_index
             self._render_chrome()
+            self._schedule_develop_current()
 
     def _on_pick_key(self) -> None:
         target = self._current_item_id()

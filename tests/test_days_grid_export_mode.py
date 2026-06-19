@@ -693,6 +693,57 @@ def test_preview_dialog_viewport_carries_one_item_per_preview(
     page.close_event()
 
 
+def test_preview_dialog_does_not_pre_develop_neighbours(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §11.3 (Nelson 2026-06-19 fix) — opening the dialog
+    must NOT run the develop pipeline for every neighbour upfront.
+    Pre-fix, _load_viewport called _develop_pixmap N times in
+    __init__, blocking the dialog from painting for seconds on a big
+    neighbour list. Post-fix, _develop_pixmap is only called for the
+    focused item, and even that runs deferred via QTimer.singleShot
+    (so the dialog paints the raw source first)."""
+    _, eg = store_and_gateway
+    # Two Mira-edited photos — both would trigger _develop_pixmap if
+    # the dialog pre-developed everything. The fixture's other cells
+    # also become develop targets (0 versions, no Mira → still
+    # develop_for_preview=False on the host side).
+    eg.save_adjustment(m.Adjustment(
+        item_id="x2", look="natural", creative_filter="vivid"))
+    eg.save_adjustment(m.Adjustment(
+        item_id="x4", look="brighten"))
+
+    develop_calls: list[str] = []
+
+    def _fake_develop(cls, item):
+        develop_calls.append(item.item_id)
+        return None  # falls back to raw file read; we don't care here
+
+    from mira.ui.exported.preview_dialog import ExportPreviewDialog
+    monkeypatch.setattr(
+        ExportPreviewDialog, "_develop_pixmap",
+        classmethod(_fake_develop))
+    # Stub QTimer.singleShot to NOT fire so we can observe the
+    # synchronous path alone (lazy = nothing developed yet).
+    from PyQt6.QtCore import QTimer
+    monkeypatch.setattr(QTimer, "singleShot",
+                        staticmethod(lambda ms, fn: None))
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # Click x2 (a Mira-edited cell) — that becomes the focused item.
+    idx = next(i for i, it in enumerate(page._items)
+               if it.item_id == "x2")
+    page._on_thumb_clicked(
+        page._items[idx].item_id, page._thumb_widgets[idx])
+    # No synchronous develop calls — the dialog ctor must NOT pre-
+    # render. The deferred QTimer callback was stubbed out so a count
+    # of 0 proves lazy-loading is in place.
+    assert develop_calls == []
+    page.close_event()
+
+
 def test_preview_staleness_chip_fires_when_recipe_drifts(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §11.3 polish — the preview viewer's stale chip lights

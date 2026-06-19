@@ -1,7 +1,8 @@
 # spec/89 — Export surface rebuild (Model B, versions, the full design pass)
 
 **Authored 2026-06-19 (Nelson + Claude). Implementation in progress —
-see §7 for slice status (Slice 1 shipped 2026-06-19).**
+see §7 for slice status (Slices 1–7 shipped 2026-06-19). §10 lists
+the explicit stubs / handoff notes for the remaining slices.**
 
 This spec consolidates the design pass for the **Export phase**:
 - Implements spec/72 Model B (third-party returns hardlinked into
@@ -329,3 +330,63 @@ improvement on every slice.
 - [spec/60 — Batch export engine](60-batch-export-engine.md)
 - [spec/61 — Share event Cuts](61-share-event-cuts.md)
 - [spec/63 — Photo viewport / locked keymap](63-photo-viewport.md)
+
+---
+
+## 10. Handoff notes (Slices 8–10)
+
+**Pick up here in a fresh session.** Working tree is clean at
+[`45e9918`](https://github.com/nksalgado-proton/Mira/commit/45e9918);
+Slices 1–7 shipped to `main`. The remaining slices have a handful of
+explicit stubs left behind that a fresh session should grep for.
+
+**Slice 8 — Export run triggers.** Wire the `Export now` batch button
+(label locked) onto both Days List + Days Grid toolbars with the
+brief modal confirm ("Render N · Delete M files. Proceed?"). The
+spec/60 batch engine already exists at `mira/ui/exported/batch.py`
+(`submit_export_batch`); the partition / `_hardlink_third_party_returns`
+was retired in Slice 1 so by the time a batch reaches the engine
+every cell is a Mira-render target. The single-item path in
+[`DaysGridPage._on_preview_export_this`](mira/ui/pages/days_grid_page.py)
+is **a stub that logs and closes** — Slice 8 owns the real wiring
+(it'll need the re-render-ask dialog from D6.C). The "Export this"
+button on the preview viewer is also disabled unless `state ==
+'picked'` (D5.A) — that contract is already enforced.
+
+**Slice 9 — Video cluster updates.** The existing `_reshape_for_export`
+already wraps videos with workshop content into a structural
+cluster. Slice 9 adds: (a) the new cover state machine with no
+Compare leg (green / red / yellow only) per Block 6 D5.A, (b) hide
+videos with no picked segments AND no snapshots per Block 6 D3.B,
+(c) filter the cluster members to only the workshop-greened entries
+per Block 6 D1.C. The video cluster code lives in
+`DaysGridPage._video_cluster_grid_item` and `_reshape_for_export`.
+
+**Slice 10 — Cleanup.** (a) Delete the `_strip_post_v6_lineage_cols`
+test-fixture helper if no longer needed (it strips both Slice-1 and
+Slice-5 columns on downgrade). (b) Update CLAUDE.md's four-phase
+table + Cut section to reference spec/89's vocabulary (the existing
+table is still spec/48/66-vocabulary). (c) Update spec/66 §1.2 and
+spec/72 §1 with "see spec/89 for the implementation framing"
+pointers. (d) Eyeball-test the visual: badge strip readability,
+scan-chip wording, cluster cover thumbnail (the live newest-version
+preview is in spec/89 §9 — only ship it now if needed).
+
+**Known stubs / deferred polish:**
+
+- The preview viewer for **0-version cells** shows the *source*
+  photo, not the Mira-developed preview (§9 first bullet). When
+  Slice 8 wires `Export this`, the same code path could synthesize
+  a develop preview for the viewer — but that's a polish step, not
+  a blocker.
+- The cluster cover thumbnail in Slice 5 uses the **source item's
+  thumb**, not the newest-version's actual rendered file (Block 1
+  D5.A says newest-version). The cluster sub-grid drill-in IS
+  correct per-version; only the cover thumb is the placeholder.
+- The badge wordmarks (`Mira`, `LRC`, etc.) ship as **text chips**
+  per Block 2 D2.B; app-specific icon glyphs are explicitly deferred
+  in §9.
+- The scan chip on both surfaces wires through `set_scan_status`;
+  the visual rendering hasn't been live-eyeballed yet (it was
+  validated via `test_scan_chip_text` unit tests only).
+

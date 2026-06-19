@@ -563,6 +563,106 @@ def test_export_mode_center_click_opens_preview_viewer(qapp, app_gateway):
     page.close_event()
 
 
+def test_preview_dialog_carries_fullres_and_fullscreen_buttons(
+        qapp, app_gateway):
+    """spec/63 reuse — the preview dialog exposes the same
+    "Full Resolution F10" + "Full Screen F11" ghost-button pair the
+    Picker uses, wired through the canonical PhotoViewport."""
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_thumb_clicked(
+        page._items[0].item_id, page._thumb_widgets[0])
+    dlg = page._last_preview_dialog
+    # The two buttons exist and carry the canonical labels.
+    assert "Full Resolution" in dlg._fullres_btn.text()
+    assert "F10" in dlg._fullres_btn.text()
+    assert "Full Screen" in dlg._fullscreen_btn.text()
+    assert "F11" in dlg._fullscreen_btn.text()
+    # The body is a PhotoViewport — the canonical spec/63 engine.
+    from mira.ui.media.photo_viewport import PhotoViewport
+    assert isinstance(dlg._viewport, PhotoViewport)
+    # Viewport's corner inspect is suppressed — the labelled button
+    # covers it (mirroring Picker's choice).
+    assert dlg._viewport._corner_inspect_visible is False
+    page.close_event()
+
+
+def test_preview_dialog_f10_button_emits_viewport_truth(
+        qapp, app_gateway):
+    """The "Full Resolution F10" button fires the viewport's
+    truth_requested signal — the same path F10 takes everywhere
+    else in the app (PhotoViewport opens the inspection lens)."""
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_thumb_clicked(
+        page._items[0].item_id, page._thumb_widgets[0])
+    dlg = page._last_preview_dialog
+    truth_fired: list[bool] = []
+    dlg._viewport.truth_requested.connect(
+        lambda: truth_fired.append(True))
+    dlg._fullres_btn.click()
+    assert truth_fired == [True]
+    page.close_event()
+
+
+def test_preview_dialog_f11_button_toggles_dialog_fullscreen(
+        qapp, app_gateway):
+    """The "Full Screen F11" button and the viewport's
+    fullscreen_requested signal both toggle the dialog's fullscreen
+    state. F11 / F via the dialog's keyPressEvent also route here."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_thumb_clicked(
+        page._items[0].item_id, page._thumb_widgets[0])
+    dlg = page._last_preview_dialog
+    dlg.show()
+    assert not dlg.isFullScreen()
+    # F11 key → fullscreen on.
+    dlg.keyPressEvent(QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_F11,
+        Qt.KeyboardModifier.NoModifier))
+    assert dlg.isFullScreen()
+    # F11 again → back to windowed.
+    dlg.keyPressEvent(QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_F11,
+        Qt.KeyboardModifier.NoModifier))
+    assert not dlg.isFullScreen()
+    # The labelled button is a checkable mirror of the dialog state.
+    assert dlg._fullscreen_btn.isCheckable()
+    dlg.close()
+    page.close_event()
+
+
+def test_preview_dialog_viewport_carries_one_item_per_preview(
+        qapp, app_gateway):
+    """The viewport receives a ViewportItem per PreviewItem; the
+    initial index matches the cell the user clicked on. Stepping via
+    the viewport's show_index updates the dialog's chrome too."""
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # Click cell 2 (third item) so the start index isn't 0.
+    page._on_thumb_clicked(
+        page._items[2].item_id, page._thumb_widgets[2])
+    dlg = page._last_preview_dialog
+    assert len(dlg._viewport.items()) == len(dlg._items)
+    assert dlg._index == 2
+    # Step back one → chrome syncs.
+    dlg._viewport.show_index(1)
+    assert dlg._index == 1
+    page.close_event()
+
+
 def test_preview_staleness_chip_fires_when_recipe_drifts(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §11.3 polish — the preview viewer's stale chip lights

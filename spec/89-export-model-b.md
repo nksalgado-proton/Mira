@@ -196,8 +196,16 @@ pixels** — the actual image the user is committing to:
 | 1-version third-party return | The actual third-party file on disk, untouched. |
 | Cluster sub-grid member | Each version's actual file. |
 
-Viewer controls:
-- **P / X** decide on the focused cell.
+Viewer controls — the dialog body is the canonical
+[`PhotoViewport`](mira/ui/media/photo_viewport.py) (the same engine
+Picker / Editor / Cuts use; spec/63 §6.1), so the locked keymap
+wires for free:
+
+- **P / X / Space** decide on the focused cell (spec/63 §4).
+- **F10** opens the inspection lens — full-resolution honest decode,
+  peaking + 1:1 zoom + AF-point overlay. Same lens every photo
+  surface opens.
+- **F / F11** toggles the dialog's fullscreen mode.
 - **Esc** backs out.
 - **Arrow keys step to neighbours** (D1b.A — stepping stays within the
   current surface; flat-cell view steps to flat-cell siblings,
@@ -205,6 +213,10 @@ Viewer controls:
 - **"Open in Editor"** button (D4.C) — opens the Editor for last-minute
   tone / crop tweaks before committing.
 - **"Export this"** button (single-item run — see §5.2).
+- **"Full Resolution F10"** + **"Full Screen F11"** ghost buttons —
+  the same labelled pair Picker exposes (Picker-parity, Nelson
+  2026-06-19 polish). Hidden corner 🔍 chip on the viewport because
+  the labelled button covers it.
 
 ---
 

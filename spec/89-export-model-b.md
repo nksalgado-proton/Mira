@@ -722,6 +722,8 @@ In order, most recent last:
 | 5 | [`abc263c`](https://github.com/nksalgado-proton/Mira/commit/abc263c) | perf(spec/89 §3.2): lazy-develop preview viewer (no upfront blocking) |
 | 6 | [`3abfe64`](https://github.com/nksalgado-proton/Mira/commit/3abfe64) | fix(spec/89 §3.2): F10 inspects the would-be-exported pixels |
 | 7 | [`f072999`](https://github.com/nksalgado-proton/Mira/commit/f072999) | spec/89 §11.3: lazy develop + F10 lens in CompareVersionsDialog |
+| 8 | [`1e4ba1b`](https://github.com/nksalgado-proton/Mira/commit/1e4ba1b) | spec/89 §12: this handoff doc |
+| 9 | [`814e563`](https://github.com/nksalgado-proton/Mira/commit/814e563) | fix(spec/89 §3.2 D4.C): "Open in Editor" actually opens the Editor (was silently no-op'd in Export mode by the spec/68 §3 short-circuit; the test that pinned the old no-op behaviour was inverted to assert the new route) |
 
 ### 12.7 Test coverage (session)
 

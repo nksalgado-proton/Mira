@@ -472,9 +472,10 @@ class DaysGridPage(QWidget):
         self._new_pass_btn = primary_button("+ Start a new pass…")
         self._new_pass_btn.clicked.connect(self.new_pass_requested.emit)
         toolbar.addWidget(self._new_pass_btn)
-        # spec/68 §3 — Export-mode primary trigger. Hidden outside
-        # Export mode; the per-day batch submitter wires below.
-        self._export_btn = primary_button("↑ Export green")
+        # spec/68 §3 / spec/89 §5.1 D1.A — Export-mode primary trigger.
+        # Hidden outside Export mode; the per-day batch submitter wires
+        # below. Label is locked to "Export now" per spec/89 §5.1.
+        self._export_btn = primary_button("↑ Export now")
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)
         toolbar.addStretch()
@@ -1973,13 +1974,126 @@ class DaysGridPage(QWidget):
         self.item_activated.emit(target_id)
 
     def _on_preview_export_this(self, dlg, item_id: str) -> None:
-        """spec/89 §5.2 — single-item Export run trigger. Slice 8 will
-        wire this through to the spec/60 batch engine + the
-        ask-on-rerender dialog (D6.C). For now we close the dialog
-        and log so the surface is reachable end-to-end."""
-        log.info(
-            "Export-this requested for %s — full wiring lands in Slice 8",
-            item_id)
+        """spec/89 §5.2 — single-item Export run trigger from the
+        preview viewer's "Export this" button. Submits one item to the
+        spec/60 batch engine via the same :func:`submit_export_batch`
+        the bulk Export now uses.
+
+        Re-render-ask (D6.C): if the source item already carries a
+        Mira-render lineage row, ask "An export already exists. Re-
+        render with current settings?" before submitting. Third-party
+        returns alone never trigger the prompt — they have no recipe to
+        re-render, and a fresh Mira render lands as a *new* version
+        alongside them under the spec/54 §8 versions-as-exports policy
+        (Block 1 D1.A — multi-version cells live together).
+
+        Disabled-when-red contract (D5.A) is enforced at the button
+        level inside :class:`ExportPreviewDialog`; this handler is
+        defensive about the cell still being green at submit time."""
+        from mira.ui.exported.batch import (
+            ExportCell, day_label_for, submit_export_batch,
+        )
+
+        if self._eg is None or self._eg.event_root is None:
+            dlg.accept()
+            return
+
+        # In versions sub-grid mode the preview's item_id is a lineage
+        # relpath, not a source item. Walk back to the cluster's source
+        # item so we render fresh against the original.
+        source_item_id = item_id
+        if (self._mode == "cluster" and self._cluster is not None
+                and self._cluster.kind == "versions"
+                and ":" in self._cluster.bucket_key):
+            source_item_id = self._cluster.bucket_key.split(":", 1)[1]
+
+        src_item = None
+        try:
+            src_item = self._eg.item(source_item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Export this: item(%s) failed", source_item_id)
+        if src_item is None or not src_item.origin_relpath:
+            log.warning(
+                "Export this: no source item / origin path for %s",
+                source_item_id)
+            dlg.accept()
+            return
+
+        event_root = Path(self._eg.event_root)
+        source_path = event_root / src_item.origin_relpath
+        if not source_path.is_file():
+            show_error(
+                self,
+                tr("Source missing"),
+                tr(
+                    "The original file isn't on disk — Mira can't "
+                    "render this item.\n\n{path}"
+                ).replace("{path}", str(source_path)),
+            )
+            dlg.accept()
+            return
+
+        # spec/89 §5.2 D6.C — re-render-ask when a Mira render already
+        # exists. Third-party-only history goes straight through.
+        try:
+            versions = self._eg.versions_for_item(source_item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Export this: versions_for_item(%s) failed",
+                source_item_id)
+            versions = []
+        has_mira_render = any(
+            (getattr(v, "provenance", "") or "") == "mira_render"
+            for v in versions
+        )
+        if has_mira_render:
+            if not confirm(
+                self,
+                tr("An export already exists."),
+                tr(
+                    "Re-render with current settings? The previous "
+                    "render stays as an older version."
+                ),
+                primary_text=tr("Re-render"),
+            ):
+                return
+
+        batch_queue = getattr(self.window(), "batch_queue", None)
+        if batch_queue is None:
+            show_error(
+                self,
+                tr("Batch queue unavailable"),
+                tr(
+                    "The app's batch queue isn't reachable — try "
+                    "restarting Mira."),
+            )
+            return
+
+        day_number = getattr(src_item, "day_number", None) or self._day_number
+        day_labels = {day_number: day_label_for(self._eg, day_number)}
+        cell = ExportCell(
+            item_id=source_item_id, path=source_path,
+            day_number=day_number,
+        )
+        try:
+            submit_export_batch(
+                self._eg, self.gateway.settings, batch_queue,
+                event_name=self._event_name,
+                cells=[cell],
+                day_labels=day_labels,
+                parent_widget=self,
+            )
+        except Exception as exc:                                   # noqa: BLE001
+            log.exception("Export this: submit failed for %s",
+                          source_item_id)
+            show_error(
+                self,
+                tr("Could not start the export"),
+                tr("The batch could not be queued.\n\n{err}")
+                .replace("{err}", str(exc)),
+            )
+            return
         dlg.accept()
 
     def _on_back_clicked(self) -> None:
@@ -2555,21 +2669,127 @@ class DaysGridPage(QWidget):
             ))
         return photo_cells, segment_rows, snapshot_cells
 
+    def _collect_delete_relpaths(self) -> list:
+        """spec/89 §5.1 step 2 — the "Delete M files" pool for an Export
+        now run on the current grid. Returns the ``Exported Media/``
+        relpaths whose lineage row carries ``intent_state='skipped'``
+        and whose file still exists on disk.
+
+        Two routing modes:
+
+        * **Day / cluster cover mode** — walk every visible item's
+          source id (flat cell → ``item.item_id``; versions cluster
+          cover → the bucket's ``versions:<id>`` tail) and pull every
+          ``versions_for_item`` row whose intent is ``skipped`` + still
+          materialised. Slice 5's versions cluster sub-grid defers the
+          file delete to here (spec/89 Slice 5 contract); a Drop on a
+          flat cell already deletes immediately, but the sweep catches
+          orphans (manual file copy + state reload + bulk-Drop on
+          shipped before file delete landed).
+        * **Versions sub-grid mode** — each cell's ``item_id`` IS the
+          lineage row's relpath. Drop targets are the visible cells
+          whose ``state == STATE_SKIPPED``.
+        """
+        if self._eg is None or self._eg.event_root is None:
+            return []
+        event_root = Path(self._eg.event_root)
+        delete_rels: set = set()
+
+        in_versions_subgrid = (
+            self._mode == "cluster"
+            and self._cluster is not None
+            and getattr(self._cluster, "kind", "") == "versions"
+        )
+        if in_versions_subgrid:
+            for it in self._items:
+                if it.item_kind != "photo":
+                    continue
+                if it.state != STATE_SKIPPED:
+                    continue
+                rel = it.item_id
+                if not isinstance(rel, str):
+                    continue
+                if not rel.startswith("Exported Media/"):
+                    continue
+                if (event_root / rel).is_file():
+                    delete_rels.add(rel)
+            return sorted(delete_rels)
+
+        # Day mode — collect source item ids visible on the surface.
+        source_ids: set = set()
+        for it in self._items:
+            if it.item_kind == "cluster":
+                ck = getattr(
+                    getattr(it, "_cull_cluster", None), "bucket_key", "")
+                if isinstance(ck, str) and ck.startswith("versions:"):
+                    source_ids.add(ck.split(":", 1)[1])
+                continue
+            source_ids.add(it.item_id)
+
+        for sid in source_ids:
+            try:
+                versions = self._eg.versions_for_item(sid)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: versions_for_item(%s) failed", sid)
+                continue
+            for v in versions:
+                if (getattr(v, "intent_state", "") or "") != "skipped":
+                    continue
+                rel = v.export_relpath
+                if (event_root / rel).is_file():
+                    delete_rels.add(rel)
+        return sorted(delete_rels)
+
+    def _collect_export_run_plan(self) -> dict:
+        """Pre-flight for "Export now" — the math the user sees in the
+        confirm modal IS the math the run executes. Returns
+        ``{"render_cells", "render_segments", "render_snapshots",
+        "delete_relpaths"}``."""
+        cells: list = []
+        segments: list = []
+        snapshots: list = []
+        in_versions_subgrid = (
+            self._mode == "cluster"
+            and self._cluster is not None
+            and getattr(self._cluster, "kind", "") == "versions"
+        )
+        # spec/89 Slice 5 — versions sub-grid cells are existing lineage
+        # rows, not render targets. Skip the render lane entirely so the
+        # run is delete-only when the user clicks Export now from inside
+        # a versions cluster.
+        if not in_versions_subgrid:
+            cells, segments, snapshots = self._collect_ship_cells()
+        delete_rels = self._collect_delete_relpaths()
+        return {
+            "render_cells": cells,
+            "render_segments": segments,
+            "render_snapshots": snapshots,
+            "delete_relpaths": delete_rels,
+        }
+
     def _on_export_clicked(self) -> None:
-        """Submit this day's not-yet-shipped green cells to the spec/60
-        batch engine via the spec/59 §8 ``BatchJobQueue`` (renamed from
+        """spec/89 §5.1 — "Export now" batch trigger. Shows the locked
+        "Render N · Delete M files. Proceed?" confirm; on Run, deletes
+        the red-intent files first (so cascading Cut-membership cleanup
+        lands before fresh rows arrive), then enqueues the render
+        manifest through the spec/59 §8 ``BatchJobQueue`` (renamed from
         ``BatchExportQueue`` by spec/84 once ingest started riding it).
 
-        The pool is the day's flat photo cells whose state is
-        ``picked`` and that aren't already in
-        ``exported_item_ids()`` — re-shipping a file the user hasn't
-        un-exported is a no-op here (the user toggles red first to
-        clear the on-disk file + lineage, then green again to
-        re-ship). For video cells, the ship targets are the video's
-        picked SEGMENTS (spec/56 — ClipUnits via the slice-4 walker)
-        and picked SNAPSHOTS (PhotoUnits over a frame extracted from
-        the source video). The engine + queue are locked (spec/68 §4);
-        this handler only builds the manifest and enqueues."""
+        N = green-intent items with a render to produce. For photos
+        that's the day's ``picked`` flat cells not yet in
+        ``exported_item_ids()``; for videos it's their picked SEGMENTS
+        (spec/56 — ClipUnits via the slice-4 walker) and picked
+        SNAPSHOTS (PhotoUnits over an extracted source frame).
+
+        M = ``Exported Media/`` files whose lineage carries
+        ``intent_state='skipped'`` and that still exist on disk. The
+        common source is the versions cluster sub-grid (Slice 5
+        defers the delete to here); a Drop on a flat cell already
+        deletes immediately, so M is usually 0 in plain day mode.
+
+        Engine + queue are locked (spec/68 §4); this handler only
+        builds the manifest, runs the delete sweep, and enqueues."""
         if self._eg is None or not self._export_mode:
             return
         if self._eg.event_root is None:
@@ -2579,25 +2799,27 @@ class DaysGridPage(QWidget):
             submit_export_batch,
         )
 
-        cells_to_ship, segment_rows, snapshot_cells = (
-            self._collect_ship_cells())
-        total_units = (
-            len(cells_to_ship) + len(segment_rows) + len(snapshot_cells))
+        plan = self._collect_export_run_plan()
+        n_render = (
+            len(plan["render_cells"])
+            + len(plan["render_segments"])
+            + len(plan["render_snapshots"])
+        )
+        m_delete = len(plan["delete_relpaths"])
 
-        if total_units == 0:
+        if n_render == 0 and m_delete == 0:
             show_info(
                 self,
-                tr("Nothing new to ship"),
+                tr("Nothing to do"),
                 tr(
-                    "Every green cell on this day is already exported "
-                    "— toggle one to red to un-ship, or open another "
-                    "day."
+                    "No green renders pending and no red files to "
+                    "delete — toggle a cell, or open another day."
                 ),
             )
             return
 
         batch_queue = getattr(self.window(), "batch_queue", None)
-        if batch_queue is None:
+        if n_render > 0 and batch_queue is None:
             show_error(
                 self,
                 tr("Batch queue unavailable"),
@@ -2607,38 +2829,91 @@ class DaysGridPage(QWidget):
             )
             return
 
-        if total_units >= 50 and not confirm(
-            self,
-            tr("Export {n} item(s)?").replace(
-                "{n}", str(total_units)),
-            tr(
-                "The job runs in the background — the strip below the "
-                "menu bar shows progress. You can keep working."
-            ),
-            primary_text=tr("Export"),
-        ):
+        title, body, primary = self._export_now_modal_text(n_render, m_delete)
+        if not confirm(self, title, body, primary_text=primary):
             return
 
-        day_labels = {self._day_number: day_label_for(
-            self._eg, self._day_number)}
+        # spec/89 §5.1 step 2 — delete first so the cascading Cut-
+        # membership cleanup lands before any fresh rows arrive. The
+        # sweep is best-effort: a single failed unlink is logged and
+        # the rest of the run continues.
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            submit_export_batch(
-                self._eg, self.gateway.settings, batch_queue,
-                event_name=self._event_name,
-                cells=cells_to_ship,
-                day_labels=day_labels,
-                parent_widget=self,
-                segment_rows=segment_rows,
-                snapshot_cells=snapshot_cells,
+            for rel in plan["delete_relpaths"]:
+                try:
+                    self._eg.delete_exported_file_by_relpath(rel)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "DaysGridPage: delete_exported_file_by_relpath"
+                        "(%s) failed during Export now", rel)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+
+        if n_render > 0:
+            day_labels = {self._day_number: day_label_for(
+                self._eg, self._day_number)}
+            try:
+                submit_export_batch(
+                    self._eg, self.gateway.settings, batch_queue,
+                    event_name=self._event_name,
+                    cells=plan["render_cells"],
+                    day_labels=day_labels,
+                    parent_widget=self,
+                    segment_rows=plan["render_segments"],
+                    snapshot_cells=plan["render_snapshots"],
+                )
+            except Exception as exc:                               # noqa: BLE001
+                log.exception("DaysGridPage: export submit failed")
+                show_error(
+                    self,
+                    tr("Could not start the export"),
+                    tr("The batch could not be queued.\n\n{err}")
+                    .replace("{err}", str(exc)),
+                )
+                return
+
+        # Cluster covers + flat-cell badges read from gateway state; a
+        # full refresh keeps the surface honest after the delete sweep
+        # lands (the render is async — the corresponding refresh comes
+        # from the batch commit closure).
+        if m_delete > 0:
+            if self._mode == "cluster" and self._cluster is not None:
+                self._open_cluster(self._cluster)
+            else:
+                self._refresh_from_gateway()
+
+    @staticmethod
+    def _export_now_modal_text(
+        n_render: int, m_delete: int,
+    ) -> tuple:
+        """spec/89 §5.1 D2.B — the locked "Render N · Delete M files.
+        Proceed?" wording. Factored out so the all-days variant on the
+        Days List can share the exact phrasing. Returns
+        ``(title, body, primary_button_label)``."""
+        if n_render == 0 and m_delete == 0:
+            # Caller short-circuits on this; defensive default for tests.
+            return (tr("Nothing to do"), tr(""), tr("OK"))
+        title = (
+            tr("Render {n} · Delete {m} files. Proceed?")
+            .replace("{n}", str(n_render))
+            .replace("{m}", str(m_delete))
+        )
+        body_bits: list = []
+        if n_render > 0:
+            body_bits.append(
+                tr("{n} item(s) render to Exported Media/.")
+                .replace("{n}", str(n_render))
             )
-        except Exception as exc:                                   # noqa: BLE001
-            log.exception("DaysGridPage: export submit failed")
-            show_error(
-                self,
-                tr("Could not start the export"),
-                tr("The batch could not be queued.\n\n{err}").replace(
-                    "{err}", str(exc)),
+        if m_delete > 0:
+            body_bits.append(
+                tr(
+                    "{m} file(s) drop from Exported Media/ "
+                    "(Original Media/ stays untouched)."
+                ).replace("{m}", str(m_delete))
             )
+        body = "\n\n".join(body_bits)
+        primary = tr("Run")
+        return (title, body, primary)
 
     def _bulk_set_state(self, state: str) -> None:
         """Apply ``state`` to every item currently visible (day mode:

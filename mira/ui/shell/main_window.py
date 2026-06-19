@@ -406,6 +406,9 @@ class MainWindow(QMainWindow):
             self._on_days_lists_day_pick_all_stub)
         self.days_lists_page.day_skip_all_requested.connect(
             self._on_days_lists_day_skip_all_stub)
+        # spec/89 §5.1 D3.B — all-days "Export now" trigger.
+        self.days_lists_page.export_now_requested.connect(
+            self._on_days_lists_export_now)
         # spec/70 Phase 3 — DaysGridPage signal wiring. Back returns to
         # Days Lists; an item click bridges to PickerPage (Surface 07,
         # redesigned + PhotoViewport-backed).
@@ -3266,6 +3269,170 @@ class MainWindow(QMainWindow):
         finally:
             eg.close()
         self._open_days_lists_for(event_id)
+
+    def _on_days_lists_export_now(self) -> None:
+        """spec/89 §5.1 D3.B — all-days "Export now" run trigger from
+        the Days List toolbar. Walks every day in the active event,
+        delegates the per-day plan math to
+        :meth:`DaysGridPage._collect_export_run_plan`, sums into a
+        single confirm with the locked modal wording, then executes
+        delete + per-day batch submit in sequence (the batch queue
+        serialises so the renders pipeline cleanly).
+
+        Sharing :class:`DaysGridPage`'s helpers means the math the
+        user confirms here matches the per-day Export now button
+        exactly — both compute N + M the same way, just summed over a
+        different surface."""
+        event_id = self._current_event_id
+        if event_id is None:
+            return
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QGuiApplication as _QGuiApplication
+        from mira.ui.design import confirm, show_error, show_info
+        from mira.ui.exported.batch import (
+            day_label_for, submit_export_batch,
+        )
+        from mira.ui.pages.days_grid_page import DaysGridPage
+
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception("Export now (all days): open_event failed")
+            return
+
+        per_day_plans: list = []   # [(day_number, plan_dict)]
+        try:
+            try:
+                ev_name = eg.event().name or tr("(unnamed event)")
+            except Exception:                                      # noqa: BLE001
+                ev_name = tr("(unnamed event)")
+            try:
+                days = sorted(
+                    d.day_number for d in eg.trip_days()
+                    if d.day_number is not None)
+            except Exception:                                      # noqa: BLE001
+                log.exception("Export now (all days): trip_days failed")
+                days = []
+            # Use a throwaway DaysGridPage per day so we can reuse its
+            # plan helpers without re-implementing the surface walk.
+            scratch = DaysGridPage(self.gateway)
+            scratch._preview_headless = True
+            try:
+                for dn in days:
+                    if not scratch.open_for_day(
+                            event_id, dn, title="", date_iso="",
+                            phase="export"):
+                        continue
+                    plan = scratch._collect_export_run_plan()
+                    if (plan["render_cells"]
+                            or plan["render_segments"]
+                            or plan["render_snapshots"]
+                            or plan["delete_relpaths"]):
+                        per_day_plans.append((dn, plan))
+            finally:
+                scratch.close_event()
+                scratch.deleteLater()
+        finally:
+            eg.close()
+
+        n_render = sum(
+            len(p["render_cells"])
+            + len(p["render_segments"])
+            + len(p["render_snapshots"])
+            for _, p in per_day_plans
+        )
+        m_delete = sum(len(p["delete_relpaths"]) for _, p in per_day_plans)
+
+        if n_render == 0 and m_delete == 0:
+            show_info(
+                self,
+                tr("Nothing to do"),
+                tr(
+                    "No green renders pending and no red files to "
+                    "delete across this event."
+                ),
+            )
+            return
+
+        title, body, primary = DaysGridPage._export_now_modal_text(
+            n_render, m_delete)
+        if not confirm(self, title, body, primary_text=primary):
+            return
+
+        # Re-open the event so the delete sweep + per-day submits ride
+        # one shared gateway. The DaysGridPage scratch above was
+        # transient; we don't reuse its gateway because the per-day
+        # open_for_day calls close it on close_event.
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception("Export now (all days): re-open failed")
+            return
+
+        try:
+            _QGuiApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
+            try:
+                for _, plan in per_day_plans:
+                    for rel in plan["delete_relpaths"]:
+                        try:
+                            eg.delete_exported_file_by_relpath(rel)
+                        except Exception:                          # noqa: BLE001
+                            log.exception(
+                                "Export now (all days): unlink %s "
+                                "failed", rel)
+            finally:
+                _QGuiApplication.restoreOverrideCursor()
+
+            if n_render > 0:
+                batch_queue = getattr(self, "batch_queue", None)
+                if batch_queue is None:
+                    show_error(
+                        self,
+                        tr("Batch queue unavailable"),
+                        tr(
+                            "The app's batch queue isn't reachable — "
+                            "try restarting Mira."),
+                    )
+                    return
+                for dn, plan in per_day_plans:
+                    if not (plan["render_cells"]
+                            or plan["render_segments"]
+                            or plan["render_snapshots"]):
+                        continue
+                    day_labels = {dn: day_label_for(eg, dn)}
+                    try:
+                        submit_export_batch(
+                            eg, self.gateway.settings, batch_queue,
+                            event_name=ev_name,
+                            cells=plan["render_cells"],
+                            day_labels=day_labels,
+                            parent_widget=self,
+                            segment_rows=plan["render_segments"],
+                            snapshot_cells=plan["render_snapshots"],
+                        )
+                    except Exception as exc:                       # noqa: BLE001
+                        log.exception(
+                            "Export now (all days): submit day %d "
+                            "failed", dn)
+                        show_error(
+                            self,
+                            tr("Could not start day {n} export")
+                            .replace("{n}", str(dn)),
+                            tr("The batch could not be queued.\n\n"
+                               "{err}").replace("{err}", str(exc)),
+                        )
+        finally:
+            eg.close()
+        # Refresh the days list so the three-slice bars reflect the
+        # delete sweep (the renders are async — their progress lives
+        # in the batch-queue strip).
+        if m_delete > 0:
+            try:
+                self._open_days_lists_for(event_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "Export now (all days): refresh after delete "
+                    "sweep failed")
 
     def _on_delete_event(self) -> None:
         """Event menu "Delete event" → offer a choice (spec/14 §5D): remove from

@@ -287,7 +287,7 @@ improvement on every slice.
 | 5 | **Versions cluster reshape + sub-grid.** ≥2-version items become a synthetic cluster (`bucket_key = "versions:<item_id>"`); sub-grid surface; member Compare orange default; cover state machine; `"N versions"` count chip. | **shipped 2026-06-19** |
 | 6 | **Preview viewer.** Center click → read-only viewer; P/X decide; Esc back; arrow stepping (within current surface); `Open in Editor` + `Export this` buttons; viewer content per §3.2 (read from disk for Mira renders). | **shipped 2026-06-19** |
 | 7 | **Watermark repurpose.** Diagonal stamp = "this flip will delete a real file." | **shipped 2026-06-19** |
-| 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | pending |
+| 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | **shipped 2026-06-19** |
 | 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | pending |
 | 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | pending |
 
@@ -340,18 +340,24 @@ improvement on every slice.
 Slices 1–7 shipped to `main`. The remaining slices have a handful of
 explicit stubs left behind that a fresh session should grep for.
 
-**Slice 8 — Export run triggers.** Wire the `Export now` batch button
-(label locked) onto both Days List + Days Grid toolbars with the
-brief modal confirm ("Render N · Delete M files. Proceed?"). The
-spec/60 batch engine already exists at `mira/ui/exported/batch.py`
-(`submit_export_batch`); the partition / `_hardlink_third_party_returns`
-was retired in Slice 1 so by the time a batch reaches the engine
-every cell is a Mira-render target. The single-item path in
+**Slice 8 — Export run triggers** (shipped 2026-06-19). Days Grid
+button is `↑ Export now` (D1.A); confirm modal carries
+"Render N · Delete M files. Proceed?" with Cancel / Run (D2.B). The
+all-days variant lives on the Days List header
+([`DaysListsPage._export_now_btn`](mira/ui/pages/days_lists_page.py),
+visible only under the Export identity; MainWindow handler
+`_on_days_lists_export_now` walks every day, sums N+M, asks once,
+then runs delete + per-day batch submits). M counts versions cluster
+lineage rows with `intent_state='skipped'` whose file still exists
+on disk (the Slice-5 deferred deletes land here, plus the legacy
+flat-cell auto-delete on X). Single-item path
 [`DaysGridPage._on_preview_export_this`](mira/ui/pages/days_grid_page.py)
-is **a stub that logs and closes** — Slice 8 owns the real wiring
-(it'll need the re-render-ask dialog from D6.C). The "Export this"
-button on the preview viewer is also disabled unless `state ==
-'picked'` (D5.A) — that contract is already enforced.
+now submits a one-cell batch and shows the D6.C re-render-ask when a
+Mira-render version already exists (third-party-only history goes
+straight through — a fresh Mira render lands as a new version
+alongside per spec/54 §8). The "Export this" button on the preview
+viewer is disabled unless `state == 'picked'` (D5.A); that contract
+remains enforced in `ExportPreviewDialog`.
 
 **Slice 9 — Video cluster updates.** The existing `_reshape_for_export`
 already wraps videos with workshop content into a structural

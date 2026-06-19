@@ -211,6 +211,11 @@ def test_submit_export_batch_builds_clip_units_via_the_walker(
 
     monkeypatch.setattr(
         page, "window", lambda: type("W", (), {"batch_queue": _FakeQueue()})())
+    # spec/89 Slice 8 — auto-accept the "Render N · Delete M files.
+    # Proceed?" modal so the wiring assertions run.
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda *args, **kwargs: True)
 
     # Stub the snapshot frame extract so the test doesn't spawn
     # ffmpeg — write a tiny JPEG at the expected temp path.

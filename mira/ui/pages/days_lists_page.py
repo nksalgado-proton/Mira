@@ -454,6 +454,12 @@ class DayRow(Card):
         self.activated.emit(self._snapshot.day_number)
 
 
+_EXPORT_NOW_TIP_ALL_DAYS = (
+    "Render every green keeper across this event and delete every "
+    "Dropped file from Exported Media/. Asks first."
+)
+
+
 class DaysListsPage(QWidget):
     """Surface 05 — per-day Picked/Skipped dashboard.
 
@@ -465,6 +471,10 @@ class DaysListsPage(QWidget):
     new_pass_requested = pyqtSignal()
     pick_all_days_requested = pyqtSignal()
     skip_all_days_requested = pyqtSignal()
+    # spec/89 §5.1 D3.B — the all-days "Export now" run trigger.
+    # Fired only in Export-identity mode; the host walks every day,
+    # totals N + M, asks once, then submits per-day batches.
+    export_now_requested = pyqtSignal()
 
     day_activated = pyqtSignal(int)               # day_number
     day_pick_all_requested = pyqtSignal(int)
@@ -541,6 +551,16 @@ class DaysListsPage(QWidget):
         new_pass = primary_button("+ Start a new pass…")
         new_pass.clicked.connect(self.new_pass_requested.emit)
         head.addWidget(new_pass)
+        # spec/89 §5.1 D3.B — the all-days Export now trigger. Visible
+        # only under the Export identity; the host walks every day,
+        # totals N + M, asks once with the locked modal, then submits
+        # per-day batches through the spec/60 engine.
+        self._export_now_btn = primary_button("↑ Export now")
+        self._export_now_btn.setToolTip(_EXPORT_NOW_TIP_ALL_DAYS)
+        self._export_now_btn.clicked.connect(
+            self.export_now_requested.emit)
+        self._export_now_btn.setVisible(False)
+        head.addWidget(self._export_now_btn)
         # Global Pick-all / Skip-all are Pick verbs — hidden under the Edit
         # identity, where there is no day-level Skip (Nelson 2026-06-18).
         self._pick_all_days_btn = ghost_button("✓ Pick all days")
@@ -627,11 +647,16 @@ class DaysListsPage(QWidget):
           ``Export all days`` / ``Drop all days``; the host respects
           explicit P/X decisions on the bulk (Block 3 D2a.B).
         """
-        # The scan chip is Export-only.
+        # The scan chip + Export now button are Export-only.
         try:
             self._scan_chip.setVisible(self._identity_phase == "export")
         except AttributeError:
             pass  # During the very first _apply_phase_chrome in __init__
+        try:
+            self._export_now_btn.setVisible(
+                self._identity_phase == "export")
+        except AttributeError:
+            pass
         if self._identity_phase == "export":
             self._pick_all_days_btn.setText("✓ Export all days")
             self._pick_all_days_btn.setToolTip(

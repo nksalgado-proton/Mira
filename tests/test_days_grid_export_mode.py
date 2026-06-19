@@ -745,3 +745,284 @@ def test_pick_mode_chrome_unchanged(qapp, app_gateway):
     page._on_thumb_clicked(page._items[0].item_id, page._thumb_widgets[0])
     assert captured == [page._items[0].item_id]    # drill-in fires
     page.close_event()
+
+
+# --------------------------------------------------------------------------- #
+# spec/89 Slice 8 — Export now confirm modal + delete sweep + single-item
+# Export-this re-render-ask.
+# --------------------------------------------------------------------------- #
+
+
+def test_export_now_button_label_is_locked_to_export_now(
+        qapp, app_gateway):
+    """spec/89 §5.1 D1.A — the locked button text is "Export now"
+    (the legacy "↑ Export green" wording is gone)."""
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    assert "Export now" in page._export_btn.text()
+    assert "green" not in page._export_btn.text().lower()
+    page.close_event()
+
+
+def test_export_now_modal_text_carries_n_and_m(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §5.1 D2.B — the confirm modal's title reads "Render N ·
+    Delete M files. Proceed?" with the actual counts the run would
+    execute. M counts versions cluster lineage rows with
+    intent_state='skipped' whose file is still on disk."""
+    _, eg = store_and_gateway
+    # Two skipped-intent third-party returns under x2 → cluster, M=2.
+    for rel in ("Exported Media/x2-v1.jpg", "Exported Media/x2-v2.jpg"):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x2", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="skipped",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x2-v1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x2-v2.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    # 0-version flat cells default red per spec/89 Block 1 D1.C; press
+    # P explicitly on x1 + x3 to mark them green renders. x4 stays red
+    # → render target N covers exactly the two we picked.
+    eg.set_phase_state("x1", "edit", "picked")
+    eg.set_phase_state("x3", "edit", "picked")
+    captured: list[tuple] = []
+
+    def _capture_confirm(parent, title, body, primary_text=None):
+        captured.append((title, body, primary_text))
+        return False                                # cancel — leave files
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm", _capture_confirm)
+
+    # The batch_queue check fires before the modal — provide one so we
+    # don't hang on the "Batch queue unavailable" error dialog.
+    class _FakeQueue:
+        def enqueue(self, *a, **kw):
+            pass
+    monkeypatch.setattr(
+        DaysGridPage, "window",
+        lambda self: type("W", (), {"batch_queue": _FakeQueue()})(),
+    )
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_export_clicked()
+
+    assert len(captured) == 1
+    title, body, primary = captured[0]
+    # N = 2 (x1 + x3 picked, render targets); M = 2 (the two skipped
+    # versions of x2).
+    assert "Render 2" in title
+    assert "Delete 2 files" in title
+    assert primary == "Run"
+    # Body explains the destination directories.
+    assert "Exported Media" in body
+    assert "Original Media" in body                # charter pin
+    # Cancel left both files in place + lineage intact.
+    assert (event_dir / "Exported Media" / "x2-v1.jpg").is_file()
+    assert (event_dir / "Exported Media" / "x2-v2.jpg").is_file()
+    assert len(eg.versions_for_item("x2")) == 2
+    page.close_event()
+
+
+def test_export_now_run_deletes_red_intent_versions(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §5.1 step 2 — Run executes the delete sweep before the
+    render submit. After Run, every red-intent version file is gone
+    and its lineage row is dropped."""
+    _, eg = store_and_gateway
+    rel_keep = "Exported Media/x1-keep.jpg"
+    rel_drop = "Exported Media/x1-drop.jpg"
+    for rel, intent in ((rel_keep, "picked"), (rel_drop, "skipped")):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state=intent,
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-keep.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-drop.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    # Mark x3 green so the render lane fires for at least one cell;
+    # otherwise n_render==0 and the submit is skipped by design.
+    eg.set_phase_state("x3", "edit", "picked")
+
+    # Auto-accept the modal and short-circuit the render submit (we
+    # only care about the delete sweep here). The function-local import
+    # of submit_export_batch in DaysGridPage._on_export_clicked re-reads
+    # the source module attribute at call time, so patching the source
+    # module takes effect.
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda *args, **kwargs: True)
+    submitted: list = []
+    monkeypatch.setattr(
+        "mira.ui.exported.batch.submit_export_batch",
+        lambda *a, **kw: submitted.append((a, kw)) or True,
+    )
+
+    class _FakeQueue:
+        def enqueue(self, *a, **kw):
+            pass
+    monkeypatch.setattr(
+        DaysGridPage, "window",
+        lambda self: type("W", (), {"batch_queue": _FakeQueue()})(),
+    )
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_export_clicked()
+
+    assert (event_dir / "Exported Media" / "x1-keep.jpg").is_file()
+    assert not (event_dir / "Exported Media" / "x1-drop.jpg").is_file()
+    rel_paths = {r.export_relpath for r in eg.versions_for_item("x1")}
+    assert rel_paths == {rel_keep}             # the skipped row dropped
+    # The render lane was still invoked for the other green keeper.
+    assert len(submitted) == 1
+    page.close_event()
+
+
+def test_export_now_no_op_when_nothing_to_do(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """Empty plan (no green renders, no red files) shows an info dialog
+    and skips the confirm + run entirely."""
+    # Mark every keeper as already shipped so the render set is empty.
+    _, eg = store_and_gateway
+    for iid in ("x1", "x2", "x3", "x4"):
+        _ship_one(eg, event_dir, iid)
+    seen: list = []
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.show_info",
+        lambda parent, title, body: seen.append(("info", title, body)),
+    )
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda *a, **kw: seen.append(("confirm", a, kw)) or True,
+    )
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_export_clicked()
+
+    kinds = [k for k, *_ in seen]
+    assert kinds == ["info"]                  # info fired; no confirm
+    page.close_event()
+
+
+def test_export_this_re_render_ask_fires_when_mira_render_exists(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §5.2 D6.C — "Export this" on an item that already has a
+    Mira-render version asks "An export already exists. Re-render with
+    current settings?" before submitting. Cancel skips the submit."""
+    _, eg = store_and_gateway
+    rel = "Exported Media/Dia 1/x2.jpg"
+    eg.record_lineage(m.Lineage(
+        export_relpath=rel, phase="edit", source_kind="item",
+        source_item_id="x2", recipe_json='{"look": "natural"}',
+        exported_at="2026-06-19T08:00:00",
+        provenance="mira_render", intent_state="picked",
+    ))
+    (event_dir / "Exported Media" / "Dia 1").mkdir(parents=True, exist_ok=True)
+    (event_dir / "Exported Media" / "Dia 1" / "x2.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+    eg.set_edit_exported("x2", True)
+
+    captured: list = []
+
+    def _capture_confirm(parent, title, body, primary_text=None):
+        captured.append((title, body, primary_text))
+        return False                          # Cancel — skip submit
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm", _capture_confirm)
+    submitted: list = []
+    monkeypatch.setattr(
+        "mira.ui.exported.batch.submit_export_batch",
+        lambda *a, **kw: submitted.append((a, kw)) or True)
+
+    class _FakeQueue:
+        def enqueue(self, *a, **kw):
+            pass
+    monkeypatch.setattr(
+        DaysGridPage, "window",
+        lambda self: type("W", (), {"batch_queue": _FakeQueue()})(),
+    )
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+
+    class _StubDialog:
+        accepted = False
+        def accept(self):
+            self.accepted = True
+    dlg = _StubDialog()
+    page._on_preview_export_this(dlg, "x2")
+
+    assert len(captured) == 1
+    title, _body, primary = captured[0]
+    assert "already exists" in title.lower()
+    assert primary == "Re-render"
+    assert submitted == []                    # cancelled before submit
+    assert not dlg.accepted                   # dialog stays open on cancel
+    page.close_event()
+
+
+def test_export_this_no_ask_when_no_mira_render(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """Items without a Mira-render version go straight to submit — the
+    re-render-ask never fires, even if third-party returns exist
+    (those are additive, not replacements)."""
+    _, eg = store_and_gateway
+    # x3 carries a third-party return only — no Mira render.
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x3-LRC.jpg", phase="edit",
+        source_kind="item", source_item_id="x3", recipe_json=None,
+        exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="picked",
+    ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x3-LRC.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+    eg.set_edit_exported("x3", True)
+
+    captured: list = []
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm",
+        lambda *a, **kw: captured.append((a, kw)) or True)
+    submitted: list = []
+    monkeypatch.setattr(
+        "mira.ui.exported.batch.submit_export_batch",
+        lambda *a, **kw: submitted.append((a, kw)) or True)
+
+    class _FakeQueue:
+        def enqueue(self, *a, **kw):
+            pass
+    monkeypatch.setattr(
+        DaysGridPage, "window",
+        lambda self: type("W", (), {"batch_queue": _FakeQueue()})(),
+    )
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+
+    class _StubDialog:
+        accepted = False
+        def accept(self):
+            self.accepted = True
+    dlg = _StubDialog()
+    page._on_preview_export_this(dlg, "x3")
+
+    assert captured == []                     # no re-render-ask fired
+    assert len(submitted) == 1                # the submit happened
+    assert dlg.accepted is True               # dialog closed
+    # The submitted ExportCell points at x3 with the source path.
+    _args, kwargs = submitted[0]
+    assert len(kwargs["cells"]) == 1
+    assert kwargs["cells"][0].item_id == "x3"
+    page.close_event()

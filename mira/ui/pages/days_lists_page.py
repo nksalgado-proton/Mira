@@ -231,11 +231,12 @@ class DayRow(Card):
         # (Nelson 2026-06-18).
         self._phase = phase
         self._is_edit = phase == "edit"
-        # spec/89 §4.1 — Export adds a three-slice bar (Shipped /
-        # Undecided / Dropped) and relabels Pick all / Skip all to
-        # Export all / Drop all. The underlying signal wiring is the
-        # same as Pick — the host (main_window) routes to the Edit
-        # phase_state ledger when ``_export_phase_active`` is set.
+        # spec/89 §4.1 — Export adds a three-slice bar (Will export /
+        # Undecided / Set aside; user-chosen 2026-06-19) and relabels
+        # Pick all / Skip all to Export all / Drop all. The underlying
+        # signal wiring is the same as Pick — the host (main_window)
+        # routes to the Edit phase_state ledger when
+        # ``_export_phase_active`` is set.
         self._is_export = phase == "export"
         self.setMinimumHeight(120)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -368,12 +369,12 @@ class DayRow(Card):
             else:
                 shipped_pct = undecided_pct = dropped_pct = 0
             bar_specs = (
-                ("Shipped", shipped, shipped_pct, total > 0, "green"),
+                ("Will export", shipped, shipped_pct, total > 0, "green"),
                 # spec/89 Block 1 D3.A / Block 4 D1.B — undecided uses
                 # the Compare orange (distinct from Edit's amber so the
                 # two phases never share a fill colour).
                 ("Undecided", undecided, undecided_pct, total > 0, "compare"),
-                ("Dropped", dropped, dropped_pct, total > 0, "red"),
+                ("Set aside", dropped, dropped_pct, total > 0, "red"),
             )
         else:
             items = snapshot.items
@@ -458,8 +459,8 @@ class DayRow(Card):
 
 
 _EXPORT_NOW_TIP_ALL_DAYS = (
-    "Render every green keeper across this event and delete every "
-    "Dropped file from Exported Media/. Asks first."
+    "Render every Will-export keeper across this event and unlink "
+    "every Set-aside file from Exported Media/. Asks first."
 )
 
 

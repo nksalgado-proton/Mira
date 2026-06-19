@@ -89,7 +89,7 @@ class PreviewItem:
 
 _STATE_LABEL = {
     "picked": "Will export",
-    "skipped": "Dropped",
+    "skipped": "Set aside",
     "compare": "Undecided",
 }
 

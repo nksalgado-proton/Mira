@@ -45,9 +45,15 @@ The cluster threshold reads the **sum of both kinds**:
 
 | Source item's ship-intent count | Day-grid cell looks like… | Default cell border |
 |---|---|---|
-| 0 | flat cell, source-photo thumb | **red** (no intent to export) |
-| 1 | flat cell, the intent's thumb + provenance badge | **green** (will ship) |
-| ≥2 | **versions cluster cover** + `×N` count chip; drill in to compare + decide per intent | derived from member states (see §1.2) |
+| 0 | flat cell, source-photo thumb | **red** (Set aside — no intent to export) |
+| 1 | flat cell, the intent's thumb + provenance badge | **green** (Will export) |
+| ≥2 | **versions cluster cover** + `×N` count chip; drill in to compare + decide per intent | **orange** (Undecided — needs your attention) |
+
+The same three states drive the Days-List three-slice bar (§4.1)
+under the user-locked labels: **Will export** (green) · **Undecided**
+(orange) · **Set aside** (red). Mixed cluster decisions
+(some-picked-some-skipped) fold into Undecided for the bar; the cell
+itself still paints the cover state machine's yellow.
 
 The cluster sub-grid surfaces every intent: a virtual **Mira
 member** (item_id `mira:<source_id>`, badged "Mira", state read from
@@ -518,13 +524,23 @@ with explicit reasons so a future session knows what's left.
   own design pass before code.
 - ~~**Days List bar accuracy under the new ship-intent rule.**~~
   **Shipped 2026-06-19** — the `phase_day_progress` export bucket
-  SQL now counts SHIP INTENTS per spec/89 §1.1: one intent per
-  lineage row + one for a Mira-edit intent + one default-`skipped`
-  intent for keepers with no real ship intents. A versions cluster
-  with two members contributes 2 to the bar; the
+  is now **per source** (one tally per picked keeper) with the
+  user-locked default-state rule (Nelson 2026-06-19):
+  **0 intents → Set aside** (override with explicit
+  `phase_state(edit)`); **1 intent → Will export** (Mira-edit only
+  OR one third-party return); **≥2 intents → Undecided** (cluster).
+  Cluster member decisions roll up through the cover state machine
+  in [`EventGateway._export_source_state`](mira/gateway/event_gateway.py)
+  — Mixed picked + skipped folds into Undecided for the bar
+  (Mixed is not a bar bucket, only a cell colour). The DayRow bar
+  carries the locked labels **Will export** / **Undecided** / **Set
+  aside** (was Shipped / Dropped); the verb buttons stay **Export
+  all** / **Drop all**. *Note: this supersedes the earlier
+  intent-level interpretation also shipped 2026-06-19; only one
+  rule lives on `main`.* The
   [`DayRow`](mira/ui/pages/days_lists_page.py) Export branch's
-  denominator is now `shipped + undecided + dropped` (instead of
-  the clamped `picked` it used). Backwards-compat keeps the
+  denominator is `shipped + undecided + dropped` (instead of the
+  clamped `picked` it used pre-polish). Backwards-compat keeps the
   `decided / committed / picked` legacy fields populated.
 - **Eyeball the scan chip wording end-to-end.** *Deferred —
   needs Nelson in the loop.* The chip is unit-tested via

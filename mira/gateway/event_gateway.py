@@ -526,97 +526,77 @@ class EventGateway:
             for dn in set(picked_by_day) | set(edited_by_day)
         }
 
-        # ---- Export: shipped / dropped / undecided over SHIP INTENTS ----
-        # spec/89 §4.1 + §11.3 polish — the three-slice Days List bar
-        # counts SHIP INTENTS (spec/89 §1.1), not source items. Each
-        # picked keeper contributes:
+        # ---- Export: will-export / set-aside / undecided per source ----
+        # spec/89 §4.1 + §11.3 (Nelson 2026-06-19 lock) — the three-
+        # slice Days List bar is **per source**: each picked keeper
+        # contributes exactly ONE tally to the bar. The state is the
+        # source's overall cover reading per the user-locked default
+        # rule:
         #
-        # * one intent per lineage row under ``Exported Media/`` (Mira
-        #   render OR third-party return), state from
-        #   ``lineage.intent_state`` (default ``'picked'`` for legacy
-        #   rows missing the column);
-        # * one intent for a Mira-edit intent — when the source carries
-        #   a non-baseline :data:`core.edit_status.EDITED_SQL`
-        #   adjustment row — state from ``phase_state(edit)`` (default
-        #   ``'compare'``);
-        # * one default ``'skipped'`` intent when the keeper has NO
-        #   ship intents at all (Block 1 D1.C — the implicit red-flat
-        #   reading; without it the keeper would vanish from the bar).
+        # * **0 ship intents** → ``'skipped'`` (Set aside). Override
+        #   with the user's explicit ``phase_state(edit)`` if present.
+        # * **1 ship intent** (Mira-edit only OR one third-party
+        #   return only) → default ``'picked'`` (Will export). A
+        #   single-version cell reads green by default — the user
+        #   expressed intent via the edit / return.
+        # * **≥2 ship intents** (cluster) → default ``'compare'``
+        #   (Undecided). The user has multiple versions to pick from;
+        #   the cell defaults to "needs your attention." Member-level
+        #   decisions roll up through the cover state machine: any
+        #   member in compare → Undecided; all-same → that state;
+        #   mix of picked + skipped → Undecided (Mixed is not a bar
+        #   bucket so it folds in).
         #
-        # The denominator stops being "picked keepers" and becomes
-        # ``shipped + undecided + dropped`` — a cluster with two
-        # versions contributes 2, a flat single-version cell
-        # contributes 1.
+        # The aggregation lives in Python — the SQL fetches the raw
+        # per-source signals and the GROUP BY in
+        # :func:`_export_source_state` is one branch per case.
         from core.edit_status import EDITED_SQL
-        export_rows = conn.execute(
+        source_rows = conn.execute(
             "WITH picked_keepers AS ( "
             "    SELECT i.id, i.day_number FROM phase_state ps "
             "    JOIN visible_item i ON i.id = ps.item_id "
             "    WHERE ps.phase = 'pick' AND ps.state = 'picked' "
-            "), "
-            "lineage_intents AS ( "
-            "    SELECT pk.day_number, "
-            "        COALESCE(l.intent_state, 'picked') AS state "
-            "    FROM picked_keepers pk "
-            "    JOIN lineage l ON l.source_item_id = pk.id "
-            "    WHERE l.phase = 'edit' "
-            "      AND l.export_relpath LIKE 'Exported Media/%' "
-            "), "
-            "mira_intents AS ( "
-            "    SELECT pk.day_number, "
-            "        COALESCE(ps_edit.state, 'compare') AS state "
-            "    FROM picked_keepers pk "
-            "    JOIN adjustment a ON a.item_id = pk.id "
-            "    LEFT JOIN phase_state ps_edit "
-            "        ON ps_edit.item_id = pk.id "
-            "       AND ps_edit.phase = 'edit' "
-            f"   WHERE {EDITED_SQL} "
-            "), "
-            # Default intents: keepers with NO real ship intents get
-            # one implicit intent. State follows the user's explicit
-            # phase_state(edit) if present (so a P on a 0-version cell
-            # still reads as picked even though there's nothing to
-            # ship); else 'skipped' (Block 1 D1.C).
-            "default_intents AS ( "
-            "    SELECT pk.day_number, "
-            "        COALESCE(ps_edit.state, 'skipped') AS state "
-            "    FROM picked_keepers pk "
-            "    LEFT JOIN phase_state ps_edit "
-            "        ON ps_edit.item_id = pk.id "
-            "       AND ps_edit.phase = 'edit' "
-            "    WHERE NOT EXISTS ( "
-            "        SELECT 1 FROM lineage l "
-            "        WHERE l.source_item_id = pk.id "
-            "          AND l.phase = 'edit' "
-            "          AND l.export_relpath LIKE 'Exported Media/%' "
-            "    ) AND NOT EXISTS ( "
-            "        SELECT 1 FROM adjustment a "
-            f"       WHERE a.item_id = pk.id AND {EDITED_SQL} "
-            "    ) "
-            "), "
-            "all_intents AS ( "
-            "    SELECT * FROM lineage_intents UNION ALL "
-            "    SELECT * FROM mira_intents UNION ALL "
-            "    SELECT * FROM default_intents "
             ") "
-            "SELECT day_number AS dn, "
-            "    SUM(CASE WHEN state = 'picked' THEN 1 ELSE 0 END) AS shipped, "
-            "    SUM(CASE WHEN state = 'skipped' THEN 1 ELSE 0 END) AS dropped, "
-            "    SUM(CASE WHEN state IN ('compare', 'candidate') "
-            "        THEN 1 ELSE 0 END) AS undecided "
-            "FROM all_intents GROUP BY day_number"
+            "SELECT pk.id, pk.day_number, "
+            "    (SELECT GROUP_CONCAT(COALESCE(l.intent_state, 'picked'), '|') "
+            "     FROM lineage l "
+            "     WHERE l.source_item_id = pk.id "
+            "       AND l.phase = 'edit' "
+            "       AND l.export_relpath LIKE 'Exported Media/%') "
+            "        AS lineage_states, "
+            "    (SELECT 1 FROM adjustment a "
+            f"    WHERE a.item_id = pk.id AND {EDITED_SQL}) "
+            "        AS has_mira, "
+            "    (SELECT state FROM phase_state ps2 "
+            "     WHERE ps2.item_id = pk.id AND ps2.phase = 'edit') "
+            "        AS ps_edit_state "
+            "FROM picked_keepers pk"
         ).fetchall()
-        export_by_day = {
-            r["dn"]: (
-                int(r["shipped"] or 0),
-                int(r["dropped"] or 0),
-                int(r["undecided"] or 0),
+
+        export_by_day: Dict[Optional[int], Dict[str, int]] = {}
+        for r in source_rows:
+            dn = r["day_number"]
+            cell = export_by_day.setdefault(
+                dn, {"shipped": 0, "dropped": 0, "undecided": 0})
+            state = self._export_source_state(
+                lineage_states_raw=r["lineage_states"],
+                has_mira=bool(r["has_mira"]),
+                ps_edit_state=r["ps_edit_state"],
             )
-            for r in export_rows
-        }
+            if state == "picked":
+                cell["shipped"] += 1
+            elif state == "skipped":
+                cell["dropped"] += 1
+            else:
+                cell["undecided"] += 1
+
         out["export"] = {}
         for dn in set(picked_by_day) | set(export_by_day):
-            shipped, dropped, undecided = export_by_day.get(dn, (0, 0, 0))
+            cell = export_by_day.get(
+                dn, {"shipped": 0, "dropped": 0, "undecided": 0})
+            shipped = cell["shipped"]
+            dropped = cell["dropped"]
+            undecided = cell["undecided"]
             total = shipped + dropped + undecided
             out["export"][dn] = {
                 "total": total,
@@ -625,13 +605,67 @@ class EventGateway:
                 "undecided": undecided,
                 # Backwards-compatible legacy fields read by the
                 # event-card status heuristic: 'decided' = the count of
-                # intents the user has implicitly or explicitly committed
-                # one way or another.
+                # sources the user has implicitly or explicitly
+                # committed one way or another.
                 "decided": shipped + dropped,
                 "committed": shipped,
                 "picked": shipped,
             }
         return out
+
+    @staticmethod
+    def _export_source_state(
+        *,
+        lineage_states_raw: Optional[str],
+        has_mira: bool,
+        ps_edit_state: Optional[str],
+    ) -> str:
+        """spec/89 §11.3 (Nelson 2026-06-19 lock) — derive ONE bar
+        state per source from its ship intents. Returns
+        ``'picked'`` (Will export) / ``'skipped'`` (Set aside) /
+        ``'compare'`` (Undecided).
+
+        Rules:
+        * 0 intents → ``ps_edit_state`` if set, else ``'skipped'``.
+        * 1 intent → the intent's state if set; default ``'picked'``.
+          (Lineage rows carry the Python-model default 'picked';
+          Mira intents fall back to ``ps_edit_state`` or 'picked'.)
+        * ≥2 intents (cluster) → cover-state machine:
+            * Any member in 'compare'/'candidate' → Undecided.
+            * All 'picked' → Will export.
+            * All 'skipped' → Set aside.
+            * Mixed picked + skipped → Undecided (Mixed isn't a bar
+              bucket; it folds into Undecided per the user-locked
+              cluster rule)."""
+        lineage_states = (
+            [s for s in (lineage_states_raw or "").split("|") if s]
+            if lineage_states_raw else [])
+        lineage_count = len(lineage_states)
+        intent_count = lineage_count + (1 if has_mira else 0)
+        if intent_count == 0:
+            return ps_edit_state or "skipped"
+        if intent_count == 1:
+            if lineage_count:
+                # Lineage row's intent_state IS the source's state.
+                return lineage_states[0] or "picked"
+            # Mira-only intent: phase_state(edit) overrides; default
+            # picked per the user rule.
+            return ps_edit_state or "picked"
+        # ≥2 intents — cluster. Aggregate via the cover state machine.
+        member_states = list(lineage_states)
+        if has_mira:
+            # The Mira member's compare default kicks in only when
+            # the user hasn't expressed a decision via ps_edit.
+            member_states.append(ps_edit_state or "compare")
+        if any(s in ("compare", "candidate") for s in member_states):
+            return "compare"
+        if all(s == "picked" for s in member_states):
+            return "picked"
+        if all(s == "skipped" for s in member_states):
+            return "skipped"
+        # Mixed picked + skipped → Undecided (per the user-locked
+        # rule; Mixed is not a bar bucket).
+        return "compare"
 
     # ----- buckets -------------------------------------------------------- #
 

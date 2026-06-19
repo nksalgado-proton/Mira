@@ -356,13 +356,20 @@ def test_phase_day_progress_export_bucket_three_slice(tmp_path):
         eg.close()
 
 
-def test_phase_day_progress_export_bucket_counts_ship_intents(tmp_path):
-    """spec/89 §11.3 polish — the export bucket counts SHIP INTENTS
-    (spec/89 §1.1), not source items. A picked keeper with 2 lineage
-    rows contributes 2 to the bar; a keeper with 1 lineage + a Mira
-    edit intent contributes 2 (the virtual Mira member + the lineage
-    row each count once). The cluster reshape's multiplicity now
-    shows up in the bar instead of being clamped to 1 per keeper."""
+def test_phase_day_progress_export_bucket_default_state_by_intent_count(
+        tmp_path):
+    """spec/89 §1.1 + §11.3 (Nelson 2026-06-19 lock) — the bar reads
+    per source (each picked keeper contributes ONE tally), and the
+    default state follows the source's ship-intent count:
+
+    * **1 intent** (Mira-edit only OR one third-party return only) →
+      default ``'picked'`` (Will export).
+    * **≥2 intents** (cluster) → default ``'compare'`` (Undecided).
+
+    The bug this test pins: under the original implementation, a
+    Mira-edited-only keeper could read as Undecided in the bar; the
+    user asked for it to read as Will export since they already
+    expressed intent via the edit."""
     from mira.gateway.event_gateway import EventGateway
     from mira.store import models as m
     from mira.store.repo import EventStore
@@ -384,51 +391,131 @@ def test_phase_day_progress_export_bucket_counts_ship_intents(tmp_path):
             capture_time_corrected="2026-04-01T08:00:00",
         ))
 
-    # Three picked keepers:
-    # * p-cluster: 2 third-party lineage rows (cluster cover, 2 intents).
-    # * p-mira-and-lineage: 1 lineage + 1 Mira-edit intent (2 intents).
-    # * p-flat: no lineage, no Mira intent → 1 default-skipped intent.
-    for iid in ("p-cluster", "p-mira-and-lineage", "p-flat"):
+    # Four picked keepers exercising every default-state branch.
+    for iid in ("p-mira-only", "p-lrc-only", "p-noedit", "p-cluster"):
         _item(iid)
         store.upsert(m.PhaseState(item_id=iid, phase="pick", state="picked"))
 
-    # Cluster — both members in picked intent state.
-    store.upsert(m.Lineage(
-        export_relpath="Exported Media/p-cluster-a.jpg",
-        phase="edit", source_kind="item", source_item_id="p-cluster",
-        recipe_json=None, exported_at="2026-06-19T08:00:00",
-        provenance="third_party", intent_state="picked"))
-    store.upsert(m.Lineage(
-        export_relpath="Exported Media/p-cluster-b.jpg",
-        phase="edit", source_kind="item", source_item_id="p-cluster",
-        recipe_json=None, exported_at="2026-06-19T08:00:00",
-        provenance="third_party", intent_state="skipped"))
-
-    # 1 lineage + 1 Mira intent (non-baseline Adjustment).
-    store.upsert(m.Lineage(
-        export_relpath="Exported Media/p-mira-and-lineage-LRC.jpg",
-        phase="edit", source_kind="item",
-        source_item_id="p-mira-and-lineage",
-        recipe_json=None, exported_at="2026-06-19T09:00:00",
-        provenance="third_party", intent_state="picked"))
+    # p-mira-only: non-baseline Adjustment, no lineage → 1 intent.
+    # User-locked rule: default Will export.
     store.upsert(m.Adjustment(
-        item_id="p-mira-and-lineage", look="natural",
-        creative_filter="bw_high_contrast"))
-    # No explicit phase_state(edit) → Mira intent reads as 'compare'.
+        item_id="p-mira-only", look="natural",
+        creative_filter="vivid"))
+
+    # p-lrc-only: one third-party return, no Mira edit → 1 intent.
+    # Default Will export (lineage row's intent_state defaults to
+    # 'picked' per the Python model).
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-lrc-only-LRC.jpg",
+        phase="edit", source_kind="item",
+        source_item_id="p-lrc-only",
+        recipe_json=None, exported_at="2026-06-19T09:00:00",
+        provenance="third_party"))
+
+    # p-noedit: no Adjustment, no lineage → 0 intents.
+    # Default-implicit source state = Set aside.
+
+    # p-cluster: non-baseline Adjustment + one third-party return →
+    # 2 intents. Cover machine on ['picked' (lineage default),
+    # 'compare' (Mira default)] → Undecided.
+    store.upsert(m.Adjustment(
+        item_id="p-cluster", look="natural",
+        creative_filter="bw"))
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-cluster-LRC.jpg",
+        phase="edit", source_kind="item",
+        source_item_id="p-cluster",
+        recipe_json=None, exported_at="2026-06-19T09:30:00",
+        provenance="third_party"))
 
     eg = EventGateway(store, event_root=tmp_path)
     try:
         cell = eg.phase_day_progress()["export"][1]
-        # 2 cluster intents + 2 mira+lineage intents + 1 flat default
-        # = 5 ship intents total.
-        assert cell["total"] == 5
-        # Shipped: p-cluster-a (picked) + p-mira-and-lineage's lineage
-        # row (picked) = 2.
+        # 4 picked keepers → 4 source-level tallies on the bar.
+        assert cell["total"] == 4
+        # Will export: p-mira-only + p-lrc-only.
         assert cell["shipped"] == 2
-        # Dropped: p-cluster-b (skipped) + p-flat default (skipped) = 2.
-        assert cell["dropped"] == 2
-        # Undecided: p-mira-and-lineage's Mira member (compare default) = 1.
+        # Set aside: p-noedit's implicit default.
+        assert cell["dropped"] == 1
+        # Undecided: p-cluster (cover machine folds Mira's compare).
         assert cell["undecided"] == 1
+    finally:
+        eg.close()
+
+
+def test_phase_day_progress_export_bucket_cluster_cover_state_machine(
+        tmp_path):
+    """spec/89 §11.3 (Nelson 2026-06-19 lock) — for sources with ≥2
+    ship intents, the bar's contribution follows the cover state
+    machine: all picked → Will export; all skipped → Set aside;
+    anything mixed or any compare member → Undecided. Mixed isn't a
+    bar bucket so it folds into Undecided per the user-locked rule."""
+    from mira.gateway.event_gateway import EventGateway
+    from mira.store import models as m
+    from mira.store.repo import EventStore
+
+    store = EventStore.create(tmp_path / "e.db", event_id="evt-x")
+    store.save_document(m.EventDocument(event=m.Event(
+        uuid="evt-x", name="x", created_at="t", updated_at="t")))
+    store.upsert(m.Camera(camera_id="G9"))
+    store.upsert(m.TripDay(day_number=1, date="2026-04-01"))
+
+    def _item(iid: str) -> None:
+        store.upsert(m.Item(
+            id=iid, kind="photo", created_at="t", provenance="captured",
+            origin_relpath=f"Original Media/_cameras/d1/G9/{iid}.rw2",
+            sha256="s" + iid, byte_size=4,
+            materialized_at="t", materialized_phase="ingest",
+            camera_id="G9", day_number=1,
+            capture_time_raw="2026-04-01T08:00:00",
+            capture_time_corrected="2026-04-01T08:00:00",
+        ))
+
+    for iid in ("p-all-picked", "p-all-skipped", "p-mixed"):
+        _item(iid)
+        store.upsert(m.PhaseState(item_id=iid, phase="pick", state="picked"))
+
+    # Cluster, both members explicitly picked → cover green → Will export.
+    for rel in (
+        "Exported Media/p-all-picked-a.jpg",
+        "Exported Media/p-all-picked-b.jpg",
+    ):
+        store.upsert(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="p-all-picked",
+            recipe_json=None, exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="picked"))
+
+    # Cluster, both members explicitly skipped → cover red → Set aside.
+    for rel in (
+        "Exported Media/p-all-skipped-a.jpg",
+        "Exported Media/p-all-skipped-b.jpg",
+    ):
+        store.upsert(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="p-all-skipped",
+            recipe_json=None, exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="skipped"))
+
+    # Cluster, one picked + one skipped → mixed → folds to Undecided.
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-mixed-a.jpg",
+        phase="edit", source_kind="item", source_item_id="p-mixed",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="picked"))
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-mixed-b.jpg",
+        phase="edit", source_kind="item", source_item_id="p-mixed",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="skipped"))
+
+    eg = EventGateway(store, event_root=tmp_path)
+    try:
+        cell = eg.phase_day_progress()["export"][1]
+        assert cell["total"] == 3
+        assert cell["shipped"] == 1            # p-all-picked
+        assert cell["dropped"] == 1            # p-all-skipped
+        assert cell["undecided"] == 1          # p-mixed (Mixed folds in)
     finally:
         eg.close()
 

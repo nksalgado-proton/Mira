@@ -716,7 +716,7 @@ class DaysGridPage(QWidget):
         if is_export:
             # Block 4 D1.B — three swatches with action-verb labels.
             self._legend_layout.addWidget(_state_swatch("picked", tr("Will export")))
-            self._legend_layout.addWidget(_state_swatch("skipped", tr("Dropped")))
+            self._legend_layout.addWidget(_state_swatch("skipped", tr("Set aside")))
             self._legend_layout.addWidget(_state_swatch("compare", tr("Undecided")))
             # Block 4 D3.A — reminder line.
             reminder_text = (

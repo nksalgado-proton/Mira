@@ -1,8 +1,10 @@
 # spec/89 — Export surface rebuild (Model B, versions, the full design pass)
 
-**Authored 2026-06-19 (Nelson + Claude). Implementation in progress —
-see §7 for slice status (Slices 1–7 shipped 2026-06-19). §10 lists
-the explicit stubs / handoff notes for the remaining slices.**
+**Authored 2026-06-19 (Nelson + Claude). All 10 slices shipped
+2026-06-19 + two eyeball-bug fixes (amber-border override, scanner
+naming-prefix mismatch) + the Mira-intent-counts-as-version cluster
+trigger refinement. §11 carries the live handoff for whoever picks
+up the polish surface next.**
 
 This spec consolidates the design pass for the **Export phase**:
 - Implements spec/72 Model B (third-party returns hardlinked into
@@ -25,27 +27,51 @@ production events carry legacy `Edited Media/` lineage rows.
 
 ## 1. Core concepts
 
-### 1.1 A "version" = one shipped lineage row
+### 1.1 A "ship intent" = one decision the next Export pass will commit
 
-A **version** of a source item is one row in `lineage` whose
-`export_relpath` lives under `Exported Media/`. Any source item can
-carry 0, 1, or many versions.
+A **ship intent** is anything the Export run on the next batch will
+either render to disk or hardlink in place. There are two kinds:
 
-| Source item has… | Day-grid cell looks like… | Default intent |
+1. **One lineage row** under `Exported Media/` — a Mira-rendered
+   JPEG or a third-party return the scanner hardlinked at scan time
+   (per §1.5).
+2. **A Mira-render intent** — the source item carries a non-default
+   `adjustment` row (look / crop / filter / rotation per
+   [`core.edit_status.EDITED_SQL`](../core/edit_status.py)). The
+   next Export run will render this to `Exported Media/`. This
+   counts as a virtual version even before the JPEG exists.
+
+The cluster threshold reads the **sum of both kinds**:
+
+| Source item's ship-intent count | Day-grid cell looks like… | Default cell border |
 |---|---|---|
-| 0 versions | flat cell, Mira-render placeholder thumb | **red** (no intent to export) |
-| 1 version (Mira or third-party) | flat cell, the version's thumb + provenance badge | **green** (a file exists, intent matches) |
-| ≥2 versions | **versions cluster cover** + "N versions" count chip; drill in to compare + decide per version | members enter in **Compare orange** |
+| 0 | flat cell, source-photo thumb | **red** (no intent to export) |
+| 1 | flat cell, the intent's thumb + provenance badge | **green** (will ship) |
+| ≥2 | **versions cluster cover** + `×N` count chip; drill in to compare + decide per intent | derived from member states (see §1.2) |
 
-Border colour = **intent only** (will it be exported on the next pass);
-badge = **on-disk state** (Mira / LRC / Helicon / Capture One / generic
-"ext"). The two axes are orthogonal.
+The cluster sub-grid surfaces every intent: a virtual **Mira
+member** (item_id `mira:<source_id>`, badged "Mira", state read from
+`phase_state(edit, source)`) when the source has Mira-edit intent,
+plus one cell per lineage row (item_id = `export_relpath`, badged
+by §1.4 inference, state read from `lineage.intent_state`).
+
+Border colour = **intent only** (will it be exported on the next
+pass); badge = **on-disk state** (Mira / LRC / Helicon / Capture One
+/ generic "ext"). The two axes are orthogonal.
+
+Nelson eyeball 2026-06-19 — the cluster was originally specified as
+"≥2 lineage rows on disk." That definition kept Mira-only edits
+invisible until the user explicitly ran Export, which defeated the
+"two intents, compare and choose" mental model the surface is for.
+The current ship-intent definition makes "I edited this in Mira AND
+in LRC" a real two-member cluster from the moment the LRC return
+lands.
 
 ### 1.2 Versions cluster — state machine
 
-Members of a freshly-discovered ≥2-version cluster enter in Compare
+Members of a freshly-discovered ≥2-intent cluster enter in Compare
 orange (intent semantically: "needs your attention"). Compare is
-**cluster-only** — single-version cells never use it.
+**cluster-only** — single-intent cells never use it.
 
 | Cluster member states | Cover border |
 |---|---|
@@ -54,9 +80,15 @@ orange (intent semantically: "needs your attention"). Compare is
 | All members decided **red** | red |
 | All decided, mix of green + red | **yellow** (distinct from Edit's amber) |
 
-A new external version added later to an already-decided cluster
-enters as Compare → cover reverts to orange. Same behaviour as "you
-have new versions to look at."
+A new lineage row added later to an already-decided cluster enters
+as Compare → cover reverts to orange. Same behaviour as "you have
+new versions to look at."
+
+The lineage member's Compare wire value is `lineage.intent_state =
+'compare'`; the Mira member's Compare wire value is `phase_state(edit,
+source).state = 'candidate'` (or no row at all, which the renderer
+also reads as Compare). The cover state derivation folds both into
+"compare" for the colour choice.
 
 ### 1.3 Versions cluster — drill-in (sub-grid)
 
@@ -290,6 +322,7 @@ improvement on every slice.
 | 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | **shipped 2026-06-19** |
 | 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | **shipped 2026-06-19** |
 | 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | **shipped 2026-06-19** |
+| — | **Post-eyeball corrections.** (a) Restrict the Edit-grid amber `border_token` override to pure Edit (Export was inheriting it). (b) Relax scanner matcher to accept LRC's default bare-filename export naming + surface `unmatched` in the chip + log a WARNING when nothing matched. (c) Mira-edit intent counts as a virtual ship version so a Mira-edit + a third-party return for the same source now forms a cluster (§1.1 refined). | **shipped 2026-06-19** |
 
 ---
 
@@ -333,12 +366,54 @@ improvement on every slice.
 
 ---
 
-## 10. Handoff notes (Slices 8–10)
+## 11. Handoff notes (post-eyeball, polish surface)
 
 **Pick up here in a fresh session.** Working tree is clean at
-[`45e9918`](https://github.com/nksalgado-proton/Mira/commit/45e9918);
-Slices 1–7 shipped to `main`. The remaining slices have a handful of
-explicit stubs left behind that a fresh session should grep for.
+[`4cd7241`](https://github.com/nksalgado-proton/Mira/commit/4cd7241);
+all 10 slices shipped, plus the eyeball-pass corrections (see
+§11.1). The remaining surface is **polish + nice-to-haves** — see
+§11.3 below — not a functional gate.
+
+### 11.1 Post-slice eyeball-pass fixes (2026-06-19)
+
+The first live walkthrough on Nelson's Alaska event surfaced three
+real bugs that landed after the original 10 slices. They are all
+shipped; flagged here so a fresh session knows what the commits
+mean and doesn't accidentally revert them.
+
+- **Amber-border override.**
+  [`_items_from_cells`](mira/ui/pages/days_grid_page.py) gated the
+  Edit-grid amber/green `border_token` on `self._phase == "edit"`
+  alone. Export shares the `'edit'` phase storage (spec/66 §1.1), so
+  every cell read amber-edited / green-unedited, completely
+  drowning the green / red ship-intent border. Gate is now
+  `self._phase == "edit" and not self._export_mode`. Commit
+  [`11616e8`](https://github.com/nksalgado-proton/Mira/commit/11616e8).
+- **Scanner filename-prefix mismatch.** The matcher only knew the
+  full Picked-Media link stem (`D{day}_{cam}_{originalname}`).
+  Lightroom Classic's default export preset emits files keyed off
+  the ORIGINAL filename (`IMG_1234-Edit.jpg`) and rejected every
+  return. `_all_item_stems` now registers BOTH the full link stem
+  and the bare origin filename stem; the longest-prefix-wins rule
+  keeps the strict match preferred when both are available. The
+  scan chip now also surfaces `unmatched` (chip used to read "up to
+  date" while 31 files sat un-linked); the scan log carries a
+  WARNING with the first five rejected names when the matcher
+  rejects everything. Same commit.
+- **Mira-edit-intent → virtual cluster member.** A source with a
+  Mira-edit intent AND a third-party return on disk now forms a
+  cluster (was: only ≥2 lineage rows). New gateway helper
+  [`items_with_mira_intent`](mira/gateway/event_gateway.py); the
+  reshape in
+  [`_reshape_for_versions`](mira/ui/pages/days_grid_page.py) counts
+  Mira intent as a virtual version and inserts a synthetic Mira
+  member (`item_id = "mira:<source_id>"`) when drilling into the
+  cluster. P/X on the Mira member writes
+  `phase_state(edit, source)`; P/X on a lineage member still writes
+  `lineage.intent_state` (existing). Commit
+  [`4cd7241`](https://github.com/nksalgado-proton/Mira/commit/4cd7241).
+
+### 11.2 Slice rollup (everything shipped 2026-06-19)
 
 **Slice 8 — Export run triggers** (shipped 2026-06-19). Days Grid
 button is `↑ Export now` (D1.A); confirm modal carries
@@ -390,21 +465,43 @@ for the next session): badge strip readability, scan-chip wording,
 cluster cover thumbnail. The live newest-version cover preview is
 still the deferred polish in §9 first/second bullets.
 
-**Known stubs / deferred polish:**
+### 11.3 Polish surface (deferred — nice-to-haves, not gates)
 
-- The preview viewer for **0-version cells** shows the *source*
-  photo, not the Mira-developed preview (§9 first bullet). When
-  Slice 8 wires `Export this`, the same code path could synthesize
-  a develop preview for the viewer — but that's a polish step, not
-  a blocker.
-- The cluster cover thumbnail in Slice 5 uses the **source item's
-  thumb**, not the newest-version's actual rendered file (Block 1
-  D5.A says newest-version). The cluster sub-grid drill-in IS
-  correct per-version; only the cover thumb is the placeholder.
-- The badge wordmarks (`Mira`, `LRC`, etc.) ship as **text chips**
-  per Block 2 D2.B; app-specific icon glyphs are explicitly deferred
-  in §9.
-- The scan chip on both surfaces wires through `set_scan_status`;
-  the visual rendering hasn't been live-eyeballed yet (it was
-  validated via `test_scan_chip_text` unit tests only).
+A fresh session can pick any of these up; none block a real
+Export workflow.
+
+- **Live Mira-develop preview in the viewer.** 0-version cells in
+  the preview viewer fall back to the source photo. The Mira
+  develop pipeline could render the preview live so the user sees
+  what the next Export run would produce. The same pipeline could
+  drive the virtual Mira member's thumbnail inside a versions
+  cluster sub-grid (today: source photo placeholder).
+- **Cluster cover thumbnail = newest version.** Block 1 D5.A
+  decided the cover should show the newest version's actual file.
+  Today the cover uses the source item's thumb. The sub-grid
+  drill-in correctly shows each version's actual file; only the
+  cover preview is the placeholder.
+- **App-specific badge icons.** Slice 4 ships text wordmarks
+  (`Mira`, `LRC`, `Helicon`, `CO`, `ext`). App-specific icon
+  glyphs can replace them in a later visual polish pass (Block 2
+  D2 alternative).
+- **Adjustments-changed staleness chip.** D1a.A ("preview reads
+  from disk") is honest but stale-tolerant. An "Adjustments changed
+  — Export to refresh" chip on the preview viewer would warn the
+  user when the on-disk render is older than the live adjustment
+  row.
+- **Snapshot multi-version nesting.** A video snapshot is a photo
+  and could technically have 2+ external versions. Slice 9 keeps
+  the video cluster's interior flat (no nested versions cluster).
+  The nested case is a deliberate v2 enhancement.
+- **Days List bar accuracy under the new ship-intent rule.** The
+  `phase_day_progress` export bucket SQL still counts at the
+  source-item level via `phase_state(edit) + EXISTS lineage`. With
+  Mira-intent-as-version clusters, the right denominator is the
+  number of ship intents, not picked-keepers. Low-stakes — the
+  bars still read sensibly — but a fresh session could revisit.
+- **Eyeball the scan chip wording end-to-end** (badges, mixed
+  match/unmatched runs, the "31 files in Edited Media/" failure
+  path). Unit-tested via `test_scan_chip_text` but never
+  side-by-side with the real surface.
 

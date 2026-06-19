@@ -5987,6 +5987,16 @@ class MainWindow(QMainWindow):
             # with this commit; the per-day batch trigger lives on the
             # grid's toolbar.
             self._export_phase_active = True
+            # spec/89 §1.5 / §2.2 — run the spec/57 §3 return scanner
+            # so any new Edited Media/ files land in the ship set
+            # immediately (Model B), then push the report to the
+            # scan chips on both Days List and Days Grid.
+            report = self._scan_external_returns(quiet=True)
+            try:
+                self.days_lists_page.set_scan_status(report)
+                self.days_grid_page.set_scan_status(report)
+            except Exception:                                      # noqa: BLE001
+                log.exception("Export scan chip update failed")
             self._open_days_lists_for(self._current_event_id)
             return
         if phase == "share" and self._current_event_id is not None:

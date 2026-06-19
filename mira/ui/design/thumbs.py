@@ -133,6 +133,8 @@ class Thumb(QWidget):
         edit_reasons: tuple[str, ...] = (),
         border_token: str | None = None,
         stamp: str | None = None,
+        origin: str | None = None,
+        skipped_in_pick: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -146,6 +148,15 @@ class Thumb(QWidget):
         self._edit_reasons = tuple(edit_reasons or ())
         self._border_token = border_token
         self._stamp = stamp
+        # spec/89 §2.1 Block 2 D3.B — origin wordmark (Mira / LRC /
+        # Helicon / CO / ext) painted on a thin strip under the thumb
+        # for Export cells. ``None`` keeps the cell badge-free
+        # (0-version cells, Pick / Edit phases).
+        self._origin = origin
+        # spec/89 §4.2 Block 7 D2.B — "skipped in Pick" indicator chip
+        # shown on Export cells that entered the pool only because a
+        # ship row exists. ``False`` keeps the cell clean.
+        self._skipped_in_pick = bool(skipped_in_pick)
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -177,6 +188,19 @@ class Thumb(QWidget):
 
     def setStamp(self, stamp: str | None) -> None:
         self._stamp = stamp
+        self.update()
+
+    def setOrigin(self, origin: str | None) -> None:
+        """spec/89 §2.1 — origin wordmark (Mira / LRC / Helicon / CO /
+        ext). Set ``None`` to clear the strip."""
+        self._origin = origin
+        self.update()
+
+    def setSkippedInPick(self, flag: bool) -> None:
+        """spec/89 §4.2 / Block 7 D2.B — "skipped in Pick" indicator
+        chip for Export-mode cells that are only in the pool because a
+        ship row exists."""
+        self._skipped_in_pick = bool(flag)
         self.update()
 
     def setClusterCount(self, n: int) -> None:
@@ -306,6 +330,8 @@ class Thumb(QWidget):
         self._paint_cluster_badge(painter, palette)
         self._paint_type_stamp(painter, palette)
         self._paint_count_chip(painter, palette)
+        self._paint_origin_strip(painter, palette)
+        self._paint_skipped_in_pick(painter, palette)
 
         painter.end()
 
@@ -321,6 +347,66 @@ class Thumb(QWidget):
         painter.setBrush(QBrush(bg))
         painter.setPen(QPen(border, 1) if border else Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, 10, 10)
+
+    def _paint_origin_strip(
+        self, painter: QPainter, palette: dict[str, str]
+    ) -> None:
+        """spec/89 §2.1 / Block 2 D3.B — a thin strip under the thumb
+        carrying the origin wordmark (Mira / LRC / Helicon / CO / ext).
+        Painted as a centred chip near the bottom edge; theme-tinted so
+        it stays legible on either palette."""
+        if not self._origin:
+            return
+        f = painter.font()
+        f.setPointSizeF(8.5)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        label_w = fm.horizontalAdvance(self._origin)
+        pad_x = 8
+        chip_w = label_w + pad_x * 2
+        chip_h = 18
+        chip_rect = QRectF(
+            (self.width() - chip_w) / 2,
+            self.height() - chip_h - 8,
+            chip_w, chip_h,
+        )
+        self._paint_chip(
+            painter, chip_rect,
+            QColor(8, 10, 16, 188), QColor(255, 255, 255, 46),
+        )
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(
+            chip_rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            self._origin,
+        )
+
+    def _paint_skipped_in_pick(
+        self, painter: QPainter, palette: dict[str, str]
+    ) -> None:
+        """spec/89 §4.2 / Block 7 D2.B — small chip telling the user
+        why an item is appearing in the Export pool even though it was
+        skipped in Pick: it has a file under Exported Media/."""
+        if not self._skipped_in_pick:
+            return
+        f = painter.font()
+        f.setPointSizeF(8.5)
+        f.setBold(True)
+        painter.setFont(f)
+        label = "skipped in Pick"
+        fm = painter.fontMetrics()
+        label_w = fm.horizontalAdvance(label)
+        pad_x = 8
+        chip_w = label_w + pad_x * 2
+        chip_h = 18
+        chip_rect = QRectF(8, self.height() - chip_h - 8, chip_w, chip_h)
+        # Faintly amber-tinted so it reads as informational, not danger.
+        bg = QColor(palette.get("amber", "#fbbf24"))
+        bg.setAlpha(220)
+        self._paint_chip(painter, chip_rect, bg, QColor(0, 0, 0, 70))
+        painter.setPen(QColor("#08101c"))
+        painter.drawText(chip_rect, int(Qt.AlignmentFlag.AlignCenter), label)
 
     def _paint_visited(self, painter: QPainter, palette: dict[str, str]) -> None:
         if not self._visited:

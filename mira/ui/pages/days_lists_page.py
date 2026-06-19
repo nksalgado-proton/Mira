@@ -594,6 +594,17 @@ class DaysListsPage(QWidget):
         )
         self._identity_host_layout.addWidget(self._identity)
 
+    def set_scan_status(self, report) -> None:
+        """spec/89 §2.2 — push the spec/57 §3 return-scan report to the
+        Export scan chip. The chip is auto-hidden under non-Export
+        identities; this just updates the text so the next show reads
+        the latest run."""
+        try:
+            from core.export_provenance import scan_chip_text
+            self._scan_chip.setText(scan_chip_text(report))
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysListsPage: scan_chip_text failed")
+
     def set_phase_identity(self, phase: str) -> None:
         """Override the identity-header phase. Hosts call this before
         showing the page so Pick / Edit / Quick Sweep route to their own

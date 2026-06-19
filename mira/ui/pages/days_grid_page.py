@@ -239,6 +239,10 @@ class GridItem:
     cluster_count: int = 0
     cluster_split: tuple[int, int] | None = None
     stamp: str | None = None
+    # spec/89 §2.1 / Block 2 D3.B — origin wordmark for the strip
+    # under the thumb (Mira / LRC / Helicon / CO / ext). ``None``
+    # leaves the strip empty (0-version cells, Pick/Edit grids).
+    origin: str | None = None
     # spec/89 §4.2 / Block 7 D2.B — Export mode: this item is in the
     # pool only because it has a file under Exported Media/, NOT
     # because it was picked in Pick. Renders a small "skipped in Pick"
@@ -523,6 +527,14 @@ class DaysGridPage(QWidget):
         self._legend_layout.setSpacing(18)
         outer.addWidget(self._legend_host)
         self._rebuild_legend_strip()
+        # spec/89 §2.2 — the external-edits scan chip, visible only
+        # under the Export identity. ``set_scan_status`` updates the
+        # wording from the scanner report; default is "up to date".
+        self._scan_chip = QLabel("External edits: up to date")
+        self._scan_chip.setObjectName("Faint")
+        self._scan_chip.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._scan_chip.setVisible(False)
+        outer.addWidget(self._scan_chip)
 
         # ── Scrolling grid ──
         # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
@@ -674,6 +686,16 @@ class DaysGridPage(QWidget):
             return self._cluster
         return None
 
+    def set_scan_status(self, report) -> None:
+        """spec/89 §2.2 — push a spec/57 §3 return-scan report to the
+        Export scan chip. The chip is hidden on non-Export phases; the
+        text is updated here so the next phase swap reads the latest."""
+        try:
+            from core.export_provenance import scan_chip_text
+            self._scan_chip.setText(scan_chip_text(report))
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: scan_chip_text failed")
+
     def _rebuild_legend_strip(self) -> None:
         """Rebuild the legend host's content for the current phase. Pick
         keeps the four picked/skipped/compare/mixed swatches; Export
@@ -779,6 +801,11 @@ class DaysGridPage(QWidget):
             # phase (swaps Export's "Will export / Dropped / Undecided"
             # in for Pick's four-swatch row).
             self._rebuild_legend_strip()
+        except Exception:                                          # noqa: BLE001
+            pass
+        # spec/89 §2.2 — the scan chip is Export-only.
+        try:
+            self._scan_chip.setVisible(is_export)
         except Exception:                                          # noqa: BLE001
             pass
 
@@ -962,7 +989,11 @@ class DaysGridPage(QWidget):
             # for flat cells without an explicit phase_state(edit) row:
             # 0 versions on disk → red default · ≥1 version → green
             # default. Then stamp the "skipped in Pick" indicator on
-            # items that only made it into the pool via shipped_ids.
+            # items that only made it into the pool via shipped_ids
+            # AND the Block 2 origin wordmark on cells with a single
+            # ship row (multi-version cells become clusters in Slice 5).
+            shipped_rows_by_item = self._shipped_rows_by_item()
+            from core.export_provenance import cell_origin_label
             for it in day_items:
                 if it.item_kind == "cluster":
                     continue
@@ -971,6 +1002,8 @@ class DaysGridPage(QWidget):
                     it.state = STATE_PICKED if has_shipped else STATE_SKIPPED
                 if it.item_id in skipped_in_pick_ids:
                     it.skipped_in_pick = True
+                rows = shipped_rows_by_item.get(it.item_id, [])
+                it.origin = cell_origin_label(rows)
             day_items = self._reshape_for_export(day_items, phase_states)
         elif self._phase == "edit":
             # BUGS.md B-010 — pure Edit is creative-only (spec/66 §1.1):
@@ -982,6 +1015,27 @@ class DaysGridPage(QWidget):
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+
+    def _shipped_rows_by_item(self) -> dict:
+        """spec/89 §2.1 — group every ``Exported Media/`` lineage row by
+        source item id. The badge layer reads this to pick a per-cell
+        origin label (or to count versions for the cluster cover chip).
+        Returns an empty dict when the gateway is unreachable."""
+        out: dict = {}
+        if self._eg is None:
+            return out
+        try:
+            rows = self._eg.lineage()
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: lineage() failed")
+            return out
+        for row in rows:
+            if not row.export_relpath.startswith("Exported Media/"):
+                continue
+            if not row.source_item_id:
+                continue
+            out.setdefault(row.source_item_id, []).append(row)
+        return out
 
     def _export_pool_filter(self):
         """spec/89 §4.2 / Block 7 D1.B — the Export grid's pool is
@@ -1527,6 +1581,8 @@ class DaysGridPage(QWidget):
                 cluster_count=item.cluster_count,
                 cluster_split=item.cluster_split,
                 stamp=item.stamp,
+                origin=item.origin,
+                skipped_in_pick=item.skipped_in_pick,
                 payload=item.item_id,
                 focusable=True,
                 tooltip=item.edit_tooltip,

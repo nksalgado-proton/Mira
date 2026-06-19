@@ -94,6 +94,8 @@ class ThumbGridItem:
     cluster_count: int = 0
     cluster_split: Optional[Tuple[int, int]] = None
     stamp: Optional[str] = None           # 'clip' / 'snapshot' (spec/56 child stamp)
+    origin: Optional[str] = None          # spec/89 §2.1 — Mira / LRC / Helicon / CO / ext
+    skipped_in_pick: bool = False         # spec/89 Block 7 D2.B indicator
     payload: object = None
     focusable: bool = False               # Tab-focusable for the locked §63 keymap
     tooltip: str = ""
@@ -129,6 +131,8 @@ class _GridCell(Thumb):
             edit_reasons=item.edit_reasons,
             border_token=item.border_token,
             stamp=item.stamp,
+            origin=item.origin,
+            skipped_in_pick=item.skipped_in_pick,
             parent=parent,
         )
         self._index = index
@@ -159,6 +163,8 @@ class _GridCell(Thumb):
         self.setEditReasons(item.edit_reasons)
         self.setBorderToken(item.border_token)
         self.setStamp(item.stamp)
+        self.setOrigin(item.origin)
+        self.setSkippedInPick(item.skipped_in_pick)
         self.setClusterCount(item.cluster_count)
         # cluster_type + cluster_split aren't setter-exposed on Thumb;
         # write them directly (paintEvent reads instance attrs).

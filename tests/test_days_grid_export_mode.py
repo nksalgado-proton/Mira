@@ -154,6 +154,40 @@ def test_export_mode_chrome_swaps_labels_and_shows_export_button(
     page.close_event()
 
 
+def test_export_mode_stamps_origin_wordmark_on_single_version_cells(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §2.1 / Block 2 — flat cells with one shipped row get the
+    origin wordmark (LRC / Helicon / CO / Mira / ext) so the user sees
+    at a glance which editor produced the file. Multi-version items
+    become a versions cluster (Slice 5) — at the flat-cell layer
+    cell_origin_label returns None for those and no badge is drawn."""
+    _, eg = store_and_gateway
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x1-Lightroom-edit.jpg",
+        phase="edit", source_kind="item", source_item_id="x1",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party"))
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/x2.jpg",
+        phase="edit", source_kind="item", source_item_id="x2",
+        recipe_json="{}", exported_at="2026-06-19T08:00:00"))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-Lightroom-edit.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "Dia 1").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "Dia 1" / "x2.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    by_id = {it.item_id: it for it in page._items}
+    assert by_id["x1"].origin == "LRC"   # filename-inferred from "Lightroom"
+    assert by_id["x2"].origin == "Mira"  # provenance default
+    # The 0-version keepers carry no badge.
+    assert by_id["x3"].origin is None
+    assert by_id["x4"].origin is None
+    page.close_event()
+
+
 def test_export_pool_includes_skipped_with_shipped_file_and_flags_it(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §4.2 / Block 7 D1.B & D2.B — the Export grid's pool is

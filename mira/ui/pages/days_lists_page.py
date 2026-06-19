@@ -85,6 +85,13 @@ class DaySnapshot:
     # baseline (non-default look/crop/filter, per core.edit_status). Only
     # read when the page renders under the Edit identity (Nelson 2026-06-18).
     edited: int = 0
+    # Export-phase numerators (spec/89 §4.1 / Block 3 D1.C three-slice
+    # bar). All three sum to ``picked`` (the keepers denominator) when
+    # the model is internally consistent. Only read when the page
+    # renders under the Export identity.
+    exported: int = 0           # green-intent items — will ship
+    dropped_export: int = 0     # red-intent items — won't ship
+    undecided: int = 0          # Compare-state cluster members (Slice 5)
     buckets: int = 0
     items: int = 0
     location: str = ""
@@ -224,6 +231,12 @@ class DayRow(Card):
         # (Nelson 2026-06-18).
         self._phase = phase
         self._is_edit = phase == "edit"
+        # spec/89 §4.1 — Export adds a three-slice bar (Shipped /
+        # Undecided / Dropped) and relabels Pick all / Skip all to
+        # Export all / Drop all. The underlying signal wiring is the
+        # same as Pick — the host (main_window) routes to the Edit
+        # phase_state ledger when ``_export_phase_active`` is set.
+        self._is_export = phase == "export"
         self.setMinimumHeight(120)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # Mockup `.day{padding:14px 16px}` — quieter than the legacy 16/14.
@@ -269,20 +282,36 @@ class DayRow(Card):
         # Pick verbs only: Edit has no per-day Skip, so the cluster is
         # omitted there and the title block takes the full row width.
         if not self._is_edit:
-            pick_all = _mini_button(
-                "✓ Pick all", "green",
-                tr_pick := (
+            if self._is_export:
+                # spec/89 §4.1 — relabel for Export; the underlying signal
+                # is the same bulk phase_state write the host routes to
+                # the edit ledger (with respect-decisions semantics on
+                # the host side per Block 3 D2a.B).
+                pick_label = "✓ Export all"
+                pick_tip = (
+                    f"Set every undecided item on day {snapshot.day_number} "
+                    "to Export. Explicit Drop decisions are kept."
+                )
+                skip_label = "✗ Drop all"
+                skip_tip = (
+                    f"Drop every undecided item on day {snapshot.day_number}. "
+                    "Explicit Export decisions are kept."
+                )
+            else:
+                pick_label = "✓ Pick all"
+                pick_tip = (
                     f"Pick every undecided item on day {snapshot.day_number}."
-                ),
-            )
+                )
+                skip_label = "✗ Skip all"
+                skip_tip = (
+                    f"Skip every undecided item on day {snapshot.day_number}."
+                )
+            pick_all = _mini_button(pick_label, "green", pick_tip)
             pick_all.clicked.connect(
                 lambda: self.pick_all_requested.emit(snapshot.day_number)
             )
             top.addWidget(pick_all)
-            skip_all = _mini_button(
-                "✗ Skip all", "red",
-                f"Skip every undecided item on day {snapshot.day_number}.",
-            )
+            skip_all = _mini_button(skip_label, "red", skip_tip)
             skip_all.clicked.connect(
                 lambda: self.skip_all_requested.emit(snapshot.day_number)
             )
@@ -318,6 +347,30 @@ class DayRow(Card):
             bar_specs = (
                 ("As shot", as_shot, as_shot_pct, picked > 0, "green"),
                 ("Edited", edited, edited_pct, picked > 0, "amber"),
+            )
+        elif self._is_export:
+            # spec/89 §4.1 / Block 3 D1.C — three-slice bar over picked
+            # keepers. The three counts always sum to picked under the
+            # gateway's intent inference (Block 1 defaults + explicit
+            # decisions); the orange slice fills only when versions
+            # clusters carry Compare-state members (Slice 5+).
+            picked = max(0, snapshot.picked)
+            shipped = max(0, min(picked, snapshot.exported))
+            dropped = max(0, min(picked - shipped, snapshot.dropped_export))
+            undecided = max(0, picked - shipped - dropped)
+            if picked > 0:
+                shipped_pct = int(round(shipped / picked * 100))
+                undecided_pct = int(round(undecided / picked * 100))
+                dropped_pct = max(0, 100 - shipped_pct - undecided_pct)
+            else:
+                shipped_pct = undecided_pct = dropped_pct = 0
+            bar_specs = (
+                ("Shipped", shipped, shipped_pct, picked > 0, "green"),
+                # spec/89 Block 1 D3.A / Block 4 D1.B — undecided uses
+                # the Compare orange (distinct from Edit's amber so the
+                # two phases never share a fill colour).
+                ("Undecided", undecided, undecided_pct, picked > 0, "compare"),
+                ("Dropped", dropped, dropped_pct, picked > 0, "red"),
             )
         else:
             items = snapshot.items
@@ -449,6 +502,16 @@ class DaysListsPage(QWidget):
         outer.addWidget(self._identity_host)
         self._refresh_identity()
 
+        # spec/89 §2.2 — the external-edits scan chip mirrors the
+        # legend-row chip on the Days Grid. Slice 2 ships the skeleton
+        # with a static "up to date" reading; Slice 4 wires it to the
+        # real scanner output (per-source breakdown on change).
+        self._scan_chip = QLabel("External edits: up to date")
+        self._scan_chip.setObjectName("Faint")
+        self._scan_chip.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._scan_chip.setVisible(False)
+        outer.addWidget(self._scan_chip)
+
         # Header — mockup `.head` proportions: Back · title block · action
         # cluster. The title block follows `.ttl h1{font-size:22px;
         # letter-spacing:-.4px}` — smaller than the 30/800 PageTitle so
@@ -544,9 +607,37 @@ class DaysListsPage(QWidget):
                 self._render()
 
     def _apply_phase_chrome(self) -> None:
-        """Show/hide phase-specific header verbs. The day-level Pick-all /
-        Skip-all are Pick concepts; Edit (and Export) have no day Skip, so
-        they are hidden there (Nelson 2026-06-18)."""
+        """Show/hide phase-specific header verbs + relabel for Export.
+
+        * Pick / Collect: ``Pick all days`` / ``Skip all days`` visible.
+        * Edit: bulk verbs hidden — Edit is creative-only per spec/66
+          §1.1 (Nelson 2026-06-18).
+        * Export: bulk verbs visible but relabelled per spec/89 §4.1 to
+          ``Export all days`` / ``Drop all days``; the host respects
+          explicit P/X decisions on the bulk (Block 3 D2a.B).
+        """
+        # The scan chip is Export-only.
+        try:
+            self._scan_chip.setVisible(self._identity_phase == "export")
+        except AttributeError:
+            pass  # During the very first _apply_phase_chrome in __init__
+        if self._identity_phase == "export":
+            self._pick_all_days_btn.setText("✓ Export all days")
+            self._pick_all_days_btn.setToolTip(
+                "Set every undecided picked keeper to Export. "
+                "Explicit Drop decisions are kept.")
+            self._skip_all_days_btn.setText("✗ Drop all days")
+            self._skip_all_days_btn.setToolTip(
+                "Drop every undecided picked keeper. "
+                "Explicit Export decisions are kept.")
+            self._pick_all_days_btn.setVisible(True)
+            self._skip_all_days_btn.setVisible(True)
+            return
+        # Pick / Collect labels (Edit hides both).
+        self._pick_all_days_btn.setText("✓ Pick all days")
+        self._pick_all_days_btn.setToolTip("")
+        self._skip_all_days_btn.setText("✗ Skip all days")
+        self._skip_all_days_btn.setToolTip("")
         show_pick_verbs = self._identity_phase in ("pick", "collect")
         self._pick_all_days_btn.setVisible(show_pick_verbs)
         self._skip_all_days_btn.setVisible(show_pick_verbs)

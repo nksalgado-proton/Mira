@@ -281,6 +281,81 @@ def test_phase_progress_is_a_query(event_gw):
     assert pdp["pick"][1]["decided"] == 1 and pdp["pick"][1]["total"] == 1
 
 
+def test_phase_day_progress_export_bucket_three_slice(tmp_path):
+    """spec/89 §4.1 — the export bucket emits ``shipped``, ``dropped``,
+    ``undecided`` over picked-keeper totals. Intent inference (Block 1
+    D1.C):
+
+    * picked keeper with explicit ``phase_state(edit)`` → that decision
+    * picked keeper with no edit row + ≥1 Exported Media/ lineage → green
+    * picked keeper with no edit row + 0 ship rows → red
+
+    Items not in the Pick keeper set drop out of the export bucket
+    entirely — Export's denominator is picked keepers, not captured.
+    """
+    from mira.gateway.event_gateway import EventGateway
+    from mira.store import models as m
+    from mira.store.repo import EventStore
+
+    store = EventStore.create(tmp_path / "e.db", event_id="evt-x")
+    store.save_document(m.EventDocument(event=m.Event(
+        uuid="evt-x", name="x", created_at="t", updated_at="t")))
+    store.upsert(m.Camera(camera_id="G9"))
+    store.upsert(m.TripDay(day_number=1, date="2026-04-01"))
+
+    def _item(iid: str) -> None:
+        store.upsert(m.Item(
+            id=iid, kind="photo", created_at="t", provenance="captured",
+            origin_relpath=f"Original Media/_cameras/d1/G9/{iid}.rw2",
+            sha256="s" + iid, byte_size=4,
+            materialized_at="t", materialized_phase="ingest",
+            camera_id="G9", day_number=1,
+            capture_time_raw="2026-04-01T08:00:00",
+            capture_time_corrected="2026-04-01T08:00:00",
+        ))
+
+    # Four picked keepers on day 1 plus one skipped (out of pool).
+    for iid in ("p-ship", "p-drop-explicit", "p-default-red", "p-shipped-via-lrc"):
+        _item(iid)
+        store.upsert(m.PhaseState(item_id=iid, phase="pick", state="picked"))
+    _item("p-not-picked")
+    store.upsert(m.PhaseState(
+        item_id="p-not-picked", phase="pick", state="skipped"))
+
+    # Explicit Export-side decisions on two of them.
+    store.upsert(m.PhaseState(item_id="p-ship", phase="edit", state="picked"))
+    store.upsert(m.PhaseState(
+        item_id="p-drop-explicit", phase="edit", state="skipped"))
+
+    # p-shipped-via-lrc has a third-party return on disk — Block 1
+    # 1-version cell, default green.
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-shipped-via-lrc-LRC.jpg",
+        phase="edit", source_kind="item",
+        source_item_id="p-shipped-via-lrc",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party"))
+
+    eg = EventGateway(store, event_root=tmp_path)
+    try:
+        pdp = eg.phase_day_progress()
+        cell = pdp["export"][1]
+        assert cell["total"] == 4
+        # shipped: p-ship (explicit P) + p-shipped-via-lrc (lineage default)
+        assert cell["shipped"] == 2
+        # dropped: p-drop-explicit (explicit X) + p-default-red (no row, no lineage)
+        assert cell["dropped"] == 2
+        # No clusters yet → no Compare members.
+        assert cell["undecided"] == 0
+        # Legacy compat fields read by _event_card_data.
+        assert cell["decided"] == 4
+        assert cell["committed"] == 2
+        # The skipped-in-Pick row is outside the keeper pool entirely.
+        assert cell["total"] == 4
+    finally:
+        eg.close()
+
+
 def test_video_workshop_reads(event_gw):
     """spec/56 reads: markers in at_ms order, segments in seg_index order,
     geometry DERIVED from markers + duration (never stored)."""

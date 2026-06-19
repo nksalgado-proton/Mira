@@ -526,24 +526,63 @@ class EventGateway:
             for dn in set(picked_by_day) | set(edited_by_day)
         }
 
-        # ---- Export: exported files (edit_exported) / picked ----
-        exported_by_day = {
-            r["dn"]: r["n"] for r in conn.execute(
-                "SELECT item.day_number AS dn, COUNT(*) AS n "
-                "FROM adjustment a JOIN visible_item item ON item.id = a.item_id "
-                "WHERE a.edit_exported = 1 "
-                "GROUP BY item.day_number"
-            )
+        # ---- Export: shipped / dropped / undecided over picked keepers ----
+        # spec/89 §4.1 — the three-slice Days List bar. The intent of
+        # each picked keeper is the live ``phase_state(phase='edit')``
+        # decision IF the row exists; otherwise the version-count
+        # default (Block 1 D1.C): 0 versions → 'skipped', ≥1 version →
+        # 'picked'. Reading lineage rows under ``Exported Media/`` is
+        # how we ask "does this item already carry a file?" The Compare
+        # leg (versions cluster members not yet decided) goes to zero
+        # under Slice 2 — Slice 5 lands the cluster reshape and surfaces
+        # the orange slice.
+        export_rows = conn.execute(
+            "WITH picked_keepers AS ( "
+            "    SELECT i.id, i.day_number FROM phase_state ps "
+            "    JOIN visible_item i ON i.id = ps.item_id "
+            "    WHERE ps.phase = 'pick' AND ps.state = 'picked' "
+            "), "
+            "intent AS ( "
+            "    SELECT pk.id, pk.day_number, "
+            "        COALESCE(ps_edit.state, "
+            "            CASE WHEN EXISTS ( "
+            "                SELECT 1 FROM lineage l "
+            "                WHERE l.source_item_id = pk.id "
+            "                  AND l.phase = 'edit' "
+            "                  AND l.export_relpath LIKE 'Exported Media/%' "
+            "            ) THEN 'picked' ELSE 'skipped' END "
+            "        ) AS state "
+            "    FROM picked_keepers pk "
+            "    LEFT JOIN phase_state ps_edit "
+            "        ON ps_edit.item_id = pk.id AND ps_edit.phase = 'edit' "
+            ") "
+            "SELECT day_number AS dn, "
+            "    SUM(CASE WHEN state = 'picked' THEN 1 ELSE 0 END) AS shipped, "
+            "    SUM(CASE WHEN state = 'skipped' THEN 1 ELSE 0 END) AS dropped "
+            "FROM intent GROUP BY day_number"
+        ).fetchall()
+        export_by_day = {
+            r["dn"]: (int(r["shipped"] or 0), int(r["dropped"] or 0))
+            for r in export_rows
         }
-        out["export"] = {
-            dn: {
-                "total": picked_by_day.get(dn, 0),
-                "decided": exported_by_day.get(dn, 0),
-                "committed": exported_by_day.get(dn, 0),
-                "picked": exported_by_day.get(dn, 0),
+        out["export"] = {}
+        for dn in set(picked_by_day) | set(export_by_day):
+            total = picked_by_day.get(dn, 0)
+            shipped, dropped = export_by_day.get(dn, (0, 0))
+            undecided = max(0, total - shipped - dropped)
+            out["export"][dn] = {
+                "total": total,
+                "shipped": shipped,
+                "dropped": dropped,
+                "undecided": undecided,
+                # Backwards-compatible legacy fields read by the
+                # event-card status heuristic: 'decided' = the count of
+                # items the user has implicitly or explicitly committed
+                # one way or another.
+                "decided": shipped + dropped,
+                "committed": shipped,
+                "picked": shipped,
             }
-            for dn in set(picked_by_day) | set(exported_by_day)
-        }
         return out
 
     # ----- buckets -------------------------------------------------------- #

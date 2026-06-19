@@ -2770,6 +2770,10 @@ class MainWindow(QMainWindow):
             # Edit bucket: edited (off the unedited baseline) / picked. The
             # Edit-identity Days Lists row reads ``edited`` (Nelson 2026-06-18).
             edit_map = progress.get("edit", {})
+            # Export bucket (spec/89 §4.1 / Block 3): three-slice bar —
+            # shipped (green intent) / dropped (red intent) / undecided
+            # (Compare-state cluster members, Slice 5 onward).
+            export_map = progress.get("export", {})
             snapshots: list[DaySnapshot] = []
             for d in trip_days:
                 cell = pick_map.get(d.day_number, {}) or {}
@@ -2800,6 +2804,7 @@ class MainWindow(QMainWindow):
                 # spark on each DayRow. One SQL pass keyed by day_number
                 # so the dashboard's analytic feel doesn't add round-
                 # trips per day.
+                export_cell = export_map.get(d.day_number, {}) or {}
                 snapshots.append(DaySnapshot(
                     day_number=d.day_number,
                     title=(d.description or f"Day {d.day_number}"),
@@ -2809,6 +2814,9 @@ class MainWindow(QMainWindow):
                     picked=picked,
                     skipped=skipped,
                     edited=edited,
+                    exported=int(export_cell.get("shipped", 0)),
+                    dropped_export=int(export_cell.get("dropped", 0)),
+                    undecided=int(export_cell.get("undecided", 0)),
                     buckets=buckets,
                     items=total,
                     location=(getattr(d, "location", "") or ""),
@@ -3213,7 +3221,14 @@ class MainWindow(QMainWindow):
         decision (event-wide, or one day) for the active phase, then refresh
         the list. Pick/Skip are reversible per item; the event-wide sweep
         confirms first. Pick phase writes the 'pick' ledger; Edit/Export
-        write 'edit' (the Export ship decision rides the edit phase_state)."""
+        write 'edit' (the Export ship decision rides the edit phase_state).
+
+        **spec/89 Block 3 D2a.B (respect explicit decisions) for Export:**
+        the bulk only commits items that have NOT been explicitly decided
+        yet — items without a ``phase_state(edit)`` row. A cell the user
+        already pressed P or X on stays untouched. Plain Pick (when
+        ``_export_phase_active`` is False) keeps the legacy override
+        semantic."""
         event_id = self._current_event_id
         if event_id is None:
             return
@@ -3235,7 +3250,19 @@ class MainWindow(QMainWindow):
             items = (eg.items(provenance="captured", day=day_number)
                      if day_number is not None
                      else eg.items(provenance="captured"))
-            eg.set_items_phase_state([it.id for it in items], phase, state)
+            target_ids = [it.id for it in items]
+            if self._export_phase_active:
+                # Drop items the user has already touched — respect
+                # explicit P/X decisions per Block 3 D2a.B.
+                try:
+                    decided = set(eg.phase_states("edit").keys())
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "phase_states('edit') failed; falling back to "
+                        "the legacy aggressive bulk")
+                    decided = set()
+                target_ids = [iid for iid in target_ids if iid not in decided]
+            eg.set_items_phase_state(target_ids, phase, state)
         finally:
             eg.close()
         self._open_days_lists_for(event_id)

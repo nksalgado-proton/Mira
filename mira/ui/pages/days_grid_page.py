@@ -1999,6 +1999,139 @@ class DaysGridPage(QWidget):
             return
         self.item_activated.emit(item_id)
 
+    def _is_preview_item_stale(self, item) -> bool:
+        """spec/89 §11.3 polish — true when the focused cell has a Mira
+        render on disk whose recorded ``recipe_json`` no longer matches
+        what the live :class:`Adjustment` would emit. Drives the
+        "Adjustments changed — Export to refresh" chip in the preview
+        viewer.
+
+        Third-party cells (no Mira render) never read stale: the file
+        IS the recipe; there's nothing to re-render against.
+        Versions sub-grid cells (item_id is a relpath) match on the
+        specific lineage row's recipe. Day-grid flat cells compare
+        against the newest Mira-render row for the source item.
+        """
+        if self._eg is None or self._eg.event_root is None:
+            return False
+        from mira.ui.exported.batch import recipe_for_item
+        import json as _json
+        # Resolve to the lineage row carrying the recipe snapshot.
+        target_row = None
+        iid = item.item_id
+        if isinstance(iid, str) and iid.startswith("Exported Media/"):
+            # Versions sub-grid: cell IS the lineage row.
+            try:
+                row = self._eg.store.conn.execute(
+                    "SELECT * FROM lineage WHERE export_relpath = ?",
+                    (iid,)).fetchone()
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "stale-check: row lookup failed for %s", iid)
+                return False
+            if row is None:
+                return False
+            provenance = (row["provenance"] or "")
+            if provenance != "mira_render":
+                return False
+            source_id = row["source_item_id"]
+            shipped_recipe_json = row["recipe_json"]
+        else:
+            # Day-grid flat / virtual Mira member: use the newest
+            # Mira-render version of the source item, if any.
+            source_id = (
+                iid.split(":", 1)[1] if isinstance(iid, str)
+                and iid.startswith("mira:") else iid
+            )
+            try:
+                versions = self._eg.versions_for_item(source_id)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "stale-check: versions_for_item(%s) failed",
+                    source_id)
+                return False
+            mira_rows = [
+                v for v in versions
+                if (getattr(v, "provenance", "") or "") == "mira_render"
+            ]
+            if not mira_rows:
+                return False
+            target_row = mira_rows[0]
+            shipped_recipe_json = getattr(target_row, "recipe_json", None)
+        try:
+            shipped = (
+                _json.loads(shipped_recipe_json) if shipped_recipe_json
+                else {})
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "stale-check: recipe_json parse failed for %s", source_id)
+            return False
+        try:
+            current = recipe_for_item(self._eg, source_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "stale-check: recipe_for_item(%s) failed", source_id)
+            return False
+        return current != shipped
+
+    def _preview_develop_kwargs(self, item, path) -> dict:
+        """spec/89 §11.3 polish — decide whether the preview viewer
+        should pipe ``path`` through Mira's develop pipeline (so the
+        user sees the would-be-shipped pixels) or read it raw from
+        disk. Returns kwargs ready to splat onto :class:`PreviewItem`.
+
+        Develop pipeline fires when:
+        * **Day-grid 0-version cell** — no shipped Mira render yet,
+          so the source photo passes through ``develop_photo_array``
+          using the live Adjustment row to preview the next Export
+          result. ``path`` is the source photo's path (per
+          :meth:`_resolve_preview_path` rule 3).
+        * **Virtual Mira cluster member** (``item_id`` starts with
+          ``"mira:"``) — same shape; the on-disk Mira render doesn't
+          exist yet.
+
+        Skipped for cells whose ``path`` already points at an
+        ``Exported Media/`` file (versions sub-grid members, shipped
+        Mira renders) — the file IS the answer, the pipeline would
+        re-render the same recipe at preview cost for nothing.
+        """
+        empty: dict = {"develop_for_preview": False}
+        if self._eg is None:
+            return empty
+        try:
+            event_root = (
+                Path(self._eg.event_root) if self._eg.event_root else None)
+            rel = (
+                str(path).replace("\\", "/")
+                if event_root is not None else "")
+            event_rel_prefix = str(event_root).replace("\\", "/") + "/" if event_root else ""
+            if event_rel_prefix and rel.startswith(event_rel_prefix):
+                rel_after = rel[len(event_rel_prefix):]
+                if rel_after.startswith("Exported Media/"):
+                    return empty
+        except Exception:                                          # noqa: BLE001
+            log.debug(
+                "preview-develop: prefix check failed for %s", path,
+                exc_info=True)
+        # Resolve the source item id (Mira-virtual members carry
+        # ``mira:<source_id>`` as their cell id; everything else is
+        # already a source id).
+        iid = item.item_id
+        source_id = (
+            iid.split(":", 1)[1] if isinstance(iid, str)
+            and iid.startswith("mira:") else iid
+        )
+        try:
+            adj = self._eg.adjustment(source_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "preview-develop: adjustment(%s) failed", source_id)
+            return empty
+        return {
+            "develop_for_preview": True,
+            "develop_adjustment": adj,
+        }
+
     def _open_export_preview(self, item) -> None:
         """spec/89 §3.2 / Slice 6 — open the read-only preview viewer
         for an Export-mode cell. Neighbours come from the current
@@ -2046,6 +2179,8 @@ class DaysGridPage(QWidget):
                 state=it.state,
                 has_shipped_file=bool(it.exported),
                 title=it.item_id.split("/")[-1] if "/" in it.item_id else "",
+                is_stale=self._is_preview_item_stale(it),
+                **self._preview_develop_kwargs(it, path),
             )
             for it, path in neighbours
         ]

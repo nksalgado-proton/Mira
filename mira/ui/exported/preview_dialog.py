@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QPixmap
@@ -68,6 +68,23 @@ class PreviewItem:
     state: Optional[str] = None      # 'picked' / 'skipped' / 'compare' / None
     has_shipped_file: bool = False   # drives "Export this" enable + label
     title: str = ""                  # header label (e.g. filename)
+    # spec/89 §11.3 polish — when the live Adjustment row would render
+    # a different recipe than the on-disk Mira version's recorded
+    # recipe_json, the dialog paints a "Adjustments changed — Export
+    # to refresh" chip so the user knows the preview pixels lag behind
+    # the current edit state. Computed by the host (see
+    # DaysGridPage._open_export_preview); always False for third-party
+    # cells (their recipe is the file itself).
+    is_stale: bool = False
+    # spec/89 §11.3 polish — for 0-version cells + virtual Mira
+    # members the dialog runs ``core.preview_render.develop_photo_array``
+    # against ``develop_adjustment`` (the source's live Adjustment row)
+    # so the user sees the actual would-be-shipped pixels instead of
+    # the raw source. ``path`` is then the source photo's absolute
+    # path; the on-disk Mira render doesn't exist yet.
+    develop_for_preview: bool = False
+    develop_adjustment: Any = None
+    develop_style_fallback: str = "general"
 
 
 _STATE_LABEL = {
@@ -131,14 +148,26 @@ class ExportPreviewDialog(QDialog):
             Qt.WidgetAttribute.WA_TranslucentBackground)
         outer.addWidget(self._image_label, 1)
 
-        # Action row: state chip + step indicator + Open in Editor +
-        # Export this + Close.
+        # Action row: state chip + stale chip + step indicator + Open
+        # in Editor + Export this + Close.
         actions = QHBoxLayout()
         actions.setSpacing(10)
 
         self._state_chip = QLabel("")
         self._state_chip.setObjectName("Sub")
         actions.addWidget(self._state_chip)
+
+        # spec/89 §11.3 — staleness chip: the on-disk render lags
+        # behind the live Adjustment row (current recipe ≠ shipped
+        # recipe_json). The "Warn" object name picks up the warning
+        # palette token. Hidden unless the current item is stale.
+        self._stale_chip = QLabel("Adjustments changed — Export to refresh")
+        self._stale_chip.setObjectName("Warn")
+        self._stale_chip.setToolTip(
+            "The on-disk JPEG was rendered with older adjustments. "
+            "Re-running Export now will refresh it.")
+        self._stale_chip.setVisible(False)
+        actions.addWidget(self._stale_chip)
 
         actions.addStretch(1)
 
@@ -171,6 +200,10 @@ class ExportPreviewDialog(QDialog):
         if not self._items:
             return
         item = self._items[self._index]
+        # Store the focused item so resizeEvent's recompute path can
+        # reach for the develop flag too (it bypasses _render_current
+        # to avoid re-applying intent/state work on every drag).
+        self._current_item = item
         self._title_label.setText(item.title or item.path.name)
         # Step indicator (1 of N).
         if len(self._items) > 1:
@@ -181,22 +214,26 @@ class ExportPreviewDialog(QDialog):
         # State chip.
         label = _STATE_LABEL.get(item.state or "", "")
         self._state_chip.setText(f"Intent: {label}" if label else "")
+        # spec/89 §11.3 — stale chip visibility tracks the focused
+        # cell; the host computes the bool by diffing current recipe
+        # vs shipped recipe_json.
+        self._stale_chip.setVisible(bool(item.is_stale))
         # Export-this enablement: only fires when intent is picked AND
         # there's either no file yet (Mira-render-and-ship) or there
         # IS one (re-render with the ask-on-rerender dialog the host
         # owns; spec/89 §5.2 D6.C).
         self._export_this_btn.setEnabled(item.state == "picked")
         self._open_editor_btn.setEnabled(True)
-        # Image.
-        pm = self._load_preview_pixmap(item.path)
+        # Image — develop pipeline when the host asks for it
+        # (0-version cells + virtual Mira members; spec/89 §11.3
+        # polish), else raw file read.
+        pm = self._load_pixmap_for(item)
         self._set_image(pm)
 
-    @staticmethod
-    def _load_preview_pixmap(path: Path) -> Optional[QPixmap]:
-        """Read the would-be / already-is shipped pixels from disk. For
-        a Mira render that hasn't been produced yet (0-version cell),
-        the caller is expected to pass the source photo's path — the
-        live develop preview is a later polish pass (spec/89 §9)."""
+    @classmethod
+    def _load_preview_pixmap(cls, path: Path) -> Optional[QPixmap]:
+        """Read the would-be / already-is shipped pixels from disk —
+        the on-disk-Mira-render and third-party-return path."""
         if not path.exists():
             return None
         pm = QPixmap(str(path))
@@ -210,6 +247,36 @@ class ExportPreviewDialog(QDialog):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
         return pm
+
+    @classmethod
+    def _load_pixmap_for(cls, item: "PreviewItem") -> Optional[QPixmap]:
+        """Resolve one PreviewItem to a QPixmap. When the host asked
+        for a live develop preview (0-version cells + virtual Mira
+        members; spec/89 §11.3 polish), pipe the source photo through
+        :func:`core.preview_render.develop_photo_array` so the user
+        sees what the next Export run would produce. Falls back to a
+        raw file read on any pipeline failure."""
+        if item.develop_for_preview:
+            try:
+                from core.preview_render import develop_photo_array
+                from mira.ui.edited.adjustment_surface import (
+                    _array_to_pixmap,
+                )
+            except Exception:                                      # noqa: BLE001
+                return cls._load_preview_pixmap(item.path)
+            arr = develop_photo_array(
+                item.path, item.develop_adjustment,
+                style_fallback=item.develop_style_fallback,
+                max_long_edge=_PREVIEW_MAX_W,
+            )
+            if arr is not None:
+                try:
+                    return _array_to_pixmap(arr)
+                except Exception:                                  # noqa: BLE001
+                    pass
+            # Pipeline / conversion failed — fall back to source bytes
+            # so the user still sees SOMETHING.
+        return cls._load_preview_pixmap(item.path)
 
     def _set_image(self, pm: Optional[QPixmap]) -> None:
         if pm is None:
@@ -243,6 +310,10 @@ class ExportPreviewDialog(QDialog):
                     state=new_state,
                     has_shipped_file=it.has_shipped_file,
                     title=it.title,
+                    is_stale=it.is_stale,
+                    develop_for_preview=it.develop_for_preview,
+                    develop_adjustment=it.develop_adjustment,
+                    develop_style_fallback=it.develop_style_fallback,
                 )
                 if i == self._index:
                     self._render_current()
@@ -310,8 +381,11 @@ class ExportPreviewDialog(QDialog):
     def resizeEvent(self, event) -> None:  # noqa: N802 — Qt
         super().resizeEvent(event)
         # Re-scale on resize so the image keeps the aspect+fit contract.
+        # Dispatch through ``_load_pixmap_for`` so live-develop items
+        # still see the pipeline (a raw QPixmap load would ignore the
+        # develop flag and show the source bytes).
         if self._items:
-            pm = self._load_preview_pixmap(self._items[self._index].path)
+            pm = self._load_pixmap_for(self._items[self._index])
             self._set_image(pm)
 
 

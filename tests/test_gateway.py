@@ -356,6 +356,83 @@ def test_phase_day_progress_export_bucket_three_slice(tmp_path):
         eg.close()
 
 
+def test_phase_day_progress_export_bucket_counts_ship_intents(tmp_path):
+    """spec/89 §11.3 polish — the export bucket counts SHIP INTENTS
+    (spec/89 §1.1), not source items. A picked keeper with 2 lineage
+    rows contributes 2 to the bar; a keeper with 1 lineage + a Mira
+    edit intent contributes 2 (the virtual Mira member + the lineage
+    row each count once). The cluster reshape's multiplicity now
+    shows up in the bar instead of being clamped to 1 per keeper."""
+    from mira.gateway.event_gateway import EventGateway
+    from mira.store import models as m
+    from mira.store.repo import EventStore
+
+    store = EventStore.create(tmp_path / "e.db", event_id="evt-x")
+    store.save_document(m.EventDocument(event=m.Event(
+        uuid="evt-x", name="x", created_at="t", updated_at="t")))
+    store.upsert(m.Camera(camera_id="G9"))
+    store.upsert(m.TripDay(day_number=1, date="2026-04-01"))
+
+    def _item(iid: str) -> None:
+        store.upsert(m.Item(
+            id=iid, kind="photo", created_at="t", provenance="captured",
+            origin_relpath=f"Original Media/_cameras/d1/G9/{iid}.rw2",
+            sha256="s" + iid, byte_size=4,
+            materialized_at="t", materialized_phase="ingest",
+            camera_id="G9", day_number=1,
+            capture_time_raw="2026-04-01T08:00:00",
+            capture_time_corrected="2026-04-01T08:00:00",
+        ))
+
+    # Three picked keepers:
+    # * p-cluster: 2 third-party lineage rows (cluster cover, 2 intents).
+    # * p-mira-and-lineage: 1 lineage + 1 Mira-edit intent (2 intents).
+    # * p-flat: no lineage, no Mira intent → 1 default-skipped intent.
+    for iid in ("p-cluster", "p-mira-and-lineage", "p-flat"):
+        _item(iid)
+        store.upsert(m.PhaseState(item_id=iid, phase="pick", state="picked"))
+
+    # Cluster — both members in picked intent state.
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-cluster-a.jpg",
+        phase="edit", source_kind="item", source_item_id="p-cluster",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="picked"))
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-cluster-b.jpg",
+        phase="edit", source_kind="item", source_item_id="p-cluster",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="skipped"))
+
+    # 1 lineage + 1 Mira intent (non-baseline Adjustment).
+    store.upsert(m.Lineage(
+        export_relpath="Exported Media/p-mira-and-lineage-LRC.jpg",
+        phase="edit", source_kind="item",
+        source_item_id="p-mira-and-lineage",
+        recipe_json=None, exported_at="2026-06-19T09:00:00",
+        provenance="third_party", intent_state="picked"))
+    store.upsert(m.Adjustment(
+        item_id="p-mira-and-lineage", look="natural",
+        creative_filter="bw_high_contrast"))
+    # No explicit phase_state(edit) → Mira intent reads as 'compare'.
+
+    eg = EventGateway(store, event_root=tmp_path)
+    try:
+        cell = eg.phase_day_progress()["export"][1]
+        # 2 cluster intents + 2 mira+lineage intents + 1 flat default
+        # = 5 ship intents total.
+        assert cell["total"] == 5
+        # Shipped: p-cluster-a (picked) + p-mira-and-lineage's lineage
+        # row (picked) = 2.
+        assert cell["shipped"] == 2
+        # Dropped: p-cluster-b (skipped) + p-flat default (skipped) = 2.
+        assert cell["dropped"] == 2
+        # Undecided: p-mira-and-lineage's Mira member (compare default) = 1.
+        assert cell["undecided"] == 1
+    finally:
+        eg.close()
+
+
 def test_video_workshop_reads(event_gw):
     """spec/56 reads: markers in at_ms order, segments in seg_index order,
     geometry DERIVED from markers + duration (never stored)."""

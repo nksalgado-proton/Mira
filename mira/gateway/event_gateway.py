@@ -526,50 +526,98 @@ class EventGateway:
             for dn in set(picked_by_day) | set(edited_by_day)
         }
 
-        # ---- Export: shipped / dropped / undecided over picked keepers ----
-        # spec/89 §4.1 — the three-slice Days List bar. The intent of
-        # each picked keeper is the live ``phase_state(phase='edit')``
-        # decision IF the row exists; otherwise the version-count
-        # default (Block 1 D1.C): 0 versions → 'skipped', ≥1 version →
-        # 'picked'. Reading lineage rows under ``Exported Media/`` is
-        # how we ask "does this item already carry a file?" The Compare
-        # leg (versions cluster members not yet decided) goes to zero
-        # under Slice 2 — Slice 5 lands the cluster reshape and surfaces
-        # the orange slice.
+        # ---- Export: shipped / dropped / undecided over SHIP INTENTS ----
+        # spec/89 §4.1 + §11.3 polish — the three-slice Days List bar
+        # counts SHIP INTENTS (spec/89 §1.1), not source items. Each
+        # picked keeper contributes:
+        #
+        # * one intent per lineage row under ``Exported Media/`` (Mira
+        #   render OR third-party return), state from
+        #   ``lineage.intent_state`` (default ``'picked'`` for legacy
+        #   rows missing the column);
+        # * one intent for a Mira-edit intent — when the source carries
+        #   a non-baseline :data:`core.edit_status.EDITED_SQL`
+        #   adjustment row — state from ``phase_state(edit)`` (default
+        #   ``'compare'``);
+        # * one default ``'skipped'`` intent when the keeper has NO
+        #   ship intents at all (Block 1 D1.C — the implicit red-flat
+        #   reading; without it the keeper would vanish from the bar).
+        #
+        # The denominator stops being "picked keepers" and becomes
+        # ``shipped + undecided + dropped`` — a cluster with two
+        # versions contributes 2, a flat single-version cell
+        # contributes 1.
+        from core.edit_status import EDITED_SQL
         export_rows = conn.execute(
             "WITH picked_keepers AS ( "
             "    SELECT i.id, i.day_number FROM phase_state ps "
             "    JOIN visible_item i ON i.id = ps.item_id "
             "    WHERE ps.phase = 'pick' AND ps.state = 'picked' "
             "), "
-            "intent AS ( "
-            "    SELECT pk.id, pk.day_number, "
-            "        COALESCE(ps_edit.state, "
-            "            CASE WHEN EXISTS ( "
-            "                SELECT 1 FROM lineage l "
-            "                WHERE l.source_item_id = pk.id "
-            "                  AND l.phase = 'edit' "
-            "                  AND l.export_relpath LIKE 'Exported Media/%' "
-            "            ) THEN 'picked' ELSE 'skipped' END "
-            "        ) AS state "
+            "lineage_intents AS ( "
+            "    SELECT pk.day_number, "
+            "        COALESCE(l.intent_state, 'picked') AS state "
+            "    FROM picked_keepers pk "
+            "    JOIN lineage l ON l.source_item_id = pk.id "
+            "    WHERE l.phase = 'edit' "
+            "      AND l.export_relpath LIKE 'Exported Media/%' "
+            "), "
+            "mira_intents AS ( "
+            "    SELECT pk.day_number, "
+            "        COALESCE(ps_edit.state, 'compare') AS state "
+            "    FROM picked_keepers pk "
+            "    JOIN adjustment a ON a.item_id = pk.id "
+            "    LEFT JOIN phase_state ps_edit "
+            "        ON ps_edit.item_id = pk.id "
+            "       AND ps_edit.phase = 'edit' "
+            f"   WHERE {EDITED_SQL} "
+            "), "
+            # Default intents: keepers with NO real ship intents get
+            # one implicit intent. State follows the user's explicit
+            # phase_state(edit) if present (so a P on a 0-version cell
+            # still reads as picked even though there's nothing to
+            # ship); else 'skipped' (Block 1 D1.C).
+            "default_intents AS ( "
+            "    SELECT pk.day_number, "
+            "        COALESCE(ps_edit.state, 'skipped') AS state "
             "    FROM picked_keepers pk "
             "    LEFT JOIN phase_state ps_edit "
-            "        ON ps_edit.item_id = pk.id AND ps_edit.phase = 'edit' "
+            "        ON ps_edit.item_id = pk.id "
+            "       AND ps_edit.phase = 'edit' "
+            "    WHERE NOT EXISTS ( "
+            "        SELECT 1 FROM lineage l "
+            "        WHERE l.source_item_id = pk.id "
+            "          AND l.phase = 'edit' "
+            "          AND l.export_relpath LIKE 'Exported Media/%' "
+            "    ) AND NOT EXISTS ( "
+            "        SELECT 1 FROM adjustment a "
+            f"       WHERE a.item_id = pk.id AND {EDITED_SQL} "
+            "    ) "
+            "), "
+            "all_intents AS ( "
+            "    SELECT * FROM lineage_intents UNION ALL "
+            "    SELECT * FROM mira_intents UNION ALL "
+            "    SELECT * FROM default_intents "
             ") "
             "SELECT day_number AS dn, "
             "    SUM(CASE WHEN state = 'picked' THEN 1 ELSE 0 END) AS shipped, "
-            "    SUM(CASE WHEN state = 'skipped' THEN 1 ELSE 0 END) AS dropped "
-            "FROM intent GROUP BY day_number"
+            "    SUM(CASE WHEN state = 'skipped' THEN 1 ELSE 0 END) AS dropped, "
+            "    SUM(CASE WHEN state IN ('compare', 'candidate') "
+            "        THEN 1 ELSE 0 END) AS undecided "
+            "FROM all_intents GROUP BY day_number"
         ).fetchall()
         export_by_day = {
-            r["dn"]: (int(r["shipped"] or 0), int(r["dropped"] or 0))
+            r["dn"]: (
+                int(r["shipped"] or 0),
+                int(r["dropped"] or 0),
+                int(r["undecided"] or 0),
+            )
             for r in export_rows
         }
         out["export"] = {}
         for dn in set(picked_by_day) | set(export_by_day):
-            total = picked_by_day.get(dn, 0)
-            shipped, dropped = export_by_day.get(dn, (0, 0))
-            undecided = max(0, total - shipped - dropped)
+            shipped, dropped, undecided = export_by_day.get(dn, (0, 0, 0))
+            total = shipped + dropped + undecided
             out["export"][dn] = {
                 "total": total,
                 "shipped": shipped,
@@ -577,7 +625,7 @@ class EventGateway:
                 "undecided": undecided,
                 # Backwards-compatible legacy fields read by the
                 # event-card status heuristic: 'decided' = the count of
-                # items the user has implicitly or explicitly committed
+                # intents the user has implicitly or explicitly committed
                 # one way or another.
                 "decided": shipped + dropped,
                 "committed": shipped,

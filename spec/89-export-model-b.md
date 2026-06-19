@@ -465,17 +465,23 @@ for the next session): badge strip readability, scan-chip wording,
 cluster cover thumbnail. The live newest-version cover preview is
 still the deferred polish in §9 first/second bullets.
 
-### 11.3 Polish surface (deferred — nice-to-haves, not gates)
+### 11.3 Polish surface
 
-A fresh session can pick any of these up; none block a real
-Export workflow.
+Most of the polish landed 2026-06-19; the deferred items are flagged
+with explicit reasons so a future session knows what's left.
 
-- **Live Mira-develop preview in the viewer.** 0-version cells in
-  the preview viewer fall back to the source photo. The Mira
-  develop pipeline could render the preview live so the user sees
-  what the next Export run would produce. The same pipeline could
-  drive the virtual Mira member's thumbnail inside a versions
-  cluster sub-grid (today: source photo placeholder).
+- ~~**Live Mira-develop preview in the viewer.**~~ **Shipped
+  2026-06-19** — new [`core.preview_render.develop_photo_array`](core/preview_render.py)
+  runs the source through the full pipeline (rotation → tone →
+  filter → crop) using the live `Adjustment` row, capped at the
+  dialog's max long-edge so a 6000-px source doesn't pay full-res
+  cost. [`ExportPreviewDialog`](mira/ui/exported/preview_dialog.py)
+  dispatches via `_load_pixmap_for`; the host
+  ([`DaysGridPage._preview_develop_kwargs`](mira/ui/pages/days_grid_page.py))
+  enables it for 0-version cells + virtual Mira cluster members
+  (`item_id` starts with `mira:`) and skips it when `path` already
+  points at an `Exported Media/` file. Pipeline failures fall back
+  to a raw source-bytes read so the user always sees SOMETHING.
 - ~~**Cluster cover thumbnail = newest version.**~~ **Shipped
   2026-06-19** — [`_versions_cluster_grid_item`](mira/ui/pages/days_grid_page.py)
   picks `rows[0]` from `versions_for_item` (newest-first per
@@ -486,27 +492,44 @@ Export workflow.
   decoder swaps in the version's pixels. Mira-intent-only
   clusters (no on-disk version yet) still use the source thumb
   as the cover — there's nothing else to show.
-- **App-specific badge icons.** Slice 4 ships text wordmarks
-  (`Mira`, `LRC`, `Helicon`, `CO`, `ext`). App-specific icon
-  glyphs can replace them in a later visual polish pass (Block 2
-  D2 alternative).
-- **Adjustments-changed staleness chip.** D1a.A ("preview reads
-  from disk") is honest but stale-tolerant. An "Adjustments changed
-  — Export to refresh" chip on the preview viewer would warn the
-  user when the on-disk render is older than the live adjustment
-  row.
-- **Snapshot multi-version nesting.** A video snapshot is a photo
-  and could technically have 2+ external versions. Slice 9 keeps
-  the video cluster's interior flat (no nested versions cluster).
-  The nested case is a deliberate v2 enhancement.
-- **Days List bar accuracy under the new ship-intent rule.** The
-  `phase_day_progress` export bucket SQL still counts at the
-  source-item level via `phase_state(edit) + EXISTS lineage`. With
-  Mira-intent-as-version clusters, the right denominator is the
-  number of ship intents, not picked-keepers. Low-stakes — the
-  bars still read sensibly — but a fresh session could revisit.
-- **Eyeball the scan chip wording end-to-end** (badges, mixed
-  match/unmatched runs, the "31 files in Edited Media/" failure
-  path). Unit-tested via `test_scan_chip_text` but never
-  side-by-side with the real surface.
+- **App-specific badge icons.** *Deferred — needs design assets.*
+  Slice 4 ships text wordmarks (`Mira`, `LRC`, `Helicon`, `CO`,
+  `ext`). App-specific icon glyphs would replace them, but the
+  asset audit (2026-06-19) only found `assets/icons/mira-mark.svg`
+  + `mira.ico` + `mira.png` — no third-party glyphs. Authoring
+  LRC/Helicon/Capture-One-look-alike SVGs (and clearing them for
+  trademark) is a design-pass concern that needs Nelson, not
+  headless work. The text wordmarks are unambiguous and ship-ready
+  in the meantime.
+- ~~**Adjustments-changed staleness chip.**~~ **Shipped 2026-06-19**
+  — [`ExportPreviewDialog`](mira/ui/exported/preview_dialog.py)
+  carries an `Adjustments changed — Export to refresh` chip that
+  fires when the focused cell's live `Adjustment` (via
+  `recipe_for_item`) no longer matches the on-disk Mira render's
+  `lineage.recipe_json`. The host populates `PreviewItem.is_stale`
+  per cell ([`DaysGridPage._is_preview_item_stale`](mira/ui/pages/days_grid_page.py));
+  third-party returns short-circuit to False (no recipe to diff).
+- **Snapshot multi-version nesting.** *Deferred — explicit v2.*
+  A video snapshot is a photo and could carry 2+ external
+  versions. Slice 9 kept the video cluster's interior flat (no
+  nested versions cluster) and §9 already flagged this as a
+  deliberate v2 enhancement. The nested case widens the cell
+  taxonomy meaningfully (cluster-inside-cluster) and deserves its
+  own design pass before code.
+- ~~**Days List bar accuracy under the new ship-intent rule.**~~
+  **Shipped 2026-06-19** — the `phase_day_progress` export bucket
+  SQL now counts SHIP INTENTS per spec/89 §1.1: one intent per
+  lineage row + one for a Mira-edit intent + one default-`skipped`
+  intent for keepers with no real ship intents. A versions cluster
+  with two members contributes 2 to the bar; the
+  [`DayRow`](mira/ui/pages/days_lists_page.py) Export branch's
+  denominator is now `shipped + undecided + dropped` (instead of
+  the clamped `picked` it used). Backwards-compat keeps the
+  `decided / committed / picked` legacy fields populated.
+- **Eyeball the scan chip wording end-to-end.** *Deferred —
+  needs Nelson in the loop.* The chip is unit-tested via
+  `test_scan_chip_text` but the visual check (badge readability,
+  mixed match/unmatched runs, the "31 files in Edited Media/"
+  failure path side-by-side with the real surface) needs a live
+  walkthrough on a real event. Out of scope for headless work.
 

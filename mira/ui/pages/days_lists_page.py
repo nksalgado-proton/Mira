@@ -349,28 +349,31 @@ class DayRow(Card):
                 ("Edited", edited, edited_pct, picked > 0, "amber"),
             )
         elif self._is_export:
-            # spec/89 §4.1 / Block 3 D1.C — three-slice bar over picked
-            # keepers. The three counts always sum to picked under the
-            # gateway's intent inference (Block 1 defaults + explicit
-            # decisions); the orange slice fills only when versions
-            # clusters carry Compare-state members (Slice 5+).
-            picked = max(0, snapshot.picked)
-            shipped = max(0, min(picked, snapshot.exported))
-            dropped = max(0, min(picked - shipped, snapshot.dropped_export))
-            undecided = max(0, picked - shipped - dropped)
-            if picked > 0:
-                shipped_pct = int(round(shipped / picked * 100))
-                undecided_pct = int(round(undecided / picked * 100))
+            # spec/89 §4.1 + §11.3 polish — three-slice bar over SHIP
+            # INTENTS (spec/89 §1.1), not picked keepers. A versions
+            # cluster with two members contributes 2 to the bar; a flat
+            # single-version cell contributes 1; a 0-version keeper
+            # contributes 1 default-skipped. The gateway returns the
+            # three counts pre-summed; the denominator here is just
+            # ``shipped + undecided + dropped`` so cluster
+            # multiplicity reads correctly.
+            shipped = max(0, snapshot.exported)
+            dropped = max(0, snapshot.dropped_export)
+            undecided = max(0, snapshot.undecided)
+            total = shipped + dropped + undecided
+            if total > 0:
+                shipped_pct = int(round(shipped / total * 100))
+                undecided_pct = int(round(undecided / total * 100))
                 dropped_pct = max(0, 100 - shipped_pct - undecided_pct)
             else:
                 shipped_pct = undecided_pct = dropped_pct = 0
             bar_specs = (
-                ("Shipped", shipped, shipped_pct, picked > 0, "green"),
+                ("Shipped", shipped, shipped_pct, total > 0, "green"),
                 # spec/89 Block 1 D3.A / Block 4 D1.B — undecided uses
                 # the Compare orange (distinct from Edit's amber so the
                 # two phases never share a fill colour).
-                ("Undecided", undecided, undecided_pct, picked > 0, "compare"),
-                ("Dropped", dropped, dropped_pct, picked > 0, "red"),
+                ("Undecided", undecided, undecided_pct, total > 0, "compare"),
+                ("Dropped", dropped, dropped_pct, total > 0, "red"),
             )
         else:
             items = snapshot.items

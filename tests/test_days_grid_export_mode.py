@@ -563,6 +563,92 @@ def test_export_mode_center_click_opens_preview_viewer(qapp, app_gateway):
     page.close_event()
 
 
+def test_preview_staleness_chip_fires_when_recipe_drifts(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 polish — the preview viewer's stale chip lights
+    when the on-disk Mira render's ``recipe_json`` no longer matches
+    the live Adjustment row.
+
+    Drive the predicate directly with a duck-typed item so the
+    Mira-intent-becomes-cluster reshape stays out of the way — the
+    predicate routes by item_id, not by surface state."""
+    import json as _json
+    from types import SimpleNamespace
+    from mira.store import models as _m
+    from mira.ui.exported.batch import recipe_for_item
+
+    _, eg = store_and_gateway
+    # x2 — set the Adjustment first, derive the recipe from it, then
+    # record lineage with that exact recipe so the cell starts FRESH.
+    eg.store.upsert(_m.Adjustment(item_id="x2", look="natural"))
+    fresh_recipe = recipe_for_item(eg, "x2")
+    ship_dir = event_dir / "Exported Media" / "Dia 1"
+    ship_dir.mkdir(parents=True, exist_ok=True)
+    (ship_dir / "x2.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/Dia 1/x2.jpg",
+        phase="edit", source_kind="item", source_item_id="x2",
+        recipe_json=_json.dumps(fresh_recipe),
+        exported_at="t", provenance="mira_render"))
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # Fresh — recipe matches shipped row.
+    assert page._is_preview_item_stale(
+        SimpleNamespace(item_id="x2")) is False
+    # Drift the Adjustment off the shipped recipe → stale.
+    eg.store.upsert(_m.Adjustment(
+        item_id="x2", look="natural",
+        creative_filter="bw_high_contrast"))
+    assert page._is_preview_item_stale(
+        SimpleNamespace(item_id="x2")) is True
+    # 0-version source: nothing on disk → fresh (no Mira row to diff).
+    assert page._is_preview_item_stale(
+        SimpleNamespace(item_id="x1")) is False
+    page.close_event()
+
+
+def test_preview_staleness_chip_skips_third_party_cells(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 polish — third-party returns never paint the
+    stale chip: the file IS the recipe, there's nothing to diff
+    against. Even with a drifted Adjustment row, a third-party-only
+    history reads as fresh."""
+    from types import SimpleNamespace
+    from mira.store import models as _m
+
+    _, eg = store_and_gateway
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x3-LRC.jpg",
+        phase="edit", source_kind="item", source_item_id="x3",
+        recipe_json=None,
+        exported_at="2026-06-19T09:00:00",
+        provenance="third_party", intent_state="picked",
+    ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x3-LRC.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+    eg.set_edit_exported("x3", True)
+    eg.store.upsert(_m.Adjustment(
+        item_id="x3", look="natural", creative_filter="film_punch"))
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # Day-grid path: the source id has no Mira-render row → False
+    # even though the third-party row exists and Adjustment drifted.
+    assert page._is_preview_item_stale(
+        SimpleNamespace(item_id="x3")) is False
+    # Versions sub-grid path: the cell IS the third-party lineage row;
+    # provenance gate short-circuits before any recipe diff.
+    assert page._is_preview_item_stale(
+        SimpleNamespace(item_id="Exported Media/x3-LRC.jpg")) is False
+    page.close_event()
+
+
 # --------------------------------------------------------------------------- #
 # X-on-shipped → un-export (the spec/68 §3 "no separate delete UI" rule)
 # --------------------------------------------------------------------------- #

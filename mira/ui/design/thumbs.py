@@ -68,6 +68,10 @@ _CLUSTER_LABELS = {
     # video are grouped under a "video" cluster cover so a day with a
     # workshopped video reads as ONE pile, drillable to its members.
     "video": "Video",
+    # spec/89 Slice 5 — items with 2+ shipped lineage rows surface as
+    # a versions cluster cover so the user can compare + decide which
+    # version(s) to ship.
+    "versions": "Versions",
 }
 
 # Per-cell type stamp — the spec/56 "Video Clip" / "Snapshot" badge a

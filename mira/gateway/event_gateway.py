@@ -2544,6 +2544,45 @@ class EventGateway:
             self.store.upsert(entry)
             self._touch()
 
+    def set_lineage_intent(
+        self, export_relpath: str, intent_state: str,
+    ) -> None:
+        """spec/89 §1.2 / Block 1 D2.B — per-version intent for a
+        cluster member. Valid states: ``'compare'`` (undecided, the
+        Compare orange initial reading), ``'picked'`` (will ship),
+        ``'skipped'`` (will be dropped on the next Export run).
+
+        Single-version flat cells ignore this column entirely — their
+        intent rides ``phase_state(edit)`` on the source item — so a
+        cluster forms only when ``versions_for_item()`` returns ≥2
+        rows. The mutator is a thin UPDATE so the caller can stay
+        branch-free at the click site (the days-grid verb path passes
+        the click's export_relpath straight in)."""
+        if intent_state not in ("compare", "picked", "skipped"):
+            raise ValueError(
+                f"set_lineage_intent: invalid state {intent_state!r}; "
+                "must be 'compare' / 'picked' / 'skipped'")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE lineage SET intent_state = ? "
+                "WHERE export_relpath = ?",
+                (intent_state, export_relpath))
+            self._touch()
+
+    def versions_for_item(self, item_id: str) -> List[m.Lineage]:
+        """spec/89 Slice 5 — every ``Exported Media/`` lineage row for
+        a source item, in newest-first export-time order (Block 1
+        D4.A). Rows without an ``exported_at`` stamp sort last (no
+        timestamp = legacy or external row). Returns ``[]`` if the
+        item has no ship rows."""
+        sql = (
+            "SELECT l.* FROM lineage l "
+            "WHERE l.phase = 'edit' AND l.source_item_id = ? "
+            "  AND l.export_relpath LIKE 'Exported Media/%' "
+            "ORDER BY COALESCE(l.exported_at, '') DESC, l.export_relpath ASC"
+        )
+        return self.store.query_raw(m.Lineage, sql, (item_id,))
+
     def clear_lineage(self, phase: str) -> None:
         """Drop a phase's lineage rows (rebuilt on re-export). The
         spec/81 Phase 2 v8 schema dropped the FK cascade on cut_member;

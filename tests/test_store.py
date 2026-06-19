@@ -504,8 +504,10 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
         "CREATE INDEX ix_event_scope ON event(scope) WHERE scope IS NOT NULL")
     conn.execute(
         "CREATE INDEX ix_event_mood ON event(mood) WHERE mood IS NOT NULL")
-    # Strip the v9→v10 column from lineage so the ADD COLUMN step on the
-    # way back up doesn't collide on the duplicate-column check (spec/89).
+    # Strip the post-v2 lineage columns so the ADD COLUMN migrations
+    # on the way back up don't collide (spec/89 added 'provenance' and
+    # 'intent_state').
+    conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
 
@@ -533,7 +535,9 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     """The fresh DDL ships at the current SCHEMA_VERSION, so the
     ``lineage`` table already carries every post-v6 column. Strip them
     so the post-v6 ADD COLUMN migrations on the way back up don't
-    collide on a duplicate column (spec/89 v9→v10 added ``provenance``)."""
+    collide on a duplicate column (spec/89 v9→v10 added ``provenance``;
+    v10→v11 added ``intent_state``)."""
+    conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
 
 

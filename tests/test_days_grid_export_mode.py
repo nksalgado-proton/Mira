@@ -154,6 +154,145 @@ def test_export_mode_chrome_swaps_labels_and_shows_export_button(
     page.close_event()
 
 
+def test_export_two_plus_versions_reshape_into_cluster_compare_orange(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 Slice 5 / Block 1 D2 — when a source item carries 2+
+    ``Exported Media/`` lineage rows, the day grid replaces the flat
+    cell with a versions cluster cover. Fresh members default
+    ``compare``; the cover's state machine paints Compare orange as
+    long as any member is undecided."""
+    _, eg = store_and_gateway
+    # Two third-party returns for the same source item — born compare.
+    for rel, ext in (
+        ("Exported Media/x1-Lightroom.jpg", "lr"),
+        ("Exported Media/x1-Helicon.tif", "hl"),
+    ):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="compare",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-Lightroom.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-Helicon.tif").write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    by_id = {it.item_id: it for it in page._items}
+    cluster_id = "cluster:versions:x1"
+    assert cluster_id in by_id, list(by_id)
+    cover = by_id[cluster_id]
+    assert cover.item_kind == "cluster"
+    assert cover.cluster_type == "versions"
+    assert cover.cluster_count == 2
+    assert cover.state == "compare"
+    # The original flat x1 cell is replaced — only the cluster remains.
+    assert "x1" not in by_id
+    page.close_event()
+
+
+def test_export_versions_sub_grid_p_writes_intent_picked(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """Drilling into a versions cluster surfaces every row; pressing P
+    on a member writes ``lineage.intent_state='picked'`` via
+    set_lineage_intent. The cover's state machine updates on the
+    next refresh."""
+    _, eg = store_and_gateway
+    for rel in (
+        "Exported Media/x1-LRC-a.jpg",
+        "Exported Media/x1-LRC-b.jpg",
+    ):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="compare",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    for name in ("x1-LRC-a.jpg", "x1-LRC-b.jpg"):
+        (event_dir / "Exported Media" / name).write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    cover = next(
+        it for it in page._items
+        if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    page._open_cluster(cover._cull_cluster)
+    # In versions sub-grid: every member starts compare.
+    assert all(it.state == "compare" for it in page._items)
+    # Press P on the first member.
+    page._apply_verb_at_index(0, "pick")
+    # The intent_state landed on the lineage row.
+    rows = {r.export_relpath: r for r in eg.versions_for_item("x1")}
+    picked_relpath = page._items[0].item_id
+    assert rows[picked_relpath].intent_state == "picked"
+    page.close_event()
+
+
+def test_export_versions_cover_state_machine(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """Verify the Block 1 D3 cover state machine derives from member
+    intent_states. The helper is exercised on a freshly-built page."""
+    _, eg = store_and_gateway
+    states = ["picked", "skipped", "compare"]
+    for i, s in enumerate(states):
+        rel = f"Exported Media/x1-v{i}.jpg"
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state=s,
+        ))
+        (event_dir / "Exported Media").mkdir(exist_ok=True)
+        (event_dir / "Exported Media" / f"x1-v{i}.jpg").write_bytes(
+            b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    # Any compare → cover Compare orange.
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    cover = next(
+        it for it in page._items if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    assert cover.state == "compare"
+    # All picked → cover green.
+    for s in eg.versions_for_item("x1"):
+        eg.set_lineage_intent(s.export_relpath, "picked")
+    page._refresh_from_gateway()
+    cover = next(
+        it for it in page._items if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    assert cover.state == "picked"
+    # All skipped → cover red.
+    for s in eg.versions_for_item("x1"):
+        eg.set_lineage_intent(s.export_relpath, "skipped")
+    page._refresh_from_gateway()
+    cover = next(
+        it for it in page._items if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    assert cover.state == "skipped"
+    # Mixed picked + skipped → cover yellow (mixed).
+    rows = eg.versions_for_item("x1")
+    eg.set_lineage_intent(rows[0].export_relpath, "picked")
+    eg.set_lineage_intent(rows[1].export_relpath, "skipped")
+    eg.set_lineage_intent(rows[2].export_relpath, "picked")
+    page._refresh_from_gateway()
+    cover = next(
+        it for it in page._items if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    assert cover.state == "mixed"
+    page.close_event()
+
+
 def test_export_mode_stamps_origin_wordmark_on_single_version_cells(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §2.1 / Block 2 — flat cells with one shipped row get the

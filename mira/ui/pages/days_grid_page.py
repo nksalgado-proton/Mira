@@ -991,7 +991,7 @@ class DaysGridPage(QWidget):
             # default. Then stamp the "skipped in Pick" indicator on
             # items that only made it into the pool via shipped_ids
             # AND the Block 2 origin wordmark on cells with a single
-            # ship row (multi-version cells become clusters in Slice 5).
+            # ship row.
             shipped_rows_by_item = self._shipped_rows_by_item()
             from core.export_provenance import cell_origin_label
             for it in day_items:
@@ -1004,6 +1004,14 @@ class DaysGridPage(QWidget):
                     it.skipped_in_pick = True
                 rows = shipped_rows_by_item.get(it.item_id, [])
                 it.origin = cell_origin_label(rows)
+            # spec/89 Slice 5 / Block 1 D2 — items with 2+ shipped rows
+            # become a versions cluster cover; the existing video
+            # reshape runs afterwards so a video that ALSO has multiple
+            # export versions of one of its snapshots is layered
+            # correctly (versions clusters wrap individual photo items,
+            # video clusters wrap the parent video).
+            day_items = self._reshape_for_versions(
+                day_items, shipped_rows_by_item)
             day_items = self._reshape_for_export(day_items, phase_states)
         elif self._phase == "edit":
             # BUGS.md B-010 — pure Edit is creative-only (spec/66 §1.1):
@@ -1015,6 +1023,107 @@ class DaysGridPage(QWidget):
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+
+    def _reshape_for_versions(
+        self,
+        items,
+        shipped_rows_by_item: dict,
+    ):
+        """spec/89 Slice 5 / Block 1 D2 — replace any flat photo cell
+        whose source carries ≥2 ``Exported Media/`` lineage rows with a
+        synthetic **versions cluster cover**. Single-version and
+        zero-version flat cells pass through unchanged.
+
+        Member intent is read from ``lineage.intent_state``; the cover's
+        border colour is derived per the Block 1 D3 state machine:
+        any member still in ``compare`` → Compare orange; otherwise
+        all-picked → green, all-skipped → red, mixed → yellow
+        (Block 4 D1.B). The thumbnail strategy (newest version)
+        materialises later in this slice when the sub-grid drill-in
+        wires its previews; for the cover here we keep the source
+        item's thumb so the day grid stays visually anchored."""
+        out = []
+        for it in items:
+            if it.item_kind != "photo":
+                out.append(it)
+                continue
+            rows = shipped_rows_by_item.get(it.item_id, [])
+            if len(rows) < 2:
+                out.append(it)
+                continue
+            cluster_item = self._versions_cluster_grid_item(it, rows)
+            out.append(cluster_item if cluster_item is not None else it)
+        return out
+
+    def _versions_cluster_grid_item(
+        self,
+        source_item,
+        rows: list,
+    ):
+        """Build a synthetic versions cluster cover for one source item
+        with ≥2 shipped lineage rows. Member ids are the rows'
+        ``export_relpath`` so per-version verb routing can resolve
+        back to the lineage row without a second lookup."""
+        if not rows:
+            return None
+        from mira.picked.model import CellColor as _CC, CullCluster, CullItem
+        from pathlib import Path as _Path
+        event_root = (
+            _Path(self._eg.event_root) if self._eg and self._eg.event_root
+            else _Path("."))
+        members: list[CullItem] = []
+        member_states: list[str] = []
+        for row in rows:
+            path = event_root / row.export_relpath
+            members.append(CullItem(
+                item_id=row.export_relpath,
+                path=path,
+                kind="photo",
+            ))
+            member_states.append(getattr(row, "intent_state", "compare") or "compare")
+        cover_color = self._versions_cover_color(member_states)
+        cluster = CullCluster(
+            bucket_key=f"versions:{source_item.item_id}",
+            kind="versions",
+            title="",
+            members=tuple(members),
+            color=cover_color,
+        )
+        return GridItem(
+            item_id=f"cluster:versions:{source_item.item_id}",
+            item_kind="cluster",
+            pixmap=source_item.pixmap,
+            state=_CELL_TO_THUMB_STATE.get(cover_color),
+            visited=bool(source_item.visited),
+            exported=False,
+            cluster_type="versions",
+            cluster_count=len(members),
+            _path=source_item._path,
+            _sha256=source_item._sha256,
+            _cull_cluster=cluster,
+        )
+
+    @staticmethod
+    def _versions_cover_color(member_states):
+        """spec/89 Block 1 D3 — derive the cover border colour from the
+        member intent_state list:
+
+        * Any 'compare' → Compare orange (the user still has unfinished
+          decisions; cover paints "needs your attention").
+        * All 'picked' → KEPT (green).
+        * All 'skipped' → DISCARDED (red).
+        * Mix of 'picked' + 'skipped' (no compare) → MIXED (yellow,
+          distinct from Edit's amber per Block 4 D3.A)."""
+        from mira.picked.model import CellColor as _CC
+        if not member_states:
+            return _CC.UNTOUCHED
+        if any(s == "compare" for s in member_states):
+            return _CC.COMPARE
+        if all(s == "picked" for s in member_states):
+            return _CC.KEPT
+        if all(s == "skipped" for s in member_states):
+            return _CC.DISCARDED
+        return _CC.MIXED
 
     def _shipped_rows_by_item(self) -> dict:
         """spec/89 §2.1 — group every ``Exported Media/`` lineage row by
@@ -1384,8 +1493,19 @@ class DaysGridPage(QWidget):
         item's provenance. The synthetic ``video:<id>`` bucket_key is
         NOT recorded as a browsed bucket — scanner soft-state stays
         clean of UI synthetics.
+
+        Versions clusters (spec/89 Slice 5 synthetic): one source
+        item's ≥2 ``Exported Media/`` lineage rows. Each member is a
+        lineage row — ``item_id`` = the row's ``export_relpath`` so
+        per-version verbs route directly via :meth:`set_lineage_intent`.
+        Member state reads from ``lineage.intent_state``; the cover's
+        ``versions:<id>`` bucket_key never lands in scanner soft-state.
         """
         is_video_cluster = (cluster.kind == "video")
+        is_versions_cluster = (cluster.kind == "versions")
+        if is_versions_cluster and self._eg is not None:
+            self._open_versions_cluster(cluster)
+            return
         if self._eg is None:
             members: list[GridItem] = []
             lookup = self._paths_state_lookup
@@ -1466,6 +1586,41 @@ class DaysGridPage(QWidget):
                 stamp=stamp,
                 _path=path,
                 _sha256=getattr(ci, "sha256", None) or None,
+            ))
+        self._mode = "cluster"
+        self._cluster = cluster
+        self._items = members
+        self._update_counts()
+        self._refresh()
+
+    def _open_versions_cluster(self, cluster: CullCluster) -> None:
+        """spec/89 Slice 5 — drill into a versions cluster. Each member
+        is a ``Lineage`` row; the sub-grid surfaces every version with
+        its current intent state and the Block 2 origin wordmark."""
+        from core.export_provenance import lineage_origin_label
+        # Re-read the rows so we see live intent_state writes since the
+        # cluster was built (the cover's CullItems froze member_states
+        # at reshape time; the sub-grid needs the latest values).
+        source_item_id = cluster.bucket_key.split(":", 1)[1] if ":" in cluster.bucket_key else ""
+        try:
+            rows = self._eg.versions_for_item(source_item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: versions_for_item(%s) failed", source_item_id)
+            rows = []
+        members: list[GridItem] = []
+        for row in rows:
+            path = Path(self._eg.event_root) / row.export_relpath if (
+                self._eg.event_root) else Path(row.export_relpath)
+            members.append(GridItem(
+                item_id=row.export_relpath,
+                item_kind="photo",
+                state=row.intent_state,
+                visited=False,
+                exported=False,
+                origin=lineage_origin_label(
+                    row.provenance, row.export_relpath),
+                _path=path,
             ))
         self._mode = "cluster"
         self._cluster = cluster
@@ -1935,6 +2090,14 @@ class DaysGridPage(QWidget):
             return False
         if self._eg is None:
             return False
+        # spec/89 Slice 5 — when the user is inside a versions cluster
+        # sub-grid, each cell IS a lineage row (item_id = the row's
+        # export_relpath). Route P/X/Space to set_lineage_intent so the
+        # per-version decision lands on lineage.intent_state rather
+        # than the item-level phase_state.
+        if (self._mode == "cluster" and self._cluster is not None
+                and self._cluster.kind == "versions"):
+            return self._apply_version_verb_at_index(idx, verb)
         cur_state = item.state  # "picked" | "skipped" | "compare" | None
         new_state = self._next_state(item.item_kind, cur_state, verb)
         if new_state is None or new_state == cur_state:
@@ -2003,6 +2166,40 @@ class DaysGridPage(QWidget):
             else "prog" if self._reviewed > 0
             else None
         )
+        return True
+
+    def _apply_version_verb_at_index(self, idx: int, verb: str) -> bool:
+        """spec/89 Slice 5 — per-version verb inside a versions cluster
+        sub-grid. ``P`` and ``X`` write ``lineage.intent_state``;
+        ``Space`` toggles between picked and skipped (Compare is the
+        initial-only state — once the user touches a version they pick
+        a side). The actual file unlink + lineage row drop happen
+        later at Export-run time (Slice 8); here we only flip the
+        intent ledger so the cluster cover state machine can re-read."""
+        if idx < 0 or idx >= len(self._items):
+            return False
+        item = self._items[idx]
+        cur = item.state
+        if verb == "pick":
+            new_state = "picked"
+        elif verb == "skip":
+            new_state = "skipped"
+        elif verb == "toggle":
+            new_state = "skipped" if cur == "picked" else "picked"
+        else:
+            return True
+        if new_state == cur:
+            return True
+        try:
+            self._eg.set_lineage_intent(item.item_id, new_state)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "set_lineage_intent(%s, %s) failed",
+                item.item_id, new_state)
+            return True
+        item.state = new_state
+        self._thumb_widgets[idx].setState(new_state)
+        self._update_counts()
         return True
 
     @staticmethod

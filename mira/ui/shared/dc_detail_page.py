@@ -365,6 +365,9 @@ class DCDetailPage(QWidget):
             # so a restored third-party row doesn't silently revert to
             # 'mira_render' (the dataclass default).
             provenance=row["provenance"],
+            # spec/89 Slice 5 — preserve per-version intent so an undo
+            # restores the cluster member to the state it was in.
+            intent_state=row["intent_state"],
         )
         return DCUnexportSnapshot(
             export_relpath=relpath,

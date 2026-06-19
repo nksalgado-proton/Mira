@@ -321,6 +321,13 @@ class Lineage:
     # displayed badge wordmark (LRC vs Helicon vs CO vs generic ext)
     # is inferred from the filename at the badge layer.
     provenance: str = "mira_render"
+    # spec/89 §1.2 / Block 1 D2.B — per-version intent for items that
+    # form a versions cluster (2+ rows for one source item). Members
+    # enter in 'compare' so the cluster cover paints Compare orange
+    # until the user resolves each version to 'picked' (ship) or
+    # 'skipped' (drop on next Export run). Single-version flat cells
+    # ignore this field — their intent reads from phase_state(edit).
+    intent_state: str = "picked"
 
 
 @dataclass

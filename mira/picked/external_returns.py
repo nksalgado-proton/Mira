@@ -198,10 +198,16 @@ def scan_for_returns(
                 report.errors.append(f"{src_rel}: {exc}")
                 continue
             try:
+                # spec/89 Slice 5 / Block 1 D2.B — born 'compare'.
+                # Single-version cells ignore intent_state, so this
+                # only matters once a second row arrives and the
+                # versions cluster forms (the cover paints Compare
+                # orange because at least one member is undecided).
                 gateway.record_lineage(m.Lineage(
                     export_relpath=dest_rel, phase="edit",
                     source_kind="item", source_item_id=source_id,
                     recipe_json=None, provenance="third_party",
+                    intent_state="compare",
                 ))
                 report.associated.append(dest_rel)
                 # spec/63 slice 8 — Cut-grid thumb, background builder.

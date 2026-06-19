@@ -332,23 +332,47 @@ class ThumbGrid(QWidget):
     def update_item(self, index: int, item: ThumbGridItem) -> None:
         """Replace one cell's data. Works for both built and pending
         cells — pending cells pick up the new data when the chunked
-        builder reaches them."""
+        builder reaches them.
+
+        Guarded against the Qt zombie case (Nelson 2026-06-19): an
+        async caller may land after the host has rebuilt the grid
+        (set_items → new cells), in which case the cell list still
+        carries a Python wrapper for a now-deleted C++ widget.
+        Touching it raises ``RuntimeError`` — log + drop.
+        """
         if not (0 <= index < len(self._items)):
             return
         self._items[index] = item
         if index < len(self._cells):
-            self._cells[index].apply_item(item)
+            try:
+                self._cells[index].apply_item(item)
+            except RuntimeError:
+                log.debug(
+                    "ThumbGrid.update_item: cell %d already deleted",
+                    index, exc_info=True)
 
     def set_pixmap(self, index: int, pixmap: Optional[QPixmap]) -> None:
         """Convenience: refresh just the pixmap on one cell. The async
-        thumb loaders use this when a decode lands."""
+        thumb loaders use this when a decode lands.
+
+        Guarded against the Qt zombie case (same as
+        :meth:`update_item`) — the cell may have been deleted before
+        the async decode landed, in which case touching it raises
+        ``RuntimeError: wrapped C/C++ object … has been deleted``.
+        Log + drop the late pixmap.
+        """
         if not (0 <= index < len(self._items)):
             return
         prev = self._items[index]
         # Mutate the stored item so re-builds pick up the new pixmap.
         prev.pixmap = pixmap
         if index < len(self._cells):
-            self._cells[index].setPixmap(pixmap)
+            try:
+                self._cells[index].setPixmap(pixmap)
+            except RuntimeError:
+                log.debug(
+                    "ThumbGrid.set_pixmap: cell %d already deleted",
+                    index, exc_info=True)
 
     def count(self) -> int:
         return len(self._items)

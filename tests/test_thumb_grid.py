@@ -79,6 +79,51 @@ def test_set_pixmap_just_swaps_the_image_on_one_cell(qapp):
     assert g.items()[1].pixmap is pm
 
 
+def test_set_pixmap_survives_deleted_cell(qapp):
+    """spec/89 §11.3 lifecycle fix (Nelson 2026-06-19) — an async
+    thumb decode can land after the host has rebuilt the grid OR
+    after the cell's underlying C++ widget has been destroyed. The
+    Python wrapper in ``self._cells[index]`` then raises
+    ``RuntimeError: wrapped C/C++ object … has been deleted`` when
+    we touch it. ``set_pixmap`` must swallow that — the late
+    pixmap is meant for a stale cell, dropping it is correct."""
+    from PyQt6.QtGui import QPixmap
+    g = ThumbGrid()
+    g.set_items([_item(payload="a"), _item(payload="b")])
+    # Simulate the Qt zombie state: the Python list still holds the
+    # cell but the C++ widget has been destroyed (re-parent + delete).
+    cell = g.cell_at(0)
+    cell.setParent(None)
+    cell.deleteLater()
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.GlobalColor.green)
+    # Pre-fix this raised RuntimeError and crashed the app. Post-fix
+    # the call returns cleanly + the stored item still picks up the
+    # pixmap (so a future rebuild gets the right pixels).
+    g.set_pixmap(0, pm)
+    assert g.items()[0].pixmap is pm
+
+
+def test_update_item_survives_deleted_cell(qapp):
+    """spec/89 §11.3 lifecycle fix — same guard as
+    :func:`test_set_pixmap_survives_deleted_cell` but for
+    ``update_item`` (used for state repaints, not just pixmaps).
+    """
+    g = ThumbGrid()
+    g.set_items([_item(state="skipped", payload="a"),
+                 _item(state="skipped", payload="b")])
+    cell = g.cell_at(0)
+    cell.setParent(None)
+    cell.deleteLater()
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
+    g.update_item(0, _item(state="picked", payload="a"))
+    # The stored item updated even though the cell was a zombie.
+    assert g.items()[0].state == "picked"
+
+
 # --------------------------------------------------------------------------- #
 # Single-zone clicks
 # --------------------------------------------------------------------------- #

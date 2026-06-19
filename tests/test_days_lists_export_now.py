@@ -42,3 +42,5 @@ def test_export_now_button_hidden_after_phase_swap_back(qapp):
     assert page._export_now_btn.isVisibleTo(page)
     page.set_phase_identity("pick")
     assert not page._export_now_btn.isVisibleTo(page)
+
+

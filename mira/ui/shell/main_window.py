@@ -3392,6 +3392,16 @@ class MainWindow(QMainWindow):
             log.exception("Export now (all days): re-open failed")
             return
 
+        # spec/89 §11.3 lifecycle (Nelson 2026-06-19 fix): the batch
+        # queue runs commit closures asynchronously and retains a
+        # reference to ``eg`` for set_edit_exported / lineage writes
+        # after the worker thread finishes. Closing ``eg`` in the
+        # finally below would race the closure → sqlite3.Programming
+        # Error("Cannot operate on a closed database"). Track whether
+        # any batch was enqueued; close immediately for the delete-
+        # only path, and leak ``eg`` for the render path (Python GC
+        # reaps it once the closures release their refs).
+        batch_submitted = False
         try:
             _QGuiApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
             try:
@@ -3416,6 +3426,7 @@ class MainWindow(QMainWindow):
                             "The app's batch queue isn't reachable — "
                             "try restarting Mira."),
                     )
+                    eg.close()
                     return
                 for dn, plan in per_day_plans:
                     if not (plan["render_cells"]
@@ -3433,6 +3444,7 @@ class MainWindow(QMainWindow):
                             segment_rows=plan["render_segments"],
                             snapshot_cells=plan["render_snapshots"],
                         )
+                        batch_submitted = True
                     except Exception as exc:                       # noqa: BLE001
                         log.exception(
                             "Export now (all days): submit day %d "
@@ -3445,7 +3457,11 @@ class MainWindow(QMainWindow):
                                "{err}").replace("{err}", str(exc)),
                         )
         finally:
-            eg.close()
+            if not batch_submitted:
+                # Delete-only run, or every submit failed — close eg
+                # right away. With submits in flight we let GC reap
+                # eg once the commit closures release their refs.
+                eg.close()
         # Refresh the days list so the three-slice bars reflect the
         # delete sweep (the renders are async — their progress lives
         # in the batch-queue strip).

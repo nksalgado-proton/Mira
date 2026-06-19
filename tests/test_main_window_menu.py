@@ -335,6 +335,120 @@ def test_days_lists_identity_export_when_phase_active(main_window):
     assert captured == ["export"]
 
 
+def test_all_days_export_now_does_not_close_eg_after_submit(
+        main_window, tmp_path, monkeypatch):
+    """spec/89 §11.3 lifecycle fix (Nelson 2026-06-19) —
+    MainWindow._on_days_lists_export_now used to close the second-
+    pass EventGateway in a finally block right after enqueueing the
+    batch. The batch_queue's commit closure runs asynchronously and
+    retains a reference to ``eg`` for set_edit_exported / lineage
+    writes, so the close raced the closure and produced
+    sqlite3.ProgrammingError("Cannot operate on a closed database")
+    on every shipped unit. The fix: close eg only when NO batch was
+    submitted (delete-only run, or every submit failed); otherwise
+    let Python GC reap eg once the closures release their refs."""
+    from unittest.mock import MagicMock
+    from mira.ui.exported.batch import ExportCell
+
+    main_window._current_event_id = "fake-evt-id"
+    # Stub the trip-day scratch path — we only care about the eg
+    # lifecycle around the batch submit.
+    scratch_eg = MagicMock()
+    scratch_eg.event.return_value = MagicMock(name="Alaska")
+    scratch_eg.trip_days.return_value = [MagicMock(day_number=1)]
+    # The second-pass eg — the one the bug closed too early.
+    run_eg = MagicMock()
+    open_calls: list = []
+
+    def _open_event(_eid):
+        open_calls.append(_eid)
+        return scratch_eg if len(open_calls) == 1 else run_eg
+    monkeypatch.setattr(
+        main_window.gateway, "open_event", _open_event)
+
+    scratch_plan = {
+        "render_cells": [ExportCell(
+            item_id="iid", path=tmp_path / "x.jpg", day_number=1)],
+        "render_segments": [],
+        "render_snapshots": [],
+        "delete_relpaths": [],
+    }
+    with patch(
+            "mira.ui.pages.days_grid_page.DaysGridPage."
+            "_collect_export_run_plan",
+            return_value=scratch_plan), \
+            patch(
+                "mira.ui.pages.days_grid_page.DaysGridPage."
+                "open_for_day",
+                return_value=True), \
+            patch(
+                "mira.ui.pages.days_grid_page.DaysGridPage."
+                "close_event"), \
+            patch("mira.ui.design.confirm",
+                  return_value=True), \
+            patch(
+                "mira.ui.exported.batch.submit_export_batch",
+                return_value=True) as submit, \
+            patch.object(main_window, "batch_queue", MagicMock()), \
+            patch.object(main_window, "_open_days_lists_for"):
+        main_window._on_days_lists_export_now()
+    assert submit.call_count == 1
+    # The second-pass eg's close MUST NOT have been called — the
+    # batch's commit closure needs it alive.
+    assert run_eg.close.call_count == 0
+
+
+def test_all_days_export_now_closes_eg_on_delete_only_run(
+        main_window, tmp_path, monkeypatch):
+    """Twin of the above: when the plan has ONLY deletes (no render
+    submits), the eg is closed immediately — no closure to wait for."""
+    from unittest.mock import MagicMock
+
+    main_window._current_event_id = "fake-evt-id"
+    scratch_eg = MagicMock()
+    scratch_eg.event.return_value = MagicMock(name="Alaska")
+    scratch_eg.trip_days.return_value = [MagicMock(day_number=1)]
+    run_eg = MagicMock()
+    open_calls: list = []
+
+    def _open_event(_eid):
+        open_calls.append(_eid)
+        return scratch_eg if len(open_calls) == 1 else run_eg
+    monkeypatch.setattr(
+        main_window.gateway, "open_event", _open_event)
+
+    # Delete-only plan: 1 relpath to unlink, no renders.
+    scratch_plan = {
+        "render_cells": [],
+        "render_segments": [],
+        "render_snapshots": [],
+        "delete_relpaths": ["Exported Media/x-skip.jpg"],
+    }
+    with patch(
+            "mira.ui.pages.days_grid_page.DaysGridPage."
+            "_collect_export_run_plan",
+            return_value=scratch_plan), \
+            patch(
+                "mira.ui.pages.days_grid_page.DaysGridPage."
+                "open_for_day",
+                return_value=True), \
+            patch(
+                "mira.ui.pages.days_grid_page.DaysGridPage."
+                "close_event"), \
+            patch("mira.ui.design.confirm",
+                  return_value=True), \
+            patch(
+                "mira.ui.exported.batch.submit_export_batch",
+                return_value=True) as submit, \
+            patch.object(main_window, "batch_queue", MagicMock()), \
+            patch.object(main_window, "_open_days_lists_for"):
+        main_window._on_days_lists_export_now()
+    assert submit.call_count == 0
+    # Delete-only path closes eg immediately.
+    assert run_eg.close.call_count == 1
+    assert run_eg.delete_exported_file_by_relpath.call_count == 1
+
+
 def test_days_grid_item_activated_opens_editor_in_export_mode(
         main_window):
     """spec/89 §3.2 D4.C (Nelson 2026-06-19) — in Export mode the

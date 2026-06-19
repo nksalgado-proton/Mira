@@ -1,0 +1,9 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.8, pytest-9.0.2, pluggy-1.6.0
+PyQt6 6.11.0 -- Qt runtime 6.11.1 -- Qt compiled 6.11.0
+rootdir: D:\Projetos_Nelson\Mira
+configfile: pyproject.toml
+plugins: anyio-4.12.1, qt-4.5.0
+collected 19 items
+
+tests\test_days_grid_export_mode.py .........

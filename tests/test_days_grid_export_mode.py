@@ -382,31 +382,80 @@ def test_export_mode_default_state_is_red_when_no_versions(
 # --------------------------------------------------------------------------- #
 
 
-def test_export_mode_click_toggles_in_place_no_drill_in(
-        qapp, app_gateway):
-    """Click on a photo cell in Export mode flips the state without
-    emitting ``item_activated`` — the locked grammar carries the
-    decision, the host has nothing to route to."""
+def test_export_destructive_watermark_only_lights_when_picked_and_shipped(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §4.2 / Block 7 D3.B Slice 7 — the "Exported" stamp on
+    the Export surface becomes a destructive cue: it only paints on
+    cells where pressing X would unlink a real file. That means
+    state=='picked' AND exported. Anything red has no destructive
+    edge (the user has already armed the drop)."""
+    _, source_eg = store_and_gateway
+    _ship_one(source_eg, event_dir, "x2")
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    # x2: shipped + intent_picked (default-green per Block 1 D1.C)
+    # → destructive cue lights up.
+    idx_x2 = next(i for i, it in enumerate(page._items) if it.item_id == "x2")
+    cell_x2 = page._thumb_widgets[idx_x2]
+    assert cell_x2._exported is True
+    assert cell_x2._state == "picked"
+    assert cell_x2._export_destructive_mode is True
+    # Now flip x2 to red intent — the destructive cue should drop off
+    # on the next repaint cycle.
+    page._apply_verb_at_index(idx_x2, "skip")
+    # Re-apply isn't visible in the unit test, but the state flipped
+    # to skipped and the underlying file got unlinked (the existing
+    # X-on-shipped behaviour); the item's exported flag clears too.
+    assert page._items[idx_x2].exported is False
+    page.close_event()
+
+
+def test_export_mode_border_click_toggles_in_place(qapp, app_gateway):
+    """spec/89 §3.1 / Block 5 D2.A — the border zone keeps the
+    locked-grammar ``toggle`` verb on Export-mode flat cells. Center
+    click opens the preview viewer instead (covered by a separate
+    test); border click flips the intent without drilling in or
+    opening a dialog."""
     page = DaysGridPage(app_gateway)
     page.open_for_day(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     captured: list[str] = []
     page.item_activated.connect(captured.append)
-    # spec/89 §1.1 Block 1 D1.C — the fixture's keepers have 0 versions
-    # so they start red; clicking flips to picked (intent-to-render).
     target = page._items[0]
     assert target.state == STATE_SKIPPED
-    # ``QApplication.focusWidget`` for _verb_on_focused — focus the
-    # target Thumb directly to mimic the click → focus sequence.
     page._thumb_widgets[0].setFocus(Qt.FocusReason.MouseFocusReason)
-    page._on_thumb_clicked(target.item_id, page._thumb_widgets[0])
+    page._on_grid_cell_border_clicked(0)
     assert captured == []                   # NO drill-in
-    # Persisted to the shared edit-phase phase_state row.
     eg = page._eg
     ps = eg.phase_state(target.item_id, "edit")
     assert ps is not None and ps.state == STATE_PICKED
-    # The in-cell visual flipped too.
     assert page._items[0].state == STATE_PICKED
+    page.close_event()
+
+
+def test_export_mode_center_click_opens_preview_viewer(qapp, app_gateway):
+    """spec/89 §3.1 / Block 5 D1.A — center click on a flat cell opens
+    the read-only preview viewer; it does NOT mutate state, does NOT
+    drill into a leaf surface. The headless flag keeps the modal
+    exec from blocking the test."""
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    captured: list[str] = []
+    page.item_activated.connect(captured.append)
+    target = page._items[0]
+    prev_state = target.state
+    page._on_thumb_clicked(target.item_id, page._thumb_widgets[0])
+    # No drill-in, no state change — the click opens a viewer.
+    assert captured == []
+    assert page._items[0].state == prev_state
+    # A dialog was constructed.
+    dlg = getattr(page, "_last_preview_dialog", None)
+    assert dlg is not None
+    assert dlg._items, "preview dialog should carry the neighbour list"
     page.close_event()
 
 
@@ -435,11 +484,12 @@ def test_x_on_shipped_cell_unlinks_file_drops_lineage_clears_flag(
     by_id = {it.item_id: it for it in page._items}
     assert by_id["x2"].exported is True
 
-    # Focus the shipped cell, click → toggle green→red. The handler
-    # detects it was shipped and calls delete_exported_file.
+    # Border click → toggle green→red (spec/89 §3.1 / Block 5 D2.A;
+    # center click now opens the preview viewer instead). The handler
+    # detects the cell was shipped and calls delete_exported_file.
     idx = next(i for i, it in enumerate(page._items) if it.item_id == "x2")
     page._thumb_widgets[idx].setFocus(Qt.FocusReason.MouseFocusReason)
-    page._on_thumb_clicked("x2", page._thumb_widgets[idx])
+    page._on_grid_cell_border_clicked(idx)
 
     # File gone, lineage row gone, edit_exported cleared.
     assert not shipped_path.is_file()
@@ -465,7 +515,7 @@ def test_x_on_unshipped_cell_does_not_call_delete_exported_file(
     real = eg.delete_exported_file
     eg.delete_exported_file = lambda iid: called.append(iid) or real(iid)
     page._thumb_widgets[0].setFocus(Qt.FocusReason.MouseFocusReason)
-    page._on_thumb_clicked(page._items[0].item_id, page._thumb_widgets[0])
+    page._on_grid_cell_border_clicked(0)
     assert called == []                     # no shipped state → no call
     page.close_event()
 

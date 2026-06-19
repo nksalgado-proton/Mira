@@ -161,6 +161,10 @@ class Thumb(QWidget):
         # shown on Export cells that entered the pool only because a
         # ship row exists. ``False`` keeps the cell clean.
         self._skipped_in_pick = bool(skipped_in_pick)
+        # spec/89 §4.2 / Block 7 D3.B Slice 7 — Export-mode flag that
+        # flips the "Exported" stamp into a destructive cue. See
+        # :meth:`setExportDestructiveMode`.
+        self._export_destructive_mode = False
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -205,6 +209,16 @@ class Thumb(QWidget):
         chip for Export-mode cells that are only in the pool because a
         ship row exists."""
         self._skipped_in_pick = bool(flag)
+        self.update()
+
+    def setExportDestructiveMode(self, flag: bool) -> None:
+        """spec/89 §4.2 / Block 7 D3.B Slice 7 — flip the "Exported"
+        stamp's meaning to a destructive cue. When True the chip only
+        paints on cells where the user pressing X would actually
+        unlink a real file (state == 'picked' AND exported), and uses
+        a red tint so the destructive intent is unmistakable. The
+        legacy informational reading stays under False."""
+        self._export_destructive_mode = bool(flag)
         self.update()
 
     def setClusterCount(self, n: int) -> None:
@@ -435,12 +449,27 @@ class Thumb(QWidget):
         painter.drawEllipse(QRectF(cx - 1.6, cy - 1.6, 3.2, 3.2))
 
     def _paint_exported(self, painter: QPainter, palette: dict[str, str]) -> None:
+        """spec/89 §4.2 / Block 7 D3.B Slice 7 — the "Exported" stamp
+        switches meaning on the Export surface: in legacy mode it
+        reads as **informational** ("this item has shipped before");
+        in Export's destructive mode (set via
+        :meth:`setExportDestructiveMode`) it ONLY paints on cells
+        where a green→red flip would actually unlink an on-disk file
+        — i.e. ``state == 'picked'`` AND ``exported`` — and uses a
+        red tint so the user reads it as "X here is destructive."
+        Cells already in red intent don't get the chip (the destructive
+        flip has already been armed)."""
         if not self._exported:
             return
+        destructive = bool(getattr(self, "_export_destructive_mode", False))
+        if destructive and self._state != "picked":
+            return
         chip_rect = QRectF(8, self.height() - 28, 88, 20)
-        self._paint_chip(painter, chip_rect, QColor(palette["accent"]), None)
+        chip_bg = QColor(palette.get("red", "#ef4444")) if destructive \
+            else QColor(palette["accent"])
+        self._paint_chip(painter, chip_rect, chip_bg, None)
         painter.setPen(QPen(QColor("#ffffff"), 1.4))
-        # Up-arrow glyph + "Exported"
+        # Up-arrow glyph + label
         ax = chip_rect.x() + 8
         ay = chip_rect.y() + chip_rect.height() / 2
         painter.drawLine(int(ax), int(ay + 4), int(ax), int(ay - 4))
@@ -451,10 +480,11 @@ class Thumb(QWidget):
         f.setPointSizeF(9.5)
         f.setBold(True)
         painter.setFont(f)
+        label = "Exported" if not destructive else "Has file"
         painter.drawText(
             chip_rect.adjusted(18, 0, 0, 0),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
-            "Exported",
+            label,
         )
 
     # Glyph order matches core.edit_status.REASON_ORDER (look, filter, crop).

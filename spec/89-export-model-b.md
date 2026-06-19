@@ -284,8 +284,8 @@ improvement on every slice.
 | 3 | **Days Grid legend + pool filter.** Pool = picked ∪ shipped + "skipped in Pick" indicator chip; legend swatches + reminder + keymap hint per §4.2; flat-cell intent inference (0-version red / 1-version green) per Block 1 D1.C. | **shipped 2026-06-19** |
 | 4 | **Provenance badges + scan chip.** Wordmark strip under each cell; chip in legend + Days List mirror; per-source breakdown wording on change. | **shipped 2026-06-19** |
 | 5 | **Versions cluster reshape + sub-grid.** ≥2-version items become a synthetic cluster (`bucket_key = "versions:<item_id>"`); sub-grid surface; member Compare orange default; cover state machine; `"N versions"` count chip. | **shipped 2026-06-19** |
-| 6 | **Preview viewer.** Center click → read-only viewer; P/X decide; Esc back; arrow stepping (within current surface); `Open in Editor` + `Export this` buttons; viewer content per §3.2 (read from disk for Mira renders). | pending |
-| 7 | **Watermark repurpose.** Diagonal stamp = "this flip will delete a real file." | pending |
+| 6 | **Preview viewer.** Center click → read-only viewer; P/X decide; Esc back; arrow stepping (within current surface); `Open in Editor` + `Export this` buttons; viewer content per §3.2 (read from disk for Mira renders). | **shipped 2026-06-19** |
+| 7 | **Watermark repurpose.** Diagonal stamp = "this flip will delete a real file." | **shipped 2026-06-19** |
 | 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | pending |
 | 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | pending |
 | 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | pending |

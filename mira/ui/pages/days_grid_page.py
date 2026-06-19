@@ -1738,6 +1738,9 @@ class DaysGridPage(QWidget):
                 stamp=item.stamp,
                 origin=item.origin,
                 skipped_in_pick=item.skipped_in_pick,
+                # spec/89 Slice 7 — Export-mode cells flip the
+                # "Exported" stamp into a destructive cue.
+                export_destructive_mode=bool(self._export_mode),
                 payload=item.item_id,
                 focusable=True,
                 tooltip=item.edit_tooltip,
@@ -1811,12 +1814,11 @@ class DaysGridPage(QWidget):
         * Pick / Edit modes: single items emit :sig:`item_activated`
           so the host (MainWindow) drills the user into the Picker /
           Editor.
-        * Export mode (spec/68 §3): no drill-in. The click is the
-          locked-grammar ``toggle`` verb on this cell — green↔red
-          flips, persisted to ``phase_state(phase="edit")``. If the
-          item was shipped and the toggle lands on red, the on-disk
-          file unlinks via ``delete_exported_file`` and the ship
-          status clears.
+        * Export mode (spec/89 §3.1 / Block 5 D1.A): center click on a
+          flat cell opens the read-only preview viewer; the border
+          zone keeps the locked-grammar ``toggle`` verb (handled in
+          :meth:`_on_grid_cell_border_clicked`). Cluster covers drill
+          in either way (Block 5 D3.A).
         """
         widget.setFocus(Qt.FocusReason.MouseFocusReason)
         item = self._find_item(item_id)
@@ -1826,17 +1828,159 @@ class DaysGridPage(QWidget):
             self._open_cluster(item._cull_cluster)
             return
         if self._export_mode:
-            # The clicked widget IS known — apply the toggle verb to
-            # its index directly so we don't depend on Qt's
-            # focusWidget() propagation (which doesn't hold in
-            # headless tests).
-            try:
-                idx = self._thumb_widgets.index(widget)
-            except ValueError:
-                return
-            self._apply_verb_at_index(idx, "toggle")
+            # spec/89 §3.1 / Block 5 D1.A — center click on a flat cell
+            # opens the preview viewer instead of toggling. The border
+            # zone (caught earlier by the two-zone splitter) still does
+            # the toggle.
+            self._open_export_preview(item)
             return
         self.item_activated.emit(item_id)
+
+    def _open_export_preview(self, item) -> None:
+        """spec/89 §3.2 / Slice 6 — open the read-only preview viewer
+        for an Export-mode cell. Neighbours come from the current
+        surface (Block 5 D1b.A — stepping stays within the surface):
+        the flat day-grid view steps across flat cells, the versions
+        sub-grid steps across the cluster's members.
+
+        Click → preview content per §3.2:
+        * 1-version Mira / third-party cell → the actual file on disk
+          under ``Exported Media/``.
+        * 0-version cell → the source photo on disk (Original Media/…)
+          — the live Mira-develop preview is a later polish pass.
+        * Versions sub-grid member → the version's file (the cell's
+          ``item_id`` is the row's ``export_relpath``).
+
+        Wires P / X / Space to the existing verb path; ``open_editor``
+        / ``export_this`` route through ``item_activated`` and a TODO
+        stub respectively (the batch + single-item run land in Slice 8).
+        """
+        from mira.ui.exported.preview_dialog import (
+            ExportPreviewDialog, PreviewItem,
+        )
+        # Build the neighbour list from the current surface — flat day
+        # grid OR versions sub-grid. Skip cluster covers (they would
+        # drill in, not preview).
+        neighbours: list = []
+        start_idx = 0
+        for it in self._items:
+            if it.item_kind == "cluster":
+                continue
+            path = self._resolve_preview_path(it)
+            if path is None:
+                continue
+            neighbours.append((it, path))
+        for i, (it, _path) in enumerate(neighbours):
+            if it.item_id == item.item_id:
+                start_idx = i
+                break
+        if not neighbours:
+            return
+        preview_items = [
+            PreviewItem(
+                item_id=it.item_id,
+                path=path,
+                state=it.state,
+                has_shipped_file=bool(it.exported),
+                title=it.item_id.split("/")[-1] if "/" in it.item_id else "",
+            )
+            for it, path in neighbours
+        ]
+        dlg = ExportPreviewDialog(
+            preview_items, start_index=start_idx, parent=self)
+        dlg.intent_pick_requested.connect(
+            lambda iid: self._on_preview_intent(dlg, iid, "pick"))
+        dlg.intent_skip_requested.connect(
+            lambda iid: self._on_preview_intent(dlg, iid, "skip"))
+        dlg.intent_toggle_requested.connect(
+            lambda iid: self._on_preview_intent(dlg, iid, "toggle"))
+        dlg.open_editor_requested.connect(
+            lambda iid: self._on_preview_open_editor(dlg, iid))
+        dlg.export_this_requested.connect(
+            lambda iid: self._on_preview_export_this(dlg, iid))
+        # Stored so tests can introspect; the headless-mode flag lets
+        # them skip the modal exec so simulating a click doesn't block.
+        self._last_preview_dialog = dlg
+        if not getattr(self, "_preview_headless", False):
+            dlg.exec()
+
+    def _resolve_preview_path(self, item) -> Optional[Path]:
+        """Pick the file the preview viewer should display for ``item``.
+
+        Order of preference:
+        1. If ``item._path`` is set AND points at a real file → use it
+           (this covers the versions sub-grid case where the path is
+           already the version's file under Exported Media/).
+        2. Else if the item has a single Exported Media/ row → that
+           file.
+        3. Else fall back to the source photo's path under Original
+           Media/ so the user sees SOMETHING (the proper 0-version
+           develop preview is a future polish pass).
+        """
+        if item._path is not None and Path(item._path).is_file():
+            return Path(item._path)
+        if self._eg is None or self._eg.event_root is None:
+            return None
+        event_root = Path(self._eg.event_root)
+        try:
+            rows = self._eg.versions_for_item(item.item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: versions_for_item failed for %s",
+                item.item_id)
+            rows = []
+        if rows:
+            return event_root / rows[0].export_relpath
+        # 0-version cell: fall back to the source photo.
+        try:
+            src_item = self._eg.item(item.item_id)
+        except Exception:                                          # noqa: BLE001
+            src_item = None
+        if src_item and src_item.origin_relpath:
+            return event_root / src_item.origin_relpath
+        return None
+
+    def _on_preview_intent(self, dlg, item_id: str, verb: str) -> None:
+        """Find the cell + apply the verb through the existing path.
+        The preview viewer doesn't reach into the gateway itself —
+        it just emits the intent, and we route it the same way a
+        keyboard verb would route from the grid."""
+        idx = next(
+            (i for i, it in enumerate(self._items)
+             if it.item_id == item_id), -1)
+        if idx < 0:
+            return
+        self._apply_verb_at_index(idx, verb)
+        # Push the post-verb state back to the dialog so its chrome
+        # (state chip + Export-this enablement) re-reads without the
+        # user needing to close + reopen.
+        new_state = self._items[idx].state
+        dlg.set_intent_state(item_id, new_state or "")
+
+    def _on_preview_open_editor(self, dlg, item_id: str) -> None:
+        """spec/89 §3.2 D4.C — "Open in Editor" button. Closes the
+        preview and emits ``item_activated`` so MainWindow routes
+        the user to the Editor for last-minute tone / crop tweaks."""
+        dlg.accept()
+        # For versions sub-grid members the item_id is the
+        # export_relpath, not a source item; fall back to the cluster's
+        # source item id so the Editor opens something it can render.
+        target_id = item_id
+        if (self._mode == "cluster" and self._cluster is not None
+                and self._cluster.kind == "versions"
+                and ":" in self._cluster.bucket_key):
+            target_id = self._cluster.bucket_key.split(":", 1)[1]
+        self.item_activated.emit(target_id)
+
+    def _on_preview_export_this(self, dlg, item_id: str) -> None:
+        """spec/89 §5.2 — single-item Export run trigger. Slice 8 will
+        wire this through to the spec/60 batch engine + the
+        ask-on-rerender dialog (D6.C). For now we close the dialog
+        and log so the surface is reachable end-to-end."""
+        log.info(
+            "Export-this requested for %s — full wiring lands in Slice 8",
+            item_id)
+        dlg.accept()
 
     def _on_back_clicked(self) -> None:
         if self._mode == "cluster":

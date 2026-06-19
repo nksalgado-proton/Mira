@@ -478,6 +478,18 @@ class DaysGridPage(QWidget):
         self._export_btn = primary_button("↑ Export now")
         self._export_btn.clicked.connect(self._on_export_clicked)
         toolbar.addWidget(self._export_btn)
+        # spec/89 §11.3 — Compare button for the versions cluster
+        # sub-grid. Visible only when ``_mode == "cluster"`` AND the
+        # open cluster's kind is "versions" (set in
+        # :meth:`_apply_phase_chrome`). Opens
+        # :class:`CompareVersionsDialog` side-by-side.
+        self._compare_btn = ghost_button("⇄ Compare versions")
+        self._compare_btn.setToolTip(
+            "Open every version side-by-side at full definition. "
+            "Click a tile's border to mark Will export / Set aside.")
+        self._compare_btn.clicked.connect(self._on_compare_versions)
+        self._compare_btn.setVisible(False)
+        toolbar.addWidget(self._compare_btn)
         toolbar.addStretch()
         # Cell-size slider (Nelson 2026-06-18). The slider value drives
         # the grid's cell width in 10-px steps; height tracks via the
@@ -776,6 +788,20 @@ class DaysGridPage(QWidget):
             pass
         try:
             self._export_btn.setVisible(is_export)
+        except Exception:                                          # noqa: BLE001
+            pass
+        # spec/89 §11.3 — Compare versions only fires when the user is
+        # already inside a versions cluster sub-grid. Hide everywhere
+        # else; :meth:`_open_cluster` / :meth:`_close_cluster`
+        # re-evaluate this on enter / exit.
+        try:
+            in_versions_subgrid = (
+                is_export
+                and self._mode == "cluster"
+                and self._cluster is not None
+                and getattr(self._cluster, "kind", "") == "versions"
+            )
+            self._compare_btn.setVisible(bool(in_versions_subgrid))
         except Exception:                                          # noqa: BLE001
             pass
         # Relabel the bulk verbs for the Export context (the
@@ -1787,6 +1813,9 @@ class DaysGridPage(QWidget):
             ))
         self._mode = "cluster"
         self._cluster = cluster
+        # spec/89 §11.3 — Compare button is sub-grid-only; reveal it on
+        # entry (mirror of the _close_cluster recompute).
+        self._apply_phase_chrome()
         self._items = members
         self._update_counts()
         self._refresh()
@@ -1797,6 +1826,9 @@ class DaysGridPage(QWidget):
             return
         self._mode = "day"
         self._cluster = None
+        # spec/89 §11.3 — the Compare button is sub-grid-only; recompute
+        # phase chrome so it hides on exit.
+        self._apply_phase_chrome()
         # Rebuild the day items so the cluster cover repaints with its
         # new aggregate (members may have moved while inside) + the
         # visited tick now that the cluster has been browsed.
@@ -2269,6 +2301,93 @@ class DaysGridPage(QWidget):
                 and ":" in self._cluster.bucket_key):
             target_id = self._cluster.bucket_key.split(":", 1)[1]
         self.item_activated.emit(target_id)
+
+    def _on_compare_versions(self) -> None:
+        """spec/89 §11.3 — open the versions cluster sub-grid's
+        side-by-side compare dialog. Builds a
+        :class:`CompareItem` per visible member (carrying the same
+        develop kwargs as the preview viewer so virtual Mira members
+        render through the develop pipeline), opens
+        :class:`CompareVersionsDialog`, routes border-click toggles
+        back through the existing per-version verb path
+        (:meth:`_apply_verb_at_index` → set_lineage_intent or
+        set_phase_state for the Mira member).
+
+        Gated by the toolbar visibility rule — the button only shows
+        in cluster mode + versions kind — so a stray call outside that
+        mode is a no-op."""
+        if (self._mode != "cluster" or self._cluster is None
+                or getattr(self._cluster, "kind", "") != "versions"):
+            return
+        if not self._items:
+            return
+        from mira.ui.exported.compare_dialog import (
+            CompareItem, CompareVersionsDialog,
+        )
+        compare_items: list = []
+        for it in self._items:
+            if it.item_kind != "photo":
+                continue
+            path = self._resolve_preview_path(it)
+            if path is None:
+                continue
+            title = getattr(it, "origin", "") or (
+                it.item_id.split("/")[-1] if "/" in it.item_id
+                else it.item_id)
+            develop_kwargs = self._preview_develop_kwargs(it, path)
+            compare_items.append(CompareItem(
+                item_id=it.item_id,
+                path=path,
+                state=it.state,
+                title=title,
+                develop_for_preview=develop_kwargs.get(
+                    "develop_for_preview", False),
+                develop_adjustment=develop_kwargs.get(
+                    "develop_adjustment"),
+            ))
+        if not compare_items:
+            return
+        dlg = CompareVersionsDialog(compare_items, parent=self)
+        dlg.intent_toggle_requested.connect(
+            lambda iid: self._on_compare_toggle(dlg, iid))
+        dlg.intent_pick_requested.connect(
+            lambda iid: self._on_compare_intent(dlg, iid, "pick"))
+        dlg.intent_skip_requested.connect(
+            lambda iid: self._on_compare_intent(dlg, iid, "skip"))
+        self._last_compare_dialog = dlg
+        if not getattr(self, "_compare_headless", False):
+            dlg.exec()
+
+    def _on_compare_toggle(self, dlg, item_id: str) -> None:
+        """Route a compare-tile border click through the existing
+        per-version verb path. Inside a versions sub-grid
+        :meth:`_apply_verb_at_index` dispatches to
+        :meth:`_apply_version_verb_at_index` which writes
+        ``lineage.intent_state`` (for lineage members) or
+        ``phase_state(edit, source)`` (for the virtual Mira member)."""
+        idx = next(
+            (i for i, it in enumerate(self._items)
+             if it.item_id == item_id), -1)
+        if idx < 0:
+            return
+        self._apply_verb_at_index(idx, "toggle")
+        new_state = self._items[idx].state
+        dlg.set_intent_state(item_id, new_state or "")
+
+    def _on_compare_intent(
+        self, dlg, item_id: str, verb: str,
+    ) -> None:
+        """Twin of :meth:`_on_compare_toggle` for explicit P / X (not
+        bound to a tile click in the current UI, but available so a
+        future keyboard / button path can reuse the routing)."""
+        idx = next(
+            (i for i, it in enumerate(self._items)
+             if it.item_id == item_id), -1)
+        if idx < 0:
+            return
+        self._apply_verb_at_index(idx, verb)
+        new_state = self._items[idx].state
+        dlg.set_intent_state(item_id, new_state or "")
 
     def _on_preview_export_this(self, dlg, item_id: str) -> None:
         """spec/89 §5.2 — single-item Export run trigger from the

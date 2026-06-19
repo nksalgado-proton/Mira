@@ -610,6 +610,140 @@ def test_preview_staleness_chip_fires_when_recipe_drifts(
     page.close_event()
 
 
+def test_compare_button_hidden_outside_versions_subgrid(
+        qapp, app_gateway):
+    """spec/89 §11.3 — the Compare button is sub-grid-only. Hidden
+    on the plain day grid (no cluster open)."""
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    assert not page._compare_btn.isVisibleTo(page)
+    page.close_event()
+
+
+def test_compare_button_visible_inside_versions_subgrid(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 — Compare button reveals when the user drills
+    into a versions cluster sub-grid; hides again on close."""
+    _, eg = store_and_gateway
+    for rel in (
+        "Exported Media/x1-Lightroom.jpg",
+        "Exported Media/x1-Helicon.tif",
+    ):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="compare",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-Lightroom.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-Helicon.tif").write_bytes(
+        b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    assert not page._compare_btn.isVisibleTo(page)
+    cluster = next(
+        it._cull_cluster for it in page._items
+        if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    page._open_cluster(cluster)
+    assert page._compare_btn.isVisibleTo(page)
+    page._close_cluster()
+    assert not page._compare_btn.isVisibleTo(page)
+    page.close_event()
+
+
+def test_compare_button_opens_dialog_with_per_version_tiles(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 — clicking Compare while inside the versions
+    sub-grid opens a CompareVersionsDialog with one tile per visible
+    member (lineage rows + virtual Mira member when present)."""
+    _, eg = store_and_gateway
+    for rel in (
+        "Exported Media/x1-Lightroom.jpg",
+        "Exported Media/x1-Helicon.tif",
+    ):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="compare",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-Lightroom.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-Helicon.tif").write_bytes(
+        b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    page._compare_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    cluster = next(
+        it._cull_cluster for it in page._items
+        if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    page._open_cluster(cluster)
+    page._on_compare_versions()
+    dlg = getattr(page, "_last_compare_dialog", None)
+    assert dlg is not None
+    # Two tiles for the two third-party returns.
+    item_ids = [t.item_id() for t in dlg._tiles]
+    assert sorted(item_ids) == [
+        "Exported Media/x1-Helicon.tif",
+        "Exported Media/x1-Lightroom.jpg",
+    ]
+    page.close_event()
+
+
+def test_compare_dialog_toggle_routes_through_set_lineage_intent(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 — a tile click inside Compare routes through the
+    existing per-version verb path: lineage members write
+    ``lineage.intent_state`` via set_lineage_intent."""
+    _, eg = store_and_gateway
+    for rel in (
+        "Exported Media/x1-a.jpg",
+        "Exported Media/x1-b.jpg",
+    ):
+        eg.record_lineage(m.Lineage(
+            export_relpath=rel, phase="edit", source_kind="item",
+            source_item_id="x1", recipe_json=None,
+            exported_at="2026-06-19T08:00:00",
+            provenance="third_party", intent_state="compare",
+        ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-a.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-b.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    page._compare_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    cluster = next(
+        it._cull_cluster for it in page._items
+        if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    page._open_cluster(cluster)
+    page._on_compare_versions()
+    dlg = page._last_compare_dialog
+    # Simulate a click on the first tile — toggle from compare → picked.
+    target_id = dlg._tiles[0].item_id()
+    dlg.intent_toggle_requested.emit(target_id)
+    row = next(
+        r for r in eg.versions_for_item("x1")
+        if r.export_relpath == target_id)
+    assert row.intent_state == "picked"
+    page.close_event()
+
+
 def test_preview_staleness_chip_skips_third_party_cells(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §11.3 polish — third-party returns never paint the

@@ -102,6 +102,23 @@ also reads as Compare). The cover state derivation folds both into
 - Per-cell label: thumbnail only — the provenance badge (§2) carries
   identification.
 - Click semantics (per §3): border = toggle, center = preview viewer.
+- **Compare button** on the sub-grid toolbar (spec/89 §11.3 polish,
+  shipped 2026-06-19) — opens
+  [`CompareVersionsDialog`](mira/ui/exported/compare_dialog.py)
+  side-by-side: every version at full-definition pixels (file from
+  disk OR live Mira-develop pipeline for virtual Mira members), each
+  with the state border + provenance caption.
+  - **Click a tile's border** → cycle picked ↔ skipped.
+  - **spec/63 locked keymap** inside the dialog: `P` Will export ·
+    `X` Set aside · `Space` toggle (all act on the focused tile);
+    `← →` step focus; `Esc` closes.
+  - The first tile is focused on open so the keyboard works
+    immediately; mouse-clicking a tile also moves focus to it
+    before firing the toggle.
+  - Routes back through the existing per-version verb path
+    (`set_lineage_intent` for lineage members,
+    `phase_state(edit, source)` for the virtual Mira member); the
+    sub-grid borders re-paint on close.
 
 ### 1.4 Provenance — the binary signal + the inferred badge label
 

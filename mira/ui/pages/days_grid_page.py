@@ -239,6 +239,11 @@ class GridItem:
     cluster_count: int = 0
     cluster_split: tuple[int, int] | None = None
     stamp: str | None = None
+    # spec/89 §4.2 / Block 7 D2.B — Export mode: this item is in the
+    # pool only because it has a file under Exported Media/, NOT
+    # because it was picked in Pick. Renders a small "skipped in Pick"
+    # indicator chip on the cell so the user knows why it's here.
+    skipped_in_pick: bool = False
     # Internal — populated only on the gateway path. Held so the
     # P/X/Space/C verbs can persist directly via the EventGateway and
     # so cluster covers can expand without a second lookup.
@@ -505,38 +510,19 @@ class DaysGridPage(QWidget):
         # ── Legend strip ──
         # Wrapped in a QWidget so the Edit phase (creative-only, spec/66
         # §1.1 — no picked/skipped/compare decision) can hide it as a
-        # whole (BUGS.md B-010, Nelson 2026-06-17).
+        # whole (BUGS.md B-010, Nelson 2026-06-17). The content is
+        # phase-driven: Pick has the four picked/skipped/compare/mixed
+        # swatches, Export swaps to the spec/89 §4.2 (Block 4)
+        # vocabulary — "Will export · Dropped · Undecided" — with a
+        # different reminder + keymap hint. Rebuilt in
+        # :meth:`_rebuild_legend_strip` so a phase swap can swap labels
+        # without leaking orphan widgets.
         self._legend_host = QWidget()
-        legend = QHBoxLayout(self._legend_host)
-        legend.setContentsMargins(0, 0, 0, 0)
-        legend.setSpacing(18)
-        legend.addWidget(_state_swatch("picked", "Picked"))
-        legend.addWidget(_state_swatch("skipped", "Skipped"))
-        legend.addWidget(_state_swatch("compare", "Compare"))
-        legend.addWidget(_state_swatch("mixed", "Mixed cluster"))
-        # Nelson 2026-06-18 — the legend reminder text used to hardcode
-        # ``#8b94a7`` (mid-grey) on the surrounding text and ``#eef1f7``
-        # (near-white) on the bold ``= state`` / ``= cluster`` /
-        # ``= visited`` runs. On light theme those bold tokens vanished
-        # into the white background. Drop the inline colours — the
-        # ``Sub`` QSS role already colours the label per-theme, and
-        # ``<b>`` carries the weight contrast without a colour shift.
-        reminder = QLabel(
-            "border <b>= state</b>"
-            " · badge <b>= cluster</b>"
-            " · eye <b>= visited</b>"
-        )
-        reminder.setObjectName("Sub")
-        reminder.setTextFormat(Qt.TextFormat.RichText)
-        legend.addWidget(reminder)
-        legend.addStretch()
-        # Locked-keymap hint at the right edge of the legend — the
-        # user never has to leave the surface to remember the verbs.
-        keys = QLabel("P Pick · X Skip · Space toggle · C Compare")
-        keys.setObjectName("Sub")
-        keys.setTextFormat(Qt.TextFormat.RichText)
-        legend.addWidget(keys)
+        self._legend_layout = QHBoxLayout(self._legend_host)
+        self._legend_layout.setContentsMargins(0, 0, 0, 0)
+        self._legend_layout.setSpacing(18)
         outer.addWidget(self._legend_host)
+        self._rebuild_legend_strip()
 
         # ── Scrolling grid ──
         # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
@@ -688,6 +674,57 @@ class DaysGridPage(QWidget):
             return self._cluster
         return None
 
+    def _rebuild_legend_strip(self) -> None:
+        """Rebuild the legend host's content for the current phase. Pick
+        keeps the four picked/skipped/compare/mixed swatches; Export
+        swaps to the spec/89 §4.2 vocabulary (Block 4 D1.B / D2.A / D3.A);
+        Edit hides the whole strip (`_apply_phase_chrome` controls the
+        host's visibility). Idempotent on phase swap."""
+        # Clear the layout in place — `setParent(None)` so the widgets
+        # get reaped on the next event-loop pass without leaking
+        # parents into the QSS selector graph.
+        while self._legend_layout.count():
+            item = self._legend_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        is_export = bool(getattr(self, "_export_mode", False))
+        if is_export:
+            # Block 4 D1.B — three swatches with action-verb labels.
+            self._legend_layout.addWidget(_state_swatch("picked", tr("Will export")))
+            self._legend_layout.addWidget(_state_swatch("skipped", tr("Dropped")))
+            self._legend_layout.addWidget(_state_swatch("compare", tr("Undecided")))
+            # Block 4 D3.A — reminder line.
+            reminder_text = (
+                "border <b>= decision</b>"
+                " · wordmark <b>= origin</b>"
+                " · count chip <b>= versions</b>"
+            )
+            # Block 4 D2.A — Export-specific keymap vocabulary.
+            keys_text = "P Export · X Drop · Space toggle"
+        else:
+            # Pick / generic legend (unchanged).
+            self._legend_layout.addWidget(_state_swatch("picked", tr("Picked")))
+            self._legend_layout.addWidget(_state_swatch("skipped", tr("Skipped")))
+            self._legend_layout.addWidget(_state_swatch("compare", tr("Compare")))
+            self._legend_layout.addWidget(_state_swatch("mixed", tr("Mixed cluster")))
+            reminder_text = (
+                "border <b>= state</b>"
+                " · badge <b>= cluster</b>"
+                " · eye <b>= visited</b>"
+            )
+            keys_text = "P Pick · X Skip · Space toggle · C Compare"
+        reminder = QLabel(reminder_text)
+        reminder.setObjectName("Sub")
+        reminder.setTextFormat(Qt.TextFormat.RichText)
+        self._legend_layout.addWidget(reminder)
+        self._legend_layout.addStretch()
+        keys = QLabel(keys_text)
+        keys.setObjectName("Sub")
+        keys.setTextFormat(Qt.TextFormat.RichText)
+        self._legend_layout.addWidget(keys)
+
     def _apply_phase_chrome(self) -> None:
         """spec/70 Phase 3 / spec/68 §3 — phase-driven chrome:
 
@@ -731,12 +768,17 @@ class DaysGridPage(QWidget):
         except Exception:                                          # noqa: BLE001
             pass
         # BUGS.md B-010 — Edit is creative-only per spec/66 §1.1; the
-        # picked/skipped/compare/mixed legend belongs to phases that
-        # carry a per-cell state decision. Hide it whenever the grid is
-        # in pure Edit mode (Export mode keeps it — the ship grammar
-        # still uses the green/red border).
+        # legend belongs to phases that carry a per-cell state
+        # decision. Hide it whenever the grid is in pure Edit mode
+        # (Export mode keeps it — the ship grammar still uses the
+        # green/red border, just with the spec/89 §4.2 vocabulary
+        # rebuilt below).
         try:
             self._legend_host.setVisible(not is_edit)
+            # spec/89 §4.2 — rebuild the strip's content for the new
+            # phase (swaps Export's "Will export / Dropped / Undecided"
+            # in for Pick's four-swatch row).
+            self._rebuild_legend_strip()
         except Exception:                                          # noqa: BLE001
             pass
 
@@ -888,11 +930,19 @@ class DaysGridPage(QWidget):
             return
         # BUGS.md B-010 — Edit grid pool is the Pick survivors (spec/66
         # §1.1 "Edit pool = all picked keepers"). Restrict the engine
-        # via item_ids when the page is in pure Edit mode; Pick and
-        # Export keep the unfiltered day.
+        # via item_ids when the page is in pure Edit mode.
+        # spec/89 §4.2 / Block 7 D1.B — Export's pool is picked keepers
+        # UNION any item with a file under Exported Media/ (the latter
+        # surfaces the "skipped in Pick but a third-party edit exists"
+        # edge case so the user can drop the file or re-Pick).
         item_ids_filter = None
+        shipped_ids: set = set()
+        skipped_in_pick_ids: set = set()
         if self._phase == "edit" and not self._export_mode:
             item_ids_filter = self._picked_item_ids_filter()
+        elif self._export_mode:
+            item_ids_filter, shipped_ids, skipped_in_pick_ids = (
+                self._export_pool_filter())
         cells = day_grid_cells(
             self._eg, self._day_number, phase=self._phase,
             default_state=self._phase_default,
@@ -908,6 +958,19 @@ class DaysGridPage(QWidget):
         phase_states = self._eg.phase_states(self._phase)
         day_items = self._items_from_cells(cells, phase_states)
         if self._export_mode:
+            # spec/89 §1.1 / Block 1 D1.C — per-item intent inference
+            # for flat cells without an explicit phase_state(edit) row:
+            # 0 versions on disk → red default · ≥1 version → green
+            # default. Then stamp the "skipped in Pick" indicator on
+            # items that only made it into the pool via shipped_ids.
+            for it in day_items:
+                if it.item_kind == "cluster":
+                    continue
+                if phase_states.get(it.item_id) is None:
+                    has_shipped = it.item_id in shipped_ids
+                    it.state = STATE_PICKED if has_shipped else STATE_SKIPPED
+                if it.item_id in skipped_in_pick_ids:
+                    it.skipped_in_pick = True
             day_items = self._reshape_for_export(day_items, phase_states)
         elif self._phase == "edit":
             # BUGS.md B-010 — pure Edit is creative-only (spec/66 §1.1):
@@ -919,6 +982,48 @@ class DaysGridPage(QWidget):
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+
+    def _export_pool_filter(self):
+        """spec/89 §4.2 / Block 7 D1.B — the Export grid's pool is
+        **picked keepers ∪ any item with a file under Exported Media/**.
+        The second term surfaces the "third-party return for an item I
+        skipped in Pick" edge case so the user can either drop the
+        file or re-Pick.
+
+        Returns ``(item_ids_filter, shipped_ids, skipped_in_pick_ids)``:
+
+        * ``item_ids_filter`` — frozenset of item ids the day-grid
+          engine should include (``None`` when the gateway can't tell
+          us, signalling "show everything in the day" as a defensive
+          fallback).
+        * ``shipped_ids`` — items with at least one ``Exported Media/``
+          lineage row. The flat-cell intent inference uses this to
+          decide a default-green vs default-red border (Block 1 D1.C).
+        * ``skipped_in_pick_ids`` — items in the pool **only** because
+          they have a ship row. The caller stamps the "skipped in Pick"
+          indicator on them (Block 7 D2.B).
+        """
+        empty = (None, set(), set())
+        if self._eg is None:
+            return empty
+        try:
+            picked_filter = self._picked_item_ids_filter()
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: pick keeper lookup failed")
+            picked_filter = None
+        try:
+            shipped_ids = set(self._eg.exported_item_ids())
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: exported_item_ids failed")
+            shipped_ids = set()
+        picked_set: set = set(picked_filter) if picked_filter is not None else set()
+        pool = picked_set | shipped_ids
+        skipped_in_pick_ids = shipped_ids - picked_set
+        # If neither lookup yielded anything (fresh event, gateway hiccup)
+        # fall back to the unfiltered day so the user sees the captures.
+        if not pool and not shipped_ids and picked_filter is None:
+            return empty
+        return frozenset(pool), shipped_ids, skipped_in_pick_ids
 
     def _picked_item_ids_filter(self) -> Optional[frozenset]:
         """Return the frozenset of item ids the Edit grid should show

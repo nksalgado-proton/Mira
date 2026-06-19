@@ -154,15 +154,53 @@ def test_export_mode_chrome_swaps_labels_and_shows_export_button(
     page.close_event()
 
 
-def test_export_mode_default_state_is_born_green(qapp, app_gateway):
-    """Items with no edit-phase ``phase_state`` row read as ``picked``
-    in Export mode (the "everything ships unless dropped" rule, spec/71
-    Export legend reminder)."""
+def test_export_pool_includes_skipped_with_shipped_file_and_flags_it(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §4.2 / Block 7 D1.B & D2.B — the Export grid's pool is
+    picked keepers ∪ items with a file in ``Exported Media/``. A photo
+    the user skipped in Pick but with a third-party return on disk
+    still appears (so they can drop the file or re-Pick), carrying a
+    ``skipped_in_pick`` flag for the indicator chip."""
+    _, eg = store_and_gateway
+    # Item x2 was Pick-picked; flip it to skipped, then drop a ship
+    # row to simulate a third-party return for a skipped photo.
+    eg.set_phase_state("x2", "pick", STATE_SKIPPED)
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x2-LRC.jpg", phase="edit",
+        source_kind="item", source_item_id="x2",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party"))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x2-LRC.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    by_id = {it.item_id: it for it in page._items}
+    # x2 (Pick-skipped + shipped) is in the pool and flagged.
+    assert "x2" in by_id
+    assert by_id["x2"].skipped_in_pick is True
+    # x2 has a shipped row → 1-version default = green.
+    assert by_id["x2"].state == STATE_PICKED
+    # The other picked keepers (x1/x3/x4) still appear, not flagged,
+    # and default red because they have no versions on disk.
+    for iid in ("x1", "x3", "x4"):
+        assert by_id[iid].skipped_in_pick is False
+        assert by_id[iid].state == STATE_SKIPPED
+    page.close_event()
+
+
+def test_export_mode_default_state_is_red_when_no_versions(
+        qapp, app_gateway):
+    """spec/89 §1.1 / Block 1 D1.C — Export's flat-cell default is
+    version-count-driven: a 0-version cell starts **red** (no intent
+    to export), a 1-version cell starts green. The fixture's keepers
+    carry no lineage rows yet, so every cell reads as ``skipped``."""
     page = DaysGridPage(app_gateway)
     assert page.open_for_day(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     states = {it.item_id: it.state for it in page._items}
-    assert all(s == "picked" for s in states.values()), states
+    assert all(s == "skipped" for s in states.values()), states
     page.close_event()
 
 
@@ -181,9 +219,10 @@ def test_export_mode_click_toggles_in_place_no_drill_in(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     captured: list[str] = []
     page.item_activated.connect(captured.append)
-    # The cells should be born green; clicking flips to skipped.
+    # spec/89 §1.1 Block 1 D1.C — the fixture's keepers have 0 versions
+    # so they start red; clicking flips to picked (intent-to-render).
     target = page._items[0]
-    assert target.state == STATE_PICKED
+    assert target.state == STATE_SKIPPED
     # ``QApplication.focusWidget`` for _verb_on_focused — focus the
     # target Thumb directly to mimic the click → focus sequence.
     page._thumb_widgets[0].setFocus(Qt.FocusReason.MouseFocusReason)
@@ -192,9 +231,9 @@ def test_export_mode_click_toggles_in_place_no_drill_in(
     # Persisted to the shared edit-phase phase_state row.
     eg = page._eg
     ps = eg.phase_state(target.item_id, "edit")
-    assert ps is not None and ps.state == STATE_SKIPPED
+    assert ps is not None and ps.state == STATE_PICKED
     # The in-cell visual flipped too.
-    assert page._items[0].state == STATE_SKIPPED
+    assert page._items[0].state == STATE_PICKED
     page.close_event()
 
 
@@ -455,8 +494,10 @@ def test_undo_stack_clears_on_close_event(qapp, app_gateway):
     page = DaysGridPage(app_gateway)
     page.open_for_day(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
-    # Push something onto the stack by toggling a cell.
-    page._apply_verb_at_index(0, "skip")
+    # The fixture's keepers carry no shipped rows, so cells default red
+    # (spec/89 Block 1 D1.C); a "pick" verb flips the first cell green
+    # and pushes the undo entry.
+    page._apply_verb_at_index(0, "pick")
     assert len(page._undo_stack) == 1
     page.close_event()
     assert page._undo_stack == []

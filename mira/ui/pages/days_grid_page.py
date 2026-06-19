@@ -1151,6 +1151,19 @@ class DaysGridPage(QWidget):
             members=tuple(members),
             color=cover_color,
         )
+        # spec/89 §11.3 / Block 1 D5.A — cover thumb is the newest
+        # version's actual file when the cluster carries lineage rows
+        # (``versions_for_item`` returns newest-first per Slice 5).
+        # The sha256 is cleared so the cache key falls to path:<rel>
+        # — using the source's sha would mis-serve the source thumb
+        # from the in-memory pixmap cache. The initial pixmap stays
+        # the source thumb as a brief placeholder until the async
+        # decoder paints the version's file.
+        cover_path = source_item._path
+        cover_sha = source_item._sha256
+        if rows:
+            cover_path = event_root / rows[0].export_relpath
+            cover_sha = None
         return GridItem(
             item_id=f"cluster:versions:{source_item.item_id}",
             item_kind="cluster",
@@ -1160,8 +1173,8 @@ class DaysGridPage(QWidget):
             exported=False,
             cluster_type="versions",
             cluster_count=len(members),
-            _path=source_item._path,
-            _sha256=source_item._sha256,
+            _path=cover_path,
+            _sha256=cover_sha,
             _cull_cluster=cluster,
         )
 

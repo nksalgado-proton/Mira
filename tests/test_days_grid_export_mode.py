@@ -193,6 +193,48 @@ def test_export_two_plus_versions_reshape_into_cluster_compare_orange(
     page.close_event()
 
 
+def test_export_versions_cluster_cover_thumb_is_newest_version(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §11.3 / Block 1 D5.A — the cluster cover's thumb is the
+    newest version's actual file on disk (``versions_for_item`` sorts
+    newest-first by exported_at). The sha256 is cleared so the cache
+    key falls to path:<rel> instead of mis-serving the source thumb."""
+    _, eg = store_and_gateway
+    # Two third-party returns, distinct exported_at — Helicon is newer.
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x1-Lightroom.jpg",
+        phase="edit", source_kind="item", source_item_id="x1",
+        recipe_json=None,
+        exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="compare",
+    ))
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x1-Helicon.tif",
+        phase="edit", source_kind="item", source_item_id="x1",
+        recipe_json=None,
+        exported_at="2026-06-19T09:30:00",   # newer
+        provenance="third_party", intent_state="compare",
+    ))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-Lightroom.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (event_dir / "Exported Media" / "x1-Helicon.tif").write_bytes(b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    cover = next(
+        it for it in page._items
+        if it.item_kind == "cluster"
+        and it.item_id == "cluster:versions:x1"
+    )
+    expected_newest = event_dir / "Exported Media" / "x1-Helicon.tif"
+    assert cover._path == expected_newest
+    # Cache key falls to path:<rel> instead of the source's sha256.
+    assert cover._sha256 is None
+    assert page._thumb_cache_key(cover) == f"path:{expected_newest}"
+    page.close_event()
+
+
 def test_export_versions_sub_grid_p_writes_intent_picked(
         qapp, app_gateway, event_dir, store_and_gateway):
     """Drilling into a versions cluster surfaces every row; pressing P

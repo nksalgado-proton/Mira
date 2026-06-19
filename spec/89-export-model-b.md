@@ -476,11 +476,16 @@ Export workflow.
   what the next Export run would produce. The same pipeline could
   drive the virtual Mira member's thumbnail inside a versions
   cluster sub-grid (today: source photo placeholder).
-- **Cluster cover thumbnail = newest version.** Block 1 D5.A
-  decided the cover should show the newest version's actual file.
-  Today the cover uses the source item's thumb. The sub-grid
-  drill-in correctly shows each version's actual file; only the
-  cover preview is the placeholder.
+- ~~**Cluster cover thumbnail = newest version.**~~ **Shipped
+  2026-06-19** — [`_versions_cluster_grid_item`](mira/ui/pages/days_grid_page.py)
+  picks `rows[0]` from `versions_for_item` (newest-first per
+  Slice 5) as the cover's `_path`, clears the source's `_sha256`
+  so the in-memory pixmap cache keys on the version's file
+  instead of mis-serving the source thumb. The initial paint
+  shows the source thumb as a brief placeholder until the async
+  decoder swaps in the version's pixels. Mira-intent-only
+  clusters (no on-disk version yet) still use the source thumb
+  as the cover — there's nothing else to show.
 - **App-specific badge icons.** Slice 4 ships text wordmarks
   (`Mira`, `LRC`, `Helicon`, `CO`, `ext`). App-specific icon
   glyphs can replace them in a later visual polish pass (Block 2

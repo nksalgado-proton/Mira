@@ -724,6 +724,7 @@ In order, most recent last:
 | 7 | [`f072999`](https://github.com/nksalgado-proton/Mira/commit/f072999) | spec/89 §11.3: lazy develop + F10 lens in CompareVersionsDialog |
 | 8 | [`1e4ba1b`](https://github.com/nksalgado-proton/Mira/commit/1e4ba1b) | spec/89 §12: this handoff doc |
 | 9 | [`814e563`](https://github.com/nksalgado-proton/Mira/commit/814e563) | fix(spec/89 §3.2 D4.C): "Open in Editor" actually opens the Editor (was silently no-op'd in Export mode by the spec/68 §3 short-circuit; the test that pinned the old no-op behaviour was inverted to assert the new route) |
+| 10 | [`e5d239d`](https://github.com/nksalgado-proton/Mira/commit/e5d239d) | fix: ThumbGrid zombie-cell crash + Export-now gateway lifecycle. (a) ThumbGrid.set_pixmap + update_item now swallow RuntimeError when the underlying _GridCell's C++ widget has been destroyed (async thumb decode landing after a grid rebuild). (b) MainWindow._on_days_lists_export_now closes the second-pass eg only on the delete-only path; render-submit path lets Python GC reap eg once the batch commit closures release their refs (was closing eagerly → sqlite3.ProgrammingError on every set_edit_exported call). Four new tests pin both contracts. |
 
 ### 12.7 Test coverage (session)
 

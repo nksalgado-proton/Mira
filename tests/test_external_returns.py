@@ -260,3 +260,92 @@ def test_longest_prefix_wins(tmp_path):
         assert eg.lineage()[0].provenance == "third_party"
     finally:
         eg.close()
+
+
+# --------------------------------------------------------------------------- #
+# Leg D — Exported Media/ orphan-healer (Alaska 2026-06-19)
+# --------------------------------------------------------------------------- #
+
+
+def test_leg_d_heals_orphan_file_under_exported_media(tmp_path):
+    """A Mira-rendered export that landed bytes-on-disk without a
+    lineage row (the Alaska clip-export bug) is recovered: Leg D matches
+    its stem to the source item and writes the missing row."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        orphan_dir = tmp_path / "Exported Media" / "Day 3"
+        orphan_dir.mkdir(parents=True)
+        # A Mira-shaped clip filename — prefix matches p1.
+        orphan = orphan_dir / "D03_G9_p1_clip1.mp4"
+        orphan.write_bytes(b"orphan clip bytes")
+
+        report = scan_for_returns(eg, "skipped")
+        assert "Exported Media/Day 3/D03_G9_p1_clip1.mp4" in report.healed
+        assert report.unmatched == []
+        rows = [r for r in eg.lineage()
+                if r.export_relpath.endswith("_clip1.mp4")]
+        assert len(rows) == 1
+        assert rows[0].source_item_id == "i-solo"
+        assert rows[0].phase == "edit"
+        assert rows[0].provenance == "third_party"
+    finally:
+        eg.close()
+
+
+def test_leg_d_is_idempotent(tmp_path):
+    """A second scan over the same orphan doesn't write duplicate
+    lineage rows — the second pass sees the row Leg D wrote on the
+    first pass and skips."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        orphan_dir = tmp_path / "Exported Media" / "Day 3"
+        orphan_dir.mkdir(parents=True)
+        (orphan_dir / "D03_G9_p1_clip1.mp4").write_bytes(b"x")
+
+        first = scan_for_returns(eg, "skipped")
+        assert len(first.healed) == 1
+        before = len(eg.lineage())
+
+        second = scan_for_returns(eg, "skipped")
+        assert second.healed == []
+        assert len(eg.lineage()) == before
+    finally:
+        eg.close()
+
+
+def test_leg_d_flags_unmatched_orphans(tmp_path):
+    """An orphan whose stem doesn't prefix any item is flagged via
+    ``report.unmatched`` — Leg D never silently leaves a file behind."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        orphan_dir = tmp_path / "Exported Media" / "stray"
+        orphan_dir.mkdir(parents=True)
+        (orphan_dir / "unknown_thing.mp4").write_bytes(b"?")
+        report = scan_for_returns(eg, "skipped")
+        assert report.healed == []
+        assert "Exported Media/stray/unknown_thing.mp4" in report.unmatched
+    finally:
+        eg.close()
+
+
+def test_leg_d_skips_files_already_in_lineage(tmp_path):
+    """A file Leg B already linked into Exported Media/ has its lineage
+    row by the time Leg D runs — Leg D must not re-write it (would
+    PK-violate even if attempted, but we check via the report)."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        # Leg B input: an Edited Media/ file that hardlinks into
+        # Exported Media/ and writes a lineage row.
+        ret = tmp_path / "Edited Media" / "LRC"
+        ret.mkdir(parents=True)
+        (ret / "D03_G9_p1-Edit.jpg").write_bytes(b"LRC")
+        report = scan_for_returns(eg, "skipped")
+        # Leg B associated it; Leg D must not double-count it as healed.
+        assert report.associated == ["Exported Media/D03_G9_p1-Edit.jpg"]
+        assert report.healed == []
+    finally:
+        eg.close()

@@ -101,14 +101,23 @@ def test_fullscreen_roundtrip_restores_geometry(qapp, gw, tmp_path):
     (QLabel minimumSizeHint == pixmap size, enforced as the WINDOW
     minimum by the top-level layout), so F11-out restored a near-
     screen-sized window — and the min-size fight inside Windows'
-    synchronous resize negotiation could wedge the event loop."""
+    synchronous resize negotiation could wedge the event loop.
+
+    Post-2026-06-19 (transport-as-layout): the dialog's natural min
+    width is whatever the transport bar contents demand. The 'a big
+    slide must never drive the dialog min' assertion still holds, just
+    expressed differently — showing a 3000×2000 pixmap doesn't bump
+    the min width above the transport's own contribution."""
     from PyQt6.QtGui import QPixmap
     p = _player(gw, tmp_path)
     p.start()
     g0 = p.geometry()
-    # a big slide must never drive the dialog's minimum size
+    # Record the dialog's min width BEFORE the big slide arrives — this
+    # is what the transport bar's chrome contributes. The pixmap must
+    # not push it any higher.
+    min_w_before = p.minimumSizeHint().width()
     p._show_pixmap(QPixmap(3000, 2000))
-    assert p.minimumSizeHint().width() < 400
+    assert p.minimumSizeHint().width() == min_w_before
     p._toggle_fullscreen()
     assert p.isFullScreen()
     p._show_pixmap(QPixmap(3000, 2000))       # a fullscreen-sized slide
@@ -239,3 +248,207 @@ def test_overlay_fields_filter_what_renders(qapp, gw, tmp_path):
     assert "2026-06-14" not in text
     assert "Canon R5" not in text
     assert "ISO" not in text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Transport bar (Nelson 2026-06-19) — Stop / Sep jumps / Play-Pause / scrubber
+# seek / live slide-time / time read-out
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_durations_table_uses_true_clip_length(qapp, gw, tmp_path):
+    """Photos/separators get ``photo_ms``; videos get their true
+    ``SessionFile.duration_ms``. The scrubber walks this table."""
+    from mira.shared.cut_session import SessionFile
+    entries = [
+        ("opener", None),
+        ("sep", 1),
+        ("file", SessionFile(export_relpath="a.jpg", kind="photo")),
+        ("file", SessionFile(export_relpath="b.mp4", kind="video",
+                             duration_ms=4_500)),
+    ]
+    from PyQt6.QtGui import QImage
+    p = CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta={d.day_number: d for d in gw.trip_days()},
+        aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32))
+    assert p._durations == [6000, 6000, 6000, 4500]
+    assert p._sep_indexes == [1]
+    assert p._total_ms() == 22_500
+
+
+def test_scrubber_click_seeks_to_entry(qapp, gw, tmp_path):
+    """Clicking the scrubber jumps the playhead — we snap to the entry
+    start (intra-clip seeking is for v2)."""
+    p = _player(gw, tmp_path)
+    p.start()
+    p._on_scrubber_seeked(3, 0)
+    assert p._index == 3
+
+
+def test_jump_to_separator_walks_prev_next(qapp, gw, tmp_path):
+    """⏮ / ⏭ jumps to the previous / next separator. The opener counts
+    as an anchor so an early ⏮ still has a destination."""
+    p = _player(gw, tmp_path)
+    p.start()
+    # entries: opener(0), sep1(1), file(2), sep2(3), file(4)
+    p._show_index(4)
+    p._jump_to_separator(-1)
+    assert p._index == 3
+    p._jump_to_separator(-1)
+    assert p._index == 1
+    p._jump_to_separator(-1)
+    assert p._index == 0                  # opener is the prev-most anchor
+    p._jump_to_separator(1)
+    assert p._index == 1
+
+
+def test_slide_time_spinbox_updates_durations_live(qapp, gw, tmp_path):
+    """Changing 'Per slide' updates ``_photo_ms`` AND rebuilds the
+    scrubber durations on the spot."""
+    p = _player(gw, tmp_path)
+    p.start()
+    assert p._photo_ms == 6000
+    p._on_slide_time_changed(3.5)
+    assert p._photo_ms == 3500
+    # photos / separators / opener all picked up the new duration
+    assert all(d == 3500 for d in p._durations)
+
+
+def test_time_label_reflects_played_and_total(qapp, gw, tmp_path):
+    """The mm:ss read-out shows played / total."""
+    p = _player(gw, tmp_path)
+    p.start()
+    p._show_index(2)                     # the first file frame
+    p._update_time_label()
+    # total = 5 entries * 6 s = 30 s; played starts at the entry's prefix.
+    assert p._time_label.text().endswith("/ 00:30")
+
+
+def test_play_icon_toggles_on_pause(qapp, gw, tmp_path):
+    """The transport's ▶/⏸ glyph flips with the pause state."""
+    p = _player(gw, tmp_path)
+    p.start()
+    assert p._btn_play.text() == "⏸"
+    p._toggle_pause()
+    assert p._btn_play.text() == "▶"
+    p._toggle_pause()
+    assert p._btn_play.text() == "⏸"
+
+
+def test_stop_button_finishes_and_stops_timers(qapp, gw, tmp_path):
+    """The Stop button (== ``_finish``) accepts the dialog AND stops the
+    ticker so an idle background timer doesn't leak past the rehearsal."""
+    p = _player(gw, tmp_path)
+    p.start()
+    assert p._ticker.isActive()
+    done = []
+    p.accepted.connect(lambda: done.append(True))
+    p._finish()
+    assert done == [True]
+    assert not p._ticker.isActive()
+    assert not p._timer.isActive()
+
+
+def test_close_event_tears_down_media(qapp, gw, tmp_path):
+    """Nelson 2026-06-19 — closing the window via the X button (or
+    Alt-F4) bypasses ``_finish`` (it's only on the Stop button + Esc +
+    natural end). The closeEvent override now runs the same teardown
+    so the music QMediaPlayer is stopped on every exit path."""
+    from PyQt6.QtGui import QCloseEvent
+    p = _player(gw, tmp_path)
+    p.start()
+    assert p._ticker.isActive()
+    # Simulate Qt sending a close event (what the X button does).
+    p.closeEvent(QCloseEvent())
+    assert not p._ticker.isActive()
+    assert not p._timer.isActive()
+    assert getattr(p, "_torn_down", False) is True
+
+
+def test_teardown_is_idempotent(qapp, gw, tmp_path):
+    """A user pressing Stop, then closing the window, must not crash —
+    the second teardown is a no-op."""
+    p = _player(gw, tmp_path)
+    p.start()
+    p._finish()
+    p._teardown_media()                       # second pass
+    p._teardown_media()                       # third pass — still no-op
+    assert getattr(p, "_torn_down", False) is True
+
+
+def test_teardown_silences_music_player_on_finish(qapp, gw, tmp_path):
+    """The Alaska report (Nelson 2026-06-19): music kept playing after
+    the rehearsal ended. ``_teardown_media`` now (a) disconnects the
+    EndOfMedia handler so the next-track race can't re-arm, (b) stops
+    the player, (c) drops the source so the decoder stops buffering,
+    (d) zeroes the audio-output volume so any in-flight samples are
+    silent. Verified via a lightweight stub — instantiating a real
+    QMediaPlayer is unstable in pytest-qt teardown."""
+    p = _player(gw, tmp_path)
+    p.start()
+
+    class _MusicStub:
+        def __init__(self):
+            self.stopped = False
+            self.source_cleared = False
+            self.disconnected = False
+        def stop(self): self.stopped = True
+        def setSource(self, _url):
+            self.source_cleared = True
+            self.url = _url
+
+        class _Sig:
+            def __init__(self, outer):
+                self._outer = outer
+            def disconnect(self):
+                if self._outer.disconnected:
+                    raise TypeError("already disconnected")
+                self._outer.disconnected = True
+
+        @property
+        def mediaStatusChanged(self):
+            if not hasattr(self, "_sig"):
+                self._sig = self._Sig(self)
+            return self._sig
+
+    class _AudioStub:
+        def __init__(self):
+            self._vol = 0.6
+        def setVolume(self, v): self._vol = float(v)
+        def volume(self): return self._vol
+
+    music = _MusicStub()
+    audio = _AudioStub()
+    p._music = music
+    p._music_audio = audio
+
+    p._finish()
+    assert music.disconnected is True
+    assert music.stopped is True
+    assert music.source_cleared is True
+    assert audio.volume() == 0.0
+
+
+def test_transport_is_a_layout_participant_below_the_canvas(qapp, gw, tmp_path):
+    """Nelson 2026-06-19 — the transport rides the dialog's QVBoxLayout
+    pinned to the bottom; the slide canvas sits in a stack widget on
+    top. The earlier overlay design lost the bar the moment the video
+    widget started painting (Qt's video sink draws over child
+    overlays). The bar is now a real layout participant: always
+    visible, never overlapped by the video, with the canvas getting
+    exactly the area above it."""
+    p = _player(gw, tmp_path)
+    p.start()
+    qapp.processEvents()
+    # The transport is the SECOND widget in the dialog's layout (the
+    # stack widget is first), with a non-zero height.
+    assert p._layout.count() == 2
+    assert p._layout.itemAt(0).widget() is p._stack_widget
+    assert p._layout.itemAt(1).widget() is p._transport
+    assert p._transport.height() > 0
+    # The slide canvas lives inside the stack widget, not the dialog,
+    # so its bottom never crosses the transport's top.
+    assert p._photo.parent() is p._stack_widget
+    assert p._stack_widget.geometry().bottom() <= p._transport.geometry().top() + 1

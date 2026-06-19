@@ -78,6 +78,23 @@ def test_open_day_builds_file_cells_with_session_colors(qapp, gw, tmp_path):
     assert "Day 2" in page._grid_header.text()
 
 
+def test_video_cells_carry_the_video_badge(qapp, gw, tmp_path):
+    """Nelson 2026-06-19 — video tiles were invisible (no poster from
+    the photo cache, no badge to label them as videos) so the user
+    couldn't pick/skip them. Every video cell now carries the
+    ``cluster_type='video'`` badge so it reads as a video at a glance,
+    poster or no poster."""
+    page = _page(gw, tmp_path)
+    page._open_day(1)                           # day 2 has the video
+    items = page._grid.items()
+    by_payload = {it.payload: it for it in items}
+    photo_cell = by_payload["Exported Media/e3a.jpg"]
+    video_cell = by_payload["Exported Media/v1.mp4"]
+    assert photo_cell.cluster_type is None
+    assert video_cell.cluster_type == "video"
+    assert video_cell.cluster_count == 1
+
+
 def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):
     page = _page(gw, tmp_path, target_s=40, max_s=90)
     page._open_day(1)

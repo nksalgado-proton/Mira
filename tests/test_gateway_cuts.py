@@ -127,12 +127,15 @@ def test_resolve_dc_exported_minus_cut(gw):
 
 
 def test_resolve_dc_intersection(gw):
-    # A macro-only DC ∩ #exported = the macro files (& narrows).
+    # A macro-only DC ∩ #exported = the macro photos + every video.
+    # Style filters are photo-shaped (spec/58 §2); a Style-filtered DC
+    # therefore carries videos through, so the intersection does too.
     macro = gw.create_dc("Macro", expr=[["+", "exported"]], styles=["macro"])
     rows = gw.resolve_dc([["+", "exported"],
                           ["&", {"kind": "dc", "id": macro.id}]])
     assert [ln.export_relpath for ln in rows] == [
-        "Exported Media/e1.jpg", "Exported Media/e3a.jpg", "Exported Media/e3b.jpg",
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg",
+        "Exported Media/e3b.jpg", "Exported Media/v1.mp4",
     ]
 
 
@@ -162,10 +165,29 @@ def test_resolve_dc_bad_operator_raises(gw):
 
 def test_resolve_dc_style_filter(gw):
     rows = gw.resolve_dc([["+", "exported"]], {"styles": ["macro"]})
-    # wildlife e2 and the unclassified video drop; both macro versions stay.
+    # wildlife e2 drops; both macro versions stay; the video rides the
+    # Style filter unconditionally (Style is a photo-shaped bucket — a
+    # video would otherwise be silently dropped by an unrelated chip
+    # selection, reported by Nelson 2026-06-19).
     assert [ln.export_relpath for ln in rows] == [
-        "Exported Media/e1.jpg", "Exported Media/e3a.jpg", "Exported Media/e3b.jpg",
+        "Exported Media/e1.jpg", "Exported Media/e3a.jpg",
+        "Exported Media/e3b.jpg", "Exported Media/v1.mp4",
     ]
+
+
+def test_style_filter_does_not_drop_videos(gw):
+    """Regression (Nelson 2026-06-19): the New Cut dialog's 'Videos'
+    checkbox + any Style chip should still surface videos. The video has
+    no classification so an ``IN``-only style filter dropped it
+    silently. Videos pass through the Style filter regardless."""
+    # Two style chips simultaneously: the macro+wildlife union still
+    # excludes nothing on the video side.
+    rows = gw.resolve_dc([["+", "exported"]],
+                         {"styles": ["macro", "wildlife"]})
+    assert "Exported Media/v1.mp4" in {ln.export_relpath for ln in rows}
+    # A style the user invented that matches nothing — videos still ride.
+    rows = gw.resolve_dc([["+", "exported"]], {"styles": ["unknown_style"]})
+    assert [ln.export_relpath for ln in rows] == ["Exported Media/v1.mp4"]
 
 
 def test_resolve_dc_media_type_filter(gw):

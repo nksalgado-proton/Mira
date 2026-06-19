@@ -1458,8 +1458,19 @@ class EventGateway:
             sql += "AND COALESCE(si.kind, oi.kind, 'photo') = ? "
             params.append(type_filter)
         if style_filter:
+            # Style chips narrow the PHOTO population only — Style is a
+            # photo-shaped bucket (per spec/58 §2 the Style button lives
+            # on the Edit photo surface). Videos pass through whatever
+            # Style chips are active, otherwise the New Cut dialog's
+            # "Videos" checkbox would silently drop every video whose
+            # classification is NULL (the common case — classification
+            # is unset for most videos). Reported by Nelson 2026-06-19.
             qs2 = ",".join("?" * len(style_filter))
-            sql += f"AND COALESCE(si.classification, oi.classification) IN ({qs2}) "
+            sql += (
+                f"AND (COALESCE(si.classification, oi.classification) "
+                f"IN ({qs2}) "
+                "OR COALESCE(si.kind, oi.kind, 'photo') = 'video') "
+            )
             params.extend(style_filter)
         sql += self._CUT_SHOW_ORDER
         return self.store.query_raw(m.Lineage, sql, tuple(params))

@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QFrame,
@@ -507,12 +507,21 @@ class CutSessionPage(QWidget):
     def _grid_item_for(self, f: SessionFile) -> ThumbGridItem:
         """Build a :class:`ThumbGridItem` for one session file. The
         ledger picked-state drives the locked §5a state token (picked /
-        skipped) so the 3px border colour reads the binary decision."""
+        skipped) so the 3px border colour reads the binary decision.
+
+        Video files get the ``cluster_type='video'`` badge so they read
+        as videos even before the poster frame finishes extracting (the
+        photo cache short-circuits on .mp4 — without the badge the cell
+        was a blank tile the user couldn't recognise as a video to
+        pick or skip; Nelson 2026-06-19)."""
         state = "picked" if self._session.is_picked(f.export_relpath) else "skipped"
+        is_video = f.kind == "video"
         return ThumbGridItem(
             pixmap=self._thumbs.get(f.export_relpath),
             state=state,
             payload=f.export_relpath,
+            cluster_type="video" if is_video else None,
+            cluster_count=1 if is_video else 0,
         )
 
     # ── days level ───────────────────────────────────────────────────
@@ -550,12 +559,82 @@ class CutSessionPage(QWidget):
     def _request_missing_thumbs(self) -> None:
         """Queue async grid-thumb decodes (priority 1) for every file of
         the open day that has none yet. Navigation elsewhere may drop
-        queued ones (generation rule) — callers re-invoke on re-entry."""
+        queued ones (generation rule) — callers re-invoke on re-entry.
+
+        Photos ride the shared photo cache (Pillow decode). Videos
+        ride the FFmpeg poster cache (``core.thumb_cache.ensure_thumb``)
+        because the photo cache short-circuits on .mp4 (spec/63 slice 7
+        + the 2026-06-15 'no log spam on video paths' guard) and would
+        otherwise leave video tiles blank forever. The video decode
+        runs on a small QTimer queue so the UI doesn't freeze opening
+        a day with many unposted videos."""
         for f in self._files_of_open_group():
-            if f.export_relpath not in self._thumbs:
+            if f.export_relpath in self._thumbs:
+                continue
+            if f.kind == "video":
+                self._enqueue_video_poster(f)
+            else:
                 self._cache.request_scaled_pixmap(
                     self._root / f.export_relpath, _GRID_THUMB_TARGET,
                     priority=1)
+
+    def _enqueue_video_poster(self, f: SessionFile) -> None:
+        """Queue a video poster extraction. The QTimer fires every
+        ~50 ms; each tick pulls one video off the queue and runs the
+        FFmpeg-backed ``ensure_thumb`` synchronously. Each is a single
+        ffmpeg invocation that typically returns in well under a second
+        and is permanently cached on disk, so subsequent visits of the
+        same day are instant. Re-entries that re-call
+        ``_request_missing_thumbs`` skip files already in ``_thumbs``
+        AND files already queued."""
+        if not hasattr(self, "_video_thumb_pending"):
+            self._video_thumb_pending: List[str] = []
+            self._video_thumb_timer = QTimer(self)
+            self._video_thumb_timer.setInterval(50)
+            self._video_thumb_timer.timeout.connect(self._tick_video_thumb)
+        relpath = f.export_relpath
+        if relpath in self._video_thumb_pending:
+            return
+        self._video_thumb_pending.append(relpath)
+        if not self._video_thumb_timer.isActive():
+            self._video_thumb_timer.start()
+
+    def _tick_video_thumb(self) -> None:
+        """Process the next queued video poster. The whole cycle —
+        FFmpeg extract + JPEG load + grid update — runs on the UI
+        thread; the QTimer interval keeps it from looking like a hang
+        even when multiple videos queue up."""
+        if not self._video_thumb_pending:
+            self._video_thumb_timer.stop()
+            return
+        relpath = self._video_thumb_pending.pop(0)
+        try:
+            from core.thumb_cache import ensure_thumb
+            from mira.ui.media.image_loader import load_pixmap
+            source = self._root / relpath
+            thumb = ensure_thumb(
+                event_root=self._root,
+                source_video=source,
+                source_rel_path=Path(relpath),
+                item_id="cut_session_grid",
+                position_ms=1000,
+                fallback_position_ms=0)
+            pm = load_pixmap(thumb)
+        except Exception:                                              # noqa: BLE001
+            log.warning(
+                "cut session: video poster extract failed for %s",
+                relpath, exc_info=True)
+            pm = QPixmap()
+        if pm.isNull():
+            return
+        self._thumbs[relpath] = pm
+        # Update the cell IFF the same day is still on screen and this
+        # file is in its current item list — navigation may have moved.
+        files = self._files_of_open_group()
+        for i, f in enumerate(files):
+            if f.export_relpath == relpath:
+                self._grid.set_pixmap(i, pm)
+                break
 
     def _on_thumb_ready(self, path: Path, _pm: QPixmap, _native) -> None:
         """A scaled delivery landed — adopt it as a grid thumb iff it

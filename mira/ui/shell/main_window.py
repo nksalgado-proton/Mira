@@ -6361,6 +6361,10 @@ class MainWindow(QMainWindow):
             lines.append(tr("{n} edited file(s) from external software "
                             "linked to their originals.")
                          .replace("{n}", str(len(report.associated))))
+        if report.healed:
+            lines.append(tr("{n} orphan file(s) under Exported Media/ "
+                            "linked back to their originals.")
+                         .replace("{n}", str(len(report.healed))))
         if report.unmatched:
             shown = ", ".join(report.unmatched[:5])
             more = len(report.unmatched) - 5

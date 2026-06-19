@@ -492,10 +492,23 @@ def submit_export_batch(
         # Export used (record_single_lineage). spec/54 §8 versions-
         # as-exports holds: a re-shipped segment lands as `(2).mp4`
         # via the worker's _NameReserver and gets its own lineage row.
+        #
+        # Belt-and-braces (Alaska 2026-06-19): wrap each clip in its
+        # own try so a single bad clip — bad recipe lookup, transient
+        # DB error — never breaks the survivors. The Alaska bug shipped
+        # 3 .mp4 files with zero lineage rows; the most likely cause is
+        # the loop crashing mid-iteration. The orphan-healer Leg D in
+        # ``scan_for_returns`` is the structural safety net; this is
+        # the prevention layer.
+        clip_writes = clip_errors = 0
         for msg in ok_clip_results:
             uid = msg.get("unit_id")
             final_str = msg.get("final_path")
             if not uid or not final_str:
+                log.warning(
+                    "submit_export_batch: clip msg missing unit_id / "
+                    "final_path (%s); skipping", msg)
+                clip_errors += 1
                 continue
             final_path = Path(final_str)
             try:
@@ -504,21 +517,42 @@ def submit_export_batch(
                 log.exception(
                     "submit_export_batch: set_edit_exported failed "
                     "for clip %s", uid)
-            cu = clip_unit_lookup.get(uid)
-            recipe = recipe_for_item(eg, uid) if cu else None
-            if cu is not None and cu.style and recipe is not None:
-                recipe.setdefault("style", cu.style)
             try:
-                record_single_lineage(
+                cu = clip_unit_lookup.get(uid)
+                recipe = recipe_for_item(eg, uid) if cu else None
+                if cu is not None and cu.style and recipe is not None:
+                    recipe.setdefault("style", cu.style)
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "submit_export_batch: recipe lookup failed for "
+                    "clip %s — proceeding with no recipe so the "
+                    "lineage row still lands", uid)
+                recipe = None
+            try:
+                ok = record_single_lineage(
                     eg, Path(eg.event_root),
                     item_id=uid, dest_path=final_path,
                     recipe=recipe,
                     resolved_params=msg.get("params"),
                 )
+                if ok:
+                    clip_writes += 1
+                else:
+                    clip_errors += 1
+                    log.warning(
+                        "submit_export_batch: record_single_lineage "
+                        "returned False for clip %s -> %s",
+                        uid, final_path)
             except Exception:                                       # noqa: BLE001
                 log.exception(
                     "submit_export_batch: record_single_lineage failed "
                     "for clip %s", uid)
+                clip_errors += 1
+        if ok_clip_results:
+            log.info(
+                "submit_export_batch: clip lane committed — %d lineage "
+                "row(s) written, %d error(s) (of %d ok clip msg(s))",
+                clip_writes, clip_errors, len(ok_clip_results))
         _cleanup_snapshot_temps(snapshot_temp_paths)
 
     if batch_queue is None:

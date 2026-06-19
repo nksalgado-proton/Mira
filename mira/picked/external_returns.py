@@ -52,14 +52,15 @@ _SIDECAR_EXTS = frozenset({".xmp", ".tmp", ".ini", ".db", ".json", ".txt"})
 class ReturnsReport:
     adopted: List[str] = field(default_factory=list)      # merged-master filenames
     associated: List[str] = field(default_factory=list)   # editor-return relpaths
+    healed: List[str] = field(default_factory=list)       # Exported Media/ orphans Leg D recovered
     unmatched: List[str] = field(default_factory=list)    # flagged, never ignored
     unmerged_bracket_count: int = 0                       # the derived reminder fact
     errors: List[str] = field(default_factory=list)
 
     @property
     def nothing_happened(self) -> bool:
-        return not (self.adopted or self.associated or self.unmatched
-                    or self.errors)
+        return not (self.adopted or self.associated or self.healed
+                    or self.unmatched or self.errors)
 
 
 def _link_stem(entry: PickedEntry) -> str:
@@ -242,16 +243,65 @@ def scan_for_returns(
                 log.exception("return association failed for %s", dest_rel)
                 report.errors.append(f"{dest_rel}: {exc}")
 
+    # ── Leg D — Exported Media/ orphan-healer (Alaska 2026-06-19) ──────
+    # A Mira-rendered export can land bytes-on-disk under
+    # ``Exported Media/`` without its companion ``lineage`` row — the
+    # render commit closure in :mod:`mira.ui.exported.batch` can be
+    # interrupted (worker crash, app exit, silently caught exception)
+    # between the worker writing the file and the host writing the
+    # row. Leg B only sweeps ``Edited Media/``, so a Mira-render orphan
+    # would stay invisible to ``exported_files()`` forever. Leg D
+    # sweeps ``Exported Media/`` directly and writes the missing rows
+    # against the same stem matcher.
+    #
+    # Provenance defaults to ``third_party`` — the scanner cannot tell
+    # a Mira-render orphan from an external tool's direct write, and
+    # ``third_party`` is the honest fallback (a Mira-render that
+    # re-runs the proper export later will overwrite the row with
+    # ``mira_render`` via the normal writer).
+    #
+    # Re-snapshot ``lineage`` AFTER Leg B so files Leg B just wrote
+    # are filtered out — both legs end in lineage rows under
+    # ``Exported Media/``, but only Leg D's destination tree is what
+    # we walk here.
+    if exported_root.is_dir():
+        known_after_b = {l.export_relpath for l in gateway.lineage()}
+        for f in sorted(exported_root.rglob("*")):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            if f.suffix.lower() in _SIDECAR_EXTS:
+                continue
+            rel = f.relative_to(event_root).as_posix()
+            if rel in known_after_b:
+                continue
+            source_id = _match_stem(f.stem, stems)
+            if source_id is None:
+                report.unmatched.append(rel)
+                continue
+            try:
+                gateway.record_lineage(m.Lineage(
+                    export_relpath=rel, phase="edit",
+                    source_kind="item", source_item_id=source_id,
+                    recipe_json=None, provenance="third_party",
+                    intent_state="compare",
+                ))
+                report.healed.append(rel)
+                queue_export_thumb(event_root, rel)
+            except Exception as exc:                                  # noqa: BLE001
+                log.exception("Leg D orphan-heal failed for %s", rel)
+                report.errors.append(f"{rel}: {exc}")
+
     # ── Leg C — the derived reminder fact (spec/57 §3.4) ───────────────
     merged = {sb.bracket_id for sb in gateway.stacks() if sb.output_item_id}
     report.unmerged_bracket_count = sum(
         1 for key in brackets if key not in merged)
 
     log.info(
-        "external-returns scan: %d adopted, %d associated, %d unmatched, "
-        "%d unmerged bracket(s), %d error(s)",
-        len(report.adopted), len(report.associated), len(report.unmatched),
-        report.unmerged_bracket_count, len(report.errors),
+        "external-returns scan: %d adopted, %d associated, %d healed, "
+        "%d unmatched, %d unmerged bracket(s), %d error(s)",
+        len(report.adopted), len(report.associated), len(report.healed),
+        len(report.unmatched), report.unmerged_bracket_count,
+        len(report.errors),
     )
     # spec/89 §1.5 diagnostic — when the matcher rejects every file the
     # scanner found, log a few examples so the user can see the prefix

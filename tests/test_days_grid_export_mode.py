@@ -382,6 +382,68 @@ def test_export_mode_default_state_is_red_when_no_versions(
 # --------------------------------------------------------------------------- #
 
 
+def test_export_mira_intent_plus_lrc_export_forms_cluster(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 Slice 5 (Nelson 2026-06-19 correction) — a source with
+    Mira-edit intent (non-default adjustment) AND one third-party
+    return on disk reads as TWO ship intents and joins a versions
+    cluster. The user sees both side-by-side without rendering the
+    Mira version first."""
+    _, eg = store_and_gateway
+    # Mira intent on x1 — a brighten Look + crop set off the unedited
+    # baseline (EDITED_SQL matches both signals).
+    eg.save_adjustment(m.Adjustment(
+        item_id="x1", look="brighten",
+        crop_x=0.05, crop_y=0.05, crop_w=0.9, crop_h=0.9))
+    # One LRC return for the same source.
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x1-LRC.jpg",
+        phase="edit", source_kind="item", source_item_id="x1",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="compare"))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    (event_dir / "Exported Media" / "x1-LRC.jpg").write_bytes(
+        b"\xff\xd8\xff\xd9")
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    by_id = {it.item_id: it for it in page._items}
+    cluster_id = "cluster:versions:x1"
+    assert cluster_id in by_id, list(by_id)
+    cover = by_id[cluster_id]
+    assert cover.cluster_type == "versions"
+    assert cover.cluster_count == 2   # Mira intent + LRC export
+    # Both members in compare → cover Compare orange.
+    assert cover.state == "compare"
+    # The flat x1 cell is gone.
+    assert "x1" not in by_id
+
+    # Drill in and confirm both members surface; verbs route correctly.
+    page._open_cluster(cover._cull_cluster)
+    by_member = {it.item_id: it for it in page._items}
+    assert "mira:x1" in by_member
+    assert "Exported Media/x1-LRC.jpg" in by_member
+    assert by_member["mira:x1"].origin == "Mira"
+    # P on the Mira member writes phase_state(edit, x1).
+    idx = next(
+        i for i, it in enumerate(page._items)
+        if it.item_id == "mira:x1")
+    page._apply_verb_at_index(idx, "pick")
+    ps = eg.phase_state("x1", "edit")
+    assert ps is not None and ps.state == "picked"
+    # X on the LRC member writes lineage.intent_state.
+    idx = next(
+        i for i, it in enumerate(page._items)
+        if it.item_id == "Exported Media/x1-LRC.jpg")
+    page._apply_verb_at_index(idx, "skip")
+    row = next(
+        r for r in eg.versions_for_item("x1")
+        if r.export_relpath == "Exported Media/x1-LRC.jpg")
+    assert row.intent_state == "skipped"
+    page.close_event()
+
+
 def test_export_destructive_watermark_only_lights_when_picked_and_shipped(
         qapp, app_gateway, event_dir, store_and_gateway):
     """spec/89 §4.2 / Block 7 D3.B Slice 7 — the "Exported" stamp on

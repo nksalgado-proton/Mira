@@ -994,6 +994,19 @@ class DaysGridPage(QWidget):
             # AND the Block 2 origin wordmark on cells with a single
             # ship row.
             shipped_rows_by_item = self._shipped_rows_by_item()
+            # spec/89 Slice 5 (Nelson 2026-06-19) — Mira-edit intent
+            # counts as a virtual version for the cluster threshold.
+            # An item with non-default look/crop/filter AND one
+            # third-party return on disk reads as two ship intents,
+            # so the cluster surfaces both side-by-side for comparison
+            # without forcing the user to render the Mira version
+            # first.
+            try:
+                mira_intent_ids = self._eg.items_with_mira_intent()
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: items_with_mira_intent failed")
+                mira_intent_ids = set()
             from core.export_provenance import cell_origin_label
             for it in day_items:
                 if it.item_kind == "cluster":
@@ -1005,14 +1018,16 @@ class DaysGridPage(QWidget):
                     it.skipped_in_pick = True
                 rows = shipped_rows_by_item.get(it.item_id, [])
                 it.origin = cell_origin_label(rows)
-            # spec/89 Slice 5 / Block 1 D2 — items with 2+ shipped rows
-            # become a versions cluster cover; the existing video
-            # reshape runs afterwards so a video that ALSO has multiple
-            # export versions of one of its snapshots is layered
-            # correctly (versions clusters wrap individual photo items,
-            # video clusters wrap the parent video).
+            # spec/89 Slice 5 / Block 1 D2 — items with 2+ ship intents
+            # (lineage rows on disk + the Mira-render intent) become a
+            # versions cluster cover; the existing video reshape runs
+            # afterwards so a video that ALSO has multiple export
+            # versions of one of its snapshots is layered correctly
+            # (versions clusters wrap individual photo items, video
+            # clusters wrap the parent video).
             day_items = self._reshape_for_versions(
-                day_items, shipped_rows_by_item)
+                day_items, shipped_rows_by_item, mira_intent_ids,
+                phase_states)
             day_items = self._reshape_for_export(day_items, phase_states)
         elif self._phase == "edit":
             # BUGS.md B-010 — pure Edit is creative-only (spec/66 §1.1):
@@ -1029,30 +1044,52 @@ class DaysGridPage(QWidget):
         self,
         items,
         shipped_rows_by_item: dict,
+        mira_intent_ids: set,
+        phase_states: dict,
     ):
         """spec/89 Slice 5 / Block 1 D2 — replace any flat photo cell
-        whose source carries ≥2 ``Exported Media/`` lineage rows with a
-        synthetic **versions cluster cover**. Single-version and
-        zero-version flat cells pass through unchanged.
+        whose source carries ≥2 **ship intents** with a synthetic
+        **versions cluster cover**. A ship intent is either:
 
-        Member intent is read from ``lineage.intent_state``; the cover's
-        border colour is derived per the Block 1 D3 state machine:
-        any member still in ``compare`` → Compare orange; otherwise
-        all-picked → green, all-skipped → red, mixed → yellow
-        (Block 4 D1.B). The thumbnail strategy (newest version)
-        materialises later in this slice when the sub-grid drill-in
-        wires its previews; for the cover here we keep the source
-        item's thumb so the day grid stays visually anchored."""
+        * one ``Exported Media/`` lineage row (a Mira render or a
+          third-party return already on disk), or
+        * the Mira-render intent itself — the source has a non-default
+          ``adjustment`` row (look / crop / filter / rotation) the
+          next Export run would materialise.
+
+        So a source with one third-party return + a non-default Mira
+        edit reads as TWO ship intents and joins a cluster, surfacing
+        both side-by-side for comparison before the Mira render even
+        materialises (Nelson 2026-06-19 eyeball — "they should be
+        in a cluster"). Single-intent and zero-intent flat cells pass
+        through unchanged.
+
+        Member intent is read per-source:
+        * Lineage members → ``lineage.intent_state`` (set by the
+          scanner to ``'compare'`` on first sight).
+        * The virtual Mira member → ``phase_state(edit, source)``.
+          A missing row defaults to ``'compare'`` so the cluster
+          presents the "needs your attention" signal on first form.
+
+        The cover's border colour is derived per the Block 1 D3 state
+        machine: any member still in compare → Compare orange; all
+        picked → green; all skipped → red; mixed → yellow (Block 4
+        D1.B). The cover thumbnail stays on the source item's thumb
+        so the day grid is visually anchored (newest-version cover
+        thumb is spec/89 §9 deferred polish)."""
         out = []
         for it in items:
             if it.item_kind != "photo":
                 out.append(it)
                 continue
             rows = shipped_rows_by_item.get(it.item_id, [])
-            if len(rows) < 2:
+            has_mira_intent = it.item_id in mira_intent_ids
+            total_intents = len(rows) + (1 if has_mira_intent else 0)
+            if total_intents < 2:
                 out.append(it)
                 continue
-            cluster_item = self._versions_cluster_grid_item(it, rows)
+            cluster_item = self._versions_cluster_grid_item(
+                it, rows, has_mira_intent, phase_states)
             out.append(cluster_item if cluster_item is not None else it)
         return out
 
@@ -1060,12 +1097,19 @@ class DaysGridPage(QWidget):
         self,
         source_item,
         rows: list,
+        has_mira_intent: bool,
+        phase_states: dict,
     ):
-        """Build a synthetic versions cluster cover for one source item
-        with ≥2 shipped lineage rows. Member ids are the rows'
-        ``export_relpath`` so per-version verb routing can resolve
-        back to the lineage row without a second lookup."""
-        if not rows:
+        """Build a synthetic versions cluster cover for one source
+        item with ≥2 ship intents (lineage rows on disk + the
+        Mira-render intent). The virtual Mira member's ``item_id`` is
+        ``mira:<source_id>`` so the per-version verb dispatcher in
+        :meth:`_apply_version_verb_at_index` knows to write to
+        ``phase_state(edit, source)`` instead of
+        ``lineage.intent_state``. Lineage members keep their
+        ``export_relpath`` as the id (unchanged from the pre-eyeball
+        path)."""
+        if not rows and not has_mira_intent:
             return None
         from mira.picked.model import CellColor as _CC, CullCluster, CullItem
         from pathlib import Path as _Path
@@ -1074,6 +1118,22 @@ class DaysGridPage(QWidget):
             else _Path("."))
         members: list[CullItem] = []
         member_states: list[str] = []
+        if has_mira_intent:
+            # The virtual Mira member — backed by the source item's
+            # phase_state(edit). Default 'candidate' (Compare orange)
+            # when no row exists so a freshly-formed cluster reads as
+            # "needs your attention." The source photo's path is the
+            # preview source until the Mira render materialises.
+            ps = phase_states.get(source_item.item_id)
+            mira_state = (
+                ps.state if ps is not None
+                else "candidate")
+            members.append(CullItem(
+                item_id=f"mira:{source_item.item_id}",
+                path=source_item._path or _Path(""),
+                kind="photo",
+            ))
+            member_states.append(mira_state)
         for row in rows:
             path = event_root / row.export_relpath
             members.append(CullItem(
@@ -1081,7 +1141,8 @@ class DaysGridPage(QWidget):
                 path=path,
                 kind="photo",
             ))
-            member_states.append(getattr(row, "intent_state", "compare") or "compare")
+            member_states.append(
+                getattr(row, "intent_state", "compare") or "compare")
         cover_color = self._versions_cover_color(member_states)
         cluster = CullCluster(
             bucket_key=f"versions:{source_item.item_id}",
@@ -1109,16 +1170,22 @@ class DaysGridPage(QWidget):
         """spec/89 Block 1 D3 — derive the cover border colour from the
         member intent_state list:
 
-        * Any 'compare' → Compare orange (the user still has unfinished
+        * Any compare → Compare orange (the user still has unfinished
           decisions; cover paints "needs your attention").
         * All 'picked' → KEPT (green).
         * All 'skipped' → DISCARDED (red).
         * Mix of 'picked' + 'skipped' (no compare) → MIXED (yellow,
-          distinct from Edit's amber per Block 4 D3.A)."""
+          distinct from Edit's amber per Block 4 D3.A).
+
+        ``'candidate'`` is the persisted ``phase_state`` value for the
+        Mira member's Compare reading; ``'compare'`` is the on-row
+        wire value the lineage members carry. Both fold to Compare
+        for cover-colour purposes."""
         from mira.picked.model import CellColor as _CC
+        compare_states = {"compare", "candidate"}
         if not member_states:
             return _CC.UNTOUCHED
-        if any(s == "compare" for s in member_states):
+        if any(s in compare_states for s in member_states):
             return _CC.COMPARE
         if all(s == "picked" for s in member_states):
             return _CC.KEPT
@@ -1639,21 +1706,59 @@ class DaysGridPage(QWidget):
         self._refresh()
 
     def _open_versions_cluster(self, cluster: CullCluster) -> None:
-        """spec/89 Slice 5 — drill into a versions cluster. Each member
-        is a ``Lineage`` row; the sub-grid surfaces every version with
-        its current intent state and the Block 2 origin wordmark."""
+        """spec/89 Slice 5 — drill into a versions cluster. Surfaces
+        every ship intent for the source: the **virtual Mira member**
+        (if the source carries a non-default ``adjustment`` row — its
+        item_id is ``mira:<source_id>``) AND every ``Exported Media/``
+        lineage row. Each member shows its current intent state and
+        the Block 2 origin wordmark."""
         from core.export_provenance import lineage_origin_label
-        # Re-read the rows so we see live intent_state writes since the
-        # cluster was built (the cover's CullItems froze member_states
-        # at reshape time; the sub-grid needs the latest values).
         source_item_id = cluster.bucket_key.split(":", 1)[1] if ":" in cluster.bucket_key else ""
+        # Re-read the rows so we see live intent_state writes since
+        # the cluster was built (the cover's CullItems froze member
+        # states at reshape time; the sub-grid needs the latest).
         try:
             rows = self._eg.versions_for_item(source_item_id)
         except Exception:                                          # noqa: BLE001
             log.exception(
                 "DaysGridPage: versions_for_item(%s) failed", source_item_id)
             rows = []
+        # Mira intent re-read — adjustment row could have changed
+        # since the cluster was built; phase_state(edit, source) carries
+        # the per-member decision.
+        try:
+            mira_intent_ids = self._eg.items_with_mira_intent()
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: items_with_mira_intent (sub-grid) failed")
+            mira_intent_ids = set()
+        try:
+            edit_phase_states = self._eg.phase_states("edit")
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: phase_states('edit') for sub-grid failed")
+            edit_phase_states = {}
         members: list[GridItem] = []
+        if source_item_id in mira_intent_ids:
+            src_item = self._eg.item(source_item_id)
+            src_path = (
+                Path(self._eg.event_root) / src_item.origin_relpath
+                if (src_item and src_item.origin_relpath
+                    and self._eg.event_root)
+                else None)
+            ps = edit_phase_states.get(source_item_id)
+            mira_state = (
+                ps.state if ps is not None
+                else "candidate")
+            members.append(GridItem(
+                item_id=f"mira:{source_item_id}",
+                item_kind="photo",
+                state=mira_state,
+                visited=False,
+                exported=False,
+                origin="Mira",
+                _path=src_path,
+            ))
         for row in rows:
             path = Path(self._eg.event_root) / row.export_relpath if (
                 self._eg.event_root) else Path(row.export_relpath)
@@ -2472,10 +2577,18 @@ class DaysGridPage(QWidget):
 
     def _apply_version_verb_at_index(self, idx: int, verb: str) -> bool:
         """spec/89 Slice 5 — per-version verb inside a versions cluster
-        sub-grid. ``P`` and ``X`` write ``lineage.intent_state``;
+        sub-grid. ``P`` and ``X`` write the decision ledger that
+        backs the member:
+
+        * **Virtual Mira member** (``item_id`` starts with ``mira:``)
+          → ``phase_state(edit, source_item)``. The next Export run
+          will render or skip the Mira version based on this.
+        * **Lineage member** (``item_id`` is the row's
+          ``export_relpath``) → ``lineage.intent_state``.
+
         ``Space`` toggles between picked and skipped (Compare is the
-        initial-only state — once the user touches a version they pick
-        a side). The actual file unlink + lineage row drop happen
+        initial-only state — once the user touches a version they
+        pick a side). The actual file unlink + render commit happen
         later at Export-run time (Slice 8); here we only flip the
         intent ledger so the cluster cover state machine can re-read."""
         if idx < 0 or idx >= len(self._items):
@@ -2492,11 +2605,16 @@ class DaysGridPage(QWidget):
             return True
         if new_state == cur:
             return True
+        is_mira = item.item_id.startswith("mira:")
         try:
-            self._eg.set_lineage_intent(item.item_id, new_state)
+            if is_mira:
+                source_id = item.item_id.split(":", 1)[1]
+                self._eg.set_phase_state(source_id, "edit", new_state)
+            else:
+                self._eg.set_lineage_intent(item.item_id, new_state)
         except Exception:                                          # noqa: BLE001
             log.exception(
-                "set_lineage_intent(%s, %s) failed",
+                "version-verb write failed (%s → %s)",
                 item.item_id, new_state)
             return True
         item.state = new_state

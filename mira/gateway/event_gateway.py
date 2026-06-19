@@ -810,6 +810,24 @@ class EventGateway:
         """The snapshot satellite rows of a source video, in ``at_ms`` order."""
         return self.store.query_by(m.VideoSnapshot, video_item_id=video_item_id)
 
+    def items_with_mira_intent(self) -> set:
+        """spec/89 Slice 5+ (Nelson 2026-06-19) — item ids whose
+        ``adjustment`` row carries a non-default look / filter / crop /
+        rotation. These count as **virtual Mira-render versions** even
+        when no JPEG has been materialised under ``Exported Media/`` yet:
+        the cluster threshold is "intent to ship two or more versions,"
+        not "two files already exist on disk." Reuses the same
+        :data:`core.edit_status.EDITED_SQL` the Edit / Days List bars
+        already filter by, so a Mira intent enters the cluster only
+        when the user has changed something off the unedited baseline.
+        """
+        from core.edit_status import EDITED_SQL
+        rows = self.store.conn.execute(
+            "SELECT a.item_id FROM adjustment a "
+            f"WHERE {EDITED_SQL}"
+        ).fetchall()
+        return {r["item_id"] for r in rows}
+
     def segment_items(self, video_item_id: str) -> List[m.Item]:
         """The segment child ITEMS of a source video, in ``seg_index`` order —
         what the workshop timeline binds state/adjustment edits to."""

@@ -361,6 +361,10 @@ class DCDetailPage(QWidget):
             source_bracket_id=row["source_bracket_id"],
             recipe_json=row["recipe_json"],
             exported_at=row["exported_at"],
+            # spec/89 §1.4 — preserve origin signal on undo round-trip
+            # so a restored third-party row doesn't silently revert to
+            # 'mira_render' (the dataclass default).
+            provenance=row["provenance"],
         )
         return DCUnexportSnapshot(
             export_relpath=relpath,

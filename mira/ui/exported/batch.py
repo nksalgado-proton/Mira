@@ -302,22 +302,13 @@ def submit_export_batch(
     event_root = Path(eg.event_root)
     default_dest = exported_media_dir(event_root)
 
-    # spec/66 §1.2 — partition: items with an ``Edited Media/`` return
-    # get hardlinked synchronously; the rest go through the render
-    # queue. (The hardlink path is its own commit + lineage write; the
-    # render path's commit closure handles the render units only.)
-    to_hardlink: List[tuple[ExportCell, str]] = []
-    to_render: List[ExportCell] = []
-    for c in cells:
-        return_rel = eg.edit_candidate_relpath(c.item_id)
-        if return_rel:
-            to_hardlink.append((c, return_rel))
-        else:
-            to_render.append(c)
-
-    if to_hardlink:
-        _hardlink_third_party_returns(
-            eg, to_hardlink, event_root, default_dest, day_labels)
+    # spec/72 Model B / spec/89 §1.5 — third-party returns enter the
+    # ship set at scan time (the return scanner hardlinks them straight
+    # into Exported Media/), so by the time a batch reaches this
+    # function every cell is a Mira-render target. The legacy
+    # partition (edit_candidate_relpath → hardlink fork) is gone with
+    # spec/89 slice 1.
+    to_render: List[ExportCell] = list(cells)
 
     units: list[PhotoUnit] = []
     source_by_unit_id: Dict[str, Path] = {}
@@ -569,71 +560,6 @@ def _cleanup_snapshot_temps(paths: List[Path]) -> None:
         except Exception:                                          # noqa: BLE001
             log.debug("snapshot temp cleanup failed: %s", p,
                       exc_info=True)
-
-
-def _hardlink_third_party_returns(
-    eg: EventGateway,
-    to_hardlink: List[tuple],
-    event_root: Path,
-    dest_root: Path,
-    day_labels: Dict[Optional[int], str],
-) -> None:
-    """spec/66 §1.2 — hardlink each third-party return from
-    ``Edited Media/`` into ``Exported Media/<day>/`` and record an
-    ``Exported Media/`` lineage row + ``set_edit_exported``. Copy
-    fallback when hardlink fails (cross-volume), mirroring the spec/57
-    return-scan policy. Lifted verbatim from the prior MVP."""
-    from os import link as _hardlink
-
-    for cell, src_relpath in to_hardlink:
-        src_path = event_root / src_relpath
-        if not src_path.exists():
-            log.warning(
-                "submit_export_batch: third-party return missing on "
-                "disk: %s — falling back to render", src_path)
-            continue
-        day_dir = dest_root / day_labels.get(cell.day_number, "")
-        try:
-            day_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:                                           # noqa: BLE001
-            log.exception(
-                "submit_export_batch: cannot create %s — skipping "
-                "hardlink", day_dir)
-            continue
-        dest_path = day_dir / src_path.name
-        stem, ext = dest_path.stem, dest_path.suffix
-        i = 2
-        while dest_path.exists():
-            dest_path = day_dir / f"{stem} ({i}){ext}"
-            i += 1
-        try:
-            _hardlink(str(src_path), str(dest_path))
-        except OSError:
-            try:
-                import shutil
-                shutil.copy2(str(src_path), str(dest_path))
-            except Exception:                                       # noqa: BLE001
-                log.exception(
-                    "submit_export_batch: hardlink + copy fallback "
-                    "failed for %s -> %s", src_path, dest_path)
-                continue
-        try:
-            eg.set_edit_exported(cell.item_id, True)
-        except Exception:                                           # noqa: BLE001
-            log.exception(
-                "submit_export_batch: set_edit_exported failed for %s",
-                cell.item_id)
-        try:
-            from mira.ui.edited._lineage import record_single_lineage
-            record_single_lineage(
-                eg, event_root,
-                item_id=cell.item_id, dest_path=dest_path,
-                recipe=recipe_for_item(eg, cell.item_id),
-            )
-        except Exception:                                           # noqa: BLE001
-            log.exception(
-                "submit_export_batch: record_single_lineage failed "
-                "for %s", cell.item_id)
 
 
 def day_label_for(

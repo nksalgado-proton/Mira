@@ -157,22 +157,35 @@ def test_unmerged_brackets_reminder_fact(tmp_path):
 
 
 def test_editor_return_associates_by_link_stem(tmp_path):
+    """spec/72 Model B / spec/89 §1.5 — the Edited Media/ file is
+    hardlinked into Exported Media/<filename>; the lineage row's
+    export_relpath points at the destination and carries
+    provenance='third_party'. The original under Edited Media/ stays
+    where the editor wrote it."""
     eg = _make_event(tmp_path)
     try:
         _project(eg, tmp_path)
         ret_dir = tmp_path / "Edited Media" / "LRC"
         ret_dir.mkdir(parents=True)
-        (ret_dir / "D03_G9_p1-Edit.jpg").write_bytes(b"LRC JPEG")
+        src = ret_dir / "D03_G9_p1-Edit.jpg"
+        src.write_bytes(b"LRC JPEG")
         (ret_dir / "D03_G9_p1-Edit.xmp").write_text("sidecar")   # ignored silently
 
         report = scan_for_returns(eg, "skipped")
-        assert report.associated == ["Edited Media/LRC/D03_G9_p1-Edit.jpg"]
+        assert report.associated == ["Exported Media/D03_G9_p1-Edit.jpg"]
         assert report.unmatched == []
+        # The hardlink landed; both paths point to the same bytes.
+        dest = tmp_path / "Exported Media" / "D03_G9_p1-Edit.jpg"
+        assert dest.exists() and dest.read_bytes() == b"LRC JPEG"
+        # LRC's inbox is additive — the original survives.
+        assert src.exists()
         lin = eg.lineage()
         assert len(lin) == 1
         row = lin[0]
+        assert row.export_relpath == "Exported Media/D03_G9_p1-Edit.jpg"
         assert row.source_item_id == "i-solo" and row.phase == "edit"
-        assert row.recipe_json is None              # external — no MC recipe
+        assert row.recipe_json is None              # external — no Mira recipe
+        assert row.provenance == "third_party"
         # Idempotent: a second scan does not duplicate the association.
         report2 = scan_for_returns(eg, "skipped")
         assert report2.associated == [] and len(eg.lineage()) == 1
@@ -181,6 +194,9 @@ def test_editor_return_associates_by_link_stem(tmp_path):
 
 
 def test_editor_return_unmatched_is_flagged(tmp_path):
+    """Unmatched files report the SOURCE relpath under Edited Media/
+    (the user reads this to find what's stray), not the would-be
+    destination — Model B doesn't materialise unmatched files."""
     eg = _make_event(tmp_path)
     try:
         ret_dir = tmp_path / "Edited Media" / "LRC"
@@ -189,6 +205,8 @@ def test_editor_return_unmatched_is_flagged(tmp_path):
         report = scan_for_returns(eg, "skipped")
         assert report.unmatched == ["Edited Media/LRC/IMG_9999.jpg"]
         assert eg.lineage() == []
+        # Nothing was materialised into Exported Media/.
+        assert not (tmp_path / "Exported Media" / "IMG_9999.jpg").exists()
     finally:
         eg.close()
 
@@ -212,7 +230,8 @@ def test_longest_prefix_wins(tmp_path):
         ret_dir.mkdir(parents=True)
         (ret_dir / "D03_G9_p10-Edit.jpg").write_bytes(b"x")
         report = scan_for_returns(eg, "skipped")
-        assert report.associated == ["Edited Media/LRC/D03_G9_p10-Edit.jpg"]
+        assert report.associated == ["Exported Media/D03_G9_p10-Edit.jpg"]
         assert eg.lineage()[0].source_item_id == "i-p10"
+        assert eg.lineage()[0].provenance == "third_party"
     finally:
         eg.close()

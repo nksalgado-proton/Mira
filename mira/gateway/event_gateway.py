@@ -824,14 +824,13 @@ class EventGateway:
     def exported_item_ids(self) -> set:
         """Item ids with at least one **SHIPPED** lineage row — items
         that made it through the spec/66 §1.1 Export phase (the Export
-        surface's green set materialised under ``Exported Media/``).
+        surface's ship set materialised under ``Exported Media/``).
 
-        The Exported-watermark (spec/59 §8) follows this set: only items
-        that shipped wear the badge. Third-party returns sitting in
-        ``Edited Media/`` are mere **edit candidates** until the user
-        picks them green and the Export run materialises (hardlinks)
-        them into ``Exported Media/`` — at which point a new lineage
-        row appears here and the watermark lights up.
+        Under **spec/72 Model B** (spec/89 §1.5) this includes
+        third-party returns: the scanner hardlinks each new
+        ``Edited Media/`` file straight into ``Exported Media/`` on
+        scan, so a return enters the ship set immediately rather than
+        waiting for the Export run.
 
         Deliberately NOT ``Adjustment.edit_exported`` — that flag is
         freshness (reset on every adjustment change) and keeps its chip.
@@ -843,38 +842,6 @@ class EventGateway:
             "AND export_relpath LIKE 'Exported Media/%'"
         ).fetchall()
         return {r["source_item_id"] for r in rows}
-
-    def edit_candidate_item_ids(self) -> set:
-        """Item ids that have a third-party return sitting under
-        ``Edited Media/`` (spec/57 §3 — LRC / Helicon outputs the
-        scanner adopted) but **have not been shipped yet**.
-
-        These are the "edit candidates": Mira holds a rendered version
-        of them, but the user hasn't picked them green in the Export
-        phase. They're the input to the spec/66 §1.2 hardlink path —
-        the Export run, on shipping a candidate, hardlinks its file from
-        ``Edited Media/`` into ``Exported Media/`` instead of
-        re-rendering (which would re-process an already-finished file)."""
-        rows = self.store.conn.execute(
-            "SELECT DISTINCT source_item_id FROM lineage "
-            "WHERE phase = 'edit' AND source_item_id IS NOT NULL "
-            "AND export_relpath LIKE 'Edited Media/%'"
-        ).fetchall()
-        return {r["source_item_id"] for r in rows}
-
-    def edit_candidate_relpath(self, item_id: str) -> Optional[str]:
-        """The newest ``Edited Media/`` relpath for an item, or
-        ``None`` if no third-party return exists. The Export surface
-        uses this to decide whether to hardlink (return exists) or
-        render (no return) for a given green cell."""
-        row = self.store.conn.execute(
-            "SELECT export_relpath FROM lineage "
-            "WHERE phase = 'edit' AND source_item_id = ? "
-            "AND export_relpath LIKE 'Edited Media/%' "
-            "ORDER BY exported_at DESC LIMIT 1",
-            (item_id,),
-        ).fetchone()
-        return row["export_relpath"] if row else None
 
     # ----- share / cuts queries (spec/61) ---------------------------------- #
     # Membership is FILE-based: cut_member rows reference lineage (exported

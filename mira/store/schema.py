@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -592,6 +592,13 @@ CREATE TABLE lineage (
   -- orders a photo's versions in the Cut picker.
   recipe_json       TEXT,
   exported_at       TEXT,
+  -- spec/72 §1 / spec/89 §1.4 Model B — origin signal. 'mira_render'
+  -- = Mira's spec/60 batch produced this file; 'third_party' = the
+  -- return scanner hardlinked it from Edited Media/ (LRC, Helicon,
+  -- Capture One, etc.). The badge wordmark (LRC vs Helicon vs CO vs
+  -- generic ext) is filename-inferred at the badge layer, not stored.
+  provenance        TEXT NOT NULL DEFAULT 'mira_render'
+                    CHECK (provenance IN ('mira_render', 'third_party')),
   CHECK ( (source_kind='item'    AND source_item_id IS NOT NULL AND source_bracket_id IS NULL)
        OR (source_kind='bracket' AND source_bracket_id IS NOT NULL AND source_item_id IS NULL) )
 );
@@ -1128,6 +1135,24 @@ FROM cut_member""")
         conn.execute(sql)
 
 
+def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """spec/72 §1 / spec/89 Model B — the unambiguous lineage signal
+    for origin (Mira-rendered vs third-party return).
+
+    Adds ``lineage.provenance`` with default ``'mira_render'``. Every
+    existing row backfills to 'mira_render' — pre-Model-B installs
+    only wrote Mira-rendered exports via the spec/60 batch engine;
+    third-party returns lived as ``Edited Media/`` candidate rows and
+    have no ``Exported Media/`` lineage row to backfill.
+
+    SQLite can't add a CHECK constraint via ALTER TABLE — the
+    validation lives at the gateway seam on migrated rows. Fresh
+    installs get the full CHECK in the DDL."""
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN provenance TEXT NOT NULL "
+        "DEFAULT 'mira_render'")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1137,6 +1162,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v6_to_v7,
     _migrate_v7_to_v8,
     _migrate_v8_to_v9,
+    _migrate_v9_to_v10,
 ]
 
 

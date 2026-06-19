@@ -1,9 +1,10 @@
-"""The external round trip's RETURN seams (spec/57 §3).
+"""The external round trip's RETURN seams (spec/57 §3 + spec/72 §1
+Model B + spec/89 §1.5).
 
 External tools work on the ``Picked Media/`` links projection and hand
 results back in two ways, both discovered by :func:`scan_for_returns`
-(run on entering Edit + from the Edit menu's scan action — no watchers,
-spec/57 §3.3):
+(run on entering Edit / Export + from the menu's scan action — no
+watchers, spec/57 §3.3):
 
 * **Stacker outputs** land at the projection ROOT (spec/57 §2.3). A
   foreign root file whose stem STARTS WITH a picked bracket member's
@@ -13,10 +14,13 @@ spec/57 §3.3):
   written, the master is picked-by-construction). The caller rebuilds
   the links afterwards so the master appears at the root seamlessly.
 * **Editor returns** (LRC-class) land in subdirs of ``Edited Media/``.
-  A file not yet in ``lineage`` whose stem starts with ANY item's link
-  stem is associated back to that item as an external edited output —
-  a ``lineage`` row (``recipe_json`` NULL = external), composing with
-  versions-as-exports (spec/54 §8).
+  Per **spec/72 §1 Model B** (locked 2026-06-14), each new file is
+  **hardlinked straight into** ``Exported Media/<filename>`` — it
+  enters the ship set immediately. The lineage row is written with
+  ``export_relpath = "Exported Media/<filename>"`` and
+  ``provenance = 'third_party'``. The original under ``Edited Media/``
+  stays untouched (it is LRC's inbox, additive). Hardlink is
+  zero-cost; the bytes already exist.
 
 Files matching nothing are FLAGGED in the report — never silently
 ignored (spec/57 §3.2). Known sidecar noise (``.xmp`` etc.) is skipped
@@ -30,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.path_builder import edited_media_dir
+from core.path_builder import edited_media_dir, exported_media_dir
 from core.photo_thumb_cache import queue_export_thumb
 from core.picked_media import PickedEntry, foreign_root_files, link_name
 from mira.picked.edit_model import picked_media_entries
@@ -78,6 +82,26 @@ def _all_item_stems(gateway, event_root: Path) -> Dict[str, str]:
         ))
         out[stem] = it.id
     return out
+
+
+def _materialize_into_exported_media(src: Path, dest: Path) -> None:
+    """spec/72 §1 / spec/89 §1.5 Model B — hardlink ``src`` (under
+    ``Edited Media/``) into ``dest`` (under ``Exported Media/``). Falls
+    back to a copy when the volumes don't support cross-link (e.g. the
+    user's library spans physical drives). Idempotent on the dest path:
+    if ``dest`` already exists, we trust the existing file is the
+    correct one — the caller has already checked the lineage PK so
+    duplicate hardlink attempts read as no-ops."""
+    from os import link as _hardlink
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _hardlink(str(src), str(dest))
+        return
+    except OSError:
+        import shutil
+        shutil.copy2(str(src), str(dest))
 
 
 def _match_stem(stem: str, stems: Dict[str, str]) -> Optional[str]:
@@ -142,34 +166,49 @@ def scan_for_returns(
             log.exception("stack adoption failed for %s", f.name)
             report.errors.append(f"{f.name}: {exc}")
 
-    # ── Leg B — editor returns under Edited Media ──────────────────────
+    # ── Leg B — editor returns under Edited Media (spec/72 Model B) ────
+    # New file under Edited Media/ → hardlink straight into
+    # Exported Media/<filename> + write a 'third_party' lineage row.
+    # Idempotent by the destination relpath (the lineage PK). The
+    # original Edited Media/<file> stays where the editor wrote it.
     known_exports = {l.export_relpath for l in gateway.lineage()}
     stems = _all_item_stems(gateway, event_root)
     edited_root = edited_media_dir(event_root)
+    exported_root = exported_media_dir(event_root)
     if edited_root.is_dir():
         for f in sorted(edited_root.rglob("*")):
             if not f.is_file() or f.name.startswith("."):
                 continue
             if f.suffix.lower() in _SIDECAR_EXTS:
                 continue
-            rel = f.relative_to(event_root).as_posix()
-            if rel in known_exports:
+            src_rel = f.relative_to(event_root).as_posix()
+            dest_rel = f"Exported Media/{f.name}"
+            if dest_rel in known_exports:
                 continue
             source_id = _match_stem(f.stem, stems)
             if source_id is None:
-                report.unmatched.append(rel)
+                report.unmatched.append(src_rel)
+                continue
+            try:
+                _materialize_into_exported_media(f, exported_root / f.name)
+            except OSError as exc:
+                log.exception(
+                    "Model B hardlink failed for %s -> %s",
+                    f, exported_root / f.name)
+                report.errors.append(f"{src_rel}: {exc}")
                 continue
             try:
                 gateway.record_lineage(m.Lineage(
-                    export_relpath=rel, phase="edit", source_kind="item",
-                    source_item_id=source_id, recipe_json=None,
+                    export_relpath=dest_rel, phase="edit",
+                    source_kind="item", source_item_id=source_id,
+                    recipe_json=None, provenance="third_party",
                 ))
-                report.associated.append(rel)
+                report.associated.append(dest_rel)
                 # spec/63 slice 8 — Cut-grid thumb, background builder.
-                queue_export_thumb(event_root, rel)
+                queue_export_thumb(event_root, dest_rel)
             except Exception as exc:  # noqa: BLE001
-                log.exception("return association failed for %s", rel)
-                report.errors.append(f"{rel}: {exc}")
+                log.exception("return association failed for %s", dest_rel)
+                report.errors.append(f"{dest_rel}: {exc}")
 
     # ── Leg C — the derived reminder fact (spec/57 §3.4) ───────────────
     merged = {sb.bracket_id for sb in gateway.stacks() if sb.output_item_id}

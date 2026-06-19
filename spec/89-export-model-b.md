@@ -1,7 +1,7 @@
 # spec/89 — Export surface rebuild (Model B, versions, the full design pass)
 
 **Authored 2026-06-19 (Nelson + Claude). Implementation in progress —
-Slice 1 was started; see §6 for slice status.**
+see §7 for slice status (Slice 1 shipped 2026-06-19).**
 
 This spec consolidates the design pass for the **Export phase**:
 - Implements spec/72 Model B (third-party returns hardlinked into
@@ -279,7 +279,7 @@ improvement on every slice.
 
 | # | Slice | Status |
 |---|---|---|
-| 1 | **Schema + scanner foundation.** Add `lineage.provenance` column (NOT NULL DEFAULT `'mira_render'`, CHECK enum); schema v9→v10 migration; scanner hardlinks `Edited Media/` returns to `Exported Media/` and stamps `provenance='third_party'`; retire `edit_candidate_*` gateway calls and the batch.py partition / `_hardlink_third_party_returns` (now dead — scanner does the work). | **In progress** (2026-06-19) |
+| 1 | **Schema + scanner foundation.** Add `lineage.provenance` column (NOT NULL DEFAULT `'mira_render'`, CHECK enum); schema v9→v10 migration; scanner hardlinks `Edited Media/` returns to `Exported Media/` and stamps `provenance='third_party'`; retire `edit_candidate_*` gateway calls and the batch.py partition / `_hardlink_third_party_returns` (now dead — scanner does the work). | **shipped 2026-06-19** |
 | 2 | **Days List Export branch.** `exported` + `undecided` (Compare count) on `DaySnapshot`; three-slice bar in `DayRow`; `Export all / Drop all` labels with respect-decisions semantics; scan chip mirror. | pending |
 | 3 | **Days Grid legend + pool filter.** Pool = picked ∪ shipped + "skipped in Pick" indicator chip; legend swatches + reminder + keymap hint per §4.2; border state machine for flat cells. | pending |
 | 4 | **Provenance badges + scan chip.** Wordmark strip under each cell; chip in legend + Days List mirror; per-source breakdown wording on change. | pending |

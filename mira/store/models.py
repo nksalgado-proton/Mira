@@ -313,6 +313,14 @@ class Lineage:
     source_bracket_id: Optional[str] = None
     recipe_json: Optional[str] = None
     exported_at: Optional[str] = None
+    # spec/72 §1 / spec/89 §1.4 Model B — the unambiguous lineage
+    # signal. 'mira_render' = Mira produced the file via spec/60 (the
+    # default, so existing call sites stay unchanged). 'third_party' =
+    # the file came from an external editor (LRC / Helicon / etc.) and
+    # was hardlinked into Exported Media/ by the return scanner. The
+    # displayed badge wordmark (LRC vs Helicon vs CO vs generic ext)
+    # is inferred from the filename at the badge layer.
+    provenance: str = "mira_render"
 
 
 @dataclass

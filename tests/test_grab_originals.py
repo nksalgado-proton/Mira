@@ -134,6 +134,10 @@ CREATE TABLE cut_member (
   added_at       TEXT NOT NULL,
   PRIMARY KEY (cut_id, export_relpath)
 )""")
+    # Strip the v9→v10 column from lineage so the ADD COLUMN step on
+    # the way back up doesn't collide on the duplicate column check
+    # (spec/89 — added 'provenance').
+    conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("UPDATE schema_info SET schema_version = 8 WHERE id = 1")
     conn.execute(
         "INSERT INTO cut (id, tag, created_at, updated_at) "

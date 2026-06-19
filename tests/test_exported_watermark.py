@@ -65,26 +65,30 @@ def test_exported_item_ids_empty_without_lineage(tmp_path):
 
 
 def test_exported_item_ids_counts_only_exported_media_rows(tmp_path):
-    """spec/66 §1.2 — ``exported_item_ids()`` returns the SHIPPED set
-    (rows under ``Exported Media/``). Third-party returns sitting in
-    ``Edited Media/`` are mere edit candidates and do NOT count until
-    the Export run hardlinks them into ``Exported Media/``."""
+    """spec/89 §1.5 — ``exported_item_ids()`` returns the SHIPPED set:
+    rows under ``Exported Media/`` regardless of provenance. Under
+    spec/72 Model B the return scanner materialises third-party files
+    straight into ``Exported Media/`` on scan, so an LRC return enters
+    the shipped set immediately. A stray ``Edited Media/`` row
+    (defensive — shouldn't occur under Model B, but the LIKE filter
+    still excludes it) does NOT count."""
     eg = _make_eg(tmp_path)
     try:
-        # Shipped (Mira-rendered, in-app export) → counts.
+        # Mira-rendered ship row → counts.
         eg.record_lineage(m.Lineage(
             export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
             source_kind="item", source_item_id="p1",
             recipe_json="{}", exported_at="t"))
-        # Third-party return inbox (LRC/Helicon) → does NOT count.
+        # Defensive: a stray Edited Media row → does NOT count.
         eg.record_lineage(m.Lineage(
             export_relpath="Edited Media/LRC/p2-edit.jpg", phase="edit",
             source_kind="item", source_item_id="p2"))
-        # Shipped via hardlink-from-return → counts.
+        # Third-party scanner-materialised return → counts.
         eg.record_lineage(m.Lineage(
-            export_relpath="Exported Media/Dia 1/p3.jpg", phase="edit",
+            export_relpath="Exported Media/p3-LRC.jpg", phase="edit",
             source_kind="item", source_item_id="p3",
-            recipe_json="{}", exported_at="t"))
+            recipe_json=None, exported_at="t",
+            provenance="third_party"))
         assert eg.exported_item_ids() == {"p1", "p3"}
     finally:
         eg.store.close()
@@ -328,41 +332,12 @@ def test_rescan_prunes_even_when_whole_folder_wiped(tmp_path):
         eg.store.close()
 
 
-def test_edit_candidate_helpers_for_third_party_returns(tmp_path):
-    """spec/66 §1.2 — ``edit_candidate_item_ids`` returns items with a
-    third-party return sitting in ``Edited Media/`` (and not yet shipped);
-    ``edit_candidate_relpath`` returns the newest return relpath for an
-    item (the Export hardlink path consumes both)."""
-    eg = _make_eg(tmp_path)
-    try:
-        eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/LRC/p1-edit.jpg", phase="edit",
-            source_kind="item", source_item_id="p1",
-            exported_at="2026-06-14T08:00:00"))
-        # A newer return for the same item — the helper takes the latest.
-        eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/LRC/p1-edit-v2.jpg", phase="edit",
-            source_kind="item", source_item_id="p1",
-            exported_at="2026-06-14T09:00:00"))
-        # A shipped (Exported Media/) row should NOT register as a
-        # candidate — it's already past the inbox stage.
-        eg.record_lineage(m.Lineage(
-            export_relpath="Exported Media/Dia 1/p2.jpg", phase="edit",
-            source_kind="item", source_item_id="p2",
-            exported_at="2026-06-14T10:00:00"))
-        assert eg.edit_candidate_item_ids() == {"p1"}
-        assert eg.edit_candidate_relpath("p1") == (
-            "Edited Media/LRC/p1-edit-v2.jpg")
-        assert eg.edit_candidate_relpath("p2") is None
-        assert eg.edit_candidate_relpath("never-imported") is None
-    finally:
-        eg.store.close()
-
-
-def test_exported_files_excludes_edit_candidates(tmp_path):
-    """spec/66 §1.2 + spec/61 §1.1 — the ``#exported`` Cut universe
-    (returned by ``exported_files``) shows only shipped rows. A
-    third-party return that hasn't been promoted is invisible to Cuts."""
+def test_third_party_provenance_round_trip(tmp_path):
+    """spec/72 §1 / spec/89 §1.4 — ``lineage.provenance`` carries the
+    origin signal: 'mira_render' (default) for Mira's own renders,
+    'third_party' for return-scanner-materialised LRC / Helicon
+    exports. Both flavours wear the watermark — every row under
+    ``Exported Media/`` counts as shipped under Model B."""
     eg = _make_eg(tmp_path)
     try:
         eg.record_lineage(m.Lineage(
@@ -370,12 +345,37 @@ def test_exported_files_excludes_edit_candidates(tmp_path):
             source_kind="item", source_item_id="p1",
             exported_at="2026-06-14T08:00:00"))
         eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/LRC/p2-edit.jpg", phase="edit",
+            export_relpath="Exported Media/p2-edit.jpg", phase="edit",
             source_kind="item", source_item_id="p2",
+            exported_at="2026-06-14T09:00:00", provenance="third_party"))
+        rows = {ln.export_relpath: ln for ln in eg.lineage()}
+        assert rows["Exported Media/Dia 1/p1.jpg"].provenance == "mira_render"
+        assert rows["Exported Media/p2-edit.jpg"].provenance == "third_party"
+        # Both items show as shipped — the watermark doesn't discriminate
+        # by provenance.
+        assert eg.exported_item_ids() == {"p1", "p2"}
+    finally:
+        eg.store.close()
+
+
+def test_exported_files_lists_all_exported_media_rows(tmp_path):
+    """spec/61 §1.1 — ``exported_files`` returns every shipped lineage
+    row regardless of provenance. Under Model B both Mira renders and
+    third-party returns sit under ``Exported Media/`` and are equally
+    part of the ``#exported`` Cut universe."""
+    eg = _make_eg(tmp_path)
+    try:
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
             exported_at="2026-06-14T08:00:00"))
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/p2-edit.jpg", phase="edit",
+            source_kind="item", source_item_id="p2",
+            exported_at="2026-06-14T08:00:00", provenance="third_party"))
         relpaths = [ln.export_relpath for ln in eg.exported_files()]
         assert "Exported Media/Dia 1/p1.jpg" in relpaths
-        assert "Edited Media/LRC/p2-edit.jpg" not in relpaths
+        assert "Exported Media/p2-edit.jpg" in relpaths
     finally:
         eg.store.close()
 
@@ -623,33 +623,34 @@ def test_delete_exported_file_drops_every_shipped_row_for_the_item(tmp_path):
         eg.store.close()
 
 
-def test_delete_exported_file_charter_safe_leaves_edited_media_alone(tmp_path):
-    """``Edited Media/`` rows are third-party return *candidates*
-    (spec/57 §3), not shipped finals. The helper only touches
-    ``Exported Media/`` — never the third-party inbox, never the
-    immutable ``Original Media/`` tree (the charter §7 invariant)."""
+def test_delete_exported_file_leaves_other_provenance_alone(tmp_path):
+    """``delete_exported_file`` operates per-item over the union of an
+    item's ``Exported Media/`` rows. With one Mira-rendered row and
+    one third-party row (e.g., the user picked a Mira render AND has
+    an LRC export of the same source), both go in one sweep — the
+    helper is item-keyed, not provenance-keyed. The charter §7
+    invariant still holds (``Original Media/`` is never touched)."""
     eg = _make_eg(tmp_path)
     try:
-        # A third-party return candidate — must survive the delete.
-        eg.record_lineage(m.Lineage(
-            export_relpath="Edited Media/LRC/p1-edit.jpg", phase="edit",
-            source_kind="item", source_item_id="p1",
-            recipe_json="{}", exported_at="t"))
-        # A real ship row alongside it.
-        ship = tmp_path / "Exported Media" / "Dia 1"
+        ship = tmp_path / "Exported Media"
         ship.mkdir(parents=True)
         (ship / "p1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+        (ship / "p1-LRC.jpg").write_bytes(b"\xff\xd8\xff\xd9")
         eg.record_lineage(m.Lineage(
-            export_relpath="Exported Media/Dia 1/p1.jpg", phase="edit",
+            export_relpath="Exported Media/p1.jpg", phase="edit",
             source_kind="item", source_item_id="p1",
             recipe_json="{}", exported_at="t"))
+        eg.record_lineage(m.Lineage(
+            export_relpath="Exported Media/p1-LRC.jpg", phase="edit",
+            source_kind="item", source_item_id="p1",
+            recipe_json=None, exported_at="t",
+            provenance="third_party"))
 
         result = eg.delete_exported_file("p1")
-        assert result["rows_deleted"] == 1
-        # The Edited Media/ inbox row survives — Mira's hands stay off
-        # the third-party returns; only the shipped final is undone.
-        assert eg.edit_candidate_relpath("p1") == (
-            "Edited Media/LRC/p1-edit.jpg")
+        # Both rows for the item are dropped; the on-disk files go too.
+        assert result["rows_deleted"] == 2
+        assert not (ship / "p1.jpg").is_file()
+        assert not (ship / "p1-LRC.jpg").is_file()
     finally:
         eg.store.close()
 

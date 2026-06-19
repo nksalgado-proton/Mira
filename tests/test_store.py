@@ -504,6 +504,9 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
         "CREATE INDEX ix_event_scope ON event(scope) WHERE scope IS NOT NULL")
     conn.execute(
         "CREATE INDEX ix_event_mood ON event(mood) WHERE mood IS NOT NULL")
+    # Strip the v9→v10 column from lineage so the ADD COLUMN step on the
+    # way back up doesn't collide on the duplicate-column check (spec/89).
+    conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
 
     schema.migrate(conn)
@@ -524,6 +527,14 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
 # --------------------------------------------------------------------------- #
 # v6 -> v7 (spec/81 — Dynamic Collection / Cut)
 # --------------------------------------------------------------------------- #
+
+
+def _strip_post_v6_lineage_cols(conn) -> None:
+    """The fresh DDL ships at the current SCHEMA_VERSION, so the
+    ``lineage`` table already carries every post-v6 column. Strip them
+    so the post-v6 ADD COLUMN migrations on the way back up don't
+    collide on a duplicate column (spec/89 v9→v10 added ``provenance``)."""
+    conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
 
 
 def _rebuild_v6_cut_tables(conn) -> None:
@@ -566,6 +577,7 @@ def test_migrate_v6_to_v7_synthesizes_dc_and_freezes_cut(tmp_path):
     store = _make_store(tmp_path)
     conn = store.conn
     _rebuild_v6_cut_tables(conn)
+    _strip_post_v6_lineage_cols(conn)
     conn.execute(
         "INSERT INTO cut (id, tag, target_s, photo_s, pool_expr_json, "
         "style_filter_json, type_filter, default_state, created_at, updated_at) "
@@ -605,6 +617,7 @@ def test_migrate_v6_to_v7_is_idempotent(tmp_path):
     store = _make_store(tmp_path)
     conn = store.conn
     _rebuild_v6_cut_tables(conn)
+    _strip_post_v6_lineage_cols(conn)
     conn.execute(
         "INSERT INTO cut (id, tag, pool_expr_json, created_at, updated_at) "
         "VALUES ('c1', 'best_macro', '[[\"+\", \"exported\"]]', 't0', 't0')")

@@ -3,8 +3,13 @@
 **Authored 2026-06-19 (Nelson + Claude). All 10 slices shipped
 2026-06-19 + two eyeball-bug fixes (amber-border override, scanner
 naming-prefix mismatch) + the Mira-intent-counts-as-version cluster
-trigger refinement. §11 carries the live handoff for whoever picks
-up the polish surface next.**
+trigger refinement. §11 carries the original polish-surface handoff;
+**§12 carries the 2026-06-19 evening session's handoff** —
+state-label lock (Will export / Set aside), per-source default
+rule, side-by-side Compare dialog, PhotoViewport reuse with F10 /
+F11 / lazy develop, F10-shows-exported-pixels everywhere. Three
+items remain genuinely deferred (waiting on design assets / your
+eyes); see §12.4.**
 
 This spec consolidates the design pass for the **Export phase**:
 - Implements spec/72 Model B (third-party returns hardlinked into
@@ -577,4 +582,155 @@ with explicit reasons so a future session knows what's left.
   mixed match/unmatched runs, the "31 files in Edited Media/"
   failure path side-by-side with the real surface) needs a live
   walkthrough on a real event. Out of scope for headless work.
+
+---
+
+## 12. Handoff — 2026-06-19 evening session
+
+**Working tree clean at
+[`f072999`](https://github.com/nksalgado-proton/Mira/commit/f072999).**
+This session locked the Export-surface vocabulary, fixed two
+default-state bugs, shipped the side-by-side Compare dialog,
+rebuilt the preview viewer on the canonical
+:class:`mira.ui.media.photo_viewport.PhotoViewport`, and made the
+F10 inspection lens always show the would-be-exported pixels.
+Three §11.3 polish items remain deferred (see §12.4) with the same
+reasons as before — they need design assets, design decisions, or
+your eyes.
+
+### 12.1 State labels + per-source default rule (locked)
+
+* The three bar / cell states are now **Will export** / **Undecided**
+  / **Set aside** (was Shipped / Dropped). Bulk verb buttons stay
+  **Export all** / **Drop all** — they're actions, not states.
+* The Days-List bar bucket
+  ([`EventGateway.phase_day_progress`](mira/gateway/event_gateway.py))
+  counts **per source** (one tally per picked keeper); state
+  follows the user-locked rule:
+  - **0 ship intents** → Set aside (overridden by explicit
+    `phase_state(edit)` if present).
+  - **1 ship intent** (Mira-edit only OR one third-party return) →
+    **Will export**.
+  - **≥2 ship intents** (cluster) → **Undecided** (cover state
+    machine rolls up member decisions; Mixed picked + skipped
+    folds into Undecided for the bar).
+* The Days-Grid flat-cell inference mirrors the same rule (was
+  `has_shipped ? picked : skipped`; now ANY ship intent → picked).
+  Bug fix in
+  [`DaysGridPage._refresh_from_gateway`](mira/ui/pages/days_grid_page.py)
+  — pre-fix the bar said green but the grid painted red for
+  Mira-edited-only photos.
+* The derivation lives in
+  [`EventGateway._export_source_state`](mira/gateway/event_gateway.py)
+  so the SQL stays readable.
+
+### 12.2 Side-by-side Compare dialog
+
+New surface for the versions cluster sub-grid:
+[`CompareVersionsDialog`](mira/ui/exported/compare_dialog.py),
+opened by the **⇄ Compare versions** toolbar button (visible only
+when in cluster mode + `cluster.kind == "versions"`).
+
+* Each tile renders one version at full-definition pixels —
+  on-disk file for lineage members, develop-pipeline render for
+  the virtual Mira member.
+* **Click a tile's border** to cycle `picked ↔ skipped` (the
+  historical ComparePage K↔D-only contract; no return to Compare).
+* spec/63 locked keymap inside the dialog: `P` Will export · `X`
+  Set aside · `Space` toggle — all act on the focused tile. `← →`
+  step focus across tiles. `F10` opens the inspection lens with
+  the focused tile's full-resolution exported pixels. `Esc` closes.
+* The first tile is focused on open; mouse click on a tile syncs
+  focus before firing the toggle.
+* **Lazy develop** — develop-pipeline tiles paint the raw source
+  first, then swap in the developed pixmap via
+  `QTimer.singleShot(0)`. A 5+-version cluster opens instantly
+  instead of blocking on N sequential pipelines.
+* Routes back through `_apply_verb_at_index` so writes land on
+  `lineage.intent_state` (lineage members) or
+  `phase_state(edit, source)` (virtual Mira member).
+
+### 12.3 Preview viewer rebuilt on PhotoViewport
+
+[`ExportPreviewDialog`](mira/ui/exported/preview_dialog.py)'s body
+is now the canonical
+:class:`~mira.ui.media.photo_viewport.PhotoViewport` (same engine
+Picker / Editor / Cuts use; spec/63 §6.1). Wins:
+
+* `P / X / Space / Esc` come from the viewport's signal contract
+  (no custom keypress duplication).
+* **F10 / F11 affordances for free.** New `Full Resolution F10` +
+  `Full Screen F11` ghost buttons — exact label parity with Picker
+  ([`picker_page.py:337`](mira/ui/pages/picker_page.py)).
+* **F10 shows the would-be-exported pixels** (the key change for
+  the user's "I always want to see what gets exported" rule):
+  - Develop-pipeline cells → `develop_photo_array` at full
+    resolution (no max-edge cap), opened in
+    `_InspectView` with the developed pixmap. Wait cursor while
+    the pipeline runs (1-3 s on a 24 MP source).
+  - On-disk versions → file opened directly in the lens (instant).
+  - The viewport's internal F10 handler is suppressed via
+    `set_truth_internal(False)`; the dialog routes
+    `truth_requested` to its own
+    [`_on_truth_requested`](mira/ui/exported/preview_dialog.py).
+* **Lazy develop** — same pattern as Compare. Dialog paints the
+  raw source first, then swaps in the developed pixmap for the
+  focused item via `QTimer.singleShot(0)`. Per-item cache so a
+  step back to a previously-developed neighbour is free.
+* **`_resolve_preview_path` correction** — flat cells with a
+  shipped lineage row now prefer the on-disk file over the source
+  photo (was returning source even when an export existed,
+  violating spec/89 §3.2's "1-version → the actual file" rule).
+
+### 12.4 Still deferred (unchanged from §11.3)
+
+These were already deferred under §11.3 and remain so — nothing
+in this session unblocked them.
+
+* **App-specific badge icons.** No third-party glyph SVGs in the
+  asset tree; authoring LRC / Helicon / Capture-One look-alikes
+  + trademark clearance is a design pass. Text wordmarks ship.
+* **Snapshot multi-version nesting.** Explicit v2 enhancement —
+  cluster-inside-cluster widens the cell taxonomy; needs a design
+  pass before code.
+* **Eyeball the scan chip wording end-to-end.** Side-by-side visual
+  check on a real event. Unit-tested via `test_scan_chip_text`.
+
+### 12.5 Known performance follow-up
+
+The develop pipeline still runs on the UI thread under a wait
+cursor — both for the preview-dialog lazy load and the F10
+full-res render. Acceptable on small-medium photos; a 24 MP RAW
+through the full pipeline (decode + auto-params + look + filter +
+crop) can take 1-3 seconds. If that ever feels sluggish in
+practice, the next move is a `QThreadPool` offload — call sites
+are already in
+[`_run_develop_for`](mira/ui/exported/preview_dialog.py),
+[`_CompareTile._run_develop`](mira/ui/exported/compare_dialog.py),
+and the two `_on_truth_requested` handlers.
+
+### 12.6 Commit chain (session)
+
+In order, most recent last:
+
+| # | Commit | Scope |
+|---|---|---|
+| 1 | [`c2877a1`](https://github.com/nksalgado-proton/Mira/commit/c2877a1) | spec/89 §11.3: lock state labels + per-source defaults (initial intent-level cut) |
+| 2 | [`6e7c44b`](https://github.com/nksalgado-proton/Mira/commit/6e7c44b) | spec/89 §11.3: versions-cluster side-by-side Compare dialog |
+| 3 | [`d3dad96`](https://github.com/nksalgado-proton/Mira/commit/d3dad96) | spec/89 §3.2: Export preview viewer reuses PhotoViewport for F10/F11 |
+| 4 | [`e294738`](https://github.com/nksalgado-proton/Mira/commit/e294738) | fix(spec/89 §1.1): grid cell default honours Mira-edit intent too |
+| 5 | [`abc263c`](https://github.com/nksalgado-proton/Mira/commit/abc263c) | perf(spec/89 §3.2): lazy-develop preview viewer (no upfront blocking) |
+| 6 | [`3abfe64`](https://github.com/nksalgado-proton/Mira/commit/3abfe64) | fix(spec/89 §3.2): F10 inspects the would-be-exported pixels |
+| 7 | [`f072999`](https://github.com/nksalgado-proton/Mira/commit/f072999) | spec/89 §11.3: lazy develop + F10 lens in CompareVersionsDialog |
+
+### 12.7 Test coverage (session)
+
+| File | What it pins |
+|---|---|
+| [`tests/test_gateway.py`](tests/test_gateway.py) | `phase_day_progress` export bucket: three-slice baseline, ship-intent default per intent count, cluster cover state machine folds Mixed → Undecided. |
+| [`tests/test_days_grid_export_mode.py`](tests/test_days_grid_export_mode.py) | Compare button visibility + signal routing; Mira-only flat-cell default = picked; preview dialog F10 dispatches by item type; lazy develop in preview; PhotoViewport reuse (buttons, F11, ViewportItem hand-off). |
+| [`tests/test_compare_versions_dialog.py`](tests/test_compare_versions_dialog.py) | Per-tile build, focus tracking, ← → / P / X / Space / Esc keymap, lazy develop, F10 dispatch by tile type. |
+| [`tests/test_preview_render.py`](tests/test_preview_render.py) | `develop_photo_array` identity / crop / unknown-filter / downscale / missing-source. |
+
+82 export-stack tests across these files (plus the gateway suite's 63) all green at HEAD.
 

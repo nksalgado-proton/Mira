@@ -3060,11 +3060,34 @@ class MainWindow(QMainWindow):
         if self._quick_sweep is not None:
             self._qs_open_viewer_for_item(item_id)
             return
-        # spec/68 §3 — Export mode handles the click itself (in-place
-        # green↔red toggle + X-on-shipped cleanup). The grid still
-        # fires item_activated for symmetry, but here the host does
-        # nothing — there's no drill-in destination for Export.
+        # spec/68 §3 — Export-mode thumb clicks toggle in place
+        # (handled in DaysGridPage._on_thumb_clicked → _apply_verb_at_index
+        # / _open_export_preview) and DO NOT emit item_activated. In
+        # Export mode the signal only fires from the preview viewer's
+        # "Open in Editor" button (spec/89 §3.2 D4.C), so routing it
+        # to the Editor here is unambiguous. We always open by item
+        # (NOT by cluster) because a versions-cluster bucket's members
+        # are lineage relpaths / virtual Mira ids — the dialog already
+        # resolved them back to the real source item_id.
         if self._export_phase_active:
+            event_id = self.days_grid_page.current_event_id()
+            day_number = self.days_grid_page.current_day_number()
+            if event_id is None:
+                return
+            from mira.ui.base.progress import run_with_progress
+            ran, ok = run_with_progress(
+                self, tr("Opening photo…"),
+                lambda _p: self.edit_page.open_to_item(
+                    event_id, day_number, item_id),
+                label=tr("Loading…"),
+            )
+            if not ran or not ok:
+                log.warning(
+                    "EditorPage open from Export preview failed "
+                    "(%s, %s, %s)", event_id, day_number, item_id)
+                return
+            self._days_grid_bridge_active = True
+            self.page_stack.show_page(self._PROCESS_PAGE_KEY)
             return
         event_id = self.days_grid_page.current_event_id()
         day_number = self.days_grid_page.current_day_number()

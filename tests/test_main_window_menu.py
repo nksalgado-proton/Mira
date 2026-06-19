@@ -335,25 +335,52 @@ def test_days_lists_identity_export_when_phase_active(main_window):
     assert captured == ["export"]
 
 
-def test_days_grid_item_activated_is_short_circuited_in_export_mode(
+def test_days_grid_item_activated_opens_editor_in_export_mode(
         main_window):
-    """spec/68 §3 — the Days Grid handles the click itself in Export
-    mode (toggle in place); the host's ``item_activated`` route is a
-    no-op so the user doesn't drill into Picker/Editor by accident."""
+    """spec/89 §3.2 D4.C (Nelson 2026-06-19) — in Export mode the
+    ``item_activated`` signal only fires from the preview viewer's
+    "Open in Editor" button (thumb clicks toggle in place via
+    DaysGridPage._on_thumb_clicked → _apply_verb_at_index /
+    _open_export_preview, NEVER emit the signal). So the host routes
+    item_activated to the Editor, opening by item (NOT by cluster —
+    versions-cluster buckets carry lineage relpaths / virtual Mira
+    ids, and the dialog already resolved them back to the real
+    source item_id). Pre-fix this short-circuited as a no-op, which
+    left the dialog closing without opening the Editor."""
     main_window._current_event_id = "fake-evt-id"
     main_window._export_phase_active = True
     main_window._edit_phase_active = False
-    # The grid would normally drill into Picker/Editor via these
-    # helpers. None of them should fire when Export is active.
+    # Stub current_event_id / current_day_number so the handler
+    # short-circuits before reaching the gateway.
     with patch.object(
-            main_window.picker_page, "open_to_item",
-            return_value=True) as picker_open, \
+            main_window.days_grid_page, "current_event_id",
+            return_value="fake-evt-id"), \
             patch.object(
-                MainWindow, "_open_edit_surface_for_item",
-                autospec=True) as edit_open:
-        main_window._on_days_grid_item_activated("any-id")
+                main_window.days_grid_page, "current_day_number",
+                return_value=3), \
+            patch.object(
+                main_window.picker_page, "open_to_item",
+                return_value=True) as picker_open, \
+            patch.object(
+                main_window.edit_page, "open_to_item",
+                return_value=True) as edit_open, \
+            patch(
+                "mira.ui.base.progress.run_with_progress",
+                return_value=(True, True)) as run_prog, \
+            patch.object(
+                main_window.page_stack, "show_page") as show_page:
+        main_window._on_days_grid_item_activated("x42")
+    # The Picker is never touched in Export mode.
     assert picker_open.call_count == 0
-    assert edit_open.call_count == 0
+    # The Editor opens by item — single keeper, bypassing the
+    # cluster route (versions-cluster members are lineage relpaths).
+    assert run_prog.call_count == 1
+    # The page stack switches to the Editor page.
+    assert show_page.call_count == 1
+    assert show_page.call_args[0][0] == main_window._PROCESS_PAGE_KEY
+    # The bridge flag is set so Back from Editor returns to the
+    # Days Grid.
+    assert main_window._days_grid_bridge_active is True
 
 
 def test_export_phase_active_clears_on_days_lists_back(main_window):

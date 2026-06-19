@@ -288,7 +288,7 @@ improvement on every slice.
 | 6 | **Preview viewer.** Center click → read-only viewer; P/X decide; Esc back; arrow stepping (within current surface); `Open in Editor` + `Export this` buttons; viewer content per §3.2 (read from disk for Mira renders). | **shipped 2026-06-19** |
 | 7 | **Watermark repurpose.** Diagonal stamp = "this flip will delete a real file." | **shipped 2026-06-19** |
 | 8 | **Export run triggers.** `Export now` batch button on both toolbars + confirm modal; single-item `Export this` re-render-ask dialog. | **shipped 2026-06-19** |
-| 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | pending |
+| 9 | **Video cluster updates.** New cover state machine (no Compare); hide empty videos; show only workshop-greened segments / snapshots inside. | **shipped 2026-06-19** |
 | 10 | **Cleanup.** Drop dead code paths, update CLAUDE.md four-phase table + Cut section to reference the new model, retire `edit_candidate_*` tests, update spec/66 §1.2 / spec/72 §1 to point here. | pending |
 
 ---
@@ -359,14 +359,18 @@ alongside per spec/54 §8). The "Export this" button on the preview
 viewer is disabled unless `state == 'picked'` (D5.A); that contract
 remains enforced in `ExportPreviewDialog`.
 
-**Slice 9 — Video cluster updates.** The existing `_reshape_for_export`
-already wraps videos with workshop content into a structural
-cluster. Slice 9 adds: (a) the new cover state machine with no
-Compare leg (green / red / yellow only) per Block 6 D5.A, (b) hide
-videos with no picked segments AND no snapshots per Block 6 D3.B,
-(c) filter the cluster members to only the workshop-greened entries
-per Block 6 D1.C. The video cluster code lives in
-`DaysGridPage._video_cluster_grid_item` and `_reshape_for_export`.
+**Slice 9 — Video cluster updates** (shipped 2026-06-19).
+[`_video_cluster_grid_item`](mira/ui/pages/days_grid_page.py) now
+filters segments + snapshots to ``phase_state(edit) == 'picked'``
+(workshop-greened only; Block 6 D1.C). The new
+[`_video_cover_color`](mira/ui/pages/days_grid_page.py) static
+helper paints the cover with no Compare leg (Block 6 §6.3 — all
+picked → green, all skipped → red, mixed → yellow). The pre-Slice-9
+"keep flat when no children" fallback in `_reshape_for_export` is
+gone (Block 6 D3.B): a video with no workshop-greened segments AND
+no workshop-greened snapshots drops out of the Export grid entirely.
+The user has to return to the Workshop and green something to bring
+it back.
 
 **Slice 10 — Cleanup.** (a) Delete the `_strip_post_v6_lineage_cols`
 test-fixture helper if no longer needed (it strips both Slice-1 and

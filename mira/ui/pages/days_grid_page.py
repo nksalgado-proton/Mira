@@ -1247,11 +1247,17 @@ class DaysGridPage(QWidget):
         items: List["GridItem"],
         phase_states: Dict,
     ) -> List["GridItem"]:
-        """Export-mode reshape (spec/56): replace each flat video cell
-        whose source owns ≥1 segment or snapshot with a synthetic
-        "video" cluster cover. Videos with no workshop touch yet (zero
-        segments + zero snapshots) stay flat. Photos + scanner clusters
-        pass through unchanged."""
+        """Export-mode reshape (spec/56 + spec/89 Slice 9 Block 6):
+        replace each flat video cell with a synthetic "video" cluster
+        cover bundling its workshop-greened segments + snapshots.
+
+        spec/89 §6.1 / Block 6 D3.B — a source video with **no picked
+        segments AND no picked snapshots** drops out of the Export grid
+        entirely; the flat-video fallback the pre-Slice-9 path used is
+        gone. The user has to go back to the Workshop and green
+        something to bring it back.
+
+        Photos + scanner clusters pass through unchanged."""
         if self._eg is None:
             return items
         event_root = (
@@ -1263,7 +1269,10 @@ class DaysGridPage(QWidget):
                 continue
             cluster_item = self._video_cluster_grid_item(
                 it, event_root, phase_states)
-            out.append(cluster_item if cluster_item is not None else it)
+            if cluster_item is not None:
+                out.append(cluster_item)
+            # else: spec/89 Block 6 D3.B — drop the cell entirely; no
+            # workshop-greened children means nothing to ship.
         return out
 
     def _video_cluster_grid_item(
@@ -1273,12 +1282,15 @@ class DaysGridPage(QWidget):
         phase_states: Dict,
     ) -> Optional["GridItem"]:
         """Build a synthetic "video" cluster cover for one source video,
-        bundling its segment + snapshot child items as members. Returns
-        ``None`` when the video has no children yet (caller keeps the
-        flat cell). The cluster's ``bucket_key`` is
-        ``video:<video_item_id>`` so the day-grid soft-state (and the
-        existing visited / browsed plumbing) doesn't collide with
-        scanner buckets."""
+        bundling its **workshop-greened** segment + snapshot child items
+        as members (spec/89 Block 6 D1.C — only ``phase_state(edit) ==
+        picked`` children are shown; workshop-skipped ones don't appear
+        in Export at all). Returns ``None`` when no workshop-greened
+        children exist (caller drops the cell per Block 6 D3.B).
+
+        The cluster's ``bucket_key`` is ``video:<video_item_id>`` so the
+        day-grid soft-state (and the existing visited / browsed
+        plumbing) doesn't collide with scanner buckets."""
         if self._eg is None:
             return None
         video_id = video_item.item_id
@@ -1294,8 +1306,6 @@ class DaysGridPage(QWidget):
             log.exception(
                 "DaysGridPage: video_snapshots(%s) failed", video_id)
             snaps = []
-        if not segs and not snaps:
-            return None
         video_row = self._eg.item(video_id)
         video_path = (
             event_root / video_row.origin_relpath
@@ -1303,34 +1313,37 @@ class DaysGridPage(QWidget):
         )
 
         members: list[CullItem] = []
+        member_states: list[str] = []
         for seg in segs:
             seg_item = self._eg.item(seg.item_id)
             if seg_item is None:
                 continue
+            ps = phase_states.get(seg.item_id)
+            if ps is None or ps.state != STATE_PICKED:
+                continue            # workshop-skipped → not shown
             members.append(CullItem(
                 item_id=seg.item_id,
                 path=video_path or Path(""),
                 kind="video",
             ))
+            member_states.append(STATE_PICKED)
         for snap in snaps:
             snap_item = self._eg.item(snap.item_id)
             if snap_item is None:
+                continue
+            ps = phase_states.get(snap.item_id)
+            if ps is None or ps.state != STATE_PICKED:
                 continue
             members.append(CullItem(
                 item_id=snap.item_id,
                 path=video_path or Path(""),
                 kind="photo",
             ))
+            member_states.append(STATE_PICKED)
         if not members:
             return None
 
-        member_colors = [
-            cell_color_for_item(
-                m.item_id, m.kind, self._phase, phase_states,
-                default_state=self._phase_default)
-            for m in members
-        ]
-        color = cluster_color(member_colors)
+        color = self._video_cover_color(member_states)
         cluster = CullCluster(
             bucket_key=f"video:{video_id}",
             kind="video",
@@ -1353,6 +1366,32 @@ class DaysGridPage(QWidget):
             _cull_cluster=cluster,
             _video_item_id=video_id,
         )
+
+    @staticmethod
+    def _video_cover_color(member_states):
+        """spec/89 §6.3 / Block 6 — video cluster cover state machine.
+        Same shape as the versions cluster but without the Compare leg
+        (video members can never be Compare — they're flat green/red):
+
+        * All ``picked`` → KEPT (green).
+        * All ``skipped`` → DISCARDED (red).
+        * Mix of ``picked`` + ``skipped`` → MIXED (yellow, distinct
+          from Edit's amber per Block 4 D3.A).
+
+        After Slice 9 the membership filter only admits ``picked``
+        children, so a freshly-rebuilt cover starts green. The
+        mixed/red branches paint when the user flips X on a member
+        inside the cluster sub-grid before the next full
+        :meth:`_refresh_from_gateway` re-runs the workshop-greened
+        filter."""
+        from mira.picked.model import CellColor as _CC
+        if not member_states:
+            return _CC.UNTOUCHED
+        if all(s == STATE_PICKED for s in member_states):
+            return _CC.KEPT
+        if all(s == STATE_SKIPPED for s in member_states):
+            return _CC.DISCARDED
+        return _CC.MIXED
 
     def _items_from_cells(
         self,

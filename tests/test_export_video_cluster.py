@@ -168,8 +168,13 @@ def test_stamp_labels_carry_clip_and_snapshot():
 
 def test_export_reshape_clusters_video_with_clips_and_snapshots(
         qapp, app_gateway, store_and_gateway, event_dir):
-    """A source video with workshop children becomes ONE "video"
-    cluster cover. Its member count == segments + snapshots."""
+    """A source video with workshop-greened children becomes ONE
+    "video" cluster cover.
+
+    spec/89 Slice 9 / Block 6 D1.C — only segments + snapshots with
+    ``phase_state(edit) == 'picked'`` are members. Workshop-skipped
+    ones don't appear. The fixture picks segs[0] + segs[2] + the
+    snapshot; segs[1] is left at the system-default 'skipped'."""
     _, eg_setup = store_and_gateway
     segs, snap_id = _setup_clips_and_snap(eg_setup)
 
@@ -179,22 +184,23 @@ def test_export_reshape_clusters_video_with_clips_and_snapshots(
     assert cover.item_kind == "cluster"
     assert cover.cluster_type == "video"
     assert cover._video_item_id == "vidA"
-    # Cluster carries all of the source video's clips + snapshots.
     cluster = cover._cull_cluster
     assert cluster is not None
     assert cluster.kind == "video"
     member_ids = {m.item_id for m in cluster.members}
-    assert {s.item_id for s in segs}.issubset(member_ids)
-    assert snap_id in member_ids
-    assert cover.cluster_count == len(segs) + 1
+    # Only the workshop-greened segments + the snapshot are members.
+    assert member_ids == {segs[0].item_id, segs[2].item_id, snap_id}
+    assert segs[1].item_id not in member_ids        # workshop-skipped
+    assert cover.cluster_count == 3
     page.close_event()
 
 
-def test_export_reshape_keeps_flat_video_when_no_children(
+def test_export_reshape_hides_pristine_video_with_no_children(
         qapp, app_gateway, event_dir):
-    """A pristine video — no markers, no snapshots — stays a flat
-    cell. (The workshop hasn't been touched, so there's nothing to
-    cluster.)"""
+    """spec/89 Slice 9 / Block 6 D3.B — a pristine video (no markers,
+    no snapshots) drops out of the Export grid entirely. The flat-
+    fallback the pre-Slice-9 reshape kept is gone — the user has to
+    return to the Workshop and green something to bring it back."""
     page = DaysGridPage(app_gateway)
     assert page.open_for_day(
         "evt-cluster", 1, title="Day", date_iso="2026-04-01",
@@ -206,9 +212,72 @@ def test_export_reshape_keeps_flat_video_when_no_children(
     )
     out = page._reshape_for_export(
         [flat], page._eg.phase_states(page._phase))
-    assert len(out) == 1
-    assert out[0].item_kind == "video"           # untouched
-    assert out[0].cluster_type is None
+    assert out == []                                # cell dropped
+    page.close_event()
+
+
+def test_export_reshape_hides_video_with_no_picked_children(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 Slice 9 — a video whose every segment + snapshot is
+    workshop-skipped drops out too. The "no workshop touch" hide rule
+    is the symmetric variant of D3.B (no picked children = nothing to
+    ship)."""
+    _, eg_setup = store_and_gateway
+    eg_setup.add_video_marker("vidA", 10_000)
+    eg_setup.add_video_marker("vidA", 20_000)
+    eg_setup.ensure_video_segments("vidA", default_state="skipped")
+    # No set_phase_state(picked) calls — every segment stays skipped.
+
+    page = DaysGridPage(app_gateway)
+    assert page.open_for_day(
+        "evt-cluster", 1, title="Day", date_iso="2026-04-01",
+        phase="export")
+    flat = GridItem(
+        item_id="vidA", item_kind="video",
+        state=STATE_PICKED,
+        _path=event_dir / "Original Media" / "vidA.mp4",
+    )
+    out = page._reshape_for_export(
+        [flat], page._eg.phase_states(page._phase))
+    assert out == []                                # cell dropped
+    page.close_event()
+
+
+def test_export_video_cover_color_green_when_all_picked(
+        qapp, app_gateway, store_and_gateway, event_dir):
+    """spec/89 Block 6 §6.3 — cluster cover state machine: all
+    members picked → cover green."""
+    _, eg_setup = store_and_gateway
+    _setup_clips_and_snap(eg_setup)
+    page = _page_with_synthetic_video_cluster(app_gateway, event_dir)
+    cover = page._items[0]
+    assert cover.state == STATE_PICKED
+    page.close_event()
+
+
+def test_export_video_cover_color_yellow_when_mixed_in_subgrid(
+        qapp, app_gateway, store_and_gateway, event_dir):
+    """spec/89 Block 6 §6.3 — flipping a member to skipped inside the
+    cluster sub-grid (no full refresh yet) produces a mixed cover.
+
+    Mixed paints when the cover is rebuilt against a member-state list
+    that carries both picked + skipped — exercising the machine
+    directly proves the branch is wired even though, post-full-
+    refresh, the workshop-greened filter drops the skipped member and
+    the cover reverts to green with N-1."""
+    from mira.picked.status import STATE_SKIPPED as _STATE_SKIPPED
+    _, eg_setup = store_and_gateway
+    _setup_clips_and_snap(eg_setup)
+    page = _page_with_synthetic_video_cluster(app_gateway, event_dir)
+    # All-picked: cover green.
+    assert page._video_cover_color([STATE_PICKED] * 3) == "picked"
+    # All-skipped: cover red.
+    assert page._video_cover_color(
+        [_STATE_SKIPPED] * 3) == "skipped"
+    # Mixed: cover yellow (distinct from Edit's amber per Block 4 D3.A).
+    assert page._video_cover_color(
+        [STATE_PICKED, _STATE_SKIPPED]) == "mixed"
+    # No Compare leg (Block 6 — members can never be Compare).
     page.close_event()
 
 
@@ -219,7 +288,11 @@ def test_open_cluster_stamps_clip_and_snapshot_members(
         qapp, app_gateway, store_and_gateway, event_dir):
     """Drilling into the video cluster cover surfaces each clip
     with stamp="clip" and each snapshot with stamp="snapshot" — the
-    Thumb renders "Video Clip" / "Snapshot" from these."""
+    Thumb renders "Video Clip" / "Snapshot" from these.
+
+    spec/89 Slice 9 / Block 6 D1.C — only the workshop-greened
+    members (segs[0] + segs[2] + snap, not the workshop-skipped
+    segs[1]) appear in the sub-grid."""
     _, eg_setup = store_and_gateway
     segs, snap_id = _setup_clips_and_snap(eg_setup)
     page = _page_with_synthetic_video_cluster(app_gateway, event_dir)
@@ -228,9 +301,9 @@ def test_open_cluster_stamps_clip_and_snapshot_members(
     page._open_cluster(cover._cull_cluster)
 
     by_id = {g.item_id: g for g in page._items}
-    # Picked outer segments + the snapshot are stamped correctly.
-    for seg in segs:
-        assert by_id[seg.item_id].stamp == "clip"
+    assert by_id[segs[0].item_id].stamp == "clip"
+    assert by_id[segs[2].item_id].stamp == "clip"
+    assert segs[1].item_id not in by_id              # workshop-skipped
     assert by_id[snap_id].stamp == "snapshot"
     page.close_event()
 

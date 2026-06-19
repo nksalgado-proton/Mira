@@ -208,12 +208,50 @@ class _CompareTile(QFrame):
 
     def _load_pixmap(self) -> None:
         """Load the tile's full-definition pixels — develop pipeline
-        when the host asked for it, else raw file read."""
+        when the host asked for it, else raw file read.
+
+        **Lazy develop (Nelson 2026-06-19).** On-disk tiles (lineage
+        members — third-party returns + shipped Mira renders) load
+        synchronously from the file (fast). Develop-pipeline tiles
+        (the virtual Mira member) defer the expensive pipeline via
+        :meth:`_kick_develop`: paint the raw source first so the tile
+        appears immediately, then swap in the developed pixmap once
+        the pipeline finishes. Same pattern the preview dialog uses
+        for its main image."""
         from mira.ui.exported.preview_dialog import ExportPreviewDialog
-        # We piggy-back on ExportPreviewDialog._load_pixmap_for so the
-        # develop-vs-file dispatch stays in one place. The class is
-        # constructed only for the helper method (no widget mount).
+        if self._item.develop_for_preview:
+            # Fast paint: show the raw source first so the tile isn't
+            # a blank waiting on the pipeline.
+            self._raw_pixmap = ExportPreviewDialog._load_preview_pixmap(
+                self._item.path)
+            self._paint_pixmap()
+            self._kick_develop()
+            return
+        # Lineage tiles: the file IS the export, no pipeline.
+        self._raw_pixmap = ExportPreviewDialog._load_preview_pixmap(
+            self._item.path)
+        self._paint_pixmap()
+
+    def _kick_develop(self) -> None:
+        """Schedule the develop pipeline to run after the dialog has
+        painted (``QTimer.singleShot(0, ...)`` defers to the next
+        event-loop pass). The dialog instantiates every tile in its
+        constructor; without this defer, opening Compare on a 5+
+        version cluster blocks for several seconds while every Mira
+        member develops."""
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._run_develop)
+
+    def _run_develop(self) -> None:
+        """Run the develop pipeline for this tile under a wait
+        cursor, then swap the developed pixmap in over the raw
+        source. Failure falls back silently to the raw source paint
+        already in place."""
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QCursor, QGuiApplication
+        from mira.ui.exported.preview_dialog import ExportPreviewDialog
         from mira.ui.exported.preview_dialog import PreviewItem as _PI
+
         proxy = _PI(
             item_id=self._item.item_id,
             path=self._item.path,
@@ -221,7 +259,14 @@ class _CompareTile(QFrame):
             develop_adjustment=self._item.develop_adjustment,
             develop_style_fallback=self._item.develop_style_fallback,
         )
-        pm = ExportPreviewDialog._load_pixmap_for(proxy)
+        QGuiApplication.setOverrideCursor(
+            QCursor(_Qt.CursorShape.WaitCursor))
+        try:
+            pm = ExportPreviewDialog._develop_pixmap(proxy)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        if pm is None:
+            return
         self._raw_pixmap = pm
         self._paint_pixmap()
 
@@ -290,6 +335,10 @@ class CompareVersionsDialog(QDialog):
         # target of P / X / Space. Tiles 0..N-1; the first tile starts
         # focused so the user can act immediately without clicking.
         self._focused_index = 0 if items else -1
+        # spec/89 §11.3 polish — track the currently-open F10
+        # inspection lens so a second F10 closes it instead of
+        # stacking another window.
+        self._inspect_window = None
         self._build_ui()
         if self._tiles:
             self._tiles[self._focused_index].set_focused(True)
@@ -311,7 +360,8 @@ class CompareVersionsDialog(QDialog):
 
         hint = QLabel(tr(
             "Click a tile, or use ← → to focus. "
-            "P Will-export · X Set-aside · Space toggle · Esc closes."
+            "P Will-export · X Set-aside · Space toggle · "
+            "F10 Full Resolution · Esc closes."
         ))
         hint.setObjectName("Sub")
         outer.addWidget(hint)
@@ -382,6 +432,88 @@ class CompareVersionsDialog(QDialog):
             return self._tiles[self._focused_index].item_id()
         return None
 
+    # ── F10 — full-resolution inspection of the focused tile ────────
+
+    def _open_inspect_for_focused(self) -> None:
+        """spec/89 §3.2 + spec/63 §4 (Nelson 2026-06-19) — F10 on the
+        focused Compare tile opens the canonical inspection lens with
+        the **would-be-exported** pixels.
+
+        * Develop-pipeline tile (the virtual Mira member) → run
+          develop_photo_array at full resolution and open the lens
+          with the developed pixmap.
+        * Lineage tile (third-party return / shipped Mira render) →
+          open the lens directly on the on-disk file.
+
+        Re-uses ``ExportPreviewDialog._develop_pixmap_full`` for the
+        develop branch and mirrors the file-load branch (raw + RAW
+        handling) so the lens always shows the actual export bytes
+        regardless of which tile carries them. A second F10 closes
+        the lens (matches the PhotoViewport toggle contract)."""
+        from pathlib import Path as _Path
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QCursor, QGuiApplication
+
+        if not (0 <= self._focused_index < len(self._tiles)):
+            return
+        # Toggle off any already-open lens before opening another.
+        if self._inspect_window is not None:
+            try:
+                self._inspect_window.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+            self._inspect_window = None
+            return
+        item = self._tiles[self._focused_index]._item
+
+        base = None
+        path = _Path(item.path) if item.path else None
+        if item.develop_for_preview:
+            from mira.ui.exported.preview_dialog import (
+                ExportPreviewDialog, PreviewItem as _PI,
+            )
+            proxy = _PI(
+                item_id=item.item_id, path=item.path,
+                develop_for_preview=True,
+                develop_adjustment=item.develop_adjustment,
+                develop_style_fallback=item.develop_style_fallback,
+            )
+            QGuiApplication.setOverrideCursor(
+                QCursor(_Qt.CursorShape.WaitCursor))
+            try:
+                base = ExportPreviewDialog._develop_pixmap_full(proxy)
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+        else:
+            from PyQt6.QtGui import QPixmap as _QPixmap
+            from mira.ui.media.image_loader import (
+                _RAW_EXTENSIONS, load_pixmap, load_raw_half_res,
+            )
+            if path is None or not path.is_file():
+                return
+            QGuiApplication.setOverrideCursor(
+                QCursor(_Qt.CursorShape.WaitCursor))
+            try:
+                if path.suffix.lower() in _RAW_EXTENSIONS:
+                    img = load_raw_half_res(path)
+                    base = (
+                        _QPixmap.fromImage(img)
+                        if not img.isNull() else load_pixmap(path))
+                else:
+                    base = load_pixmap(path)
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+        if base is None or base.isNull():
+            return
+        from mira.ui.media.photo_viewport import _InspectView
+        self._inspect_window = _InspectView(
+            base, None, path=path,
+            is_raw=False,                # developed / display pixels
+            with_tools=True, parent=self,
+        )
+        self._inspect_window.open_windowed()
+        self._inspect_window.setFocus()
+
     # ── Qt overrides ────────────────────────────────────────────────
 
     def keyPressEvent(self, event: QKeyEvent) -> None:         # noqa: N802
@@ -390,6 +522,7 @@ class CompareVersionsDialog(QDialog):
         P       Will export (focused tile)
         X       Set aside (focused tile)
         Space   toggle picked ↔ skipped (focused tile)
+        F10     Full Resolution lens on the focused tile (exported pixels)
         Esc     close the dialog
         """
         key = event.key()
@@ -403,6 +536,10 @@ class CompareVersionsDialog(QDialog):
             return
         if key in (Qt.Key.Key_Right, Qt.Key.Key_PageDown):
             self._step_focus(+1)
+            event.accept()
+            return
+        if key == Qt.Key.Key_F10:
+            self._open_inspect_for_focused()
             event.accept()
             return
         target = self._focused_item_id()

@@ -693,6 +693,132 @@ def test_preview_dialog_viewport_carries_one_item_per_preview(
     page.close_event()
 
 
+def test_preview_dialog_f10_inspects_developed_pixels_for_mira_items(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §3.2 (Nelson 2026-06-19) — F10 on a develop-pipeline
+    cell (0-version or virtual Mira member) inspects the
+    WOULD-BE-EXPORTED pixels: the host runs
+    develop_photo_array at full resolution (no max-edge cap) and
+    feeds the developed pixmap to _InspectView. The user sees the
+    actual export, not the raw source."""
+    _, eg = store_and_gateway
+    # x2 has a non-baseline Adjustment → develop_for_preview=True
+    # when the host builds the PreviewItem.
+    eg.save_adjustment(m.Adjustment(
+        item_id="x2", look="natural", creative_filter="vivid"))
+
+    # Track full-develop calls (the new full-res path F10 uses).
+    full_develop_calls: list[str] = []
+    from mira.ui.exported.preview_dialog import ExportPreviewDialog
+
+    def _fake_full_develop(cls, item):
+        full_develop_calls.append(item.item_id)
+        # Return a tiny placeholder so _InspectView gets something to
+        # open without us decoding a real image.
+        from PyQt6.QtGui import QColor, QImage, QPixmap
+        img = QImage(16, 12, QImage.Format.Format_RGB888)
+        img.fill(QColor(50, 100, 150))
+        return QPixmap.fromImage(img)
+    monkeypatch.setattr(
+        ExportPreviewDialog, "_develop_pixmap_full",
+        classmethod(_fake_full_develop))
+
+    # Stub _InspectView so the test doesn't open a real modal window.
+    opened: list[tuple] = []
+    class _FakeInspect:
+        def __init__(self, base, af_point=None, *, path=None,
+                     is_raw=False, with_tools=True, parent=None):
+            opened.append((base, path, is_raw))
+        def open_windowed(self): pass
+        def setFocus(self): pass
+        def close(self): pass
+    monkeypatch.setattr(
+        "mira.ui.media.photo_viewport._InspectView", _FakeInspect)
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    idx = next(
+        i for i, it in enumerate(page._items) if it.item_id == "x2")
+    page._on_thumb_clicked(
+        page._items[idx].item_id, page._thumb_widgets[idx])
+    dlg = page._last_preview_dialog
+    # The viewport's internal F10 handler is suppressed — the dialog
+    # owns the truth-request route.
+    assert dlg._viewport._truth_internal is False
+    # Fire F10 (via the labelled button or the truth_requested signal).
+    dlg._fullres_btn.click()
+    # The dialog ran the FULL-resolution develop pipeline (not the
+    # bounded one used for the dialog body).
+    assert full_develop_calls == ["x2"]
+    # And opened the inspection lens with the developed pixmap (NOT
+    # the source path's pixels).
+    assert len(opened) == 1
+    base, path, is_raw = opened[0]
+    assert base is not None
+    assert is_raw is False        # developed pixmap is never raw
+    page.close_event()
+
+
+def test_preview_dialog_f10_inspects_on_disk_file_for_shipped_items(
+        qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
+    """spec/89 §3.2 — for on-disk Mira renders + third-party returns,
+    F10 still opens the file directly (the file IS the export, no
+    pipeline to run)."""
+    _, eg = store_and_gateway
+    # Ship x3 as a third-party return.
+    eg.record_lineage(m.Lineage(
+        export_relpath="Exported Media/x3-LRC.jpg",
+        phase="edit", source_kind="item", source_item_id="x3",
+        recipe_json=None, exported_at="2026-06-19T08:00:00",
+        provenance="third_party", intent_state="picked"))
+    (event_dir / "Exported Media").mkdir(exist_ok=True)
+    # A minimal valid JPEG so load_pixmap returns something non-null.
+    from PyQt6.QtGui import QColor, QImage
+    img = QImage(8, 8, QImage.Format.Format_RGB888)
+    img.fill(QColor(80, 90, 100))
+    assert img.save(
+        str(event_dir / "Exported Media" / "x3-LRC.jpg"), "JPG", 90)
+    eg.set_edit_exported("x3", True)
+
+    full_develop_calls: list[str] = []
+    from mira.ui.exported.preview_dialog import ExportPreviewDialog
+    monkeypatch.setattr(
+        ExportPreviewDialog, "_develop_pixmap_full",
+        classmethod(lambda cls, item: full_develop_calls.append(item.item_id)))
+
+    opened: list[tuple] = []
+    class _FakeInspect:
+        def __init__(self, base, af_point=None, *, path=None,
+                     is_raw=False, with_tools=True, parent=None):
+            opened.append((base, path, is_raw))
+        def open_windowed(self): pass
+        def setFocus(self): pass
+        def close(self): pass
+    monkeypatch.setattr(
+        "mira.ui.media.photo_viewport._InspectView", _FakeInspect)
+
+    page = DaysGridPage(app_gateway)
+    page._preview_headless = True
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    idx = next(
+        i for i, it in enumerate(page._items) if it.item_id == "x3")
+    page._on_thumb_clicked(
+        page._items[idx].item_id, page._thumb_widgets[idx])
+    dlg = page._last_preview_dialog
+    dlg._fullres_btn.click()
+    # No develop pipeline ran — the file IS the export.
+    assert full_develop_calls == []
+    # The lens opened with the on-disk file path.
+    assert len(opened) == 1
+    _base, path, _is_raw = opened[0]
+    assert path is not None
+    assert path.name == "x3-LRC.jpg"
+    page.close_event()
+
+
 def test_preview_dialog_does_not_pre_develop_neighbours(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
     """spec/89 §11.3 (Nelson 2026-06-19 fix) — opening the dialog

@@ -2247,39 +2247,66 @@ class DaysGridPage(QWidget):
             dlg.exec()
 
     def _resolve_preview_path(self, item) -> Optional[Path]:
-        """Pick the file the preview viewer should display for ``item``.
+        """Pick the file the preview viewer should display for ``item``
+        — spec/89 §3.2 mapping per cell type.
 
-        Order of preference:
-        1. If ``item._path`` is set AND points at a real file → use it
-           (this covers the versions sub-grid case where the path is
-           already the version's file under Exported Media/).
-        2. Else if the item has a single Exported Media/ row → that
-           file.
-        3. Else fall back to the source photo's path under Original
-           Media/ so the user sees SOMETHING (the proper 0-version
-           develop preview is a future polish pass).
+        Order of preference (Nelson 2026-06-19 corrected):
+        1. **Versions sub-grid member** (``item_id`` starts with
+           ``Exported Media/``) → ``item._path`` is already the
+           lineage row's file. Use it.
+        2. **Flat cell with a shipped lineage row** → the newest
+           lineage row's file under ``Exported Media/`` (matches
+           §3.2's "1-version third-party return" / "1-version
+           Mira-rendered cell" rules — pre-fix this returned the
+           source photo even when a third-party export existed, so
+           the preview never showed the actual export).
+        3. **Mira-virtual member** (``item_id`` starts with ``mira:``)
+           OR **0-version flat cell** → the source photo under
+           ``Original Media/`` so :meth:`_preview_develop_kwargs`'s
+           develop-pipeline path can fire on it.
+        4. Fall back to whatever ``item._path`` carries (defensive).
         """
-        if item._path is not None and Path(item._path).is_file():
+        iid = item.item_id
+        # Rule 1 — versions sub-grid member.
+        if (isinstance(iid, str)
+                and iid.startswith("Exported Media/")
+                and item._path is not None
+                and Path(item._path).is_file()):
             return Path(item._path)
         if self._eg is None or self._eg.event_root is None:
-            return None
+            return Path(item._path) if item._path else None
         event_root = Path(self._eg.event_root)
+        # Mira-virtual members don't have a lineage row of their own;
+        # the source path is what we want for the develop pipeline.
+        is_mira_virtual = (
+            isinstance(iid, str) and iid.startswith("mira:"))
+        # Rule 2 — flat cell, prefer the shipped lineage row over the
+        # source. Skipped for Mira-virtual members.
+        if not is_mira_virtual:
+            try:
+                rows = self._eg.versions_for_item(iid)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: versions_for_item failed for %s",
+                    iid)
+                rows = []
+            if rows:
+                lineage_path = event_root / rows[0].export_relpath
+                if lineage_path.is_file():
+                    return lineage_path
+        # Rule 3 — fall back to the source photo for 0-version cells +
+        # Mira-virtual members (develop pipeline runs on top).
+        source_id = (
+            iid.split(":", 1)[1] if is_mira_virtual else iid)
         try:
-            rows = self._eg.versions_for_item(item.item_id)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "DaysGridPage: versions_for_item failed for %s",
-                item.item_id)
-            rows = []
-        if rows:
-            return event_root / rows[0].export_relpath
-        # 0-version cell: fall back to the source photo.
-        try:
-            src_item = self._eg.item(item.item_id)
+            src_item = self._eg.item(source_id)
         except Exception:                                          # noqa: BLE001
             src_item = None
         if src_item and src_item.origin_relpath:
             return event_root / src_item.origin_relpath
+        # Rule 4 — defensive fallback to whatever the GridItem carries.
+        if item._path is not None and Path(item._path).is_file():
+            return Path(item._path)
         return None
 
     def _on_preview_intent(self, dlg, item_id: str, verb: str) -> None:

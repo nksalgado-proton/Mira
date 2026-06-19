@@ -158,15 +158,25 @@ class ExportPreviewDialog(QDialog):
         self._title_label.setObjectName("Sub")
         outer.addWidget(self._title_label)
 
-        # spec/63 § canonical single-photo display engine. F10 opens the
-        # inspection lens (full-resolution honest decode + peaking
+        # spec/63 § canonical single-photo display engine. F10 opens
+        # the inspection lens (full-resolution honest decode + peaking
         # tools); F11 is delegated to the host via fullscreen_requested
         # so the dialog can toggle showFullScreen / showNormal. The
         # labelled "Full Resolution" button below replaces the corner
         # 🔍 chip.
+        #
+        # **Truth-override (Nelson 2026-06-19).** We opt OUT of the
+        # viewport's internal F10 handler (``set_truth_internal(False)``)
+        # so the dialog can decide per-item: develop-pipeline cells
+        # (0-version + virtual Mira members) render the lens base at
+        # full resolution through ``develop_photo_array`` so the user
+        # inspects the WOULD-BE-EXPORTED pixels, not the raw source.
+        # On-disk versions (Mira renders + third-party returns) still
+        # open the file directly — the file IS the export.
         self._viewport = PhotoViewport(self)
         self._viewport.set_corner_inspect_visible(False)
         self._viewport.set_lens_tools_visible(True)
+        self._viewport.set_truth_internal(False)
         self._viewport.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._viewport.setMinimumHeight(360)
@@ -177,6 +187,10 @@ class ExportPreviewDialog(QDialog):
         self._viewport.fullscreen_requested.connect(self._toggle_fullscreen)
         self._viewport.back_requested.connect(self.reject)
         self._viewport.current_changed.connect(self._on_viewport_step)
+        self._viewport.truth_requested.connect(self._on_truth_requested)
+        # Track the currently-open inspection lens so a follow-up F10
+        # closes it instead of stacking another window.
+        self._inspect_window = None
 
         # Action row: state chip + stale chip + step indicator + Open
         # in Editor + Export this + Full Resolution + Full Screen + Close.
@@ -335,6 +349,122 @@ class ExportPreviewDialog(QDialog):
         if (0 <= self._index < len(self._items)
                 and self._items[self._index].item_id == item_id):
             self._viewport.set_rendered_pixmap(pm)
+
+    # ── F10 — full-resolution inspection of the EXPORTED pixels ─────────
+
+    def _on_truth_requested(self) -> None:
+        """spec/89 §3.2 + spec/63 §4 (Nelson 2026-06-19) — F10 opens
+        the inspection lens with the **would-be-exported** pixels:
+
+        * Develop-pipeline items (0-version + virtual Mira members)
+          run :func:`core.preview_render.develop_photo_array` at full
+          resolution (no max-edge cap) so the lens shows what the
+          next Export run will produce, including look / filter /
+          crop. This blocks under a wait cursor — the user pressed
+          F10 deliberately and a 1-3 s render for full-res inspection
+          is acceptable.
+        * On-disk items (Mira renders + third-party returns) open the
+          file directly via the standard
+          :class:`mira.ui.media.photo_viewport._InspectView` path —
+          the file IS the export, no pipeline to run."""
+        from pathlib import Path as _Path
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QCursor, QGuiApplication
+
+        if not (0 <= self._index < len(self._items)):
+            return
+        item = self._items[self._index]
+        # A second F10 closes any already-open lens (mirror the
+        # PhotoViewport _on_truth_requested contract: F10 is a toggle).
+        if self._inspect_window is not None:
+            try:
+                self._inspect_window.close()
+            except Exception:                                       # noqa: BLE001
+                pass
+            self._inspect_window = None
+            return
+
+        base = None
+        path = _Path(item.path) if item.path else None
+        if item.develop_for_preview:
+            QGuiApplication.setOverrideCursor(
+                QCursor(_Qt.CursorShape.WaitCursor))
+            try:
+                base = self._develop_pixmap_full(item)
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+            if base is None:
+                return
+        else:
+            # Mirror PhotoViewport._honest_full_res — load JPEG/HEIC
+            # directly, RAW via half-res sensor demosaic. Wait cursor
+            # in case the source is huge.
+            from mira.ui.media.image_loader import (
+                _RAW_EXTENSIONS, load_pixmap, load_raw_half_res,
+            )
+            from PyQt6.QtGui import QPixmap as _QPixmap
+
+            if path is None or not path.is_file():
+                return
+            is_raw = path.suffix.lower() in _RAW_EXTENSIONS
+            QGuiApplication.setOverrideCursor(
+                QCursor(_Qt.CursorShape.WaitCursor))
+            try:
+                if is_raw:
+                    img = load_raw_half_res(path)
+                    base = (
+                        _QPixmap.fromImage(img)
+                        if not img.isNull() else load_pixmap(path))
+                else:
+                    base = load_pixmap(path)
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+            if base is None or base.isNull():
+                return
+
+        # Open the canonical inspection lens with the EXPORTED pixels.
+        from mira.ui.media.photo_viewport import _InspectView
+        is_raw = (
+            path is not None
+            and path.suffix.lower() in {
+                ".rw2", ".cr2", ".cr3", ".nef", ".arw", ".raf",
+                ".orf", ".dng",
+            })
+        # Develop-pipeline items don't behave as raw: the developed
+        # pixmap is an 8-bit composite, not a sensor demosaic.
+        if item.develop_for_preview:
+            is_raw = False
+        self._inspect_window = _InspectView(
+            base, None, path=path, is_raw=is_raw,
+            with_tools=True, parent=self,
+        )
+        self._inspect_window.open_windowed()
+        self._inspect_window.setFocus()
+
+    @classmethod
+    def _develop_pixmap_full(cls, item: "PreviewItem") -> Optional[QPixmap]:
+        """Full-resolution develop for F10 inspection — no max-edge
+        cap. The 2400-px-bound :meth:`_develop_pixmap` covers the
+        dialog body's lazy preview; this one is for the lens."""
+        try:
+            from core.preview_render import develop_photo_array
+            from mira.ui.edited.adjustment_surface import _array_to_pixmap
+        except Exception:                                          # noqa: BLE001
+            log.exception("preview-dialog: full-develop imports failed")
+            return None
+        arr = develop_photo_array(
+            item.path, item.develop_adjustment,
+            style_fallback=item.develop_style_fallback,
+            max_long_edge=0,        # 0 disables the downscale
+        )
+        if arr is None:
+            return None
+        try:
+            return _array_to_pixmap(arr)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "preview-dialog: full-res _array_to_pixmap failed")
+            return None
 
     @classmethod
     def _develop_pixmap(cls, item: "PreviewItem") -> Optional[QPixmap]:

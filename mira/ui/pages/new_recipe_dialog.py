@@ -254,6 +254,17 @@ class NewRecipeContext:
     per_photo_seconds: float = 6.0
     has_budget: bool = True
 
+    # ``is_editing`` flips the Start-button gate to a permissive mode
+    # (spec/90 Phase 4e — Nelson 2026-06-20): when True, Start enables
+    # as long as Source is non-empty, regardless of probe state. Use
+    # for the Adjust flow on an existing Cut, where the user may be
+    # editing metadata (budget, etc.) and the source's current
+    # resolution might be empty (deleted exports) or errored (missing
+    # operand) — neither of which should block saving the metadata
+    # change. New-Cut flow keeps False so the old non-empty-pool gate
+    # still protects accidental empty Cuts.
+    is_editing: bool = False
+
 
 # --------------------------------------------------------------------------- #
 # Source-section chips + picker popover
@@ -1393,6 +1404,7 @@ class NewRecipeDialog(QDialog):
         self._max_minutes: int = max(1, int(ctx.max_minutes))
         self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
         self._has_budget: bool = bool(ctx.has_budget)
+        self._is_editing: bool = bool(ctx.is_editing)
 
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
@@ -2786,14 +2798,30 @@ class NewRecipeDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _refresh_start_enabled(self) -> None:
-        """Gate the Start button. Disabled when source is empty / the
-        last probe raised :class:`RecipeResolutionError` / the last
-        probe returned an empty pool. Enabled when the last probe
-        returned a non-empty pool with no errors."""
+        """Gate the Start button.
+
+        **New Cut** (``is_editing=False``): disabled when source is
+        empty / the last probe raised :class:`RecipeResolutionError` /
+        the last probe returned an empty pool. Enabled when the last
+        probe returned a non-empty pool with no errors. Spec/90 Phase
+        4e original gate — protects accidental empty new Cuts.
+
+        **Adjust an existing Cut** (``is_editing=True``): enabled as
+        long as Source is non-empty, regardless of probe state. The
+        user may be editing metadata (budget, name, etc.) on a Cut
+        whose source's current resolution is empty (deleted exports)
+        or errored (missing operand) — neither should block saving the
+        metadata change. The picker session handles an empty pool
+        gracefully + preserves the existing cut's stray members on
+        re-entry."""
         if not hasattr(self, "_start_btn"):
             return
         if not self._source_chips:
             self._start_btn.setEnabled(False)
+            return
+        if self._is_editing:
+            # Permissive: source non-empty is enough.
+            self._start_btn.setEnabled(True)
             return
         res = self._last_resolution
         if res is None:

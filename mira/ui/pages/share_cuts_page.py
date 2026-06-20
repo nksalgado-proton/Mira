@@ -1220,6 +1220,11 @@ class ShareCutsPage(QWidget):
 
         if prefill is not None:
             self._apply_recipe_prefill(ctx, prefill, kwargs)
+            # Adjust flow → permissive Start gate (spec/90 §5.1 / Phase
+            # 4e edit note): the user may be clearing the budget on a
+            # Cut whose source resolves to an empty pool today, and
+            # that should still save.
+            ctx.is_editing = True
         return ctx
 
     def _apply_recipe_prefill(

@@ -237,6 +237,54 @@ def test_collection_flavour_start_uses_pin_mode_from_otherwise(qapp):
     assert drafts[0].pin_mode == PIN_WEED_OUT
 
 
+def test_editing_mode_start_enabled_even_with_empty_pool(qapp):
+    """spec/90 Phase 4e edit note (Nelson 2026-06-20): when the dialog
+    opens via Adjust on an existing Cut (``is_editing=True``), Start
+    enables as long as Source is non-empty — even if the current
+    resolution is an empty pool. The user may be clearing the budget
+    on a Cut whose source's exports were deleted, and that metadata
+    change should still save."""
+    ctx = NewRecipeContext(
+        available_pools=_pools(),
+        selected_source=[(JOIN_OR, _pools()[0])],
+        is_editing=True,
+    )
+    dlg = _dialog(qapp, ctx=ctx,
+                  recipe_probe=lambda _c: _resolution(0))  # empty pool
+    dlg._run_probe()
+    assert dlg._start_btn.isEnabled() is True
+
+
+def test_editing_mode_start_enabled_even_with_probe_error(qapp):
+    """When the source references a missing operand, Adjust still lets
+    the user save (e.g., to clear the budget) — the picker handles
+    the empty-resolution case gracefully."""
+    def probe(_comp):
+        raise RecipeResolutionError("missing", kind="cut")
+    ctx = NewRecipeContext(
+        available_pools=_pools(),
+        selected_source=[(JOIN_OR, _pools()[0])],
+        is_editing=True,
+    )
+    dlg = _dialog(qapp, ctx=ctx, recipe_probe=probe)
+    dlg._run_probe()
+    assert dlg._start_btn.isEnabled() is True
+
+
+def test_new_cut_mode_start_still_disabled_on_empty_pool(qapp):
+    """Regression guard: with ``is_editing=False`` (New Cut path) the
+    old gate still protects accidental empty new Cuts."""
+    ctx = NewRecipeContext(
+        available_pools=_pools(),
+        selected_source=[(JOIN_OR, _pools()[0])],
+        is_editing=False,
+    )
+    dlg = _dialog(qapp, ctx=ctx,
+                  recipe_probe=lambda _c: _resolution(0))
+    dlg._run_probe()
+    assert dlg._start_btn.isEnabled() is False
+
+
 def test_collection_flavour_start_accepts_dialog(qapp):
     """Collection Start emits then accepts() — same lifecycle as the
     Cut-flavour path."""

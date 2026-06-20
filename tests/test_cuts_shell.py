@@ -291,6 +291,35 @@ def test_adjust_prefill_with_real_budget_keeps_has_budget_true(qapp, gw,
     assert ctx.per_photo_seconds == 5.0
 
 
+def test_adjust_prefill_marks_context_as_editing(qapp, gw, tmp_path):
+    """spec/90 Phase 4e edit note (Nelson 2026-06-20): the Adjust
+    prefill flags ``ctx.is_editing=True`` so the dialog's Start gate
+    relaxes — the user can save a metadata change (clear budget,
+    rename, etc.) on a Cut whose source resolves to an empty pool."""
+    from types import SimpleNamespace
+    shell = _shell(gw)
+    prefill = SimpleNamespace(
+        name="short_version",
+        pool_expr_json='[["+", "exported"]]',
+        style_filter_json='[]',
+        type_filter="both",
+        default_state="skipped",
+        target_s=300, max_s=600,
+        photo_s=5.0,
+        music_category=None, card_style="black",
+    )
+    ctx = shell._build_recipe_context(
+        shell._dialog_kwargs(), prefill=prefill)
+    assert ctx.is_editing is True
+
+
+def test_new_cut_context_is_not_editing(qapp, gw, tmp_path):
+    """No prefill → not Adjust → ctx.is_editing stays False."""
+    shell = _shell(gw)
+    ctx = shell._build_recipe_context(shell._dialog_kwargs(), prefill=None)
+    assert ctx.is_editing is False
+
+
 def test_adjust_prefill_with_null_budget_flips_has_budget_false(qapp, gw,
                                                                 tmp_path):
     """spec/90 §5.1 Bug 2 — Adjusting a Cut with target_s=max_s=None

@@ -23,7 +23,7 @@ QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius
  * 1-px bottom hairline. Cuts/DCs scroll layouts use spacing(0) so
  * rows butt-up directly. */
 QFrame#ShareListRow { background: transparent; border: none;
-                      border-bottom: 1px solid {line};
+                      border-bottom: 1px solid {accent};
                       border-radius: 0px; }
 
 /* Share-tab content wrapper — accent/purple hairline border to match

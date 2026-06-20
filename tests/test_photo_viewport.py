@@ -700,3 +700,25 @@ def test_tab_toggles_play_only_on_armed_video(qapp, viewport, monkeypatch):
     assert not viewport._player.playing
     QTest.keyClick(viewport, Qt.Key.Key_Tab)      # play
     assert viewport._player.playing
+
+
+def test_stale_cache_delivery_after_widget_destroyed_is_silent(qapp, cache):
+    """Regression (Nelson 2026-06-19 — uncaught exception, app
+    restart): the photo cache is an app-lifetime singleton; a
+    viewport destroyed mid-decode (user navigates away during an
+    async request) keeps its Python wrapper alive — long enough for
+    the cache's signal to find us — but the C++ widget is gone, so
+    `self.update()` raised `RuntimeError: wrapped C/C++ object of
+    type PhotoViewport has been deleted`. The slots now early-return
+    via `sip.isdeleted`."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QPixmap
+    vp = PhotoViewport(cache=cache)
+    # Force the C++ side to die without going through deleteLater + the
+    # event loop, so the Python wrapper is the only thing left.
+    sip.delete(vp)
+    # The cache emits, the slot finds a dead widget — both entry points
+    # must be safe.
+    vp._on_scaled_ready(Path("nope.jpg"), QPixmap(), QSize(0, 0))
+    vp._on_decode_failed(Path("nope.jpg"))

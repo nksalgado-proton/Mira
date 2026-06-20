@@ -1387,6 +1387,17 @@ class PhotoViewport(QWidget):
 
     def _on_scaled_ready(self, path: Path, pixmap: QPixmap,
                          native: QSize) -> None:
+        # The photo cache is an app-lifetime singleton; a viewport
+        # destroyed mid-decode (user navigates away during an async
+        # request) keeps its Python wrapper alive — long enough for the
+        # cache's signal to find us — but the underlying C++ widget is
+        # gone, so anything that touches the QObject (``self.update()``,
+        # ``self._label``…) raises ``RuntimeError: wrapped C/C++ object
+        # has been deleted`` (Nelson 2026-06-19 crash report).
+        # ``sip.isdeleted`` is the canonical guard and is cheap.
+        from PyQt6 import sip
+        if sip.isdeleted(self):
+            return
         item = self.current_item()
         if (item is None or item.path is None
                 or Path(path) != Path(item.path)):
@@ -1394,6 +1405,9 @@ class PhotoViewport(QWidget):
         self._adopt_sharp(pixmap, native)
 
     def _on_decode_failed(self, path: Path) -> None:
+        from PyQt6 import sip
+        if sip.isdeleted(self):
+            return
         item = self.current_item()
         if item is None or item.path is None or Path(path) != Path(item.path):
             return

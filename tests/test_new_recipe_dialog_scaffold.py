@@ -160,10 +160,10 @@ def _find_placeholder(dlg: NewRecipeDialog, text_marker: str) -> bool:
     return False
 
 
-def test_rules_section_renders_phase_4c_placeholder(qapp):
+def test_rules_section_renders(qapp):
+    """Phase 4c shipped the real Rules section; the placeholder retired."""
     dlg = _cut_dialog(qapp)
     assert dlg.findChild(object, "RulesSection") is not None
-    assert _find_placeholder(dlg, "Phase 4c")
 
 
 def test_otherwise_section_renders_phase_4c_placeholder(qapp):

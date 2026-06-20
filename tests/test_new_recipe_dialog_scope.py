@@ -220,18 +220,22 @@ def test_remove_scope_chip(qapp):
     assert dlg._scope_chips[0][1].uuid == "evt-bali"
 
 
-def test_two_scope_chips_render_join_label_between_them(qapp):
+def test_two_scope_chips_render_join_chevron_between_them(qapp):
+    """spec/90 §3.2 — Phase 4c hooks the join word to
+    :class:`_JoinChevron` so the user can swap one-click between
+    ``or`` / ``and`` / ``but not in``. ``join_word()`` returns the
+    bare word (without the chevron glyph)."""
+    from mira.ui.pages.new_recipe_dialog import _JoinChevron
     dlg = _collection_dialog(qapp)
     dlg._add_scope_chip(_events()[0])
     dlg._add_scope_chip(_events()[1])
-    join_labels = []
+    chevrons = []
     for i in range(dlg._scope_row.count()):
         w = dlg._scope_row.itemAt(i).widget()
-        if w is None:
-            continue
-        if w.objectName() == "PoolFormulaOp":
-            join_labels.append(w.text())
-    assert join_labels == [JOIN_OR]
+        if isinstance(w, _JoinChevron):
+            chevrons.append(w)
+    assert len(chevrons) == 1
+    assert chevrons[0].join_word() == JOIN_OR
 
 
 # --------------------------------------------------------------------------- #

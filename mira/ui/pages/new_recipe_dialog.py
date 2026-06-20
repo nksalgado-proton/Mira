@@ -34,8 +34,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QDate, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon
+from PyQt6.QtCore import QDate, QPoint, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -75,17 +75,39 @@ FLAVOUR_COLLECTION = "collection"
 INVENTORY_EVENT = "event"
 INVENTORY_LIBRARY = "library"
 
-# Join words (spec/90 §3.2). The dropdown widget that picks between them
-# lands in Phase 4c; Phase 4a renders the default ``or`` between any two
-# chips so the sentence reads correctly.
+# Join words (spec/90 §3.2). Phase 4c hooks each rendered join word to
+# :class:`_JoinWordPopover` so the user can swap one-click between the
+# three set-algebra meanings.
 JOIN_OR = "or"
 JOIN_AND = "and"
 JOIN_BUT_NOT = "but not in"
 
 # Mapping the join word ↔ the spec/81 resolver operator. The picker
-# widget in Phase 4c will emit join words; the source-sentence encoder
-# translates here.
+# widget emits join words; the source / scope / rule-predicate encoders
+# translate here.
 _JOIN_TO_OP = {JOIN_OR: "+", JOIN_AND: "&", JOIN_BUT_NOT: "-"}
+
+#: Ordered (join, plain-language description) pairs the join-word popover
+#: renders (spec/90 §1.2 + §3.2). Order pins the user-facing presentation.
+JOIN_WORD_OPTIONS: Tuple[Tuple[str, str], ...] = (
+    (JOIN_OR, "items in either set"),
+    (JOIN_AND, "items in both sets"),
+    (JOIN_BUT_NOT, "exclude these"),
+)
+
+# Verdicts (spec/90 §1.3). pick = items matched start picked; skip = items
+# matched start skipped. The Otherwise row carries the default-when-no-rule-
+# matched verdict; every Rule carries a per-rule verdict.
+VERDICT_PICK = "pick"
+VERDICT_SKIP = "skip"
+VERDICTS: Tuple[str, ...] = (VERDICT_PICK, VERDICT_SKIP)
+
+#: Ordered (verdict, plain-language description) pairs the verb popover
+#: renders (spec/90 §3.3).
+VERB_OPTIONS: Tuple[Tuple[str, str], ...] = (
+    (VERDICT_PICK, "items matched by this rule start picked"),
+    (VERDICT_SKIP, "items matched by this rule start skipped"),
+)
 
 
 def _palette_mode() -> str:
@@ -172,6 +194,12 @@ class NewRecipeContext:
     available_event_collections: List[OperandOption] = field(
         default_factory=list)
 
+    # People catalogue for the Faces section of the rule-predicate picker
+    # (spec/90 §4.3 — Person chips inside rule predicates). Empty until
+    # face recognition (spec/91) ships, but the picker section lights up as
+    # soon as the People-page wiring populates this list.
+    available_people: List[OperandOption] = field(default_factory=list)
+
     # Filter vocabularies (spec/90 §4). Each is the list of distinct
     # values the picker offers; the user multi-selects.
     available_styles: List[str] = field(default_factory=list)
@@ -182,6 +210,12 @@ class NewRecipeContext:
     # loading a saved Recipe (Phase 4e).
     selected_source: List[Tuple[str, OperandOption]] = field(default_factory=list)
     selected_scope: List[Tuple[str, OperandOption]] = field(default_factory=list)
+    # Each rule is a (predicate, verdict) pair. predicate uses the same
+    # (join, operand) tuple list as source / scope; verdict is one of
+    # :data:`VERDICTS`.
+    selected_rules: List[Tuple[List[Tuple[str, OperandOption]], str]] = field(
+        default_factory=list)
+    otherwise: str = VERDICT_SKIP   # spec/90 §1.3 default-when-no-rule-matches
     selected_styles: List[str] = field(default_factory=list)
     selected_cameras: List[str] = field(default_factory=list)
     selected_lenses: List[str] = field(default_factory=list)
@@ -240,6 +274,207 @@ class _SourceChip(QFrame):
 #: event-set operands (Events / Event Collections / Date ranges).
 PICKER_TARGET_SOURCE = "source"
 PICKER_TARGET_SCOPE = "scope"
+PICKER_TARGET_RULE_PREDICATE = "rule_predicate"
+
+
+# --------------------------------------------------------------------------- #
+# Join-word + verb popovers (spec/90 §3.2 + §3.3)
+# --------------------------------------------------------------------------- #
+
+
+class _ChoicePopover(QFrame):
+    """Shared base for the small two-/three-option popovers Phase 4c adds.
+
+    Each option renders as a left-aligned button with the choice token in
+    bold + a faint plain-language description per spec/90 §1.2 / §3.3.
+    The currently-selected option carries a ``selected="true"`` Qt property
+    so the QSS cascade can mark it (the rule itself lives in the project's
+    theme stylesheets; the widget only sets the property).
+
+    Subclasses pass the option list, the currently-selected key, and a
+    ``role`` object name that QSS targets ("JoinWordPopover" / "VerbPopover")."""
+
+    chosen = pyqtSignal(str)
+
+    def __init__(
+        self,
+        options: Sequence[Tuple[str, str]],
+        *,
+        selected: Optional[str] = None,
+        role: str = "ChoicePopover",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName(role)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumWidth(220)
+        self._rows: Dict[str, QPushButton] = {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(2)
+
+        for key, description in options:
+            btn = QPushButton(self)
+            btn.setObjectName(f"{role}Row")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("text-align: left; padding: 6px 10px;")
+            # Two-line label: the key in bold + a faint plain-language
+            # description (§1.2). HTML keeps the layout flexible without
+            # nesting widgets.
+            btn.setText(f"<b>{key}</b><br/><span style='color:#888'>"
+                        f"{tr(description)}</span>")
+            btn.setProperty("_key", key)
+            btn.setProperty("selected", "true" if key == selected else "false")
+            btn.clicked.connect(
+                lambda _checked=False, k=key: self._on_chosen(k))
+            self._rows[key] = btn
+            outer.addWidget(btn)
+
+    def _on_chosen(self, key: str) -> None:
+        self.chosen.emit(key)
+        self.close()
+
+
+class _JoinWordPopover(_ChoicePopover):
+    """spec/90 §3.2 — pick between ``or`` / ``and`` / ``but not in``.
+
+    Opens on click of a :class:`_JoinChevron` between two chips."""
+
+    def __init__(
+        self,
+        *,
+        selected: str = JOIN_OR,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(
+            JOIN_WORD_OPTIONS,
+            selected=selected,
+            role="JoinWordPopover",
+            parent=parent,
+        )
+
+
+class _VerbPopover(_ChoicePopover):
+    """spec/90 §3.3 — pick between ``pick`` / ``skip``.
+
+    Opens on click of a :class:`_VerdictPill` (Rules row or Otherwise row)."""
+
+    def __init__(
+        self,
+        *,
+        selected: str = VERDICT_SKIP,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(
+            VERB_OPTIONS,
+            selected=selected,
+            role="VerbPopover",
+            parent=parent,
+        )
+
+
+class _JoinChevron(QPushButton):
+    """The clickable join-word affordance between two chips (spec/90 §3.2).
+
+    Renders as ``or ⌄`` (or the currently-selected word + the chevron) and
+    opens :class:`_JoinWordPopover` anchored below it on click. Emits
+    :attr:`chosen` with the new join word when the user picks one.
+
+    Visually it's small inline text — uses the existing ``PoolFormulaOp``
+    QSS role for the colour treatment so Phases 4a/4b's static labels
+    swap in pixel-for-pixel."""
+
+    chosen = pyqtSignal(str)
+
+    def __init__(self, join: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("PoolFormulaOp")
+        self.setFlat(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tr("Swap the join word between or / and / but not in."))
+        self._join = join
+        self._render()
+        self.clicked.connect(self._open_popover)
+
+    def join_word(self) -> str:
+        return self._join
+
+    def set_join_word(self, join: str) -> None:
+        self._join = join
+        self._render()
+
+    def _render(self) -> None:
+        # Trailing chevron ⌄ marks the affordance; the join word itself is
+        # the leading text per the spec's "small text with a chevron".
+        self.setText(f"{self._join} ⌄")
+
+    def _open_popover(self) -> None:
+        popover = _JoinWordPopover(selected=self._join, parent=self)
+        popover.chosen.connect(self._on_chosen)
+        pos = self.mapToGlobal(self.rect().bottomLeft())
+        popover.move(pos)
+        popover.show()
+        self._popover = popover                            # keep-alive
+
+    def _on_chosen(self, join: str) -> None:
+        self.set_join_word(join)
+        self.chosen.emit(join)
+
+
+class _VerdictPill(QPushButton):
+    """The clickable verdict-pill affordance (spec/90 §3.3).
+
+    Renders as a green pill for ``pick`` or a red pill for ``skip`` — the
+    object name flips between ``VerdictPickPill`` and ``VerdictSkipPill``
+    so the QSS cascade colours each appropriately. Opens
+    :class:`_VerbPopover` anchored below on click; emits :attr:`chosen`
+    with the new verdict when the user picks one."""
+
+    chosen = pyqtSignal(str)
+
+    def __init__(
+        self, verdict: str = VERDICT_SKIP,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tr("Click to swap between pick (green) and skip (red)."))
+        self._verdict = verdict if verdict in VERDICTS else VERDICT_SKIP
+        self._render()
+        self.clicked.connect(self._open_popover)
+
+    def verdict(self) -> str:
+        return self._verdict
+
+    def set_verdict(self, verdict: str) -> None:
+        if verdict not in VERDICTS:
+            return
+        self._verdict = verdict
+        self._render()
+
+    def _render(self) -> None:
+        self.setText(tr(self._verdict))
+        self.setObjectName(
+            "VerdictPickPill" if self._verdict == VERDICT_PICK
+            else "VerdictSkipPill")
+        # Re-polish so the QSS cascade picks up the object name change.
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
+
+    def _open_popover(self) -> None:
+        popover = _VerbPopover(selected=self._verdict, parent=self)
+        popover.chosen.connect(self._on_chosen)
+        pos = self.mapToGlobal(self.rect().bottomLeft())
+        popover.move(pos)
+        popover.show()
+        self._popover = popover                            # keep-alive
+
+    def _on_chosen(self, verdict: str) -> None:
+        self.set_verdict(verdict)
+        self.chosen.emit(verdict)
 
 
 class _OperandPickerPopover(QFrame):
@@ -276,6 +511,8 @@ class _OperandPickerPopover(QFrame):
         target: str = PICKER_TARGET_SOURCE,
         events: Sequence[OperandOption] = (),
         event_collections: Sequence[OperandOption] = (),
+        people: Sequence[OperandOption] = (),
+        show_faces: bool = False,
         # Legacy alias from Phase 4a — accepted for back-compat. Maps
         # to ``target=PICKER_TARGET_SCOPE`` when True.
         show_event_collections: bool = False,
@@ -291,13 +528,20 @@ class _OperandPickerPopover(QFrame):
             # into Event Collections in the picker. Phase 4b's Scope target
             # is the proper home for that vocabulary.
             target = PICKER_TARGET_SCOPE
-        if target not in (PICKER_TARGET_SOURCE, PICKER_TARGET_SCOPE):
+        if target not in (
+            PICKER_TARGET_SOURCE,
+            PICKER_TARGET_SCOPE,
+            PICKER_TARGET_RULE_PREDICATE,
+        ):
             raise ValueError(
-                f"picker target must be 'source' or 'scope', got {target!r}")
+                f"picker target must be 'source' / 'scope' / "
+                f"'rule_predicate', got {target!r}")
         self._target = target
         self._pools = list(pools)
         self._events = list(events)
         self._event_collections = list(event_collections)
+        self._people = list(people)
+        self._show_faces = bool(show_faces)
         self._rows: List[Tuple[OperandOption, QPushButton]] = []
         self._date_range_row: Optional[QPushButton] = None
 
@@ -319,8 +563,9 @@ class _OperandPickerPopover(QFrame):
         self._populate_sections()
 
         # "Save as DC…" only applies to the Source picker — Scope's
-        # output is event sets, not item sets, so the affordance is
-        # nonsensical there.
+        # output is event sets, not item sets, and a rule predicate's
+        # output is a per-item match set the resolver consumes once. The
+        # rule-predicate picker also hides it.
         if self._target == PICKER_TARGET_SOURCE:
             outer.addWidget(_divider())
             self._save_btn = ghost_button(tr("Save as DC…"))
@@ -341,7 +586,13 @@ class _OperandPickerPopover(QFrame):
         Scope target (spec/90 §3.4 — Collection dialog only): Events ·
         Event Collections · Date ranges. The Date ranges section has
         no inventory; instead it shows one ``+ Add date range…`` button
-        that opens :class:`_DateRangePickerPopover`."""
+        that opens :class:`_DateRangePickerPopover`.
+
+        Rule-predicate target (spec/90 §3.5, §4.3): same item-set
+        alphabet as Source (Base · DCs · Cuts) plus a **Faces** section
+        when the dialog enables hardware filters AND the people catalog
+        has entries. Person chips in rule predicates are the §4.3
+        advanced affordance."""
         if self._target == PICKER_TARGET_SCOPE:
             self._populate_scope_sections()
             return
@@ -361,6 +612,20 @@ class _OperandPickerPopover(QFrame):
                 row = self._make_row(pool)
                 self._list_layout.addWidget(row)
                 self._rows.append((pool, row))
+
+        # Faces ride the rule-predicate target only (spec/90 §4.3) — Source
+        # items have no Person-membership concept; rule predicates are the
+        # one path Person chips enter.
+        if (
+            self._target == PICKER_TARGET_RULE_PREDICATE
+            and self._show_faces
+            and self._people
+        ):
+            self._list_layout.addWidget(_micro(tr("Faces")))
+            for person in self._people:
+                row = self._make_row(person)
+                self._list_layout.addWidget(row)
+                self._rows.append((person, row))
 
     def _populate_scope_sections(self) -> None:
         """The Scope picker's three sections (spec/90 §3.1)."""
@@ -572,6 +837,212 @@ class _DateRangePickerPopover(QDialog):
 
 
 # --------------------------------------------------------------------------- #
+# Rules section — :class:`_RuleRow` + the dialog-side wiring
+# --------------------------------------------------------------------------- #
+
+
+class _RuleDragHandle(QPushButton):
+    """The ``≡`` grip on a rule row (spec/90 §1.3 — "user re-orders rules
+    by drag"). Captures mouse press, fires :attr:`drag_pressed` so the
+    parent :class:`_RuleRow` can route the gesture to the dialog's
+    reorder seam."""
+
+    drag_pressed = pyqtSignal(QPoint)       # global mouse position
+    drag_released = pyqtSignal(QPoint)      # global mouse position
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__("≡", parent)             # ≡
+        self.setObjectName("RuleDragHandle")
+        self.setFlat(True)
+        self.setFixedSize(24, 28)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip(tr("Drag to reorder this rule."))
+        self._dragging = False
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.drag_pressed.emit(event.globalPosition().toPoint())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._dragging:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.drag_released.emit(event.globalPosition().toPoint())
+        super().mouseReleaseEvent(event)
+
+
+class _RuleRow(QFrame):
+    """One Rule's row (spec/90 §1.3).
+
+    Layout, left → right:
+
+    * ``≡`` drag handle (:class:`_RuleDragHandle`) for reorder.
+    * Index number (``1.`` / ``2.`` / …).
+    * Predicate sentence — same chip + join-word grammar as the Source
+      and Scope rows, but a per-rule chip list. The trailing ``+``
+      opens the operand picker with ``target='rule_predicate'``.
+    * Verdict pill (:class:`_VerdictPill`) with the verb popover.
+    * Match-count placeholder (``"(— match)"``); Phase 4d wires the
+      live numbers.
+    * Delete ``×`` button.
+
+    Owns the per-rule state (predicate chips + verdict); the parent
+    dialog provides callbacks for the operand picker and signals on
+    state change so the dialog can re-emit :meth:`rules_expression`.
+    """
+
+    changed = pyqtSignal()                  # any state mutation
+    delete_requested = pyqtSignal()
+    add_operand_requested = pyqtSignal(object)  # the QPushButton anchor
+    drag_pressed = pyqtSignal(int, QPoint)      # row index, global pos
+    drag_released = pyqtSignal(int, QPoint)
+
+    def __init__(
+        self,
+        index: int,
+        predicate: Sequence[Tuple[str, OperandOption]] = (),
+        verdict: str = VERDICT_SKIP,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("RuleRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._index = index
+        self._predicate: List[Tuple[str, OperandOption]] = list(predicate)
+        self._verdict = verdict if verdict in VERDICTS else VERDICT_SKIP
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(8)
+
+        # Drag handle.
+        self._handle = _RuleDragHandle(self)
+        self._handle.drag_pressed.connect(
+            lambda pos: self.drag_pressed.emit(self._index, pos))
+        self._handle.drag_released.connect(
+            lambda pos: self.drag_released.emit(self._index, pos))
+        outer.addWidget(self._handle)
+
+        # Index label.
+        self._index_label = QLabel(self)
+        self._index_label.setObjectName("RuleIndex")
+        self._index_label.setMinimumWidth(20)
+        outer.addWidget(self._index_label)
+
+        # "If items are in" lead + predicate sentence.
+        lead = QLabel(tr("If items are in"))
+        lead.setObjectName("RuleLead")
+        outer.addWidget(lead)
+        self._predicate_box = QWidget(self)
+        self._predicate_row = QHBoxLayout(self._predicate_box)
+        self._predicate_row.setContentsMargins(0, 0, 0, 0)
+        self._predicate_row.setSpacing(6)
+        outer.addWidget(self._predicate_box, 1)
+
+        # Verdict pill.
+        self._verdict_pill = _VerdictPill(self._verdict, self)
+        self._verdict_pill.chosen.connect(self._on_verdict_chosen)
+        outer.addWidget(self._verdict_pill)
+
+        # Match-count placeholder (Phase 4d will wire the live number).
+        self._match_label = QLabel(tr("(— match)"))
+        self._match_label.setObjectName("RuleMatchCount")
+        outer.addWidget(self._match_label)
+
+        # Delete.
+        delete = QPushButton("×", self)
+        delete.setObjectName("PoolStepperBtn")
+        delete.setFixedSize(22, 22)
+        delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setToolTip(tr("Remove this rule."))
+        delete.clicked.connect(self.delete_requested.emit)
+        outer.addWidget(delete)
+
+        self._refresh_index()
+        self._refresh_predicate_row()
+
+    # ----- public API ----------------------------------------------- #
+
+    def set_index(self, index: int) -> None:
+        self._index = index
+        self._refresh_index()
+
+    def predicate(self) -> List[Tuple[str, OperandOption]]:
+        return list(self._predicate)
+
+    def verdict(self) -> str:
+        return self._verdict
+
+    def set_verdict(self, verdict: str) -> None:
+        if verdict in VERDICTS and verdict != self._verdict:
+            self._verdict = verdict
+            self._verdict_pill.set_verdict(verdict)
+            self.changed.emit()
+
+    def append_operand(self, operand: OperandOption) -> None:
+        """Push a new operand onto the predicate; default join is ``or``."""
+        self._predicate.append((JOIN_OR, operand))
+        self._refresh_predicate_row()
+        self.changed.emit()
+
+    def remove_operand(self, chip_index: int) -> None:
+        if 0 <= chip_index < len(self._predicate):
+            self._predicate.pop(chip_index)
+            self._refresh_predicate_row()
+            self.changed.emit()
+
+    def set_join(self, chip_index: int, join: str) -> None:
+        if 0 < chip_index < len(self._predicate):
+            _old_join, operand = self._predicate[chip_index]
+            self._predicate[chip_index] = (join, operand)
+            self._refresh_predicate_row()
+            self.changed.emit()
+
+    # ----- internal ------------------------------------------------- #
+
+    def _refresh_index(self) -> None:
+        self._index_label.setText(f"{self._index + 1}.")
+
+    def _refresh_predicate_row(self) -> None:
+        while self._predicate_row.count():
+            item = self._predicate_row.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.deleteLater()
+
+        for i, (join, operand) in enumerate(self._predicate):
+            if i != 0:
+                chevron = _JoinChevron(join, self._predicate_box)
+                chevron.chosen.connect(
+                    lambda new_join, idx=i: self.set_join(idx, new_join))
+                self._predicate_row.addWidget(chevron)
+            chip = _SourceChip(
+                operand.name, operand.count, self._predicate_box)
+            chip.removed.connect(
+                lambda idx=i: self.remove_operand(idx))
+            self._predicate_row.addWidget(chip)
+
+        add = QPushButton("+", self._predicate_box)
+        add.setObjectName("PoolStepperBtn")
+        add.setFixedSize(24, 24)
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.setToolTip(tr("Add an operand to this rule's predicate."))
+        add.clicked.connect(
+            lambda _=False: self.add_operand_requested.emit(add))
+        self._predicate_row.addWidget(add)
+        self._predicate_row.addStretch()
+
+    def _on_verdict_chosen(self, verdict: str) -> None:
+        # _VerdictPill already updated its own state; reflect in our model.
+        if verdict in VERDICTS:
+            self._verdict = verdict
+            self.changed.emit()
+
+
+# --------------------------------------------------------------------------- #
 # The dialog
 # --------------------------------------------------------------------------- #
 
@@ -633,6 +1104,23 @@ class NewRecipeDialog(QDialog):
         self._scope_chips: List[Tuple[str, OperandOption]] = list(
             ctx.selected_scope or [])
 
+        # Rules + Otherwise state (spec/90 §1.3). Each rule is
+        # ``(predicate_chips, verdict)`` where ``predicate_chips`` is the
+        # same ``(join, OperandOption)`` tuple list source / scope use.
+        self._rules: List[Tuple[List[Tuple[str, OperandOption]], str]] = [
+            (list(predicate), verdict)
+            for predicate, verdict in (ctx.selected_rules or [])
+        ]
+        self._otherwise: str = (
+            ctx.otherwise if ctx.otherwise in VERDICTS else VERDICT_SKIP
+        )
+        # Live row widgets — kept in lockstep with :attr:`_rules` so a
+        # drag-reorder can shuffle pure data and then re-render once.
+        self._rule_rows: List[_RuleRow] = []
+        # Outstanding drag — populated by :class:`_RuleDragHandle`'s
+        # press signal; consumed on release.
+        self._dragging_rule_index: Optional[int] = None
+
         # Filter state. Pill-toggle chips + checkboxes drive these.
         self._style_chips: Dict[str, QPushButton] = {}
         self._camera_chips: Dict[str, QPushButton] = {}
@@ -655,6 +1143,7 @@ class NewRecipeDialog(QDialog):
         self._refresh_source_row()
         if self._show_scope:
             self._refresh_scope_row()
+        self._refresh_rules_rows()
 
     # ------------------------------------------------------------------ #
     # Build
@@ -827,9 +1316,10 @@ class NewRecipeDialog(QDialog):
 
     def _refresh_source_row(self) -> None:
         """Rebuild the Source sentence — the ``Start from`` lead, each
-        chip with its preceding join-word label, then the trailing ``+``
-        button. Phase 4a renders join words as inline labels (the
-        dropdown widget lands in Phase 4c)."""
+        chip with its preceding join-word affordance, then the trailing
+        ``+`` button. Phase 4c hooks each between-chip join word to
+        :class:`_JoinChevron`, so the user can swap one-click between
+        ``or`` / ``and`` / ``but not in`` (spec/90 §3.2)."""
         # Clear the row.
         while self._source_row.count():
             item = self._source_row.takeAt(0)
@@ -852,9 +1342,11 @@ class NewRecipeDialog(QDialog):
                 lead.setObjectName("PoolAddLabel")
                 self._source_row.addWidget(lead)
             else:
-                join_lbl = QLabel(join)
-                join_lbl.setObjectName("PoolFormulaOp")
-                self._source_row.addWidget(join_lbl)
+                chevron = _JoinChevron(join, self._source_box)
+                chevron.chosen.connect(
+                    lambda new_join, i=index:
+                    self._set_source_join(i, new_join))
+                self._source_row.addWidget(chevron)
             chip = _SourceChip(operand.name, operand.count, self._source_box)
             chip.removed.connect(
                 lambda i=index: self._remove_source_chip(i))
@@ -863,6 +1355,15 @@ class NewRecipeDialog(QDialog):
         self._source_row.addWidget(self._build_add_operand_button())
         self._source_row.addStretch()
         self._refresh_source_summary()
+
+    def _set_source_join(self, index: int, join: str) -> None:
+        """Swap one Source chip's preceding join word. ``index`` is the
+        chip's position; the first chip's join is always treated as
+        union by the encoder and the popover is never offered for it."""
+        if 0 < index < len(self._source_chips):
+            _old_join, operand = self._source_chips[index]
+            self._source_chips[index] = (join, operand)
+            self._refresh_source_row()
 
     def _build_add_operand_button(self) -> QPushButton:
         """The ``+`` affordance that opens the operand picker (spec/90 §3.4)."""
@@ -960,9 +1461,11 @@ class NewRecipeDialog(QDialog):
                 lead.setObjectName("PoolAddLabel")
                 self._scope_row.addWidget(lead)
             else:
-                join_lbl = QLabel(join)
-                join_lbl.setObjectName("PoolFormulaOp")
-                self._scope_row.addWidget(join_lbl)
+                chevron = _JoinChevron(join, self._scope_box)
+                chevron.chosen.connect(
+                    lambda new_join, i=index:
+                    self._set_scope_join(i, new_join))
+                self._scope_row.addWidget(chevron)
             chip = _SourceChip(operand.name, operand.count, self._scope_box)
             chip.removed.connect(
                 lambda i=index: self._remove_scope_chip(i))
@@ -1031,6 +1534,14 @@ class NewRecipeDialog(QDialog):
     def _remove_scope_chip(self, index: int) -> None:
         if 0 <= index < len(self._scope_chips):
             self._scope_chips.pop(index)
+            self._refresh_scope_row()
+
+    def _set_scope_join(self, index: int, join: str) -> None:
+        """Swap one Scope chip's preceding join word (spec/90 §3.2). The
+        first chip's join is always treated as union by the encoder."""
+        if 0 < index < len(self._scope_chips):
+            _old_join, operand = self._scope_chips[index]
+            self._scope_chips[index] = (join, operand)
             self._refresh_scope_row()
 
     def _refresh_scope_summary(self) -> None:
@@ -1141,24 +1652,177 @@ class NewRecipeDialog(QDialog):
     # -------- Placeholder sections (Phase 4b/4c/4d) ------------------- #
 
     def _build_rules_section(self) -> QWidget:
+        """The Rules block (spec/90 §1.3). Each rule is a row in a
+        :class:`QVBoxLayout`; the user adds rules via the ``+ add rule``
+        button at the bottom. Drag-to-reorder lives on the per-row
+        :class:`_RuleDragHandle`; the dialog computes the target index
+        on release using the cursor's global y vs each row's geometry.
+
+        Drag-to-reorder choice: custom mouse handling on the drag handle
+        rather than ``QListWidget``. The rule row is a composed widget
+        (drag handle + index + predicate sentence + verdict pill + match
+        count + delete) — a ``QListWidget`` with custom item delegates
+        would have to re-implement the predicate sentence's join-word
+        popovers + chip removal flow. The custom-handle approach reuses
+        the per-row widget verbatim; the reorder seam is one method
+        (:meth:`_reorder_rule`) the tests can call directly without
+        synthesising native drag events."""
         host = QWidget()
         host.setObjectName("RulesSection")
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
+        v.setSpacing(6)
         v.addWidget(_micro(tr("Rules")))
-        v.addWidget(_placeholder(tr("Rules: (Phase 4c)")))
+
+        self._rules_container = QWidget(host)
+        self._rules_layout = QVBoxLayout(self._rules_container)
+        self._rules_layout.setContentsMargins(0, 0, 0, 0)
+        self._rules_layout.setSpacing(4)
+        v.addWidget(self._rules_container)
+
+        add_btn = ghost_button(tr("+ Add rule"))
+        add_btn.setObjectName("AddRuleButton")
+        add_btn.clicked.connect(self._on_add_rule_clicked)
+        v.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         return host
 
     def _build_otherwise_section(self) -> QWidget:
+        """The Otherwise row (spec/90 §1.1, §1.3). Just the leading word
+        + a verdict pill. Always present; default verdict is ``skip``
+        (matches the most common pick-in shape per spec/90 §3.5)."""
         host = QWidget()
         host.setObjectName("OtherwiseSection")
-        v = QVBoxLayout(host)
+        v = QHBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
-        v.addWidget(_micro(tr("Otherwise")))
-        v.addWidget(_placeholder(tr("Otherwise: (Phase 4c)")))
+        v.setSpacing(8)
+        lead = QLabel(tr("Otherwise"))
+        lead.setObjectName("OtherwiseLead")
+        v.addWidget(lead)
+        self._otherwise_pill = _VerdictPill(self._otherwise, host)
+        self._otherwise_pill.chosen.connect(self._on_otherwise_chosen)
+        v.addWidget(self._otherwise_pill)
+        v.addStretch()
         return host
+
+    # ---- rules wiring ---------------------------------------------- #
+
+    def _refresh_rules_rows(self) -> None:
+        """Tear down the per-row widget list and rebuild from
+        :attr:`_rules`. The cheaper diff (insert / remove / move) would
+        be fiddly; rules lists are tiny in practice."""
+        while self._rules_layout.count():
+            item = self._rules_layout.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.deleteLater()
+        self._rule_rows = []
+
+        for index, (predicate, verdict) in enumerate(self._rules):
+            row = _RuleRow(index, predicate, verdict, self._rules_container)
+            row.delete_requested.connect(
+                lambda r=row: self._delete_rule(r))
+            row.add_operand_requested.connect(
+                lambda anchor, r=row: self._open_rule_predicate_picker(r, anchor))
+            row.changed.connect(
+                lambda r=row: self._on_rule_row_changed(r))
+            row.drag_pressed.connect(self._on_rule_drag_pressed)
+            row.drag_released.connect(self._on_rule_drag_released)
+            self._rules_layout.addWidget(row)
+            self._rule_rows.append(row)
+
+    def _on_add_rule_clicked(self) -> None:
+        """Append a fresh rule with empty predicate + default ``skip``
+        verdict. spec/90 §3.5 — pick-in is the most common shape."""
+        self._rules.append(([], VERDICT_SKIP))
+        self._refresh_rules_rows()
+
+    def _delete_rule(self, row: "_RuleRow") -> None:
+        if row in self._rule_rows:
+            idx = self._rule_rows.index(row)
+            del self._rules[idx]
+            self._refresh_rules_rows()
+
+    def _on_rule_row_changed(self, row: "_RuleRow") -> None:
+        """A rule's predicate or verdict changed in-row — mirror to the
+        dialog's data store. Tests subscribe to widget signals via the
+        rule row directly; this routes the state."""
+        if row in self._rule_rows:
+            idx = self._rule_rows.index(row)
+            self._rules[idx] = (row.predicate(), row.verdict())
+
+    def _open_rule_predicate_picker(
+        self, row: "_RuleRow", anchor: QWidget,
+    ) -> None:
+        """Open the operand picker with ``target='rule_predicate'`` for
+        a specific :class:`_RuleRow`. Faces appear when the dialog
+        enables hardware filters AND the People catalog has entries."""
+        popover = _OperandPickerPopover(
+            self._ctx.available_pools,
+            target=PICKER_TARGET_RULE_PREDICATE,
+            people=self._ctx.available_people,
+            show_faces=self._show_hardware,
+            parent=self,
+        )
+        popover.chosen.connect(
+            lambda operand, r=row: self._on_predicate_operand_chosen(r, operand))
+        pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
+        popover.move(pos)
+        popover.show()
+        self._picker_popover = popover
+
+    def _on_predicate_operand_chosen(
+        self, row: "_RuleRow", operand: OperandOption,
+    ) -> None:
+        """Route the picker's chosen operand back into the right rule
+        row. The row owns its predicate list; we just relay."""
+        row.append_operand(operand)
+
+    def _on_otherwise_chosen(self, verdict: str) -> None:
+        """Verb popover -> Otherwise pill. The pill already updated
+        itself; mirror to the model."""
+        if verdict in VERDICTS:
+            self._otherwise = verdict
+
+    # ---- drag-to-reorder ------------------------------------------- #
+
+    def _on_rule_drag_pressed(self, index: int, _global_pos: QPoint) -> None:
+        self._dragging_rule_index = index
+
+    def _on_rule_drag_released(
+        self, _index: int, global_pos: QPoint,
+    ) -> None:
+        """Compute the drop target from the cursor's global y vs each
+        row's geometry; reorder the data list; rebuild the rows."""
+        from_idx = self._dragging_rule_index
+        self._dragging_rule_index = None
+        if from_idx is None:
+            return
+        # Find the target index: walk the live rows, take the row whose
+        # vertical centre the cursor passed over.
+        target = from_idx
+        for row in self._rule_rows:
+            top_left = row.mapToGlobal(QPoint(0, 0))
+            bottom = top_left.y() + row.height()
+            if global_pos.y() < (top_left.y() + bottom) // 2:
+                target = self._rule_rows.index(row)
+                break
+        else:
+            target = len(self._rules) - 1
+        self._reorder_rule(from_idx, target)
+
+    def _reorder_rule(self, from_idx: int, to_idx: int) -> None:
+        """Move :attr:`_rules` entry ``from_idx`` to ``to_idx``. Idempotent
+        when ``from_idx == to_idx``. The testable seam — tests call this
+        directly rather than synthesising mouse drag events."""
+        if from_idx == to_idx:
+            return
+        if not (0 <= from_idx < len(self._rules)):
+            return
+        if not (0 <= to_idx < len(self._rules)):
+            return
+        rule = self._rules.pop(from_idx)
+        self._rules.insert(to_idx, rule)
+        self._refresh_rules_rows()
 
     def _build_metrics_section(self) -> QWidget:
         host = QWidget()
@@ -1238,6 +1902,45 @@ class NewRecipeDialog(QDialog):
             out.append([op, self._encode_operand(operand)])
         return out
 
+    def rules_expression(self) -> list:
+        """The Rules list encoded into the spec/90 §5.1 shape.
+
+        Each rule is ``{"predicate": [[op, operand], ...], "verdict":
+        "pick" | "skip"}``. Empty predicates are dropped silently —
+        :mod:`core.recipe_resolver` would drop them at resolve time
+        anyway (a no-op rule). The first chip's join encodes as
+        union (``+``); later chips use :data:`_JOIN_TO_OP` translation."""
+        out: List[Dict[str, Any]] = []
+        for predicate, verdict in self._rules:
+            if not predicate:
+                continue
+            encoded: List[List[Any]] = []
+            for index, (join, operand) in enumerate(predicate):
+                op = "+" if index == 0 else _JOIN_TO_OP.get(join, "+")
+                encoded.append([op, self._encode_operand(operand)])
+            out.append({"predicate": encoded, "verdict": verdict})
+        return out
+
+    def otherwise_verdict(self) -> str:
+        """The Otherwise row's current verdict (spec/90 §1.1, §1.3).
+        Always returns one of :data:`VERDICTS` — empty state is not
+        representable; the dialog defaults to ``skip``."""
+        return self._otherwise
+
+    def composition(self) -> dict:
+        """Aggregate the section payloads into one ``composition`` dict
+        matching the spec/90 §5.1 schema. Convenient for tests + the
+        Phase 4e save-recipe / start-picker wiring."""
+        comp: Dict[str, Any] = {
+            "source": self.source_expression(),
+            "filters": self.filters_payload(),
+            "rules": self.rules_expression(),
+            "otherwise": self.otherwise_verdict(),
+        }
+        if self._show_scope:
+            comp["scope"] = self.scope_expression()
+        return comp
+
     @staticmethod
     def _encode_operand(operand: OperandOption) -> Any:
         """Operand encoding mirroring
@@ -1262,6 +1965,14 @@ class NewRecipeDialog(QDialog):
                 "start": operand.start or "",
                 "end": operand.end or "",
             }
+        if operand.kind == "person":
+            # Person refs (spec/90 §4.3) carry an ``id`` (the user-store
+            # ``person.id``). The strict-ref check on the resolver side
+            # uses ``id``; the dialog renders ``name``.
+            ref: Dict[str, Any] = {"kind": "person"}
+            if operand.id:
+                ref["id"] = operand.id
+            return ref
         # DC / Cut / Event Collection
         tag = operand.tag or operand.name.lstrip("#")
         ref: Dict[str, Any] = {"kind": operand.kind, "tag": tag}
@@ -1314,8 +2025,14 @@ __all__ = [
     "JOIN_OR",
     "JOIN_AND",
     "JOIN_BUT_NOT",
+    "JOIN_WORD_OPTIONS",
+    "VERDICT_PICK",
+    "VERDICT_SKIP",
+    "VERDICTS",
+    "VERB_OPTIONS",
     "PICKER_TARGET_SOURCE",
     "PICKER_TARGET_SCOPE",
+    "PICKER_TARGET_RULE_PREDICATE",
     "DateRangeQuickSelect",
     "NewRecipeContext",
     "NewRecipeDialog",

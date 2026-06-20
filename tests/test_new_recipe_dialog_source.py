@@ -134,26 +134,25 @@ def test_adding_one_operand_renders_one_chip(qapp):
     assert any(isinstance(c, _SourceChip) for c in chips)
 
 
-def test_adding_two_operands_inserts_a_join_label(qapp):
-    """spec/90 §3.2 — two chips share an ``or`` (default) join word
-    rendered as inline text between them. The dropdown widget that lets
-    the user swap to ``and`` / ``but not in`` lands in Phase 4c."""
+def test_adding_two_operands_inserts_a_join_chevron(qapp):
+    """spec/90 §3.2 — two chips share a clickable join word between
+    them. Phase 4c hooks each join word to :class:`_JoinChevron`, so
+    the rendered label is ``"or ⌄"`` (the word + the chevron
+    affordance). The chevron's ``join_word()`` returns the bare
+    word."""
     dlg = _dialog(qapp)
     a, b = dlg._ctx.available_pools[0], dlg._ctx.available_pools[1]
     dlg._add_source_chip(a)
     dlg._add_source_chip(b)
-    # Two chips + one join label between them; the join label uses the
-    # "PoolFormulaOp" object name (carries the chevron treatment we
-    # inherit from the legacy dialog).
-    join_labels = []
-    from mira.ui.pages.new_recipe_dialog import _SourceChip
+    from mira.ui.pages.new_recipe_dialog import _JoinChevron
+    join_chevrons = []
     for i in range(dlg._source_row.count()):
         w = dlg._source_row.itemAt(i).widget()
-        if w is None:
-            continue
-        if w.objectName() == "PoolFormulaOp":
-            join_labels.append(w.text())
-    assert join_labels == [JOIN_OR]
+        if isinstance(w, _JoinChevron):
+            join_chevrons.append(w)
+    assert len(join_chevrons) == 1
+    assert join_chevrons[0].join_word() == JOIN_OR
+    assert "or" in join_chevrons[0].text()
 
 
 def test_remove_chip_drops_it_from_row(qapp):

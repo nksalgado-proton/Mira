@@ -349,3 +349,58 @@ def test_leg_d_skips_files_already_in_lineage(tmp_path):
         assert report.healed == []
     finally:
         eg.close()
+
+
+def test_leg_d_recovers_recipe_driven_export_orphans(tmp_path):
+    """spec/90 §7 Phase 3 — when a Recipe runs again on a new event the
+    spec/60 batch export engine produces a fresh ``Exported Media/`` set;
+    an interrupted commit there lands an orphan the same way an
+    interactive export's would, and Leg D heals it via the source-item
+    stem matcher.
+
+    This pins the contract from Leg D's perspective: the scanner doesn't
+    distinguish "Recipe-driven export was interrupted" from "any other
+    Mira-render orphan". Both paths produce a missing-row Exported Media/
+    file with a stem that prefixes a known item; Leg D writes the lineage
+    row, ``provenance`` lands as ``third_party`` (the honest fallback —
+    a re-run will rewrite it to ``mira_render`` if applicable), and the
+    file enters the ship set.
+
+    Same as :func:`test_leg_d_heals_orphan_file_under_exported_media`
+    structurally, but the framing (and the assertion that the source
+    attribution still works against the picked item the Recipe targeted)
+    is the spec/90 regression."""
+    eg = _make_event(tmp_path)
+    try:
+        _project(eg, tmp_path)
+        # Simulate a Recipe-driven export landing a multi-file batch
+        # under Exported Media/: two photo exports, one of which is the
+        # ``i-solo`` item the Recipe's `#picked` source resolved to. The
+        # batch engine wrote BOTH files but crashed before either lineage
+        # row landed (the spec/60 worker-interrupt scenario). Leg D
+        # heals what it can match.
+        recipe_export_dir = tmp_path / "Exported Media" / "recipe-#picked"
+        recipe_export_dir.mkdir(parents=True)
+        good = recipe_export_dir / "D03_G9_p1.jpg"
+        good.write_bytes(b"recipe export bytes")
+        # A stray with no matching source item — Leg D flags it.
+        stray = recipe_export_dir / "untracked-file.jpg"
+        stray.write_bytes(b"stray bytes")
+
+        report = scan_for_returns(eg, "skipped")
+        good_rel = "Exported Media/recipe-#picked/D03_G9_p1.jpg"
+        stray_rel = "Exported Media/recipe-#picked/untracked-file.jpg"
+        assert good_rel in report.healed
+        assert stray_rel in report.unmatched
+
+        # The healed orphan has a real lineage row attributed to the
+        # source item the Recipe targeted; provenance is the honest
+        # third_party fallback. A later proper Recipe re-export would
+        # rewrite this to mira_render via the normal writer.
+        rows = [r for r in eg.lineage()
+                if r.export_relpath == good_rel]
+        assert len(rows) == 1
+        assert rows[0].source_item_id == "i-solo"
+        assert rows[0].provenance == "third_party"
+    finally:
+        eg.close()

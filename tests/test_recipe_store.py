@@ -178,6 +178,284 @@ def test_recipe_name_unique_within_flavour(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# RecipeStore CRUD service (spec/90 §7 Phase 3)
+# --------------------------------------------------------------------------- #
+
+
+def _store(tmp_path):
+    """Build a RecipeStore over a fresh user-store with a stable now()."""
+    from mira.shared.recipe_store import RecipeStore
+    import itertools as _it
+    counter = _it.count(1)
+    user_store = _make_store(tmp_path)
+    rs = RecipeStore(
+        user_store,
+        now=lambda: NOW,
+        new_id=lambda: f"rcp-{next(counter):03d}",
+    )
+    return rs, user_store
+
+
+_BASIC_COMPOSITION = {
+    "source": [["+", "exported"]],
+    "filters": {"styles": ["macro"], "media_type": "photo"},
+    "otherwise": "skip",
+    "presentation": {"target_s": 90, "photo_s": 6.0, "card_style": "black"},
+}
+
+
+def test_recipe_store_create_returns_persisted_row(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        assert recipe.id == "rcp-001"
+        assert recipe.name == "short"
+        assert recipe.flavour == "cut"
+        assert recipe.created_at == NOW
+        assert recipe.updated_at == NOW
+        # The composition decodes back to the dict the caller passed.
+        assert rs.composition(recipe) == _BASIC_COMPOSITION
+        # And the row is actually persisted under that id.
+        persisted = rs.get("rcp-001")
+        assert persisted is not None
+        assert persisted.name == "short"
+    finally:
+        us.close()
+
+
+def test_recipe_store_create_serializes_composition_to_json(tmp_path):
+    """The store owns JSON encoding; the user-store row carries the string."""
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        # The dataclass field is the JSON string (storage shape).
+        assert isinstance(recipe.composition_json, str)
+        # And the round-trip via json.loads matches the input dict.
+        assert json.loads(recipe.composition_json) == _BASIC_COMPOSITION
+    finally:
+        us.close()
+
+
+def test_recipe_store_create_rejects_empty_name(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="name"):
+            rs.create("", "cut", _BASIC_COMPOSITION)
+        with pytest.raises(ValueError, match="name"):
+            rs.create("   ", "cut", _BASIC_COMPOSITION)
+    finally:
+        us.close()
+
+
+def test_recipe_store_create_rejects_unknown_flavour(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="flavour"):
+            rs.create("short", "mix", _BASIC_COMPOSITION)
+    finally:
+        us.close()
+
+
+def test_recipe_store_create_raises_typed_error_on_collision(tmp_path):
+    """``UNIQUE (flavour, name)`` surfaces as :class:`RecipeNameTakenError`
+    — not a raw ``sqlite3.IntegrityError`` (spec/90 §7 Phase 3)."""
+    from mira.shared.recipe_store import RecipeNameTakenError
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("short", "cut", _BASIC_COMPOSITION)
+        with pytest.raises(RecipeNameTakenError) as exc:
+            rs.create("short", "cut", _BASIC_COMPOSITION)
+        assert exc.value.flavour == "cut"
+        assert exc.value.name == "short"
+    finally:
+        us.close()
+
+
+def test_recipe_store_create_same_name_other_flavour_allowed(tmp_path):
+    """spec/90 §5.5 splits the namespace by flavour. A Cut Recipe + a
+    Collection Recipe may share a name."""
+    rs, us = _store(tmp_path)
+    try:
+        cut_r = rs.create("highlights", "cut", _BASIC_COMPOSITION)
+        col_r = rs.create("highlights", "collection", _BASIC_COMPOSITION)
+        assert cut_r.id != col_r.id
+        assert rs.by_name("cut", "highlights").id == cut_r.id
+        assert rs.by_name("collection", "highlights").id == col_r.id
+    finally:
+        us.close()
+
+
+def test_recipe_store_update_partial_touches_updated_at(tmp_path):
+    """``updated_at`` advances; ``created_at`` stays put. The store's
+    injected ``now`` callable gives the test a deterministic clock."""
+    from mira.shared.recipe_store import RecipeStore
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        original_created = recipe.created_at
+
+        # Swap the clock to a later instant; update; assert updated_at
+        # moved while created_at stayed.
+        rs._now = lambda: "2026-06-21T08:00:00+00:00"
+        next_composition = dict(_BASIC_COMPOSITION)
+        next_composition["otherwise"] = "pick"
+        rs.update(recipe.id, composition=next_composition)
+
+        refreshed = rs.get(recipe.id)
+        assert refreshed.created_at == original_created
+        assert refreshed.updated_at == "2026-06-21T08:00:00+00:00"
+        assert rs.composition(refreshed)["otherwise"] == "pick"
+    finally:
+        us.close()
+
+
+def test_recipe_store_update_rename_is_supported(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        rs.update(recipe.id, name="shorter")
+        refreshed = rs.get(recipe.id)
+        assert refreshed.name == "shorter"
+        # Same id, but the (flavour, name) key now points to "shorter".
+        assert rs.by_name("cut", "shorter") is not None
+        assert rs.by_name("cut", "short") is None
+    finally:
+        us.close()
+
+
+def test_recipe_store_update_rename_collision_raises(tmp_path):
+    from mira.shared.recipe_store import RecipeNameTakenError
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("short", "cut", _BASIC_COMPOSITION)
+        other = rs.create("medium", "cut", _BASIC_COMPOSITION)
+        with pytest.raises(RecipeNameTakenError):
+            rs.update(other.id, name="short")
+    finally:
+        us.close()
+
+
+def test_recipe_store_update_same_name_is_a_noop(tmp_path):
+    """Re-saving the same row with its own name doesn't trip the uniqueness
+    pre-check (the row excludes itself from the collision scan)."""
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        # Same name + a fresh composition: should succeed.
+        rs.update(recipe.id, name="short", composition={
+            "source": [["+", "exported"]],
+            "otherwise": "pick",
+        })
+        refreshed = rs.get(recipe.id)
+        assert refreshed.name == "short"
+        assert rs.composition(refreshed)["otherwise"] == "pick"
+    finally:
+        us.close()
+
+
+def test_recipe_store_update_unknown_id_raises_keyerror(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        with pytest.raises(KeyError):
+            rs.update("rcp-nope", name="x")
+    finally:
+        us.close()
+
+
+def test_recipe_store_delete_is_idempotent(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        rs.delete(recipe.id)
+        assert rs.get(recipe.id) is None
+        rs.delete(recipe.id)             # second delete is a no-op
+    finally:
+        us.close()
+
+
+def test_recipe_store_by_name_returns_none_when_missing(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        assert rs.by_name("cut", "nope") is None
+    finally:
+        us.close()
+
+
+def test_recipe_store_list_filter_by_flavour(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("short", "cut", _BASIC_COMPOSITION)
+        rs.create("long", "cut", _BASIC_COMPOSITION)
+        rs.create("highlights", "collection", _BASIC_COMPOSITION)
+
+        cuts = rs.list(flavour="cut")
+        assert [r.name for r in cuts] == ["long", "short"]
+        collections = rs.list(flavour="collection")
+        assert [r.name for r in collections] == ["highlights"]
+    finally:
+        us.close()
+
+
+def test_recipe_store_list_include_other_appends_cross_flavour(tmp_path):
+    """spec/90 §5.5 — the dialog's opt-in "show Collection Recipes here too"
+    setting surfaces cross-flavour entries AFTER the requested flavour."""
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("short", "cut", _BASIC_COMPOSITION)
+        rs.create("highlights", "collection", _BASIC_COMPOSITION)
+        rs.create("travel", "collection", _BASIC_COMPOSITION)
+
+        mixed = rs.list(flavour="cut", include_other=True)
+        assert [r.name for r in mixed] == ["short", "highlights", "travel"]
+        assert [r.flavour for r in mixed] == ["cut", "collection", "collection"]
+
+        # include_other=False (default) filters out the cross-flavour set.
+        cuts_only = rs.list(flavour="cut", include_other=False)
+        assert [r.name for r in cuts_only] == ["short"]
+    finally:
+        us.close()
+
+
+def test_recipe_store_list_no_flavour_returns_all_sorted(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("short", "cut", _BASIC_COMPOSITION)
+        rs.create("highlights", "collection", _BASIC_COMPOSITION)
+        rs.create("long", "cut", _BASIC_COMPOSITION)
+
+        every = rs.list()
+        # ORDER BY flavour, name — collections (h) first, then cuts (l, s).
+        assert [r.flavour for r in every] == [
+            "collection", "cut", "cut"]
+        assert [r.name for r in every] == ["highlights", "long", "short"]
+    finally:
+        us.close()
+
+
+def test_recipe_store_composition_is_tolerant(tmp_path):
+    """A row with malformed JSON shouldn't crash readers — the helper
+    coerces to ``{}``. Matches the spec/81 / spec/90 resolver's posture."""
+    from mira.shared.recipe_store import RecipeStore
+    rs, us = _store(tmp_path)
+    try:
+        # Bypass create() to write a row with intentionally-broken JSON
+        # via the raw underlying upsert. We can't UNIQUE-collide because
+        # the SQL CHECK constraint validates the JSON — so the row stays
+        # well-formed under SQL but the helper still handles the edge.
+        recipe = rs.create("short", "cut", _BASIC_COMPOSITION)
+        # Force a malformed (but JSON-valid empty-array) blob to test
+        # the tolerant fallback to {}.
+        with us.transaction() as conn:
+            conn.execute(
+                "UPDATE recipe SET composition_json = '[]' WHERE id = ?",
+                (recipe.id,))
+        refreshed = rs.get(recipe.id)
+        assert rs.composition(refreshed) == {}  # not a dict → {}
+    finally:
+        us.close()
+
+
+# --------------------------------------------------------------------------- #
 # Person — the spec/90 §5.2 column addition
 # --------------------------------------------------------------------------- #
 

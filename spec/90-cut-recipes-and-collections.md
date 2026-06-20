@@ -460,6 +460,48 @@ picked-state the Picker session opens against. Missing named operands raise
 `RecipeResolutionError(missing_operand, kind)`; vocabulary filter misses
 resolve leniently to empty (§1.4).
 
+### 5.1.1 Phase 3 — Recipe ↔ `CutDraft` adapter
+
+The dialog will eventually consume the Recipe via the existing
+[`CutDraft`](../mira/shared/cut_draft.py) handoff value (the dialog →
+pin-session contract the spec/61 picker and spec/81 commit path already
+read). Phase 3 lands the adapter so a Cut-flavoured Recipe ↔ `CutDraft`
+round-trip works before Phase 4 builds the new widget.
+
+**The pin-mode extension.** `CutDraft.pin_mode` gains a fourth value —
+`'rule-based'` — for Recipes that compose a non-trivial rule list. The
+three legacy modes (`keep-all` / `weed-out` / `pick-in`) remain expressible
+verbatim and round-trip via the §1.5 sugar. The picker reads
+`pin_mode == 'rule-based'` as "walk `rules` first-match-wins, fall back
+to `otherwise`"; the existing legacy paths keep working unchanged. Two
+new fields ride alongside: `rules: tuple[CutDraftRule, ...]` and
+`otherwise: 'pick' | 'skip'`. The §1.5 sugar collapse runs both ways:
+
+| Recipe composition shape       | CutDraft pin_mode |
+|---|---|
+| Non-empty `rules`              | `'rule-based'` (rules + otherwise carried verbatim) |
+| No rules + `otherwise = skip`  | `'pick-in'` |
+| No rules + `otherwise = pick`  | `'weed-out'` (keep-all collapses here too — see below) |
+
+**The keep-all collapse.** spec/90 §1.5 names a third sugar case:
+"keep-all = no rules + Otherwise → pick + Picker session skipped". The
+"Picker session skipped" hint isn't expressible in `CutDraft` today; the
+adapter treats it as `weed-out` and lets the dialog layer a `skip_picker`
+extras flag on top in Phase 4 if it wants the keep-all UX back. Recipes
+themselves don't carry the hint — a Recipe replay always opens the
+picker so the user can still curate.
+
+**Source DC inference.** When the composition's source is exactly
+`[("+", {"kind": "dc", "id": X})]`, the adapter populates the legacy
+`CutDraft.source_dc_id` field. Anything more composed leaves it `None`
+and the picker reads `expr` as the authoritative source.
+
+The CRUD service [`RecipeStore`](../mira/shared/recipe_store.py) owns the
+JSON encoding — callers pass and receive Python dicts for `composition`,
+never raw JSON strings. The library's `UNIQUE (flavour, name)` surfaces as
+a typed `RecipeNameTakenError` so the dialog can pattern-match without
+touching `sqlite3`.
+
 ### 5.2 Person + Face (face recognition substrate)
 
 Forward-compatible model for face recognition. **Not implemented in v1 of this
@@ -548,6 +590,17 @@ dialog grammar leaves room.
 |---|---|
 | **Cut Recipe applied to Collection** | Safe. No hidden filters; the Collection dialog opens with the Recipe's sections and the user can add Scope / hardware / Person rows. |
 | **Collection Recipe applied to Cut** | Cut dialog can't display the Scope / Camera / Lens / Faces sections. The Recipe is **filtered out of the Cut dialog's Recipe pool by default**, with an opt-in setting *"show Collection Recipes here too"*. When the user opts in, a banner reads *"This Recipe filters by Camera = R5 + Faces = Pedro — not editable here. [Edit as Collection] [Apply anyway]"*. Strict-style honesty. |
+
+**Phase 3 — the store-level seam.** `RecipeStore.list(flavour, include_other)`
+implements the visibility policy. With `flavour='cut'` + `include_other=False`
+(the default) the dialog sees only Cut Recipes; with `include_other=True` the
+Collection Recipes append after, alphabetical within each flavour. The
+service surfaces the data; the dialog applies the "show Collection Recipes
+here too" toggle and the banner copy above. The adapter
+([`recipe_to_cut_draft`](../mira/shared/recipe_draft_adapter.py)) refuses to
+adapt a Collection-flavoured Recipe into a `CutDraft` — the cross-pollination
+check is the dialog's policy (Phase 4) but the adapter fails loudly on
+misuse so a wrong-shaped draft never reaches the picker.
 
 ---
 

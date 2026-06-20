@@ -254,6 +254,17 @@ def scan_for_returns(
     # sweeps ``Exported Media/`` directly and writes the missing rows
     # against the same stem matcher.
     #
+    # spec/90 §7 Phase 3 — Recipe-driven re-exports use the same orphan
+    # path. When a Recipe runs again on a new event, the spec/60 batch
+    # export engine produces a fresh ``Exported Media/`` set (the
+    # Recipe's pool, re-resolved against the target event). Any
+    # interrupted commit there lands an orphan the same way an
+    # interactive export's would; Leg D heals it without caring whether
+    # the producer was a manual one-off or a Recipe replay. The matcher
+    # only knows about stems → source items; the Recipe identity (if
+    # any) is recoverable from the source item's spec/72 lineage row at
+    # the next normal export, not at heal time.
+    #
     # Provenance defaults to ``third_party`` — the scanner cannot tell
     # a Mira-render orphan from an external tool's direct write, and
     # ``third_party`` is the honest fallback (a Mira-render that

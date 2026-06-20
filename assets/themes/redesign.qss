@@ -20,12 +20,13 @@ QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius
 /* Share-list tile (Cut row + DC row). Sits INSIDE the tab content
  * #Card2 wrapper.
  *
- * v4 (Nelson 2026-06-20): per Nelson's pick, each tile reads as a
- * fully-bordered card matching the #exported pool card above —
- * accent-tinted line, rounded corners, ``card`` surface. Restore the
- * layout's gap between rows (see _build_cuts_tab) so the tiles
- * separate visually. */
-QFrame#ShareListRow { background: {card}; border: 1px solid {accent};
+ * v5 (Nelson 2026-06-20 — screenshot): the accent-tinted border in v4
+ * read as chunky/saturated when repeated per-row against the solid
+ * dark bg (the pool card masks its accent border with a gradient;
+ * solid-bg tiles can't). Settle on the same ``line`` colour Card2
+ * uses for the outer wrapper — subtle, consistent, no per-row purple
+ * noise. */
+QFrame#ShareListRow { background: {card}; border: 1px solid {line};
                       border-radius: {radius_lg}px; }
 /* Event tiles — spec/77 §7.2. QSS owns the rounded background fill;
  * the border is painted by ``EventTile.paintEvent`` (copying the

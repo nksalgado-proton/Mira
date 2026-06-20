@@ -805,12 +805,17 @@ class _CutsListView(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        # Transparent scroll + viewport + inner widget so the Card2 wash
+        # behind shows through — without this the scroll area paints its
+        # default light bg, which reads as a thin horizontal line under
+        # the section label (Nelson 2026-06-20 screenshot).
+        self._scroll.setStyleSheet("background: transparent;")
+        self._scroll.viewport().setAutoFillBackground(False)
         inner = QWidget()
+        inner.setAutoFillBackground(False)
         self._cuts_layout = QVBoxLayout(inner)
         self._cuts_layout.setContentsMargins(0, 0, 0, 0)
-        # Spacing between accent-bordered tile cards (Nelson 2026-06-20
-        # v4 — tiles now read as discrete cards matching the #exported
-        # pool card above, so they need air between them).
+        # Spacing between bordered tile cards.
         self._cuts_layout.setSpacing(10)
         self._cuts_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._scroll.setWidget(inner)
@@ -849,11 +854,13 @@ class _CutsListView(QWidget):
         self._dc_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        self._dc_scroll.setStyleSheet("background: transparent;")
+        self._dc_scroll.viewport().setAutoFillBackground(False)
         dc_inner = QWidget()
+        dc_inner.setAutoFillBackground(False)
         self._dcs_layout = QVBoxLayout(dc_inner)
         self._dcs_layout.setContentsMargins(0, 0, 0, 0)
-        # Match the cuts list — bordered tile spacing
-        # (see _build_cuts_tab for the rationale).
+        # Match the cuts list — bordered tile spacing.
         self._dcs_layout.setSpacing(10)
         self._dcs_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._dc_scroll.setWidget(dc_inner)

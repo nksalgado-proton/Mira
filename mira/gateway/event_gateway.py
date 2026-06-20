@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from core import collection_resolver, cut_budget, cut_names
+from core import collection_resolver, cut_budget, cut_names, recipe_resolver
 from core.video_segments import segment_bounds as derive_segment_bounds
 from mira.store import models as m
 from mira.store.repo import EventStore
@@ -1352,6 +1352,170 @@ class EventGateway:
         """The dialog's live count for a draft DC formula (spec/81 §2) — how
         many files this expr+filters resolves to right now."""
         return len(self.resolve_dc(expr, filters))
+
+    # ----- Recipe resolution (spec/90 §7 Phase 2) -------------------------- #
+
+    def _operand_person_members(self, person_id: str) -> Optional[set]:
+        """Resolve a Person id to the set of export relpaths where they
+        appear (spec/90 §4.3 + §5.2). Joins ``face`` to ``lineage`` on the
+        source item — the SQL ``SELECT lineage.export_relpath FROM face
+        JOIN lineage ...`` shape.
+
+        Returns ``None`` when the Person id doesn't appear in this event's
+        ``face`` table AND no row exists in ``photo_person`` either — the
+        Phase-1 substrate has no people management UI, so the only way
+        to know "this id is real" is to see it on a row. ``None`` triggers
+        the strict-reference miss path (spec/90 §1.4); an empty set means
+        "exists, no detections" (lenient — Phase 1 ships with face empty).
+
+        The ``photo_person`` fallback is the load-bearing seam to the
+        user-level catalog: a Person known via ``photo_person`` (manual
+        tagging — spec/53 §2.5) counts as "exists, no faces detected
+        yet", which is the §4.3 correct behaviour pending the recognition
+        pipeline (spec/90 §7 Phase 6).
+        """
+        # Items where this Person is detected via the face table.
+        face_rows = self.store.conn.execute(
+            "SELECT DISTINCT l.export_relpath "
+            "FROM face f "
+            "JOIN lineage l ON l.source_item_id = f.item_id "
+            "WHERE f.person_id = ? "
+            "AND l.phase = 'edit' "
+            "AND l.export_relpath LIKE 'Exported Media/%'",
+            (person_id,),
+        ).fetchall()
+        if face_rows:
+            return {r["export_relpath"] for r in face_rows}
+        # Existence fallback: a row in photo_person proves the id is real
+        # (user-tagged, no auto detection yet → lenient empty set).
+        exists = self.store.conn.execute(
+            "SELECT 1 FROM photo_person WHERE person_id = ? LIMIT 1",
+            (person_id,),
+        ).fetchone()
+        if exists is not None:
+            return set()
+        return None
+
+    def _check_recipe_operand(self, operand: Mapping) -> None:
+        """Strict-reference guard for one named operand in a Recipe expression
+        (spec/90 §1.4). Raises :class:`recipe_resolver.RecipeResolutionError`
+        when the operand's referent is gone. Event-scope ignores ``event`` /
+        ``event_collection`` operands — those are scope-level, only meaningful
+        on the cross-event face; for an event-Cut Recipe they shouldn't
+        appear, but if they do we let them pass (the LibraryGateway face
+        does the real check)."""
+        kind = operand.get("kind")
+        if kind == "dc":
+            dc = None
+            if operand.get("id"):
+                dc = self.dynamic_collection(operand["id"])
+            if dc is None and operand.get("tag"):
+                dc = self.dc_by_tag(operand["tag"])
+            if dc is None:
+                raise recipe_resolver.RecipeResolutionError(
+                    operand.get("tag") or operand.get("id") or "",
+                    kind="dc",
+                )
+        elif kind == "cut":
+            cut = None
+            if operand.get("id"):
+                cut = self.cut(operand["id"])
+            if cut is None and operand.get("tag"):
+                cut = self.cut_by_tag(operand["tag"])
+            if cut is None:
+                raise recipe_resolver.RecipeResolutionError(
+                    operand.get("tag") or operand.get("id") or "",
+                    kind="cut",
+                )
+        elif kind == recipe_resolver.PERSON_KIND:
+            pid = operand.get("id")
+            if not pid or self._operand_person_members(pid) is None:
+                raise recipe_resolver.RecipeResolutionError(
+                    pid or "", kind=recipe_resolver.PERSON_KIND,
+                )
+
+    def _recipe_dc_expr_by_ref(
+        self, operand: Mapping,
+    ) -> Optional[list]:
+        """Live DC expression lookup for the strict walk's transitive
+        recursion. Returns ``None`` when the DC is gone (the operand
+        validator already raised on it; this returning ``None`` just
+        stops the walk for that branch)."""
+        dc = None
+        if operand.get("id"):
+            dc = self.dynamic_collection(operand["id"])
+        if dc is None and operand.get("tag"):
+            dc = self.dc_by_tag(operand["tag"])
+        if dc is None:
+            return None
+        return self.dc_expr(dc)
+
+    def _operand_person_for_predicate(
+        self, operand: Mapping,
+    ) -> Optional[set]:
+        """``extra_operand`` adapter for :func:`core.collection_resolver.resolve`
+        so Person chips work inside rule predicates (spec/90 §4.3 advanced).
+        The strict-walk has already validated the id before resolution
+        starts; if for some reason it slipped through and the id is gone,
+        we return ``set()`` (graceful — same shape as the dc / cut paths
+        when a ref is missing). ``None`` from the underlying accessor maps
+        to ``set()`` here, NOT to "unknown" — the resolver's empty-set
+        contract is honoured."""
+        kind = operand.get("kind")
+        if kind != recipe_resolver.PERSON_KIND:
+            return None                                    # not ours; resolver falls through
+        pid = operand.get("id") or ""
+        members = self._operand_person_members(pid)
+        return set(members) if members is not None else set()
+
+    def resolve_recipe(
+        self,
+        composition: Mapping,
+        *,
+        scope: Optional[Sequence[str]] = None,   # event uuids — Cut flavour ignores
+    ) -> recipe_resolver.RecipeResolution:
+        """Evaluate a Recipe ``composition`` against this event (spec/90 §7
+        Phase 2). Returns the ordered pool of export relpaths plus a
+        per-relpath ``initially_picked`` seed map.
+
+        Event scope is Cut-flavoured (spec/90 §2.1) — the ``scope`` parameter
+        is accepted for API parity with :meth:`LibraryGateway.resolve_recipe`
+        but ignored here (the event is implicit). The composition's ``scope``
+        section is walked for strict-reference checks regardless, so a
+        cross-pollinated Recipe (a Collection Recipe applied to a Cut, spec/90
+        §5.5) still surfaces missing-operand errors before any resolution.
+
+        Raises :class:`recipe_resolver.RecipeResolutionError` if any named
+        operand (DC / Cut / Person) is missing — the dialog catches and
+        reports. Style / Media / Camera / Lens filters resolve leniently to
+        empty; the empty pool is reported as ``RecipeResolution(pool=[],
+        seed={})``."""
+        del scope                                          # event scope is implicit
+
+        def _resolve_pool(expr, filters):
+            rows = self.resolve_dc(expr, filters)
+            return [ln.export_relpath for ln in rows]
+
+        def _resolve_predicate_keys(predicate_expr):
+            keys = collection_resolver.resolve(
+                [list(t) for t in predicate_expr],
+                {},                                        # rule predicates: no top-level filters
+                base_universe=self._operand_base_universe,
+                dc_by_ref=self._operand_dc,
+                cut_members=self._operand_cut_members,
+                apply_filters=lambda ks, _f: list(ks),
+                extra_operand=self._operand_person_for_predicate,
+            )
+            return set(keys)
+
+        return recipe_resolver.resolve_recipe(
+            composition,
+            resolve_pool=_resolve_pool,
+            resolve_predicate_keys=_resolve_predicate_keys,
+            person_members=self._operand_person_members,
+            validate_named_operand=self._check_recipe_operand,
+            dc_expr_by_ref=self._recipe_dc_expr_by_ref,
+        )
 
     @staticmethod
     def cut_expr_snapshot(cut: m.Cut) -> List[list]:

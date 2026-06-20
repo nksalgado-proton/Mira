@@ -388,6 +388,78 @@ house escape hatch (spec/53 §1.1 — every table that might grow gets one).
 `UNIQUE (flavour, name)` splits the namespace by flavour so a Cut Recipe and a
 Collection Recipe may share a name (§5.5).
 
+**Phase 2 composition_json shape** (landed alongside the resolver). The
+resolver reads these keys; any others (and any unknown nested keys) round-trip
+unchanged. Every section except `source` and `otherwise` is optional.
+
+```jsonc
+{
+  // Scope sentence (Collection face only — empty/missing for Cut). Same chip
+  // + join-word grammar as Source. Operand kinds: "event" / "event_collection".
+  "scope": [
+    ["+", {"kind": "event", "uuid": "evt-alaska"}],
+    ["+", {"kind": "event_collection", "tag": "adventure_events"}]
+  ],
+
+  // Source sentence — REQUIRED, non-empty. Standard spec/81 expression.
+  // Operand kinds: base token "exported" (or a ladder rung for Collection),
+  // "dc" (typed ref), "cut" (typed ref).
+  "source": [["+", "exported"]],
+
+  // Filter section — narrows the resolved pool. All keys optional.
+  //   styles, media_type    — Style + Media (spec/90 §4.1; both dialogs)
+  //   camera_ids, lens_models — Camera + Lens (§4.2; Collection only, but
+  //                             the storage shape is the same)
+  //   person_ids            — Person multi-select (§4.3; advanced for Cut)
+  //   plus the spec/32 §2 catalogue for the Collection face
+  "filters": {
+    "styles": ["macro"],
+    "media_type": "both",
+    "camera_ids": ["G9"],
+    "lens_models": ["100-500mm"],
+    "person_ids": ["person-pedro"]
+  },
+
+  // Rules — ordered list; first match wins (§1.3). Each rule's predicate
+  // is a sentence resolved via the same set-algebra engine; the verdict
+  // ("pick" / "skip") is applied to items the predicate set contains.
+  // Operand kinds in a predicate: dc, cut, person.
+  "rules": [
+    {
+      "predicate": [["+", {"kind": "cut", "tag": "blurry"}]],
+      "verdict": "skip"
+    },
+    {
+      "predicate": [
+        ["+", {"kind": "cut", "tag": "best_wildlife"}],
+        ["+", {"kind": "cut", "tag": "best_landscapes"}]
+      ],
+      "verdict": "pick"
+    }
+  ],
+
+  // Otherwise — REQUIRED. Verdict for items matching no rule.
+  "otherwise": "skip",
+
+  // Presentation — non-resolver state for the Picker session + export
+  // pipeline. Resolver ignores; the dialog reads.
+  "presentation": {
+    "target_s": 90,
+    "max_s": 300,
+    "photo_s": 6.0,
+    "music_category": "happy",
+    "card_style": "multi"
+  }
+}
+```
+
+The resolver returns a `RecipeResolution(pool, seed)` where `pool` is the
+ordered list of member keys (export relpaths for event scope; cross-event
+packed keys for cross-event), and `seed[key] = True/False` is the initial
+picked-state the Picker session opens against. Missing named operands raise
+`RecipeResolutionError(missing_operand, kind)`; vocabulary filter misses
+resolve leniently to empty (§1.4).
+
 ### 5.2 Person + Face (face recognition substrate)
 
 Forward-compatible model for face recognition. **Not implemented in v1 of this

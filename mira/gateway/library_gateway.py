@@ -49,9 +49,9 @@ import logging
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from core import collection_resolver, cut_budget, cut_names
+from core import collection_resolver, cut_budget, cut_names, recipe_resolver
 from mira.gateway import cross_event_resolver as cev
 from mira.gateway import global_items_sync as gis
 from mira.store.repo import EventStore
@@ -268,6 +268,187 @@ class LibraryGateway:
                  filters: Optional[Mapping] = None) -> int:
         """The dialog's live count for a draft DC formula (spec/81 §2)."""
         return len(cev.resolve_cross_event(self.user_store, expr, filters))
+
+    # ----- Recipe resolution (spec/90 §7 Phase 2) ------------------------- #
+
+    def _event_collection_by_ref(
+        self, operand: Mapping[str, Any],
+    ) -> Optional[um.EventCollection]:
+        """Resolve a ``{"kind":"event_collection","id"|"tag":…}`` operand to
+        the live row, or ``None`` when it's gone. Same lookup pattern as
+        :meth:`dc_by_tag` so the strict-ref check can compose naturally."""
+        ec_id = operand.get("id")
+        if ec_id:
+            ec = self.user_store.get(um.EventCollection, ec_id)
+            if ec is not None:
+                return ec
+        tag = operand.get("tag")
+        if tag:
+            rows = self.user_store.query_by(um.EventCollection, tag=tag)
+            return rows[0] if rows else None
+        return None
+
+    def _event_exists(self, uuid: str) -> bool:
+        """An event uuid is "known" iff it has an ``event_index`` row. The
+        cross-event surface uses this index (spec/53 §2.3) as the authoritative
+        list of events the library knows about."""
+        row = self.user_store.conn.execute(
+            "SELECT 1 FROM event_index WHERE event_uuid = ? LIMIT 1",
+            (uuid,),
+        ).fetchone()
+        return row is not None
+
+    def _person_exists(self, person_id: str) -> bool:
+        """A Person id is "known" iff it has a row in the user-level catalog
+        (``person`` table, spec/53 §2.5). The face detections that resolve to
+        items live per-event; this is only the existence gate (spec/90 §1.4
+        strict-reference rule)."""
+        row = self.user_store.conn.execute(
+            "SELECT 1 FROM person WHERE id = ? LIMIT 1", (person_id,),
+        ).fetchone()
+        return row is not None
+
+    def _check_recipe_operand(self, operand: Mapping[str, Any]) -> None:
+        """Strict-reference guard for one named operand in a cross-event
+        Recipe expression (spec/90 §1.4). Cross-event admits a wider operand
+        alphabet than event-scope: ``dc`` (saved_filter) / ``cut`` (cross-event
+        Cut, deferred to spec/81 Phase 2 Item 4) / ``event_collection`` (the
+        Scope alphabet, spec/90 §5.3) / ``event`` (Scope) / ``person``
+        (Filters + advanced rule predicates)."""
+        kind = operand.get("kind")
+        if kind == "dc":
+            sf = None
+            if operand.get("id"):
+                sf = self.user_store.get(um.SavedFilter, operand["id"])
+            if sf is None and operand.get("tag"):
+                sf = self.dc_by_tag(operand["tag"])
+            if sf is None:
+                raise recipe_resolver.RecipeResolutionError(
+                    operand.get("tag") or operand.get("id") or "",
+                    kind="dc",
+                )
+        elif kind == "cut":
+            # Cross-event Cuts are deferred (spec/81 Phase 2 Item 4); any
+            # reference is "missing" until that surface lands. The strict
+            # rule (spec/90 §1.4) raises here so a Recipe naming a
+            # cross-event Cut surfaces the problem; the dialog UI in Phase 4
+            # would gate the operand behind feature availability anyway.
+            raise recipe_resolver.RecipeResolutionError(
+                operand.get("tag") or operand.get("id") or "",
+                kind="cut",
+            )
+        elif kind == recipe_resolver.EVENT_COLLECTION_KIND:
+            ec = self._event_collection_by_ref(operand)
+            if ec is None:
+                raise recipe_resolver.RecipeResolutionError(
+                    operand.get("tag") or operand.get("id") or "",
+                    kind=recipe_resolver.EVENT_COLLECTION_KIND,
+                )
+        elif kind == recipe_resolver.EVENT_KIND:
+            uuid = operand.get("uuid") or operand.get("id") or ""
+            if not uuid or not self._event_exists(uuid):
+                raise recipe_resolver.RecipeResolutionError(
+                    uuid, kind=recipe_resolver.EVENT_KIND,
+                )
+        elif kind == recipe_resolver.PERSON_KIND:
+            pid = operand.get("id") or ""
+            if not pid or not self._person_exists(pid):
+                raise recipe_resolver.RecipeResolutionError(
+                    pid, kind=recipe_resolver.PERSON_KIND,
+                )
+
+    def _recipe_dc_expr_by_ref(
+        self, operand: Mapping[str, Any],
+    ) -> Optional[list]:
+        """Live DC expression lookup for the strict walk's transitive
+        recursion."""
+        sf = None
+        if operand.get("id"):
+            sf = self.user_store.get(um.SavedFilter, operand["id"])
+        if sf is None and operand.get("tag"):
+            sf = self.dc_by_tag(operand["tag"])
+        if sf is None:
+            return None
+        return self.dc_expr(sf)
+
+    def _person_member_keys(self, person_id: str) -> Optional[Set[str]]:
+        """Resolve a Person id to the set of cross-event packed keys where
+        they appear (spec/90 §4.3). The face data is per-event; cross-event
+        resolution would have to fan out across every event.db. For Phase 2
+        we keep it simple: the existence gate runs against the user-level
+        catalog (:meth:`_person_exists`), and detected-set resolution is
+        deferred — the catalog-known Person resolves to the EMPTY set
+        across events until the cross-event face sync ships.
+
+        Returns ``None`` when the Person is unknown (strict-ref miss);
+        empty set when known but no detections fanned out yet (lenient —
+        the §4.3 face-substrate-empty rule)."""
+        return set() if self._person_exists(person_id) else None
+
+    def _operand_person_for_predicate(
+        self, operand: Mapping[str, Any],
+    ) -> Optional[Set[str]]:
+        """``extra_operand`` adapter for Person chips inside rule predicates."""
+        if operand.get("kind") != recipe_resolver.PERSON_KIND:
+            return None
+        members = self._person_member_keys(operand.get("id") or "")
+        return set(members) if members is not None else set()
+
+    def resolve_recipe(
+        self,
+        composition: Mapping[str, Any],
+        *,
+        scope: Optional[Sequence[str]] = None,
+    ) -> recipe_resolver.RecipeResolution:
+        """Evaluate a cross-event Recipe ``composition`` (spec/90 §7 Phase 2).
+
+        Returns the ordered pool of cross-event packed keys
+        (``"<event_uuid>::<item_id>"``) plus a per-key ``initially_picked``
+        seed map.
+
+        ``scope`` is the pre-resolved set of event uuids the Recipe reaches.
+        For Phase 2 the parameter is accepted for API parity; the resolver
+        narrows the source pool to those uuids when provided. ``None`` means
+        "library-wide" — every event in scope (the default for a Collection
+        Recipe with no explicit Scope sentence).
+
+        Raises :class:`recipe_resolver.RecipeResolutionError` if any named
+        operand (DC / Event Collection / Event / Person — cross-event Cuts
+        are deferred) is missing. Vocabulary filters (Style / Media /
+        Camera / Lens / EXIF / location) resolve leniently to empty pools."""
+        scope_uuids: Optional[FrozenSet[str]] = (
+            frozenset(scope) if scope is not None else None
+        )
+
+        def _resolve_pool(expr, filters):
+            keys = cev.resolve_cross_event(self.user_store, expr, filters)
+            if scope_uuids is None:
+                return list(keys)
+            return [k for k in keys if cev.unpack_key(k)[0] in scope_uuids]
+
+        def _resolve_predicate_keys(predicate_expr):
+            acc = cev.CrossEventAccessors(self.user_store)
+            keys = collection_resolver.resolve(
+                [list(t) for t in predicate_expr],
+                {},
+                base_universe=acc.base_universe,
+                dc_by_ref=acc.dc_by_ref,
+                cut_members=acc.cut_members,
+                apply_filters=lambda ks, _f: list(ks),
+                extra_operand=self._operand_person_for_predicate,
+            )
+            if scope_uuids is None:
+                return set(keys)
+            return {k for k in keys if cev.unpack_key(k)[0] in scope_uuids}
+
+        return recipe_resolver.resolve_recipe(
+            composition,
+            resolve_pool=_resolve_pool,
+            resolve_predicate_keys=_resolve_predicate_keys,
+            person_members=self._person_member_keys,
+            validate_named_operand=self._check_recipe_operand,
+            dc_expr_by_ref=self._recipe_dc_expr_by_ref,
+        )
 
     def dc_show_totals(
         self,

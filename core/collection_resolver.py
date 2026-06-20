@@ -109,6 +109,7 @@ def resolve(
     dc_by_ref: Callable[[Mapping[str, Any]], Optional[DCExpr]],
     cut_members: Callable[[Mapping[str, Any]], Set[str]],
     apply_filters: Callable[[Set[str], Mapping[str, Any]], List[str]],
+    extra_operand: Optional[Callable[[Mapping[str, Any]], Optional[Set[str]]]] = None,
     _seen: Optional[Set[str]] = None,
     _memo: Optional[Dict[str, List[str]]] = None,
 ) -> List[str]:
@@ -119,6 +120,16 @@ def resolve(
     DC) or terminally (the base universe, or a frozen Cut). Cycle-safe: a DC
     whose own id is already on the resolution stack raises :class:`CycleError`.
 
+    ``extra_operand`` is the spec/90 §4.3 hook for additional operand kinds
+    (Person chips) the rule-list recipe model adds on top of the spec/81
+    base / dc / cut alphabet. Called only when the operand kind is not one
+    the core resolver already knows; ``None`` from the callback means
+    "still don't know — fall through to empty"; a set means "use this set
+    of keys". Default ``None`` = no extras, behaviour identical to the
+    pre-recipe resolver. The callback fires once per operand instance, so a
+    strict-reference guard can raise from inside it (the resolver doesn't
+    catch).
+
     ``_seen`` / ``_memo`` are internal recursion state — callers pass the
     top-level ``expr`` + ``filters`` and leave them defaulted."""
     keys = _resolve_keys(
@@ -127,6 +138,7 @@ def resolve(
         dc_by_ref=dc_by_ref,
         cut_members=cut_members,
         apply_filters=apply_filters,
+        extra_operand=extra_operand,
         seen=_seen if _seen is not None else set(),
         memo=_memo if _memo is not None else {},
     )
@@ -142,6 +154,7 @@ def _resolve_keys(
     apply_filters: Callable[[Set[str], Mapping[str, Any]], List[str]],
     seen: Set[str],
     memo: Dict[str, List[str]],
+    extra_operand: Optional[Callable[[Mapping[str, Any]], Optional[Set[str]]]] = None,
 ) -> Set[str]:
     """The set-algebra core: fold operand key-sets left-to-right. Returns an
     UNORDERED key set — ordering is the caller's ``apply_filters`` job."""
@@ -161,6 +174,7 @@ def _resolve_keys(
             apply_filters=apply_filters,
             seen=seen,
             memo=memo,
+            extra_operand=extra_operand,
         )
         if op == "+":
             members |= operand_set
@@ -182,9 +196,12 @@ def _resolve_operand(
     apply_filters: Callable[[Set[str], Mapping[str, Any]], List[str]],
     seen: Set[str],
     memo: Dict[str, List[str]],
+    extra_operand: Optional[Callable[[Mapping[str, Any]], Optional[Set[str]]]] = None,
 ) -> Set[str]:
     """One operand → its member-key set. Base token + Cut ref are terminal;
-    a DC ref recurses (cycle-guarded + memoised on the DC id)."""
+    a DC ref recurses (cycle-guarded + memoised on the DC id). Operand kinds
+    the core doesn't know are delegated to ``extra_operand`` (spec/90 §4.3 —
+    Person chips); unknown to both → empty (graceful)."""
     if is_base_token(operand):
         return set(base_universe(operand))
     kind = operand_kind(operand)
@@ -208,6 +225,7 @@ def _resolve_operand(
                 apply_filters=apply_filters,
                 seen=seen,
                 memo=memo,
+                extra_operand=extra_operand,
             )
             # A nested DC's OWN filters apply before it composes upward.
             ordered = apply_filters(keys, dc.filters)
@@ -215,6 +233,10 @@ def _resolve_operand(
             seen.discard(dc.id)
         memo[dc.id] = ordered
         return set(ordered)
+    if extra_operand is not None and isinstance(operand, Mapping):
+        extra = extra_operand(operand)
+        if extra is not None:
+            return set(extra)
     return set()                                       # unknown operand → empty
 
 

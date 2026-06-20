@@ -200,19 +200,21 @@ def test_window_title_matches_flavour(qapp):
     assert coll.windowTitle() == "New Collection"
 
 
-def test_start_button_disabled_in_phase_4a(qapp):
-    """Phase 4a hasn't wired the rule list yet, so Start stays disabled
-    (spec/90 §1.3 — rules + Otherwise are required to seed the picker)."""
+def test_start_button_disabled_with_empty_source(qapp):
+    """Phase 4e — Start is gated on a non-empty source + a successful probe.
+    A fresh dialog has no source chips, so Start stays disabled."""
     dlg = _cut_dialog(qapp)
     assert dlg._start_btn.isEnabled() is False
 
 
-def test_load_recipe_button_disabled_in_phase_4a(qapp):
-    """Load Recipe… opens the saved-Recipe picker in Phase 4e."""
+def test_load_recipe_button_disabled_without_store(qapp):
+    """Load Recipe… enables once a :class:`RecipeStore` is wired (Phase
+    4e). A scaffold dialog has none, so the button stays disabled."""
     dlg = _cut_dialog(qapp)
     assert dlg._load_btn.isEnabled() is False
 
 
-def test_save_recipe_button_disabled_in_phase_4a(qapp):
+def test_save_recipe_button_disabled_without_store(qapp):
+    """Same gating as Load — no store wired → no save path."""
     dlg = _cut_dialog(qapp)
     assert dlg._save_recipe_btn.isEnabled() is False

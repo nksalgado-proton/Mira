@@ -142,6 +142,39 @@ def test_cut_row_is_fixed_height_and_list_scrolls(qapp, gw):
 # --------------------------------------------------------------------------- #
 
 
+def test_make_new_recipe_dialog_wires_recipe_store(qapp, gw, tmp_path):
+    """spec/90 Phase 4e — the page's dialog factory builds the
+    :class:`NewRecipeDialog` in its Cut-face configuration and wires
+    every probe + the user-store-backed :class:`RecipeStore`. Without
+    this the Save / Load Recipe buttons would stay disabled in
+    production."""
+    from mira.user_store.repo import UserStore
+    us = UserStore.create(tmp_path / "mira.db", app_version="t",
+                          created_at="2026-06-20T12:00:00+00:00")
+    # Stand-in app gateway that exposes the user_store the page needs.
+    class _G:
+        def __init__(self, eg, settings, us):
+            self._eg = eg
+            self.settings = settings
+            self.user_store = us
+        def open_event(self, _id): return self._eg
+    g = _G(gw, Settings(), us)
+    shell = ShareCutsPage(g)
+    assert shell.open_event("evt-c")
+    kwargs = shell._dialog_kwargs()
+    dlg = shell._make_new_recipe_dialog(kwargs)
+    # The Save + Load buttons enable when a RecipeStore is wired.
+    assert dlg._save_recipe_btn.isEnabled() is True
+    assert dlg._load_btn.isEnabled() is True
+    # The Cut face hides Scope + hardware.
+    from mira.ui.pages.new_recipe_dialog import FLAVOUR_CUT
+    assert dlg._flavour == FLAVOUR_CUT
+    assert dlg._show_scope is False
+    assert dlg._show_hardware is False
+    dlg.deleteLater()
+    us.close()
+
+
 def test_dialog_kwargs_wire_gateway_feeds(qapp, gw, tmp_path):
     shell = _shell(gw)
     kw = shell._dialog_kwargs()

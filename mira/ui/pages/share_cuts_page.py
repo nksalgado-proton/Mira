@@ -60,12 +60,20 @@ from mira.ui.design import (
 from mira.ui.i18n import tr
 from mira.ui.shared.cut_detail_page import CutDetailPage
 from mira.ui.shared.cut_session_page import CutSessionPage
-# spec/65 §3.13 / §5.1: the New Cut dialog routes through an adapter
-# that wraps the redesigned page. ``CutDraft`` lives in
-# :mod:`mira.shared.cut_draft` (the dialog→session handoff shape); the
-# call sites here (``NewCutDialog(...).exec()`` + ``.draft()``) are
-# the same as the prior chassis used.
-from mira.ui.shared.new_cut_dialog_adapter import NewCutDialog
+# spec/90 §7 Phase 5: the New Cut dialog is the two-faced
+# :class:`NewRecipeDialog` widget — the Cut-face configuration (no Scope,
+# no hardware filters, event-scope inventory). The handoff value is a
+# :class:`CutDraft` the dialog builds via the spec/90 Phase 3 adapter
+# (:func:`recipe_to_cut_draft`); the page connects to
+# :attr:`NewRecipeDialog.start_requested` to receive it.
+from mira.shared.recipe_store import RecipeStore
+from mira.ui.pages.new_recipe_dialog import (
+    FLAVOUR_CUT,
+    INVENTORY_EVENT,
+    NewRecipeContext,
+    NewRecipeDialog,
+    OperandOption,
+)
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +143,32 @@ def _format_dc_expr(expr) -> str:
             continue
         bits.append(f"{op_glyph.get(op, op)}#{tag}")
     return " ".join(bits)
+
+
+def _expr_from_pool_dict(pool: dict) -> list:
+    """Translate the legacy ``{"#name": signed_mult}`` shape (the
+    ``cut_info()['pool']`` field the old dialog emitted) into the
+    spec/81 DC expression shape — ordered ``[[op, operand], ...]`` with
+    the base ``"exported"`` bare and any user tag typed as
+    ``{"kind":"cut",...}``. Kept on the page so callers of
+    :meth:`_save_dc` that still pass a ``pool`` dict (existing tests
+    + back-compat) keep working after the new_cut_dialog_adapter
+    retired."""
+    out: list = []
+    for prefixed, mult in (pool or {}).items():
+        try:
+            mult = int(mult)
+        except (TypeError, ValueError):
+            continue
+        if mult == 0:
+            continue
+        tag = str(prefixed).lstrip("#")
+        op = "+" if mult > 0 else "-"
+        operand: object = tag if tag == "exported" else {
+            "kind": "cut", "id": None, "tag": tag}
+        for _ in range(abs(mult)):
+            out.append([op, operand])
+    return out
 
 
 def _format_dc_filters(filters) -> str:
@@ -1040,18 +1074,26 @@ class ShareCutsPage(QWidget):
 
     # ── New Cut → session ────────────────────────────────────────────
 
+    _EXPORTED_TAG = "exported"
+
     def _dialog_kwargs(self) -> dict:
+        """Bundle the per-event facts the :class:`NewRecipeDialog` needs.
+        Returns a dict the page passes both ways: tests inspect the
+        kwargs to confirm the gateway feeds are wired, and the dialog
+        ctor reads the context + probes off it. Kept stable across
+        spec/90 Phase 4e so the test suite keeps reading
+        ``existing_cuts`` / ``existing_dcs`` / ``exported_count`` /
+        ``pool_probe`` / ``totals_probe`` / ``event_label`` /
+        ``music_hint`` / ``music_categories`` / ``style_options``."""
         eg = self._eg
         cut_counts = []
         for cut in eg.cuts():
             totals = eg.cut_show_totals(cut.id)
             cut_counts.append((cut.tag, totals.photo_count + totals.video_count))
-        # Spec/81 §2 — the New Cut dialog's add row offers DCs as
-        # operands alongside Cuts, so a DC can be composed out of other
-        # DCs (``all-time-best = best-macro + best-wildlife``). Each DC
-        # carries its live resolution count (recipe → set, evaluated on
-        # demand) so the chip count is honest. A malformed DC is read as
-        # zero (matches the DCs tab's resilience).
+        # Spec/81 §2 — DCs appear in the dialog's operand picker alongside
+        # base + Cuts. Each DC carries its live resolution count (recipe →
+        # set, evaluated on demand). A malformed DC reads as zero — the
+        # picker still lists it so the user can rewire / delete.
         dc_rows: list[tuple[str, str, int]] = []
         for dc in eg.dynamic_collections():
             try:
@@ -1083,66 +1125,206 @@ class ShareCutsPage(QWidget):
                 expr, filters={"styles": list(styles), "media_type": tf}),
             event_label=eg.event().name,
             separators_on=self._separators_on(),
-            templates=self._templates(),
-            template_saver=self._save_template,
-            dc_saver=self._save_dc,
         )
 
-    def _templates(self) -> list:
-        """Saved recipes from the user-level store (spec/61 §2 + slice 10),
-        exposed as flat recipe objects (card_style lifted out of extras).
-        Graceful absence when the host gateway carries no user store."""
+    def _build_recipe_context(
+        self, kwargs: dict, *, prefill: Optional[object] = None,
+    ) -> NewRecipeContext:
+        """Translate :meth:`_dialog_kwargs` + an optional ``prefill``
+        (Edit-mode :class:`SimpleNamespace`) into a
+        :class:`NewRecipeContext`. The operand inventory is base +
+        DCs + Cuts in declared order; collision suffixes ``— DC`` /
+        ``— Cut`` keep them distinguishable per spec/81 §2."""
+        available_pools: list[OperandOption] = [
+            OperandOption(
+                name=f"#{self._EXPORTED_TAG}",
+                count=int(kwargs.get("exported_count") or 0),
+                kind="base", tag=self._EXPORTED_TAG),
+        ]
+        dc_rows = list(kwargs.get("existing_dcs") or ())
+        cut_rows = list(kwargs.get("existing_cuts") or ())
+        dc_tags = {tag for _id, tag, _n in dc_rows}
+        cut_tags = {tag for tag, _n in cut_rows}
+        collisions = dc_tags & cut_tags
+        for dc_id, tag, n in dc_rows:
+            suffix = " — DC" if tag in collisions else ""
+            available_pools.append(OperandOption(
+                name=f"#{tag}{suffix}", count=int(n or 0),
+                kind="dc", id=dc_id or None, tag=tag))
+        for tag, n in cut_rows:
+            suffix = " — Cut" if tag in collisions else ""
+            available_pools.append(OperandOption(
+                name=f"#{tag}{suffix}", count=int(n or 0),
+                kind="cut", tag=tag))
+
+        ctx = NewRecipeContext(
+            event_name=kwargs.get("event_label") or "",
+            available_pools=available_pools,
+            available_styles=list(kwargs.get("style_options") or []),
+        )
+        # Default selection — start the Source from #exported so the
+        # user composes from there (matches the legacy New Cut default).
+        ctx.selected_source = [(
+            "or",
+            OperandOption(
+                name=f"#{self._EXPORTED_TAG}",
+                count=int(kwargs.get("exported_count") or 0),
+                kind="base", tag=self._EXPORTED_TAG),
+        )]
+
+        if prefill is not None:
+            self._apply_recipe_prefill(ctx, prefill, kwargs)
+        return ctx
+
+    def _apply_recipe_prefill(
+        self, ctx: NewRecipeContext, prefill: object, kwargs: dict,
+    ) -> None:
+        """Edit-mode prefill: read a :class:`SimpleNamespace` carrying the
+        legacy Cut fields (``pool_expr_json`` / ``style_filter_json`` /
+        ``type_filter`` / ``default_state`` / ``target_s`` / ``max_s`` /
+        ``photo_s`` / ``card_style``) and seed the equivalent dialog
+        state. Anything the dialog can't honour (legacy keep-all /
+        weed-out / pick-in pin-mode hint) maps onto the §1.5 sugar
+        equivalent: no rules + Otherwise = pick/skip."""
+        import json as _json
+        name = getattr(prefill, "name", "") or ""
+        if name:
+            ctx.name = name
+
+        # Source from the cut's expr_snapshot_json.
+        pool_json = getattr(prefill, "pool_expr_json", None)
+        if pool_json:
+            try:
+                expr = _json.loads(pool_json) or []
+            except (TypeError, ValueError):
+                expr = []
+            inventory = {p.tag or p.name.lstrip("#"): p
+                         for p in ctx.available_pools}
+            selected: list[tuple[str, OperandOption]] = []
+            op_to_join = {"+": "or", "-": "but not in", "&": "and"}
+            for index, pair in enumerate(expr):
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    continue
+                op, operand = pair[0], pair[1]
+                if isinstance(operand, str):
+                    tag = operand
+                elif isinstance(operand, Mapping if False else dict):
+                    tag = operand.get("tag") or ""
+                else:
+                    tag = ""
+                if not tag:
+                    continue
+                hit = inventory.get(tag)
+                if hit is None:
+                    # Operand no longer in the inventory — synthesise a
+                    # placeholder chip so the prefill is honest.
+                    kind = (operand.get("kind") if isinstance(operand, dict)
+                            else "base")
+                    op_id = (operand.get("id") if isinstance(operand, dict)
+                             else None)
+                    hit = OperandOption(
+                        name=f"#{tag}", kind=kind or "base",
+                        tag=tag, id=op_id)
+                join = "or" if index == 0 else op_to_join.get(op, "or")
+                selected.append((join, hit))
+            if selected:
+                ctx.selected_source = selected
+
+        # Filters.
+        style_json = getattr(prefill, "style_filter_json", None)
+        if style_json:
+            try:
+                ctx.selected_styles = list(_json.loads(style_json) or [])
+            except (TypeError, ValueError):
+                pass
+        type_filter = getattr(prefill, "type_filter", "both") or "both"
+        ctx.include_photos = type_filter in ("both", "photo")
+        ctx.include_videos = type_filter in ("both", "video")
+
+        # Otherwise verdict — spec/90 §1.5 sugar from the legacy default_state.
+        state = getattr(prefill, "default_state", "skipped") or "skipped"
+        ctx.otherwise = "pick" if state == "picked" else "skip"
+
+        # Runtime presentation.
+        target_s = getattr(prefill, "target_s", None)
+        if isinstance(target_s, (int, float)):
+            ctx.target_minutes = max(1, int(round(float(target_s) / 60)))
+        max_s = getattr(prefill, "max_s", None)
+        if isinstance(max_s, (int, float)):
+            ctx.max_minutes = max(1, int(round(float(max_s) / 60)))
+        photo_s = getattr(prefill, "photo_s", None)
+        if isinstance(photo_s, (int, float)):
+            ctx.per_photo_seconds = max(0.1, float(photo_s))
+
+    def _recipe_store(self) -> Optional[RecipeStore]:
+        """Construct a :class:`RecipeStore` over the app's user_store, or
+        ``None`` when the host gateway carries no user store (smokes /
+        unit tests without persistence)."""
         us = getattr(self.gateway, "user_store", None)
         if us is None:
-            return []
+            return None
         try:
-            import json
-            from types import SimpleNamespace
-            from mira.user_store import models as um
-            out = []
-            for t in us.all(um.CutTemplate):
-                try:
-                    card = json.loads(t.extras_json).get("card_style", "black")
-                except (ValueError, TypeError):
-                    card = "black"
-                out.append(SimpleNamespace(
-                    name=t.name,
-                    pool_expr_json=t.pool_expr_json,
-                    style_filter_json=t.style_filter_json,
-                    type_filter=t.type_filter,
-                    default_state=t.default_state,
-                    target_s=t.target_s, max_s=t.max_s,
-                    photo_s=t.photo_s,
-                    music_category=t.music_category,
-                    card_style=card,
-                ))
-            return out
-        except Exception:  # noqa: BLE001 — templates are a convenience
-            log.exception("could not load cut templates")
-            return []
+            return RecipeStore(us)
+        except Exception:                              # noqa: BLE001
+            log.exception("could not open recipe store")
+            return None
+
+    def _make_new_recipe_dialog(
+        self,
+        kwargs: dict,
+        *,
+        prefill: Optional[object] = None,
+        heading_text: Optional[str] = None,
+    ) -> NewRecipeDialog:
+        """Construct the :class:`NewRecipeDialog` from page kwargs +
+        prefill. Wires every probe + the recipe store; sets the window
+        title when a heading override is given (Edit Cut)."""
+        eg = self._eg
+        ctx = self._build_recipe_context(kwargs, prefill=prefill)
+        # Cut face = flavour='cut' + no scope + no hardware + event inventory
+        # per spec/90 §2.1. ``recipe_probe`` returns a RecipeResolution so the
+        # metrics + Start gate use the resolver's pool/seed map directly.
+        dlg = NewRecipeDialog(
+            flavour=FLAVOUR_CUT,
+            show_scope=False,
+            show_hardware=False,
+            inventory_scope=INVENTORY_EVENT,
+            ctx=ctx,
+            pool_probe=kwargs.get("pool_probe"),
+            totals_probe=kwargs.get("totals_probe"),
+            recipe_probe=(lambda comp: eg.resolve_recipe(comp))
+                          if eg is not None else None,
+            recipe_store=self._recipe_store(),
+            parent=self,
+        )
+        if heading_text:
+            dlg.setWindowTitle(heading_text)
+        return dlg
 
     def _save_dc(self, name: str, info: dict) -> None:
         """Save the dialog's current source as a Dynamic Collection
-        (spec/81 §2). Translates the dialog's ``cut_info()`` payload (the
-        same shape the adapter consumes for template saves) into a
-        :meth:`EventGateway.create_dc` call. Raises ``ValueError`` with
-        a ``check_tag`` code ('empty' / 'reserved' / 'taken') on bad
-        names so the dialog can surface a user-friendly message; the
-        ``cycle`` code surfaces from the gateway's cycle guard. The page
-        refreshes on success so the DC tab shows the new DC."""
+        (spec/81 §2). Accepts the legacy ``cut_info``-shaped dict so the
+        existing tests (and the older "Save as DC…" footer flow) keep
+        working — Phase 4e doesn't surface this in the new dialog yet
+        (spec/90 §3.4's Save-as-DC seam in the picker is still a
+        placeholder), but the host hook is the same.
+
+        Raises ``ValueError`` with a ``check_tag`` code ('empty' /
+        'reserved' / 'taken') on bad names so a caller can surface a
+        user-friendly message; the ``cycle`` code surfaces from the
+        gateway's cycle guard. The page refreshes on success so the DC
+        tab shows the new DC."""
         eg = self._eg
         if eg is None:
             return
-        # Spec/81 §2 — prefer the typed-ref ``pool_expr`` the dialog
-        # ships (kind + id + tag per operand). Falls back to the legacy
-        # signed-mult dict translation only when ``pool_expr`` is
-        # absent (older dialog tests / pre-spec/81 callers).
-        from mira.ui.shared.new_cut_dialog_adapter import _expr_from_counts
+        # Prefer the typed-ref pool_expr the dialog ships; fall back to
+        # the legacy signed-mult dict translation when only ``pool`` is
+        # present (older callers / direct tests).
         pool_expr = info.get("pool_expr")
         if pool_expr:
             expr = [list(p) for p in pool_expr]
         else:
-            expr = [list(t) for t in _expr_from_counts(info.get("pool", {}))]
+            expr = _expr_from_pool_dict(info.get("pool", {}))
         styles = list(info.get("styles") or [])
         media_type = "both"
         if bool(info.get("include_photos", True)) and not bool(
@@ -1157,46 +1339,7 @@ class ShareCutsPage(QWidget):
             styles=styles,
             media_type=media_type,
         )
-        # Refresh the page so the DC tab shows the new DC.
         self.refresh()
-
-    def _save_template(self, name: str, draft) -> None:
-        """Persist the dialog's recipe to the user-level template store.
-
-        spec/81 reshape: :class:`CutDraft` now carries ``expr`` / ``styles`` /
-        ``media_type`` / ``pin_mode``. The user-store column names stay
-        legacy (``pool_expr_json`` / ``style_filter_json`` / ``type_filter`` /
-        ``default_state``) — that table is the user-level template schema,
-        not a CutDraft field. We derive the legacy ``default_state`` from
-        the new ``pin_mode`` (keep-all + weed-out start all-in → ``picked``;
-        pick-in starts all-out → ``skipped``). The JSON inside
-        ``pool_expr_json`` is the new operand encoding (bare ``"exported"``
-        or typed ``{"kind":"cut|dc",...}`` ref) — readers handle either."""
-        us = getattr(self.gateway, "user_store", None)
-        if us is None:
-            return
-        import json
-        import uuid
-        from datetime import datetime, timezone
-        from mira.shared.cut_draft import PIN_KEEP_ALL, PIN_WEED_OUT
-        from mira.user_store import models as um
-        default_state = ("picked" if draft.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
-                         else "skipped")
-        us.upsert(um.CutTemplate(
-            id=uuid.uuid4().hex,
-            name=name,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            pool_expr_json=json.dumps([list(t) for t in draft.expr]),
-            style_filter_json=json.dumps(list(draft.styles)),
-            type_filter=draft.media_type,
-            default_state=default_state,
-            target_s=draft.target_s,
-            max_s=draft.max_s,
-            photo_s=draft.photo_s,
-            music_category=draft.music_category,
-            extras_json=json.dumps(
-                {"card_style": getattr(draft, "card_style", "black")}),
-        ))
 
     def start_new_cut(self) -> None:
         """Public entry — the Share menu's "New Cut…" lands here after
@@ -1216,11 +1359,12 @@ class ShareCutsPage(QWidget):
                 "first."))
             box.exec()
             return
-        dlg = NewCutDialog(parent=self, **self._dialog_kwargs())
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        kwargs = self._dialog_kwargs()
+        draft = self._exec_edit_dialog(prefill=None, kwargs=kwargs)
+        if draft is None:
             return
         session = CutSession.from_draft(
-            self._eg, dlg.draft(), separators_on=self._separators_on())
+            self._eg, draft, separators_on=self._separators_on())
         self._start_session(session)
 
     def _on_adjust_cut(self, cut_id: str) -> None:
@@ -1234,8 +1378,8 @@ class ShareCutsPage(QWidget):
         migration v6→v7). The frozen formula lives on the Cut as
         ``expr_snapshot_json``; the filters live on the source DC
         (``filters_json``). The prefill keys keep their legacy names since
-        the dialog adapter reads them under those names — the *content*
-        switches to the new shape."""
+        the recipe-context adapter reads them under those names — the
+        *content* switches to the new shape."""
         eg = self._eg
         cut = eg.cut(cut_id) if eg else None
         if cut is None:
@@ -1276,13 +1420,19 @@ class ShareCutsPage(QWidget):
     def _exec_edit_dialog(self, prefill, kwargs):
         """The modal seam — tests stub this; the app runs the dialog.
         (A test once exec()'d the real dialog and parked a window on
-        Nelson's desktop for 24 minutes. Never again.)"""
-        dlg = NewCutDialog(
-            parent=self, prefill=prefill,
-            heading_text=tr("Edit Cut"), **kwargs)
+        Nelson's desktop for 24 minutes. Never again.)
+
+        Spec/90 Phase 4e: opens :class:`NewRecipeDialog` and returns the
+        :class:`CutDraft` the dialog's ``start_requested`` signal emits.
+        Returns ``None`` if the user cancelled."""
+        heading = tr("Edit Cut") if prefill is not None else None
+        dlg = self._make_new_recipe_dialog(
+            kwargs, prefill=prefill, heading_text=heading)
+        drafts: list = []
+        dlg.start_requested.connect(drafts.append)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        return dlg.draft()
+        return drafts[0] if drafts else None
 
     def _start_session(self, session: CutSession) -> None:
         self._teardown_session()

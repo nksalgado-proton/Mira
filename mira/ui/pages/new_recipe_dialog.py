@@ -13,22 +13,23 @@ Two faces, one widget (spec/90 §2.3):
   top with event / Event-Collection / date-range chips; Camera / Lens /
   Faces join the Filters block (spec/90 §2.2, §4).
 
-This module ships **Phase 4a only** — the widget skeleton plus the Source
-section (chip + join-word sentence per spec/90 §3.1) and the Filters section
-(Style + Media everywhere; Camera + Lens when ``show_hardware=True``).
-Placeholder rows stand in for the not-yet-built sections so the visual
-structure reads correctly and the layout settles where Phase 4b-e will fill
-in. The legacy :mod:`mira.ui.pages.new_cut_dialog` stays in place; Phase 4e
-swaps the entry points.
+Phase 4a–e build the widget incrementally: scaffold (4a), Scope (4b),
+Rules + verb + join-word popovers (4c), live metrics + resolver probe
+(4d), and the Save / Load Recipe footer + Start-button wiring (4e —
+which also retires the legacy ``new_cut_dialog`` module). The widget is
+now the production New Cut surface; :class:`mira.ui.pages.share_cuts_page.ShareCutsPage`
+opens it directly.
 
 The widget's public surface matches the spec/90 §2.3 contract — four
-boolean / enum flags pin the visible sections, the inventory + facets ride
-the :class:`NewRecipeContext` dataclass, and live probes connect to the
-gateway (``pool_probe`` / ``totals_probe``) for the metrics row Phase 4d
-turns on. No template / save-as-Recipe wiring yet — those land in 4e.
+boolean / enum flags pin the visible sections, the inventory + facets
+ride the :class:`NewRecipeContext` dataclass, live probes connect to
+the gateway (``pool_probe`` / ``totals_probe`` / ``recipe_probe``), and
+the optional :class:`RecipeStore` enables the Save as Recipe… +
+Load Recipe… buttons.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -41,11 +42,16 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QDateEdit,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -54,6 +60,12 @@ from PyQt6.QtWidgets import (
 )
 
 from core import recipe_resolver as _recipe_resolver
+from mira.shared.recipe_store import (
+    FLAVOUR_COLLECTION as _STORE_FLAVOUR_COLLECTION,
+    FLAVOUR_CUT as _STORE_FLAVOUR_CUT,
+    RecipeNameTakenError,
+    RecipeStore,
+)
 from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
@@ -119,8 +131,7 @@ def _palette_mode() -> str:
 
 
 def _micro(text: str) -> QLabel:
-    """Micro section header — Faint, all-caps. Same role as
-    :func:`mira.ui.pages.new_cut_dialog._micro`."""
+    """Micro section header — Faint, all-caps."""
     lbl = QLabel(text.upper())
     lbl.setObjectName("Micro")
     return lbl
@@ -243,16 +254,14 @@ class NewRecipeContext:
 class _SourceChip(QFrame):
     """Selected-operand chip in the Source sentence.
 
-    Visually mirrors :class:`mira.ui.pages.new_cut_dialog._PoolChip` so the
-    Phase 4e swap doesn't shift any pixels. Uses the global
-    ``QFrame#PoolChipHost`` QSS rule (card2 bg + line border + 14px
-    radius); :attr:`Qt.WidgetAttribute.WA_StyledBackground` keeps the
-    cascade reaching nested under the scroll area.
+    Uses the global ``QFrame#PoolChipHost`` QSS rule (card2 bg + line
+    border + 14px radius); :attr:`Qt.WidgetAttribute.WA_StyledBackground`
+    keeps the cascade reaching nested under the scroll area.
 
-    Phase 4a affordance: one ``×`` button removes the chip. The +/− / ∩
-    steppers from the legacy ``_PoolChip`` retire — the rule-list grammar
-    handles those via the join-word dropdown that Phase 4c adds between
-    chips, so the chips themselves stay simple."""
+    One ``×`` button removes the chip. The +/− / ∩ steppers from the
+    retired ``_PoolChip`` are gone — the rule-list grammar handles the
+    set-algebra via the join-word dropdown between chips, so the chips
+    themselves stay simple."""
 
     removed = pyqtSignal()
 
@@ -860,6 +869,211 @@ class _DateRangePickerPopover(QDialog):
 
 
 # --------------------------------------------------------------------------- #
+# Save-as-Recipe + Load-Recipe sub-dialogs (spec/90 §7 Phase 5)
+# --------------------------------------------------------------------------- #
+
+
+class _SaveRecipeNameDialog(QDialog):
+    """One-line name dialog the footer "Save as Recipe…" button opens.
+
+    Defaults to the parent dialog's Name field when present. On OK, the
+    parent reads :meth:`recipe_name` and calls :meth:`RecipeStore.create`;
+    a :class:`RecipeNameTakenError` is surfaced via :meth:`show_error`
+    which keeps the dialog open with an inline message so the user can
+    pick a different name without retyping.
+    """
+
+    def __init__(
+        self,
+        *,
+        default: str = "",
+        flavour: str = FLAVOUR_CUT,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("SaveRecipeNameDialog")
+        self.setWindowTitle(tr("Save as Recipe"))
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self._flavour = flavour
+
+        box = QVBoxLayout(self)
+        group = QGroupBox(tr("Recipe name"))
+        group.setObjectName("FormFieldGroup")
+        gbox = QVBoxLayout(group)
+        self._edit = QLineEdit(default)
+        self._edit.setObjectName("SaveRecipeNameEdit")
+        self._edit.setToolTip(tr(
+            "How this Recipe appears in the Load Recipe… list."))
+        self._edit.textChanged.connect(self._refresh)
+        gbox.addWidget(self._edit)
+        self._error = QLabel("")
+        self._error.setObjectName("SaveRecipeNameError")
+        self._error.setWordWrap(True)
+        self._error.setVisible(False)
+        gbox.addWidget(self._error)
+        box.addWidget(group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Save"))
+            self._ok.setToolTip(tr("Save the Recipe under this name."))
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel is not None:
+            cancel.setToolTip(tr("Don't save a Recipe."))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box.addWidget(buttons)
+        self._refresh()
+
+    def recipe_name(self) -> str:
+        return self._edit.text().strip()
+
+    def show_error(self, message: str) -> None:
+        """Display ``message`` inline; called by the parent when
+        :meth:`RecipeStore.create` raised :class:`RecipeNameTakenError`."""
+        self._error.setText(message)
+        self._error.setVisible(True)
+
+    def _refresh(self, _text: str = "") -> None:
+        # Typing clears a stale error so the user isn't told their
+        # in-progress name is taken. ``isHidden()`` rather than
+        # ``isVisible()`` so we don't gate on the dialog being on-screen
+        # (it isn't during tests).
+        if not self._error.isHidden():
+            self._error.setVisible(False)
+            self._error.setText("")
+        if self._ok is not None:
+            self._ok.setEnabled(bool(self._edit.text().strip()))
+
+
+class _LoadRecipeDialog(QDialog):
+    """Saved-Recipe picker the header "Load Recipe…" button opens.
+
+    Lists Recipes from :meth:`RecipeStore.list` filtered to the dialog's
+    flavour by default; a "Show {other} Recipes too" checkbox flips the
+    list to the cross-flavour view per spec/90 §5.5 — same-flavour first,
+    other-flavour appended after with a small kind suffix so the user
+    can tell them apart.
+
+    Emits :attr:`recipe_chosen` on double-click or OK; the parent reads
+    the selection and re-populates its state from the Recipe's
+    composition_json.
+    """
+
+    recipe_chosen = pyqtSignal(object)             # um.Recipe
+
+    def __init__(
+        self,
+        *,
+        recipes_for: Callable[[bool], Sequence[Any]],
+        flavour: str = FLAVOUR_CUT,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("LoadRecipeDialog")
+        self.setWindowTitle(tr("Load Recipe"))
+        self.setModal(True)
+        self.setMinimumWidth(460)
+        self.setMinimumHeight(380)
+        self._recipes_for = recipes_for
+        self._flavour = flavour
+        self._rows: List[Tuple[Any, QListWidgetItem]] = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
+
+        hint = QLabel(tr(
+            "Pick a Recipe to pre-fill every section below. The source "
+            "re-evaluates against THIS event's data."))
+        hint.setObjectName("PageHint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        other = (FLAVOUR_COLLECTION if flavour == FLAVOUR_CUT
+                 else FLAVOUR_CUT)
+        self._include_other_cb = QCheckBox(
+            tr("Show {other} Recipes too").format(other=other),
+            self)
+        self._include_other_cb.setObjectName("LoadRecipeIncludeOther")
+        self._include_other_cb.toggled.connect(self._refresh)
+        outer.addWidget(self._include_other_cb)
+
+        self._list = QListWidget(self)
+        self._list.setObjectName("LoadRecipeList")
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        outer.addWidget(self._list, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Load"))
+            self._ok.setToolTip(tr("Load the selected Recipe."))
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        self._list.itemSelectionChanged.connect(self._refresh_ok)
+        self._refresh()
+
+    def selected_recipe(self) -> Optional[Any]:
+        items = self._list.selectedItems()
+        if not items:
+            return None
+        for recipe, item in self._rows:
+            if item is items[0]:
+                return recipe
+        return None
+
+    def _refresh(self) -> None:
+        self._list.clear()
+        self._rows = []
+        include_other = self._include_other_cb.isChecked()
+        for recipe in self._recipes_for(include_other) or ():
+            label = self._format_label(recipe)
+            item = QListWidgetItem(label, self._list)
+            self._rows.append((recipe, item))
+        self._refresh_ok()
+
+    def _format_label(self, recipe: Any) -> str:
+        name = getattr(recipe, "name", "") or ""
+        created = (getattr(recipe, "created_at", "") or "")[:10]
+        flavour = getattr(recipe, "flavour", "") or ""
+        if flavour and flavour != self._flavour:
+            suffix = (f"  ({tr('Collection')})"
+                      if flavour == FLAVOUR_COLLECTION
+                      else f"  ({tr('Cut')})")
+        else:
+            suffix = ""
+        if created:
+            return f"{name}{suffix}    {created}"
+        return f"{name}{suffix}"
+
+    def _refresh_ok(self) -> None:
+        if self._ok is not None:
+            self._ok.setEnabled(bool(self._list.selectedItems()))
+
+    def _on_double_click(self, _item) -> None:
+        if self.selected_recipe() is not None:
+            self._on_accept()
+
+    def _on_accept(self) -> None:
+        recipe = self.selected_recipe()
+        if recipe is None:
+            return
+        self.recipe_chosen.emit(recipe)
+        self.accept()
+
+
+# --------------------------------------------------------------------------- #
 # Rules section — :class:`_RuleRow` + the dialog-side wiring
 # --------------------------------------------------------------------------- #
 
@@ -1114,6 +1328,15 @@ class NewRecipeDialog(QDialog):
     # clicked. The host wires the modal in Phase 4e; Phase 4a uses a
     # toast-shaped placeholder so the no-op is honest.
     save_as_dc_requested = pyqtSignal()
+    #: spec/90 §7 Phase 5 — emitted by :meth:`_on_start_clicked` once the
+    #: composition + draft are ready. Carries the :class:`CutDraft`
+    #: the host hands to :meth:`CutSession.from_draft`. The dialog
+    #: accepts() itself after emission; the host wires the picker session
+    #: in its slot.
+    start_requested = pyqtSignal(object)           # CutDraft
+    #: Emitted after a successful :meth:`RecipeStore.create` so the
+    #: host can show a toast (the dialog stays open).
+    recipe_saved = pyqtSignal(object)              # um.Recipe
 
     def __init__(
         self,
@@ -1127,6 +1350,7 @@ class NewRecipeDialog(QDialog):
         totals_probe: Optional[Callable] = None,
         recipe_probe: Optional[Callable[
             [dict], "_recipe_resolver.RecipeResolution"]] = None,
+        recipe_store: Optional[RecipeStore] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1146,6 +1370,13 @@ class NewRecipeDialog(QDialog):
         self._pool_probe = pool_probe
         self._totals_probe = totals_probe
         self._recipe_probe = recipe_probe
+        self._recipe_store = recipe_store
+        # Cross-flavour banner widget — created in :meth:`_build_metrics_section`
+        # and toggled in :meth:`_show_cross_flavour_banner` /
+        # :meth:`_clear_cross_flavour_banner`. spec/90 §5.5 — when a Collection
+        # Recipe is loaded into a Cut dialog its hidden filters become a banner
+        # above the metrics line.
+        self._cross_flavour_fields: List[str] = []
 
         # Runtime presentation state (Phase 4d). Seeded from the ctx;
         # the spin widgets in the Runtime row mutate these on change.
@@ -1274,11 +1505,15 @@ class NewRecipeDialog(QDialog):
         block.addStretch()
         h.addLayout(block, 1)
 
-        # Load Recipe… — placeholder for Phase 4e.
+        # Load Recipe… — opens a picker over :class:`RecipeStore`. Disabled
+        # when no store is wired (smokes / unit tests without persistence).
         self._load_btn = ghost_button(tr("Load Recipe…"))
-        self._load_btn.setEnabled(False)
-        self._load_btn.setToolTip(tr(
-            "Pre-fill every section from a saved Recipe — Phase 4e."))
+        self._load_btn.setEnabled(self._recipe_store is not None)
+        self._load_btn.setToolTip(
+            tr("Pre-fill every section from a saved Recipe.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._load_btn.clicked.connect(self._on_load_recipe_clicked)
         h.addWidget(self._load_btn)
 
         # Close X — same line-icon as the legacy dialog.
@@ -2054,6 +2289,10 @@ class NewRecipeDialog(QDialog):
         if not hasattr(self, "_probe_timer"):
             return                                       # called pre-init
         self._probe_timer.start()
+        # Cheap gating up-front: an empty Source instantly disables Start
+        # without waiting for the probe. The post-probe call in
+        # :meth:`_run_probe` re-evaluates with the resolution in hand.
+        self._refresh_start_enabled()
 
     def _run_probe(self) -> None:
         """Build the composition + call :attr:`_recipe_probe`. Updates
@@ -2063,6 +2302,7 @@ class NewRecipeDialog(QDialog):
         timer's wall-clock wait."""
         if self._recipe_probe is None:
             self._show_metrics_hint(tr("(no probe wired yet)"))
+            self._refresh_start_enabled()
             return
         composition = self.composition()
         try:
@@ -2073,21 +2313,25 @@ class NewRecipeDialog(QDialog):
                 + (f" ({exc.kind})" if exc.kind else ""))
             self._last_resolution = None
             self._clear_rule_breakdown_labels()
+            self._refresh_start_enabled()
             return
         except ValueError as exc:
             self._show_metrics_hint(str(exc))
             self._last_resolution = None
             self._clear_rule_breakdown_labels()
+            self._refresh_start_enabled()
             return
         except Exception as exc:                         # noqa: BLE001
             log.exception("recipe_probe raised — keeping previous metrics")
             self._show_metrics_error(tr("Probe error: ") + str(exc))
+            self._refresh_start_enabled()
             return
 
         self._last_resolution = resolution
         self._apply_metrics(resolution)
         self._apply_rule_breakdown(resolution.rule_breakdown)
         self._clear_banner()
+        self._refresh_start_enabled()
 
     def _refresh_metrics_from_state(self) -> None:
         """Re-render the metrics line using the last successful
@@ -2174,24 +2418,356 @@ class NewRecipeDialog(QDialog):
         h = QHBoxLayout(host)
         h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
-        # Save as Recipe… — Phase 4e.
+        # Save as Recipe… — opens :class:`_SaveRecipeNameDialog` then
+        # writes through :class:`RecipeStore`. Disabled when no store is
+        # wired (smokes / unit tests without persistence).
         self._save_recipe_btn = ghost_button(tr("Save as Recipe…"))
-        self._save_recipe_btn.setEnabled(False)
-        self._save_recipe_btn.setToolTip(tr(
-            "Save these choices as a Recipe — Phase 4e."))
+        self._save_recipe_btn.setEnabled(self._recipe_store is not None)
+        self._save_recipe_btn.setToolTip(
+            tr("Save these choices as a Recipe.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
         h.addWidget(self._save_recipe_btn)
         h.addStretch()
         cancel = ghost_button(tr("Cancel"))
         cancel.clicked.connect(self.reject)
         h.addWidget(cancel)
-        # Start — disabled in Phase 4a (the picker session wiring lands
-        # in Phase 4e along with the Save flow).
+        # Start — gated by :meth:`_refresh_start_enabled`. Disabled on
+        # empty source / probe error / empty pool; enabled when the last
+        # probe returned a non-empty pool with no errors.
         self._start_btn = primary_button(tr("▶ Start"))
         self._start_btn.setEnabled(False)
         self._start_btn.setToolTip(tr(
-            "Pick the rules + Otherwise verdict — Phase 4c — to enable Start."))
+            "Compose a Source and pick a verdict to enable Start."))
+        self._start_btn.clicked.connect(self._on_start_clicked)
         h.addWidget(self._start_btn)
         return host
+
+    # ------------------------------------------------------------------ #
+    # Save as Recipe…  (spec/90 §7 Phase 5)
+    # ------------------------------------------------------------------ #
+
+    def _on_save_recipe_clicked(self) -> None:
+        """Footer Save as Recipe… — opens the naming dialog and writes
+        through :class:`RecipeStore`. The naming dialog keeps the focus
+        on retry: a :class:`RecipeNameTakenError` is surfaced inline
+        without closing the dialog so the user can pick another name."""
+        if self._recipe_store is None:
+            return
+        default = self._name_edit.text().strip()
+        dlg = _SaveRecipeNameDialog(
+            default=default, flavour=self._flavour, parent=self)
+        while True:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            name = dlg.recipe_name()
+            try:
+                recipe = self._recipe_store.create(
+                    name=name,
+                    flavour=self._flavour,
+                    composition=self.composition(),
+                )
+            except RecipeNameTakenError:
+                kind = (tr("Collection") if self._flavour == FLAVOUR_COLLECTION
+                        else tr("Cut"))
+                dlg.show_error(tr(
+                    "A {kind} Recipe named '{name}' already exists. "
+                    "Pick another."
+                ).format(kind=kind, name=name))
+                continue
+            except ValueError as exc:                       # bad name
+                dlg.show_error(str(exc))
+                continue
+            self.recipe_saved.emit(recipe)
+            self._toast(tr("Recipe '{name}' saved.").format(name=name))
+            return
+
+    def _toast(self, message: str) -> None:
+        """Brief acknowledgement after a Recipe save. Uses
+        :class:`QMessageBox` for now — the design-system toast widget
+        isn't a single seam yet; a no-icon message box reads as a quick
+        ack without parking on the desktop."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Save Recipe"))
+        box.setText(message)
+        box.exec()
+
+    # ------------------------------------------------------------------ #
+    # Load Recipe…  (spec/90 §7 Phase 5)
+    # ------------------------------------------------------------------ #
+
+    def _on_load_recipe_clicked(self) -> None:
+        """Header Load Recipe… — opens the recipe picker over
+        :class:`RecipeStore`. The picker filters to this dialog's flavour
+        by default; a checkbox flips it to the cross-flavour view per
+        spec/90 §5.5."""
+        if self._recipe_store is None:
+            return
+        store = self._recipe_store
+        flavour = self._flavour
+
+        def recipes_for(include_other: bool):
+            return store.list(flavour=flavour, include_other=include_other)
+
+        dlg = _LoadRecipeDialog(
+            recipes_for=recipes_for, flavour=flavour, parent=self)
+        dlg.recipe_chosen.connect(self._apply_recipe)
+        dlg.exec()
+
+    def _apply_recipe(self, recipe: Any) -> None:
+        """Pre-fill every section from a :class:`um.Recipe`. Tears down
+        the in-memory chip / rule state, repopulates Source / Scope /
+        Filters / Rules / Otherwise from the composition_json, then
+        kicks one probe so the metrics + per-rule labels refresh.
+
+        spec/90 §5.5 — a Collection Recipe loaded into the Cut dialog
+        may carry hidden filters (Camera / Lens / Faces / Scope). Those
+        filters survive in the composition but the Cut face can't edit
+        them; :meth:`_apply_cross_flavour_banner` posts a warning above
+        the metrics line so the mismatch is honest."""
+        composition = RecipeStore.composition(recipe)
+        self._apply_composition(composition)
+        self._name_edit.setText(getattr(recipe, "name", "") or "")
+        loaded_flavour = getattr(recipe, "flavour", self._flavour)
+        if loaded_flavour != self._flavour:
+            self._apply_cross_flavour_banner(loaded_flavour, composition)
+        else:
+            self._clear_cross_flavour_banner()
+        self._kick_probe()
+
+    def _apply_composition(self, composition: Mapping[str, Any]) -> None:
+        """Tear down the source / scope / rule chip lists and rebuild
+        them from ``composition``. Filter chips + Otherwise + presentation
+        spinners are reset in place."""
+        # Source.
+        self._source_chips = self._decode_expr(
+            composition.get("source") or [])
+        self._refresh_source_row()
+
+        # Scope (Collection only). When a Cut dialog loads a Collection
+        # Recipe (spec/90 §5.5) the scope decodes but the Cut face has
+        # no row to render it; ``_show_scope`` skips the refresh.
+        if self._show_scope:
+            self._scope_chips = self._decode_expr(
+                composition.get("scope") or [])
+            self._refresh_scope_row()
+
+        # Rules + Otherwise.
+        self._rules = self._decode_rules(composition.get("rules") or [])
+        self._otherwise = (
+            composition.get("otherwise")
+            if composition.get("otherwise") in VERDICTS
+            else VERDICT_SKIP
+        )
+        self._refresh_rules_rows()
+        if hasattr(self, "_otherwise_pill"):
+            self._otherwise_pill.set_verdict(self._otherwise)
+
+        # Filters (Style + Media; Camera / Lens only when ``show_hardware``).
+        filters = composition.get("filters") or {}
+        if not isinstance(filters, Mapping):
+            filters = {}
+        styles = filters.get("styles") or []
+        for style, chip in self._style_chips.items():
+            chip.setChecked(style in styles)
+        media_type = filters.get("media_type") or "both"
+        if self._photos_cb is not None:
+            self._photos_cb.setChecked(media_type in ("both", "photo"))
+        if self._videos_cb is not None:
+            self._videos_cb.setChecked(media_type in ("both", "video"))
+        if self._show_hardware:
+            cams = filters.get("camera_ids") or []
+            for cam, chip in self._camera_chips.items():
+                chip.setChecked(cam in cams)
+            lenses = filters.get("lens_models") or []
+            for lens, chip in self._lens_chips.items():
+                chip.setChecked(lens in lenses)
+
+        # Presentation (Runtime spinners). Reads target_s / max_s in
+        # seconds; the dialog displays minutes.
+        presentation = composition.get("presentation") or {}
+        if isinstance(presentation, Mapping):
+            target_s = presentation.get("target_s")
+            if isinstance(target_s, (int, float)):
+                self._target_minutes = max(1, int(round(float(target_s) / 60)))
+                if hasattr(self, "_target_spin"):
+                    self._target_spin.setValue(self._target_minutes)
+            max_s = presentation.get("max_s")
+            if isinstance(max_s, (int, float)):
+                self._max_minutes = max(1, int(round(float(max_s) / 60)))
+                if hasattr(self, "_max_spin"):
+                    self._max_spin.setValue(self._max_minutes)
+            photo_s = presentation.get("photo_s")
+            if isinstance(photo_s, (int, float)):
+                self._per_photo_seconds = max(0.1, float(photo_s))
+                if hasattr(self, "_per_photo_spin"):
+                    self._per_photo_spin.setValue(self._per_photo_seconds)
+
+    def _decode_expr(
+        self, expr: Sequence[Sequence[Any]],
+    ) -> List[Tuple[str, OperandOption]]:
+        """Translate a composition expression back into the
+        ``(join, OperandOption)`` chip-list the dialog stores. Unknown
+        ops fall back to ``or`` so a malformed Recipe still loads."""
+        op_to_join = {"+": JOIN_OR, "-": JOIN_BUT_NOT, "&": JOIN_AND}
+        out: List[Tuple[str, OperandOption]] = []
+        for index, pair in enumerate(expr or ()):
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            op, operand = pair[0], pair[1]
+            join = JOIN_OR if index == 0 else op_to_join.get(op, JOIN_OR)
+            out.append((join, self._operand_from_encoded(operand)))
+        return out
+
+    def _decode_rules(
+        self, rules: Sequence[Any],
+    ) -> List[Tuple[List[Tuple[str, OperandOption]], str]]:
+        out: List[Tuple[List[Tuple[str, OperandOption]], str]] = []
+        for raw in rules or ():
+            if not isinstance(raw, Mapping):
+                continue
+            predicate = self._decode_expr(raw.get("predicate") or [])
+            verdict = raw.get("verdict")
+            if verdict not in VERDICTS:
+                verdict = VERDICT_SKIP
+            out.append((predicate, verdict))
+        return out
+
+    def _operand_from_encoded(self, operand: Any) -> OperandOption:
+        """Re-hydrate an operand. Looks for a match in the ctx's
+        inventories first (so the live count is current); falls back to
+        a placeholder chip carrying the raw values so the Recipe still
+        loads when the named operand no longer exists."""
+        if isinstance(operand, str):
+            tag = operand
+            for opt in self._ctx.available_pools:
+                if (opt.kind == "base" and
+                        (opt.tag or opt.name.lstrip("#")) == tag):
+                    return opt
+            return OperandOption(name=f"#{tag}", kind="base", tag=tag)
+        if not isinstance(operand, Mapping):
+            return OperandOption(name=str(operand), kind="base")
+        kind = operand.get("kind") or "base"
+        if kind == "event":
+            uuid = operand.get("uuid") or ""
+            for opt in self._ctx.available_events:
+                if opt.uuid == uuid:
+                    return opt
+            return OperandOption(
+                name=f"[{uuid}]", kind="event", uuid=uuid)
+        if kind == "date_range":
+            start = operand.get("start") or ""
+            end = operand.get("end") or ""
+            return OperandOption(
+                name=f"[{start} — {end}]", kind="date_range",
+                start=start, end=end)
+        if kind == "person":
+            person_id = operand.get("id") or ""
+            for opt in self._ctx.available_people:
+                if opt.id == person_id:
+                    return opt
+            return OperandOption(
+                name=f"[{person_id}]", kind="person", id=person_id)
+        tag = operand.get("tag") or ""
+        op_id = operand.get("id")
+        inventory: Sequence[OperandOption]
+        if kind == "event_collection":
+            inventory = self._ctx.available_event_collections
+        else:
+            inventory = self._ctx.available_pools
+        for opt in inventory:
+            if (opt.kind == kind and
+                    ((op_id and opt.id == op_id) or
+                     (opt.tag or opt.name.lstrip("#")) == tag)):
+                return opt
+        return OperandOption(
+            name=f"#{tag}" if tag else str(operand),
+            kind=kind, tag=tag or None, id=op_id)
+
+    def _apply_cross_flavour_banner(
+        self, loaded_flavour: str, composition: Mapping[str, Any],
+    ) -> None:
+        """spec/90 §5.5 — when a Collection Recipe is loaded into a Cut
+        dialog (or vice versa), surface the not-editable filters as a
+        banner above the metrics line. The banner shares the metrics
+        banner slot (mutually exclusive with the resolver error banner —
+        the next probe clears it)."""
+        fields: List[str] = []
+        filters = composition.get("filters") or {}
+        if isinstance(filters, Mapping):
+            if not self._show_hardware:
+                if filters.get("camera_ids"):
+                    fields.append(tr("Camera"))
+                if filters.get("lens_models"):
+                    fields.append(tr("Lens"))
+                if filters.get("person_ids"):
+                    fields.append(tr("Faces"))
+        if not self._show_scope and composition.get("scope"):
+            fields.append(tr("Scope"))
+        self._cross_flavour_fields = fields
+        if not fields:
+            return
+        message = tr(
+            "This Recipe filters by {fields} — not editable here."
+        ).format(fields=" + ".join(fields))
+        self._show_metrics_hint(message)
+
+    def _clear_cross_flavour_banner(self) -> None:
+        self._cross_flavour_fields = []
+
+    # ------------------------------------------------------------------ #
+    # Start — gate + draft handoff  (spec/90 §7 Phase 5)
+    # ------------------------------------------------------------------ #
+
+    def _refresh_start_enabled(self) -> None:
+        """Gate the Start button. Disabled when source is empty / the
+        last probe raised :class:`RecipeResolutionError` / the last
+        probe returned an empty pool. Enabled when the last probe
+        returned a non-empty pool with no errors."""
+        if not hasattr(self, "_start_btn"):
+            return
+        if not self._source_chips:
+            self._start_btn.setEnabled(False)
+            return
+        res = self._last_resolution
+        if res is None:
+            # Probe hasn't completed yet (or wasn't wired). With no
+            # probe the dialog can still hand off to the picker as
+            # long as the source is non-empty; a missing resolver is a
+            # smoke / unit-test path, not a production path.
+            self._start_btn.setEnabled(self._recipe_probe is None)
+            return
+        self._start_btn.setEnabled(bool(res.pool))
+
+    def _on_start_clicked(self) -> None:
+        """Footer ▶ Start — build the composition, adapt it to a
+        :class:`CutDraft`, emit :attr:`start_requested`, and accept().
+
+        Collection-flavour Start is out of scope for Phase 4e —
+        cross-event Collection sessions wait for spec/76's library
+        surface. The Cut-flavour path is the only Start that wires the
+        picker session today."""
+        if self._flavour == FLAVOUR_COLLECTION:
+            raise NotImplementedError(
+                "Cross-event Collection Start not yet wired; coming in a "
+                "future phase")
+        from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
+        from mira.user_store import models as um
+        composition = self.composition()
+        name = self._name_edit.text().strip()
+        recipe = um.Recipe(
+            id="",
+            name=name,
+            flavour=self._flavour,
+            composition_json=json.dumps(composition),
+            created_at="",
+            updated_at="",
+        )
+        draft = recipe_to_cut_draft(recipe)
+        self.start_requested.emit(draft)
+        self.accept()
 
     # ------------------------------------------------------------------ #
     # Name preview
@@ -2276,8 +2852,8 @@ class NewRecipeDialog(QDialog):
 
     @staticmethod
     def _encode_operand(operand: OperandOption) -> Any:
-        """Operand encoding mirroring
-        :meth:`mira.ui.pages.new_cut_dialog.NewCutDialog._operand_for_name`.
+        """Translate an :class:`OperandOption` into the spec/81 / spec/90
+        operand encoding the resolver consumes.
 
         * Base universes stay bare strings.
         * DC / Cut / Event Collection refs become ``{"kind": …, "tag":

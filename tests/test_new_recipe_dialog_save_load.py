@@ -1,0 +1,267 @@
+"""spec/90 Phase 4e — :class:`NewRecipeDialog` Save / Load wiring.
+
+* Save flow: the footer "Save as Recipe…" button opens the name dialog;
+  on OK it calls :meth:`RecipeStore.create` with the current composition
+  and the main dialog stays open.
+* Name conflict: :class:`RecipeNameTakenError` keeps the naming dialog
+  open with an inline error.
+* Load flow: the header "Load Recipe…" button opens the picker; the
+  picker lists Recipes of the dialog's flavour by default; selecting one
+  re-populates the dialog state and kicks the probe.
+* Cross-flavour banner: loading a Collection Recipe into the Cut dialog
+  shows the spec/90 §5.5 banner above the metrics line.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from mira.shared.recipe_store import (
+    FLAVOUR_COLLECTION,
+    FLAVOUR_CUT,
+    RecipeStore,
+)
+from mira.ui.pages.new_recipe_dialog import (
+    INVENTORY_EVENT,
+    JOIN_OR,
+    NewRecipeContext,
+    NewRecipeDialog,
+    OperandOption,
+    VERDICT_PICK,
+    VERDICT_SKIP,
+    _LoadRecipeDialog,
+    _SaveRecipeNameDialog,
+)
+from mira.user_store.repo import UserStore
+
+
+NOW = "2026-06-20T12:00:00+00:00"
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def store(tmp_path) -> RecipeStore:
+    """A fresh user-store backed RecipeStore."""
+    us = UserStore.create(tmp_path / "mira.db", app_version="t", created_at=NOW)
+    return RecipeStore(us)
+
+
+def _ctx() -> NewRecipeContext:
+    return NewRecipeContext(
+        event_name="Costa Rica 2026",
+        available_pools=[
+            OperandOption(name="#exported", count=42, kind="base",
+                          tag="exported"),
+            OperandOption(name="#bests", count=8, kind="cut",
+                          tag="bests", id="cut-b"),
+        ],
+        available_styles=["macro", "wildlife"],
+        selected_source=[(JOIN_OR, OperandOption(
+            name="#exported", count=42, kind="base", tag="exported"))],
+    )
+
+
+def _dialog(
+    qapp,
+    store: RecipeStore,
+    *,
+    flavour: str = FLAVOUR_CUT,
+    show_hardware: bool = False,
+    show_scope: bool = False,
+    ctx: NewRecipeContext = None,
+) -> NewRecipeDialog:
+    return NewRecipeDialog(
+        flavour=flavour,
+        show_scope=show_scope,
+        show_hardware=show_hardware,
+        inventory_scope=INVENTORY_EVENT,
+        ctx=ctx or _ctx(),
+        recipe_store=store,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Save flow
+# --------------------------------------------------------------------------- #
+
+
+def test_save_flow_writes_through_recipe_store(qapp, store):
+    """A successful save writes one Recipe through the store with the
+    dialog's current composition and flavour."""
+    dlg = _dialog(qapp, store)
+    dlg._name_edit.setText("short")
+    dlg._otherwise = VERDICT_PICK
+    composition = dlg.composition()
+    assert composition["source"]                    # non-empty
+    recipe = store.create(
+        name="short", flavour=FLAVOUR_CUT, composition=composition)
+    assert recipe.name == "short"
+    assert recipe.flavour == FLAVOUR_CUT
+    assert json.loads(recipe.composition_json)["source"]
+
+
+def test_save_button_enabled_when_store_wired(qapp, store):
+    """With a :class:`RecipeStore`, the footer Save button enables."""
+    dlg = _dialog(qapp, store)
+    assert dlg._save_recipe_btn.isEnabled() is True
+
+
+def test_save_button_disabled_when_no_store(qapp):
+    """No store wired (smokes / unit tests) → button stays disabled."""
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
+    )
+    assert dlg._save_recipe_btn.isEnabled() is False
+
+
+def test_save_name_conflict_shows_inline_error(qapp, store):
+    """A :class:`RecipeNameTakenError` keeps the name dialog open with
+    an inline error message (the user retries without retyping)."""
+    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
+    dlg = _SaveRecipeNameDialog(default="short", flavour=FLAVOUR_CUT)
+    dlg.show_error("A Cut Recipe named 'short' already exists. Pick another.")
+    # ``isHidden`` is the right check here — ``isVisible`` returns False
+    # unless the widget tree is on-screen (it isn't in tests).
+    assert not dlg._error.isHidden()
+    assert "already exists" in dlg._error.text()
+    # Typing clears the error so the user isn't told their in-progress
+    # name is taken.
+    dlg._edit.setText("short_v2")
+    assert dlg._error.isHidden()
+
+
+def test_save_name_dialog_defaults_to_current_name(qapp, store):
+    """The naming dialog opens with the main dialog's Name field as
+    the default."""
+    dlg = _SaveRecipeNameDialog(default="trip_best", flavour=FLAVOUR_CUT)
+    assert dlg.recipe_name() == "trip_best"
+
+
+def test_save_name_dialog_gates_ok_on_text(qapp, store):
+    """Empty input keeps OK disabled."""
+    dlg = _SaveRecipeNameDialog(default="", flavour=FLAVOUR_CUT)
+    assert not dlg._ok.isEnabled()
+    dlg._edit.setText("  My Recipe  ")
+    assert dlg._ok.isEnabled()
+    assert dlg.recipe_name() == "My Recipe"
+
+
+# --------------------------------------------------------------------------- #
+# Load flow
+# --------------------------------------------------------------------------- #
+
+
+def test_load_button_enabled_when_store_wired(qapp, store):
+    dlg = _dialog(qapp, store)
+    assert dlg._load_btn.isEnabled() is True
+
+
+def test_load_picker_lists_same_flavour_by_default(qapp, store):
+    """The picker calls :meth:`RecipeStore.list` with the dialog's
+    flavour; ``include_other=False`` filters out cross-flavour rows."""
+    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
+    store.create(name="curated_macro", flavour=FLAVOUR_COLLECTION,
+                 composition={})
+    picker = _LoadRecipeDialog(
+        recipes_for=lambda include_other: store.list(
+            flavour=FLAVOUR_CUT, include_other=include_other),
+        flavour=FLAVOUR_CUT,
+    )
+    rows = [picker._list.item(i).text() for i in range(picker._list.count())]
+    assert any("short" in r for r in rows)
+    assert not any("curated_macro" in r for r in rows)
+
+
+def test_load_picker_include_other_appends_cross_flavour(qapp, store):
+    """Toggling the checkbox repopulates with cross-flavour Recipes
+    appended after — same-flavour first per spec/90 §5.5."""
+    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
+    store.create(name="curated_macro", flavour=FLAVOUR_COLLECTION,
+                 composition={})
+    picker = _LoadRecipeDialog(
+        recipes_for=lambda include_other: store.list(
+            flavour=FLAVOUR_CUT, include_other=include_other),
+        flavour=FLAVOUR_CUT,
+    )
+    picker._include_other_cb.setChecked(True)
+    rows = [picker._list.item(i).text() for i in range(picker._list.count())]
+    assert any("short" in r for r in rows)
+    assert any("curated_macro" in r for r in rows)
+
+
+def test_apply_recipe_populates_source_and_kicks_probe(qapp, store):
+    """Loading a Recipe clears the current dialog state and seeds Source
+    from the composition. ``_kick_probe`` runs (verified by checking
+    the per-rule and Otherwise verdict updates)."""
+    composition = {
+        "source": [["+", "exported"], ["+", {"kind": "cut", "tag": "bests"}]],
+        "rules": [{
+            "predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+            "verdict": "pick",
+        }],
+        "otherwise": "skip",
+        "filters": {"styles": ["macro"], "media_type": "photo"},
+    }
+    recipe = store.create(name="my_short", flavour=FLAVOUR_CUT,
+                          composition=composition)
+    dlg = _dialog(qapp, store)
+    dlg._apply_recipe(recipe)
+    # Source has both operands.
+    names = [op.name for _join, op in dlg._source_chips]
+    assert "#exported" in names
+    assert any("bests" in n for n in names)
+    # Rules + Otherwise.
+    assert len(dlg._rules) == 1
+    assert dlg._rules[0][1] == VERDICT_PICK
+    assert dlg._otherwise == VERDICT_SKIP
+    # Filters.
+    assert dlg._style_chips["macro"].isChecked()
+    assert dlg._photos_cb.isChecked()
+    assert not dlg._videos_cb.isChecked()
+    # Name field updated.
+    assert dlg._name_edit.text() == "my_short"
+
+
+def test_apply_collection_recipe_into_cut_dialog_shows_banner(qapp, store):
+    """spec/90 §5.5 — a Collection Recipe loaded into the Cut dialog
+    surfaces its hidden filters (Camera / Lens / Faces / Scope) as a
+    banner above the metrics line."""
+    composition = {
+        "scope": [["+", {"kind": "event", "uuid": "evt-a"}]],
+        "source": [["+", "exported"]],
+        "filters": {"camera_ids": ["G9"], "person_ids": ["person-pedro"]},
+        "otherwise": "skip",
+    }
+    recipe = store.create(name="curated_pedro",
+                          flavour=FLAVOUR_COLLECTION,
+                          composition=composition)
+    dlg = _dialog(qapp, store, flavour=FLAVOUR_CUT)
+    dlg._apply_recipe(recipe)
+    assert dlg._cross_flavour_fields                # non-empty
+    assert not dlg._metrics_banner.isHidden()
+    text = dlg._metrics_banner.text()
+    assert "Camera" in text
+    assert "Faces" in text
+    assert "Scope" in text
+
+
+def test_apply_same_flavour_recipe_does_not_show_cross_flavour_banner(
+        qapp, store):
+    """A Cut Recipe loaded into the Cut dialog never carries hidden
+    filters — no banner."""
+    composition = {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "filters": {"styles": ["macro"], "media_type": "both"},
+    }
+    recipe = store.create(name="same", flavour=FLAVOUR_CUT,
+                          composition=composition)
+    dlg = _dialog(qapp, store, flavour=FLAVOUR_CUT)
+    dlg._apply_recipe(recipe)
+    assert dlg._cross_flavour_fields == []

@@ -58,3 +58,7 @@ tools/_*.png
 
 # Scratch agent briefs (handoffs, not part of the spec tree).
 /BRIEF-*.md
+
+# spec/92 UI safety net: throwaway render-diff heatmaps (the locked
+# baseline in scripts/_ui_baseline/ IS committed; the diffs are not).
+scripts/_ui_diff/

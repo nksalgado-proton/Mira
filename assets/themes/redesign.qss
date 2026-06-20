@@ -138,11 +138,16 @@ QComboBox#DesignSelect QAbstractItemView::item:selected {
 /* ---- Chips / tags / pill toggles ---- */
 QLabel#Tag         { background: {accent_soft}; color: {accent}; border-radius: {radius_sm}px;
                      padding: 3px 8px; font-size: 11px; font-weight: 700; }
-QLabel#ChipOpen    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
-QLabel#ChipClosed  { background: rgba(255,93,162,0.16); color: {pink};   border-radius: 13px; padding: 5px 11px; font-weight: 700; }
-QLabel#ChipDone    { background: rgba(52,211,153,0.14); color: {green};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
-QLabel#ChipProg    { background: rgba(251,191,36,0.18); color: {amber};  border-radius: 13px; padding: 5px 11px; font-weight: 700; }
-QLabel#ChipIdle    { background: {card2};                color: {ink_soft};  border-radius: 13px; padding: 5px 11px; font-weight: 600; }
+/* Status chips (spec/92 §2.5 → Chip[tone]). One base role + a `tone`
+ * property selects the variant. Weight 700 is the default; idle drops
+ * to 600. Open/Done share their look (green-tint, weight 700);
+ * collapsing them onto one role keeps that intentional. */
+QLabel#Chip                  { border-radius: 13px; padding: 5px 11px; font-weight: 700; }
+QLabel#Chip[tone="open"]     { background: rgba(52,211,153,0.14); color: {green}; }
+QLabel#Chip[tone="closed"]   { background: rgba(255,93,162,0.16); color: {pink}; }
+QLabel#Chip[tone="done"]     { background: rgba(52,211,153,0.14); color: {green}; }
+QLabel#Chip[tone="prog"]     { background: rgba(251,191,36,0.18); color: {amber}; }
+QLabel#Chip[tone="idle"]     { background: {card2};               color: {ink_soft}; font-weight: 600; }
 
 /* Pipeline percentage labels — phase-identity colour (spec/66); faint at 0% */
 QLabel#PctCollect  { color: {blue};      font-weight: 700; }

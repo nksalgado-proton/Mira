@@ -244,11 +244,17 @@ def test_open_tile_has_no_status_pill(qapp):
     """spec/77 §10.1 — the green Open / pink Closed pill is gone from
     every title row. The body (donuts ↔ photo) speaks the status."""
     open_tile = EventTile(_open_card())
-    # Walk descendants — no QLabel objectName should match ChipOpen /
-    # ChipClosed (the roles the old pill used).
+    # Walk descendants — neither the legacy roles (#ChipOpen / #ChipClosed,
+    # retired by spec/92 §2.5) nor the current #Chip[tone="open|closed"]
+    # may appear: the status pill is gone, whichever role would carry it.
     from PyQt6.QtWidgets import QLabel
+    def _is_status_pill(w: QLabel) -> bool:
+        name = w.objectName()
+        return name in ("ChipOpen", "ChipClosed") or (
+            name == "Chip" and w.property("tone") in ("open", "closed")
+        )
     for w in open_tile.findChildren(QLabel):
-        assert w.objectName() not in ("ChipOpen", "ChipClosed"), (
+        assert not _is_status_pill(w), (
             "found a status pill that spec/77 §10.1 retired"
         )
     closed = EventCardData(
@@ -257,7 +263,7 @@ def test_open_tile_has_no_status_pill(qapp):
     )
     closed_tile = EventTile(closed)
     for w in closed_tile.findChildren(QLabel):
-        assert w.objectName() not in ("ChipOpen", "ChipClosed")
+        assert not _is_status_pill(w)
 
 
 # ──────────────────────────────────────────────────────────────────

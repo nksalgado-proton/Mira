@@ -4,9 +4,10 @@ QLabel-based chips for state pills (open/closed/done/in-progress/idle) and
 tags (uppercase micro accents). QPushButton-based pill_toggle for selectable
 options (Creative Focus, Participants in the Event Header dialog).
 
-QSS rules in ``redesign.qss`` carry the look (#ChipOpen / #ChipClosed /
-#ChipDone / #ChipProg / #ChipIdle / #Tag / #PillToggle); these helpers wire
-the ObjectName + cursor and return ready-to-add widgets.
+QSS rules in ``redesign.qss`` carry the look (#Chip[tone=…] / #Tag /
+#PillToggle); these helpers wire the ObjectName + tone property + cursor
+and return ready-to-add widgets. Spec/92 §2.5 collapsed the five sibling
+#Chip* roles onto one #Chip + a `tone` property.
 """
 from __future__ import annotations
 
@@ -14,38 +15,39 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel, QPushButton, QWidget
 
 
-def _chip(role: str, text: str, parent: QWidget | None = None) -> QLabel:
+def _chip(tone: str, text: str, parent: QWidget | None = None) -> QLabel:
     lab = QLabel(text, parent)
-    lab.setObjectName(role)
+    lab.setObjectName("Chip")
+    lab.setProperty("tone", tone)
     lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
     return lab
 
 
 def chip_open(text: str = "Open", parent: QWidget | None = None) -> QLabel:
     """Green-tinted pill for open/active events."""
-    return _chip("ChipOpen", text, parent)
+    return _chip("open", text, parent)
 
 
 def chip_closed(text: str = "Closed", parent: QWidget | None = None) -> QLabel:
     """Pink-tinted pill for closed events / finished sessions."""
-    return _chip("ChipClosed", text, parent)
+    return _chip("closed", text, parent)
 
 
 def chip_done(text: str = "Done", parent: QWidget | None = None) -> QLabel:
     """Green-tinted pill for completed phases / 100% stages."""
-    return _chip("ChipDone", text, parent)
+    return _chip("done", text, parent)
 
 
 def chip_prog(text: str = "62%", parent: QWidget | None = None) -> QLabel:
     """Amber-tinted pill for in-progress phases / partial completion."""
-    return _chip("ChipProg", text, parent)
+    return _chip("prog", text, parent)
 
 
 def chip_idle(
     text: str = "Not started", parent: QWidget | None = None
 ) -> QLabel:
     """Neutral pill for not-started / 0%-state. Card2 fill, ink_faint text."""
-    return _chip("ChipIdle", text, parent)
+    return _chip("idle", text, parent)
 
 
 def tag(text: str, parent: QWidget | None = None) -> QLabel:

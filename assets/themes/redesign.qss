@@ -20,16 +20,13 @@ QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius
 /* Share-list tile (Cut row + DC row). Sits INSIDE the tab content
  * #Card2 wrapper.
  *
- * v3 (Nelson 2026-06-20): the per-tile #Card border + shadow already
- * landed; the user then reported "I see no change". Pixel probe
- * confirmed why: the layout's 12-px spacing was painting #card2 bands
- * between every pair of rows, reading visually as separators. Final
- * shape: transparent background + 1-px bottom hairline, with the
- * surrounding layout's spacing dropped to 0 — a clean list look,
- * separators come from the hairline alone. */
-QFrame#ShareListRow { background: transparent; border: none;
-                      border-bottom: 1px solid {line};
-                      border-radius: 0px; }
+ * v4 (Nelson 2026-06-20): per Nelson's pick, each tile reads as a
+ * fully-bordered card matching the #exported pool card above —
+ * accent-tinted line, rounded corners, ``card`` surface. Restore the
+ * layout's gap between rows (see _build_cuts_tab) so the tiles
+ * separate visually. */
+QFrame#ShareListRow { background: {card}; border: 1px solid {accent};
+                      border-radius: {radius_lg}px; }
 /* Event tiles — spec/77 §7.2. QSS owns the rounded background fill;
  * the border is painted by ``EventTile.paintEvent`` (copying the
  * days-grid Thumb's pattern in ``mira/ui/design/thumbs.py``: 2px

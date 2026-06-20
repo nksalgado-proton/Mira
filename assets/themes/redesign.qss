@@ -396,9 +396,12 @@ QLabel#BandHint                  { color: {ink_faint}; font-size: 12px;
  *     Save Recipe buttons.
  *   BandGroup    — secondary tint surface that wraps the inner cards;
  *     no hard border, generous radius.
- *   SectionCard  — proper card-style inner box (Source, Filters,
- *     Rules, Otherwise, Runtime, Metrics). Card surface + line border +
- *     medium radius + interior padding.
+ *   SectionCard  — soft inset inner box (Source, Filters, Rules,
+ *     Otherwise, Runtime, Metrics). Card surface + medium radius;
+ *     NO border — the band's ``{card2}`` tint reads the inner card's
+ *     ``{card}`` surface as inset on its own (heavy borders made the
+ *     dialog read as a grid of boxed tiles; tint alone carries the
+ *     hierarchy per Nelson eyeball 2026-06-20).
  * QSS background only paints when WA_StyledBackground is set on the
  * QWidget/QFrame; the dialog code sets that on each host. */
 QFrame#RecipeToolbar             { background: {card2}; border: none;
@@ -418,7 +421,7 @@ QFrame#FiltersSection,
 QFrame#RulesSectionCard,
 QFrame#OtherwiseSectionCard,
 QFrame#RuntimeSectionCard,
-QFrame#MetricsSectionCard        { background: {card}; border: 1px solid {line};
+QFrame#MetricsSectionCard        { background: {card}; border: none;
                                    border-radius: {radius_md}px; }
 
 /* Verb / join-word popover rows — two-line buttons with a key + faint

@@ -399,3 +399,166 @@ def test_probe_receives_the_full_composition(qapp):
     assert "rules" in c
     assert c["otherwise"] in (VERDICT_PICK, VERDICT_SKIP)
     assert "filters" in c
+
+
+# --------------------------------------------------------------------------- #
+# Bug 1 / Bug 2 — runtime spinners flow into composition, has_budget toggle
+# --------------------------------------------------------------------------- #
+
+
+def test_composition_emits_presentation_with_runtime_fields(qapp):
+    """spec/90 §5.1 Bug 1 — ``composition()`` includes a ``presentation``
+    dict carrying the runtime spinner values (target_s / max_s in
+    seconds; photo_s as float). Without this the recipe_to_cut_draft
+    adapter reads None and the picker session loses its budget."""
+    dlg = _dialog(qapp)
+    comp = dlg.composition()
+    assert "presentation" in comp
+    presentation = comp["presentation"]
+    # Default ctx: target_minutes=10 → 600 s; max_minutes=12 → 720 s;
+    # per_photo_seconds=6.0.
+    assert presentation["target_s"] == 600
+    assert presentation["max_s"] == 720
+    assert presentation["photo_s"] == 6.0
+
+
+def test_composition_spinner_changes_round_trip_into_presentation(qapp):
+    """Mutating the spinners updates the emitted presentation dict —
+    the seam tests use to confirm the round-trip."""
+    dlg = _dialog(qapp)
+    dlg._on_target_changed(5)
+    dlg._on_max_changed(15)
+    dlg._on_per_photo_changed(4.5)
+    presentation = dlg.composition()["presentation"]
+    assert presentation["target_s"] == 300
+    assert presentation["max_s"] == 900
+    assert presentation["photo_s"] == 4.5
+
+
+def test_composition_no_budget_emits_null_target_and_max(qapp):
+    """spec/90 §5.1 Bug 2 — with ``has_budget=False`` the presentation
+    block emits target_s + max_s as ``None`` (the picker session reads
+    "no limit" from the resulting CutDraft). photo_s stays — it's
+    slide-rate, not a budget."""
+    ctx = NewRecipeContext(
+        available_pools=_pools(),
+        available_styles=["macro"],
+        has_budget=False,
+    )
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    presentation = dlg.composition()["presentation"]
+    assert presentation["target_s"] is None
+    assert presentation["max_s"] is None
+    assert presentation["photo_s"] == 6.0
+
+
+def test_budget_checkbox_unchecked_disables_target_and_max_spinners(qapp):
+    """The Target + Max spinners go disabled when the checkbox is
+    unchecked. Per-photo stays enabled (it's slide-rate, not a budget)."""
+    ctx = NewRecipeContext(
+        available_pools=_pools(), has_budget=False)
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    assert dlg._budget_check.isChecked() is False
+    assert dlg._target_spin.isEnabled() is False
+    assert dlg._max_spin.isEnabled() is False
+    assert dlg._per_photo_spin.isEnabled() is True
+
+
+def test_budget_checkbox_toggle_flips_emitted_presentation(qapp):
+    """Toggling the checkbox flips presentation.target_s / max_s
+    between concrete int values and None — round-trips per toggle."""
+    dlg = _dialog(qapp)
+    # Default has_budget=True → numbers.
+    assert dlg.composition()["presentation"]["target_s"] == 600
+    dlg._on_budget_toggled(False)
+    assert dlg.composition()["presentation"]["target_s"] is None
+    assert dlg.composition()["presentation"]["max_s"] is None
+    dlg._on_budget_toggled(True)
+    assert dlg.composition()["presentation"]["target_s"] == 600
+    assert dlg.composition()["presentation"]["max_s"] == 720
+
+
+def test_metrics_line_drops_target_suffix_when_no_budget(qapp):
+    """spec/90 §5.1 Bug 2 — with no budget, the metrics line drops the
+    "of MM:SS target" suffix and tags the runtime as ``runtime``
+    instead. The user sees the projected length without an implied
+    limit."""
+    ctx = NewRecipeContext(
+        available_pools=_pools(),
+        available_styles=["macro"],
+        has_budget=False,
+    )
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+        recipe_probe=lambda _c: _fake_resolution(pool_size=386, picked=11),
+    )
+    dlg._run_probe()
+    text = dlg._metrics_label.text()
+    assert "386" in text
+    assert "11" in text
+    # 11 * 6.0 = 66s → 1:06.
+    assert "1:06" in text
+    # The "of N target" suffix is GONE; "runtime" appears instead.
+    assert "target" not in text
+    assert "runtime" in text
+
+
+def test_metrics_line_keeps_target_suffix_when_budget_re_enabled(qapp):
+    """Toggling the checkbox back on restores the "of MM:SS target"
+    suffix without firing a fresh probe."""
+    dlg = _dialog(qapp,
+                  recipe_probe=lambda _c: _fake_resolution(pool_size=10,
+                                                           picked=5))
+    dlg._run_probe()
+    assert "target" in dlg._metrics_label.text()
+    dlg._on_budget_toggled(False)
+    assert "target" not in dlg._metrics_label.text()
+    assert "runtime" in dlg._metrics_label.text()
+    dlg._on_budget_toggled(True)
+    assert "target" in dlg._metrics_label.text()
+
+
+def test_apply_composition_with_null_budget_unchecks_box(qapp):
+    """Loading a Recipe whose presentation has target_s=max_s=None
+    flips the checkbox off + greys the spinners."""
+    dlg = _dialog(qapp)
+    # Start with the default checked state, then load a no-budget comp.
+    assert dlg._budget_check.isChecked() is True
+    dlg._apply_composition({
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "presentation": {"target_s": None, "max_s": None, "photo_s": 6.0},
+    })
+    assert dlg._budget_check.isChecked() is False
+    assert dlg._target_spin.isEnabled() is False
+    assert dlg._max_spin.isEnabled() is False
+    assert dlg._has_budget is False
+
+
+def test_apply_composition_with_budget_checks_box(qapp):
+    """Loading a Recipe with a real budget flips the checkbox on +
+    populates the spinners."""
+    ctx = NewRecipeContext(available_pools=_pools(), has_budget=False)
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    assert dlg._budget_check.isChecked() is False
+    dlg._apply_composition({
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "presentation": {"target_s": 300, "max_s": 600, "photo_s": 4.0},
+    })
+    assert dlg._budget_check.isChecked() is True
+    assert dlg._target_spin.isEnabled() is True
+    assert dlg._max_spin.isEnabled() is True
+    assert dlg._target_minutes == 5            # 300 s / 60
+    assert dlg._max_minutes == 10              # 600 s / 60
+    assert dlg._per_photo_seconds == 4.0

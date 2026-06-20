@@ -261,6 +261,124 @@ def test_adjust_goes_dialog_first_then_session(qapp, gw, tmp_path):
     assert shell._stack.currentWidget() is shell.list_page
 
 
+def test_adjust_prefill_with_real_budget_keeps_has_budget_true(qapp, gw,
+                                                               tmp_path):
+    """spec/90 §5.1 Bug 2 — Adjusting a Cut whose target_s/max_s carry
+    real values opens the dialog with has_budget=True and spinners
+    showing the right numbers."""
+    from types import SimpleNamespace
+    from mira.ui.pages.new_recipe_dialog import (
+        FLAVOUR_CUT,
+        INVENTORY_EVENT,
+        NewRecipeContext,
+    )
+    shell = _shell(gw)
+    prefill = SimpleNamespace(
+        name="short_version",
+        pool_expr_json='[["+", "exported"]]',
+        style_filter_json='[]',
+        type_filter="both",
+        default_state="skipped",
+        target_s=300, max_s=600,
+        photo_s=5.0,
+        music_category=None, card_style="black",
+    )
+    ctx = shell._build_recipe_context(
+        shell._dialog_kwargs(), prefill=prefill)
+    assert ctx.has_budget is True
+    assert ctx.target_minutes == 5             # 300 s / 60
+    assert ctx.max_minutes == 10               # 600 s / 60
+    assert ctx.per_photo_seconds == 5.0
+
+
+def test_adjust_prefill_with_null_budget_flips_has_budget_false(qapp, gw,
+                                                                tmp_path):
+    """spec/90 §5.1 Bug 2 — Adjusting a Cut with target_s=max_s=None
+    opens the dialog with has_budget=False (checkbox unchecked, spinners
+    greyed at the UI layer)."""
+    from types import SimpleNamespace
+    shell = _shell(gw)
+    prefill = SimpleNamespace(
+        name="no_budget",
+        pool_expr_json='[["+", "exported"]]',
+        style_filter_json='[]',
+        type_filter="both",
+        default_state="skipped",
+        target_s=None, max_s=None,
+        photo_s=6.0,
+        music_category=None, card_style="black",
+    )
+    ctx = shell._build_recipe_context(
+        shell._dialog_kwargs(), prefill=prefill)
+    assert ctx.has_budget is False
+
+
+def test_start_round_trips_budget_through_adapter(qapp, gw, tmp_path):
+    """spec/90 §5.1 Bug 1 + Bug 2 end-to-end — clicking Start on a Cut
+    with a budget produces a CutDraft whose target_s reflects the
+    dialog's spinner value (via the presentation block)."""
+    from types import SimpleNamespace
+    from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
+    from mira.user_store import models as um
+    import json as _json
+    shell = _shell(gw)
+    prefill = SimpleNamespace(
+        name="short_version",
+        pool_expr_json='[["+", "exported"]]',
+        style_filter_json='[]',
+        type_filter="both",
+        default_state="skipped",
+        target_s=300, max_s=600,
+        photo_s=5.0,
+        music_category=None, card_style="black",
+    )
+    dlg = shell._make_new_recipe_dialog(
+        shell._dialog_kwargs(), prefill=prefill)
+    comp = dlg.composition()
+    assert comp["presentation"]["target_s"] == 300
+    assert comp["presentation"]["max_s"] == 600
+    recipe = um.Recipe(id="", name="short_version", flavour="cut",
+                       composition_json=_json.dumps(comp),
+                       created_at="", updated_at="")
+    draft = recipe_to_cut_draft(recipe)
+    assert draft.target_s == 300
+    assert draft.max_s == 600
+    assert draft.photo_s == 5.0
+    dlg.deleteLater()
+
+
+def test_start_round_trips_null_budget_through_adapter(qapp, gw, tmp_path):
+    """A no-budget composition round-trips to draft.target_s=None
+    (cut_session_page renders "no limit" from the resulting CutDraft)."""
+    from types import SimpleNamespace
+    from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
+    from mira.user_store import models as um
+    import json as _json
+    shell = _shell(gw)
+    prefill = SimpleNamespace(
+        name="no_budget_cut",
+        pool_expr_json='[["+", "exported"]]',
+        style_filter_json='[]',
+        type_filter="both",
+        default_state="skipped",
+        target_s=None, max_s=None,
+        photo_s=6.0,
+        music_category=None, card_style="black",
+    )
+    dlg = shell._make_new_recipe_dialog(
+        shell._dialog_kwargs(), prefill=prefill)
+    comp = dlg.composition()
+    assert comp["presentation"]["target_s"] is None
+    assert comp["presentation"]["max_s"] is None
+    recipe = um.Recipe(id="", name="x", flavour="cut",
+                       composition_json=_json.dumps(comp),
+                       created_at="", updated_at="")
+    draft = recipe_to_cut_draft(recipe)
+    assert draft.target_s is None
+    assert draft.max_s is None
+    dlg.deleteLater()
+
+
 def test_back_emits_closed(qapp, gw, tmp_path):
     shell = _shell(gw)
     got = []

@@ -1291,16 +1291,23 @@ class ShareCutsPage(QWidget):
         state = getattr(prefill, "default_state", "skipped") or "skipped"
         ctx.otherwise = "pick" if state == "picked" else "skip"
 
-        # Runtime presentation.
+        # Runtime presentation. spec/90 §5.1: ``has_budget`` derives from
+        # whether the existing Cut carries a real bound — a Cut saved
+        # with target_s=max_s=None re-opens the dialog with the
+        # checkbox unchecked + spinners greyed.
         target_s = getattr(prefill, "target_s", None)
+        max_s = getattr(prefill, "max_s", None)
         if isinstance(target_s, (int, float)):
             ctx.target_minutes = max(1, int(round(float(target_s) / 60)))
-        max_s = getattr(prefill, "max_s", None)
         if isinstance(max_s, (int, float)):
             ctx.max_minutes = max(1, int(round(float(max_s) / 60)))
         photo_s = getattr(prefill, "photo_s", None)
         if isinstance(photo_s, (int, float)):
             ctx.per_photo_seconds = max(0.1, float(photo_s))
+        ctx.has_budget = (
+            isinstance(target_s, (int, float))
+            or isinstance(max_s, (int, float))
+        )
 
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or

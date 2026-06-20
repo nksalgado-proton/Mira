@@ -442,7 +442,11 @@ unchanged. Every section except `source` and `otherwise` is optional.
   "otherwise": "skip",
 
   // Presentation — non-resolver state for the Picker session + export
-  // pipeline. Resolver ignores; the dialog reads.
+  // pipeline. Resolver ignores; the dialog reads. `target_s` / `max_s`
+  // are nullable: when both are `null` the Cut carries no runtime
+  // budget (the dialog's "Set a runtime budget" checkbox emits both as
+  // null when unchecked, and the picker shows "no limit"). `photo_s`
+  // is slide-rate, not a budget — always present.
   "presentation": {
     "target_s": 90,
     "max_s": 300,
@@ -459,6 +463,16 @@ packed keys for cross-event), and `seed[key] = True/False` is the initial
 picked-state the Picker session opens against. Missing named operands raise
 `RecipeResolutionError(missing_operand, kind)`; vocabulary filter misses
 resolve leniently to empty (§1.4).
+
+The dialog exposes a `has_budget` toggle (`NewRecipeContext.has_budget`,
+default `true` for new Cuts). When `false` the Target / Max spinners go
+disabled and the emitted `presentation.target_s` / `max_s` are both
+`null`; the [`recipe_to_cut_draft`](../mira/shared/recipe_draft_adapter.py)
+adapter propagates the nulls into the resulting `CutDraft`, and the
+[picker session](../mira/ui/shared/cut_session_page.py) renders "no
+limit" from there. The Adjust prefill derives `has_budget` from the
+existing Cut's bounds — a Cut saved with `target_s = max_s = NULL`
+re-opens with the checkbox unchecked.
 
 ### 5.1.1 Phase 3 — Recipe ↔ `CutDraft` adapter
 

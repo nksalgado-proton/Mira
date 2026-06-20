@@ -241,9 +241,18 @@ class NewRecipeContext:
     # :mod:`core.cut_budget`; ``per_photo_seconds`` is the seconds-per-
     # slide cost the runtime math multiplies by. Defaults match the
     # legacy New Cut dialog's spec/61 §2 step 5 numbers.
+    #
+    # ``has_budget`` (spec/90 §5.1 presentation block): when False the
+    # dialog renders the Target / Max spinners greyed and emits
+    # ``presentation.target_s = max_s = None`` so the picker session
+    # honours the "no time budget" state (cut_session_page already
+    # renders "no limit" for NULL bounds). True by default for new
+    # Cuts; the Adjust prefill flips it to False when the existing Cut
+    # has both NULL bounds.
     target_minutes: int = 10
     max_minutes: int = 12
     per_photo_seconds: float = 6.0
+    has_budget: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -1383,6 +1392,7 @@ class NewRecipeDialog(QDialog):
         self._target_minutes: int = max(1, int(ctx.target_minutes))
         self._max_minutes: int = max(1, int(ctx.max_minutes))
         self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
+        self._has_budget: bool = bool(ctx.has_budget)
 
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
@@ -2171,13 +2181,29 @@ class NewRecipeDialog(QDialog):
         settings (spec/61 §2 step 5 / spec/90 §10). Phase 4d only needs
         Target / Max / Per-photo to feed the metrics row's runtime math;
         Music + slide-cards still live on the spec/61 §3.1 settings
-        surface and don't influence the live count."""
+        surface and don't influence the live count.
+
+        spec/90 §5.1 presentation block: a "Set a runtime budget"
+        checkbox sits above the Target / Max spinners. When unchecked,
+        the Target + Max spinners go disabled and the emitted
+        ``presentation.target_s`` / ``max_s`` are ``None`` — the
+        picker session renders "no limit" honestly. Per-photo is
+        slide-rate (not a budget) and stays enabled regardless."""
         host = QWidget()
         host.setObjectName("RuntimeSection")
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
         v.addWidget(_micro(tr("Runtime")))
+
+        # Budget toggle — unchecked = "no budget" (target_s/max_s emit
+        # as None; spinners disabled).
+        self._budget_check = QCheckBox(tr("Set a runtime budget"))
+        self._budget_check.setObjectName("RuntimeBudgetCheck")
+        self._budget_check.setChecked(self._has_budget)
+        self._budget_check.toggled.connect(self._on_budget_toggled)
+        v.addWidget(self._budget_check)
+
         row = QHBoxLayout()
         row.setSpacing(10)
 
@@ -2192,6 +2218,7 @@ class NewRecipeDialog(QDialog):
         self._target_spin.setRange(1, 240)
         self._target_spin.setValue(self._target_minutes)
         self._target_spin.setSuffix(" min")
+        self._target_spin.setEnabled(self._has_budget)
         self._target_spin.valueChanged.connect(self._on_target_changed)
         tv.addWidget(self._target_spin)
         row.addWidget(target_box)
@@ -2207,6 +2234,7 @@ class NewRecipeDialog(QDialog):
         self._max_spin.setRange(1, 480)
         self._max_spin.setValue(self._max_minutes)
         self._max_spin.setSuffix(" min")
+        self._max_spin.setEnabled(self._has_budget)
         self._max_spin.valueChanged.connect(self._on_max_changed)
         mv.addWidget(self._max_spin)
         row.addWidget(max_box)
@@ -2231,6 +2259,17 @@ class NewRecipeDialog(QDialog):
         row.addStretch()
         v.addLayout(row)
         return host
+
+    def _on_budget_toggled(self, checked: bool) -> None:
+        """Checkbox toggled — flip the budget state, grey or restore the
+        Target / Max spinners, and refresh the metrics line (the suffix
+        drops the "of N target" portion when no budget)."""
+        self._has_budget = bool(checked)
+        if hasattr(self, "_target_spin"):
+            self._target_spin.setEnabled(self._has_budget)
+        if hasattr(self, "_max_spin"):
+            self._max_spin.setEnabled(self._has_budget)
+        self._refresh_metrics_from_state()
 
     def _on_target_changed(self, value: int) -> None:
         self._target_minutes = int(value)
@@ -2345,17 +2384,27 @@ class NewRecipeDialog(QDialog):
     def _apply_metrics(
         self, resolution: "_recipe_resolver.RecipeResolution",
     ) -> None:
-        """Render the metrics line from a fresh resolution."""
+        """Render the metrics line from a fresh resolution. With a
+        runtime budget set, includes the ``of MM:SS target`` suffix;
+        without one (spec/90 §5.1 — has_budget=False), the line drops
+        the suffix and tags the runtime as ``runtime`` so the user
+        sees the projected length without an implied limit."""
         pool_size = len(resolution.pool)
         picked = sum(1 for v in resolution.seed.values() if v)
         total_s = float(picked) * float(self._per_photo_seconds)
-        target_s = int(self._target_minutes) * 60
-        text = (
+        head = (
             f"{pool_size} {tr('in pool')} · "
             f"{picked} {tr('initially picked')} · "
-            f"{_format_mm_ss(total_s)} {tr('of')} "
-            f"{_format_mm_ss(target_s)} {tr('target')}"
         )
+        if self._has_budget:
+            target_s = int(self._target_minutes) * 60
+            text = (
+                head
+                + f"{_format_mm_ss(total_s)} {tr('of')} "
+                + f"{_format_mm_ss(target_s)} {tr('target')}"
+            )
+        else:
+            text = head + f"{_format_mm_ss(total_s)} {tr('runtime')}"
         self._metrics_label.setText(text)
 
     def _apply_rule_breakdown(
@@ -2586,16 +2635,21 @@ class NewRecipeDialog(QDialog):
                 chip.setChecked(lens in lenses)
 
         # Presentation (Runtime spinners). Reads target_s / max_s in
-        # seconds; the dialog displays minutes.
+        # seconds; the dialog displays minutes. spec/90 §5.1: has_budget
+        # derives from whether the loaded recipe carries a real bound —
+        # a Recipe saved with target_s=max_s=None re-opens with the
+        # checkbox unchecked.
         presentation = composition.get("presentation") or {}
         if isinstance(presentation, Mapping):
             target_s = presentation.get("target_s")
-            if isinstance(target_s, (int, float)):
+            max_s = presentation.get("max_s")
+            has_target = isinstance(target_s, (int, float))
+            has_max = isinstance(max_s, (int, float))
+            if has_target:
                 self._target_minutes = max(1, int(round(float(target_s) / 60)))
                 if hasattr(self, "_target_spin"):
                     self._target_spin.setValue(self._target_minutes)
-            max_s = presentation.get("max_s")
-            if isinstance(max_s, (int, float)):
+            if has_max:
                 self._max_minutes = max(1, int(round(float(max_s) / 60)))
                 if hasattr(self, "_max_spin"):
                     self._max_spin.setValue(self._max_minutes)
@@ -2604,6 +2658,16 @@ class NewRecipeDialog(QDialog):
                 self._per_photo_seconds = max(0.1, float(photo_s))
                 if hasattr(self, "_per_photo_spin"):
                     self._per_photo_spin.setValue(self._per_photo_seconds)
+            # Sync has_budget + the checkbox / spinner-enabled state.
+            self._has_budget = bool(has_target or has_max)
+            if hasattr(self, "_budget_check"):
+                self._budget_check.blockSignals(True)
+                self._budget_check.setChecked(self._has_budget)
+                self._budget_check.blockSignals(False)
+            if hasattr(self, "_target_spin"):
+                self._target_spin.setEnabled(self._has_budget)
+            if hasattr(self, "_max_spin"):
+                self._max_spin.setEnabled(self._has_budget)
 
     def _decode_expr(
         self, expr: Sequence[Sequence[Any]],
@@ -2850,16 +2914,44 @@ class NewRecipeDialog(QDialog):
     def composition(self) -> dict:
         """Aggregate the section payloads into one ``composition`` dict
         matching the spec/90 §5.1 schema. Convenient for tests + the
-        Phase 4e save-recipe / start-picker wiring."""
+        Phase 4e save-recipe / start-picker wiring.
+
+        The ``presentation`` block carries the runtime spinners through
+        to :func:`recipe_to_cut_draft` (which reads ``target_s`` /
+        ``max_s`` / ``photo_s`` from it). When :attr:`_has_budget` is
+        False, ``target_s`` + ``max_s`` are emitted as ``None`` so the
+        downstream Cut shows "no limit" (cut_session_page §131).
+        Music / card_style / overlay_fields / separators are Phase 4
+        UI gaps — left out of the presentation block until the dialog
+        gains those controls."""
         comp: Dict[str, Any] = {
             "source": self.source_expression(),
             "filters": self.filters_payload(),
             "rules": self.rules_expression(),
             "otherwise": self.otherwise_verdict(),
+            "presentation": self.presentation_payload(),
         }
         if self._show_scope:
             comp["scope"] = self.scope_expression()
         return comp
+
+    def presentation_payload(self) -> dict:
+        """The ``presentation`` block of the composition (spec/90 §5.1).
+        Emits the runtime fields the dialog currently exposes; leaves
+        the unimplemented Phase 4 fields (music_category, card_style,
+        overlay_fields, separators) out of the dict so the adapter's
+        tolerant defaults take over."""
+        target_s: Optional[int] = (
+            int(self._target_minutes) * 60 if self._has_budget else None
+        )
+        max_s: Optional[int] = (
+            int(self._max_minutes) * 60 if self._has_budget else None
+        )
+        return {
+            "target_s": target_s,
+            "max_s": max_s,
+            "photo_s": float(self._per_photo_seconds),
+        }
 
     @staticmethod
     def _encode_operand(operand: OperandOption) -> Any:

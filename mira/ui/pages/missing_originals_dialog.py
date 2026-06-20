@@ -123,11 +123,7 @@ class MissingOriginalsDialog(QDialog):
     def _divider() -> QFrame:
         d = QFrame()
         d.setFrameShape(QFrame.Shape.HLine)
-        d.setObjectName("DialogDivider")
-        line = PALETTE[_palette_mode()]["line"]
-        d.setStyleSheet(
-            f"background: {line}; max-height: 1px; min-height: 1px;"
-        )
+        d.setObjectName("DialogDivider")  # themed hairline (redesign.qss)
         return d
 
     def _build_header_bar(self) -> QWidget:
@@ -149,7 +145,7 @@ class MissingOriginalsDialog(QDialog):
         tile = QLabel("!" if intent == "warning" else "i")
         tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(
+        tile.setStyleSheet(  # pragma: no-qss — bordered glyph header tile (token colours)
             f"background: {p['accent_soft']}; color: {accent};"
             f" border: 1px solid {accent}; border-radius: 9px;"
             f" font-size: 16px; font-weight: 800;"
@@ -178,16 +174,7 @@ class MissingOriginalsDialog(QDialog):
         ))
         close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.setToolTip(tr("Close"))
-        close.setStyleSheet(
-            "QPushButton#DialogClose {"
-            f" background: transparent;"
-            f" border: 1px solid {p['line']}; border-radius: 9px;"
-            "}"
-            "QPushButton#DialogClose:hover {"
-            f" border-color: {p['accent']};"
-            "}"
-        )
+        close.setToolTip(tr("Close"))  # styled by QPushButton#DialogClose (redesign.qss)
         close.clicked.connect(self._on_close_x)
         h.addWidget(close)
         return host
@@ -212,9 +199,8 @@ class MissingOriginalsDialog(QDialog):
         if path_text:
             p = PALETTE[_palette_mode()]
             hint = QLabel(path_text)
-            hint.setObjectName("Faint")
+            hint.setObjectName("Sub")  # ink_soft label (redesign.qss)
             hint.setWordWrap(True)
-            hint.setStyleSheet(f"color: {p['ink_soft']};")
             hint.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )

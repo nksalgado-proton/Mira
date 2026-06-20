@@ -251,9 +251,10 @@ class CutPlayerDialog(QDialog):
         # start() then exec(), and applying modality to an already-visible
         # window is unreliable on Windows (owner left half-disabled).
         self.setModal(True)
-        self.setStyleSheet("background-color: black;")  # the show's canvas —
-        # a deliberate exception to the no-inline rule: this surface is the
-        # slideshow itself, not app chrome, and must stay black in any theme.
+        self.setStyleSheet("background-color: black;")  # pragma: no-qss
+        # the show's canvas — a deliberate exception to the no-inline rule: this
+        # surface is the slideshow itself, not app chrome, and must stay black in
+        # any theme.
         self._entries = list(entries)
         self._root = Path(event_root)
         self._photo_s = float(photo_s)
@@ -317,7 +318,7 @@ class CutPlayerDialog(QDialog):
         if self._overlay_fields and self._provenance_resolver is not None:
             self._overlay_label = QLabel(self)
             self._overlay_label.setObjectName("CutPlayOverlay")
-            self._overlay_label.setStyleSheet(
+            self._overlay_label.setStyleSheet(  # pragma: no-qss — slideshow overlay
                 "color: #ffffff;"
                 " background-color: rgba(0, 0, 0, 150);"
                 " padding: 8px 12px;"
@@ -491,7 +492,7 @@ class CutPlayerDialog(QDialog):
             from PyQt6.QtWidgets import QLabel
             self._missing_label = QLabel(self._stack_widget)
             self._missing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._missing_label.setStyleSheet(
+            self._missing_label.setStyleSheet(  # pragma: no-qss — slideshow text
                 "color: #cccccc; background: transparent;")
             self._stack_layout.addWidget(self._missing_label)
         self._missing_label.setText(tr("(file missing)"))
@@ -728,7 +729,7 @@ class CutPlayerDialog(QDialog):
         show, not to app chrome."""
         bar = QFrame(self)
         bar.setObjectName("CutPlayTransport")
-        bar.setStyleSheet(
+        bar.setStyleSheet(  # pragma: no-qss — slideshow transport bar
             "QFrame#CutPlayTransport {"
             " background-color: rgba(0, 0, 0, 220);"
             " border-top: 1px solid rgba(255, 255, 255, 50);"
@@ -831,7 +832,7 @@ class CutPlayerDialog(QDialog):
         prev = QLabel(self)
         prev.setObjectName("CutPlayHoverPreview")
         prev.setWindowFlags(Qt.WindowType.ToolTip)
-        prev.setStyleSheet(
+        prev.setStyleSheet(  # pragma: no-qss — slideshow scrubber preview
             "background-color: rgba(0, 0, 0, 220);"
             " border: 1px solid rgba(255, 255, 255, 90);"
             " color: #ffffff; padding: 4px;")

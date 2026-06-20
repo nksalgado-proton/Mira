@@ -63,10 +63,7 @@ def _divider() -> QFrame:
     line colour from the live palette so it follows the theme toggle."""
     d = QFrame()
     d.setFrameShape(QFrame.Shape.HLine)
-    line = PALETTE[_palette_mode()]["line"]
-    d.setStyleSheet(
-        f"background: {line}; max-height: 1px; min-height: 1px;"
-    )
+    d.setObjectName("DialogDivider")  # themed hairline (redesign.qss)
     return d
 
 

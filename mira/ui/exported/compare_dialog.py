@@ -202,7 +202,7 @@ class _CompareTile(QFrame):
             focus_rule = (
                 f"_CompareTile {{ outline: 2px solid {ring}; "
                 f"outline-offset: -1px; }}")
-        self.setStyleSheet(
+        self.setStyleSheet(  # pragma: no-qss — §5a state-border colour is per-tile data
             f"_CompareTile {{ border: {_TILE_BORDER_WIDTH}px solid "
             f"{color}; border-radius: 6px; }} {focus_rule}")
 

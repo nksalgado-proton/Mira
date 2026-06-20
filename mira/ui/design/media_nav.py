@@ -81,7 +81,7 @@ class _FilmstripThumb(QFrame):
         self.setObjectName(role)
         # Dim non-current items (design-system §3 MediaNav filmstrip rule)
         if not current:
-            self.setStyleSheet(
+            self.setStyleSheet(  # pragma: no-qss — runtime hover opacity toggle
                 self.styleSheet() + " QFrame { opacity: 0.62; }"
             )
         v = QHBoxLayout(self)

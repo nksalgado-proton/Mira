@@ -123,7 +123,7 @@ def _phase_status_chip(status: str, phase_key: str) -> QLabel:
         color = p.get(token, p["accent"])
         chip = QLabel("Done")
         chip.setObjectName("ChipPhaseDone")
-        chip.setStyleSheet(
+        chip.setStyleSheet(  # pragma: no-qss — phase-coloured chip, colour is data-driven
             f"background: {_with_alpha(color, 36)}; color: {color};"
             " border-radius: 13px; padding: 4px 11px; font-size: 11px;"
             " font-weight: 700;"
@@ -133,7 +133,7 @@ def _phase_status_chip(status: str, phase_key: str) -> QLabel:
         amber = p.get("amber", "#fbbf24")
         chip = QLabel("In progress")
         chip.setObjectName("ChipPhaseProg")
-        chip.setStyleSheet(
+        chip.setStyleSheet(  # pragma: no-qss — phase-coloured chip, colour is data-driven
             f"background: {_with_alpha(amber, 36)}; color: {amber};"
             " border-radius: 13px; padding: 4px 11px; font-size: 11px;"
             " font-weight: 700;"
@@ -168,7 +168,7 @@ class _StepBadge(QLabel):
         self.setFixedSize(24, 24)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         p = PALETTE[_palette_mode()]
-        self.setStyleSheet(
+        self.setStyleSheet(  # pragma: no-qss — accent-soft tile, token colours
             f"background: {p['accent_soft']}; color: {p['accent']};"
             " border: none; border-radius: 8px;"
             " font-size: 12px; font-weight: 800;"
@@ -209,7 +209,7 @@ class _DonutLegend(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         swatch = QFrame()
         swatch.setFixedSize(11, 11)
-        swatch.setStyleSheet(
+        swatch.setStyleSheet(  # pragma: no-qss — camera swatch colour is data-driven
             f"background: {s.color}; border-radius: 3px;"
         )
         row.addWidget(swatch)
@@ -225,7 +225,7 @@ class _DonutLegend(QWidget):
         # the CSS3 property and logs a warning per repaint. The values
         # here are short %s so monospacing isn't structurally needed.)
         p = PALETTE[_palette_mode()]
-        pct.setStyleSheet(
+        pct.setStyleSheet(  # pragma: no-qss — token colour label
             f"color: {p['ink']}; font-weight: 600;"
         )
         row.addWidget(pct)
@@ -316,7 +316,7 @@ class PhaseCard(Card):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         line_color = PALETTE[_palette_mode()]["line"]
-        sep.setStyleSheet(
+        sep.setStyleSheet(  # pragma: no-qss — separator, token colour
             f"color: {line_color}; background: {line_color};"
         )
         sep.setFixedHeight(1)

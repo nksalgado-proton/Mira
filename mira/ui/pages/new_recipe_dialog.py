@@ -704,7 +704,7 @@ class _OperandPickerPopover(QFrame):
         btn = QPushButton(tr("+ Add date range…"), self)
         btn.setObjectName("OperandPickerAddDateRange")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet("text-align: left; padding: 6px 8px;")
+        btn.setStyleSheet("text-align: left; padding: 6px 8px;")  # pragma: no-qss — layout-only
         btn.clicked.connect(self._on_add_date_range)
         self._list_layout.addWidget(btn)
         self._date_range_row = btn
@@ -717,7 +717,7 @@ class _OperandPickerPopover(QFrame):
         btn = QPushButton(text, self)
         btn.setObjectName("OperandPickerRow")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet("text-align: left; padding: 6px 8px;")
+        btn.setStyleSheet("text-align: left; padding: 6px 8px;")  # pragma: no-qss — layout-only
         btn.clicked.connect(lambda _checked=False, p=pool: self._on_chosen(p))
         return btn
 

@@ -291,10 +291,6 @@ class CollectPhotoPicker(QDialog):
         self._preview.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._preview.setStyleSheet(
-            "QLabel#PreviewPane { background: rgba(0, 0, 0, 0.08);"
-            " border: 1px solid #c0c0c0; }"
-        )
         pvbox.addWidget(self._preview, stretch=1)
 
         self._preview_meta = QLabel("")

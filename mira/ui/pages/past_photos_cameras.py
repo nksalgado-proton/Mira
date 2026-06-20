@@ -388,9 +388,7 @@ class PastPhotosCamerasDialog(QDialog):
         ])
         self._table.setShowGrid(True)
         self._table.setGridStyle(Qt.PenStyle.SolidLine)
-        self._table.setStyleSheet(
-            "QTableWidget { gridline-color: #9ca3af; }"
-        )
+        self._table.setObjectName("PastPhotosTable")  # themed gridline (redesign.qss)
         self._table.verticalHeader().setVisible(False)
         # All columns user-draggable; the last (Value) stretches to fill — the app-wide
         # table standard (spec/05 §4b, Nelson 2026-05-30: always use resizable headers).

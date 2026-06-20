@@ -141,8 +141,7 @@ class _SearchFieldWrap(QWidget):
         # Source: assets/icons/glyphs/search.svg (path data extracted from
         # surface-01-initial-app.html). Tinted ink_soft for the active theme.
         self._glyph = QLabel(self.input)
-        self._glyph.setObjectName("SearchGlyph")
-        self._glyph.setStyleSheet("background: transparent;")
+        self._glyph.setObjectName("SearchGlyph")  # transparent by default (QLabel base, redesign.qss)
         self._glyph.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
         )

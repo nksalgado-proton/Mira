@@ -135,15 +135,11 @@ class _SectionHeader(QWidget):
         v.setSpacing(6)
         p = PALETTE[_palette_mode()]
         lbl = QLabel(text.upper())
-        lbl.setObjectName("SectionHeader")
-        lbl.setStyleSheet(
-            f"color: {p['accent']}; font-size: 10px; font-weight: 800;"
-            " letter-spacing: 1.5px;"
-        )
+        lbl.setObjectName("SectionEyebrow")  # shared section-eyebrow role (redesign.qss)
         v.addWidget(lbl)
         rule = QFrame()
         rule.setFixedHeight(1)
-        rule.setStyleSheet(
+        rule.setStyleSheet(  # pragma: no-qss — decorative accent-fade gradient (computed)
             "background: qlineargradient("
             f"x1:0, y1:0, x2:1, y2:0,"
             f" stop:0 {_with_alpha(p['accent'], 90)},"
@@ -251,11 +247,7 @@ class EventHeaderDialog(QDialog):
     def _divider() -> QFrame:
         d = QFrame()
         d.setFrameShape(QFrame.Shape.HLine)
-        d.setObjectName("DialogDivider")
-        line = PALETTE[_palette_mode()]["line"]
-        d.setStyleSheet(
-            f"background: {line}; max-height: 1px; min-height: 1px;"
-        )
+        d.setObjectName("DialogDivider")  # themed hairline (redesign.qss)
         return d
 
     def _build_header_bar(self) -> QWidget:
@@ -270,12 +262,9 @@ class EventHeaderDialog(QDialog):
         # light theme picks up accent_soft = #eceaff instead of dark's
         # #211f3a (the prior inline hex broke the tile in light mode).
         tile = QLabel()
+        tile.setObjectName("CutHeaderTile")  # shared accent-soft dialog tile (redesign.qss)
         tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(
-            f"background: {p['accent_soft']}; color: {p['accent']};"
-            " border: none; border-radius: 9px;"
-        )
         tile.setPixmap(
             tinted_svg_pixmap(GLYPH_EVENT, 18, QColor(p["accent"]))
         )
@@ -316,16 +305,7 @@ class EventHeaderDialog(QDialog):
         ))
         close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.setToolTip(tr("Cancel and close"))
-        close.setStyleSheet(
-            "QPushButton#DialogClose {"
-            f" background: transparent;"
-            f" border: 1px solid {p['line']}; border-radius: 9px;"
-            "}"
-            "QPushButton#DialogClose:hover {"
-            f" border-color: {p['accent']};"
-            "}"
-        )
+        close.setToolTip(tr("Cancel and close"))  # styled by QPushButton#DialogClose (redesign.qss)
         close.clicked.connect(self.reject)
         h.addWidget(close)
         return host

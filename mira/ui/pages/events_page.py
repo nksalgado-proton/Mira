@@ -169,7 +169,7 @@ class EventsPage(QWidget):
         h.setSpacing(10)
 
         title = QLabel("Events")
-        title.setStyleSheet("font-size: 22px; font-weight: 800;")
+        title.setStyleSheet("font-size: 22px; font-weight: 800;")  # pragma: no-qss — layout-only (font)
         h.addWidget(title)
 
         # Three small stat pills — open / closed / total days. The chip
@@ -188,7 +188,7 @@ class EventsPage(QWidget):
         # §3.2, also the original fix #1 root cause).
         self._showing_label = QLabel("")
         self._showing_label.setObjectName("Faint")
-        self._showing_label.setStyleSheet("font-size: 12px;")
+        self._showing_label.setStyleSheet("font-size: 12px;")  # pragma: no-qss — layout-only (font)
         self._showing_label.setVisible(False)
         h.addWidget(self._showing_label)
 
@@ -215,7 +215,7 @@ class EventsPage(QWidget):
         self._clear_btn = QPushButton("× Clear")
         self._clear_btn.setObjectName("Ghost")
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_btn.setStyleSheet(
+        self._clear_btn.setStyleSheet(  # pragma: no-qss — layout-only padding override
             "QPushButton#Ghost { padding: 8px 10px; }"
         )
         self._clear_btn.clicked.connect(self._on_clear_filters)
@@ -260,7 +260,7 @@ class EventsPage(QWidget):
         host frame attached to a ``QWidgetAction`` so the menu inherits
         Esc-to-close + click-outside-to-close from Qt for free."""
         menu = QMenu(self)
-        menu.setStyleSheet(
+        menu.setStyleSheet(  # pragma: no-qss — menu chrome
             "QMenu { background: transparent; border: none; }"
         )
 

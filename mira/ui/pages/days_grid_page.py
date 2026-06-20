@@ -320,7 +320,7 @@ def _state_swatch(state: str, label: str) -> QWidget:
     color = PALETTE["dark"][state]
     swatch = QLabel()
     swatch.setFixedSize(18, 14)
-    swatch.setStyleSheet(
+    swatch.setStyleSheet(  # pragma: no-qss — §5a legend swatch border colour is data-driven
         f"background: transparent; border: 3px solid {color};"
         f" border-radius: 5px;"
     )

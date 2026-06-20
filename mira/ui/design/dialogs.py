@@ -59,7 +59,7 @@ def _icon_tile(intent: str) -> QLabel:
     tile = QLabel(cfg["glyph"])
     tile.setFixedSize(46, 46)
     tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    tile.setStyleSheet(
+    tile.setStyleSheet(  # pragma: no-qss — intent colour (info/success/warn/error) is data-driven
         f"background: rgba(124,108,255,0.10); color: {cfg['color']};"
         f" border: 1px solid {cfg['color']}; border-radius: 14px;"
         f" font-size: 20px; font-weight: 800;"
@@ -69,7 +69,7 @@ def _icon_tile(intent: str) -> QLabel:
 
 def _divider() -> QFrame:
     d = QFrame()
-    d.setStyleSheet("background: #262b38; max-height: 1px; min-height: 1px;")
+    d.setObjectName("DialogDivider")  # themed hairline (redesign.qss)
     return d
 
 
@@ -77,15 +77,8 @@ def _make_danger_button(text: str) -> QPushButton:
     """Solid-red 'destructive primary' button — only used by the
     destructive-confirm template per design-system."""
     btn = QPushButton(text)
-    btn.setObjectName("DangerPrimary")
+    btn.setObjectName("DangerPrimary")  # styled by redesign.qss (theme tokens)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(
-        "QPushButton#DangerPrimary {"
-        " background: #ef4444; color: #ffffff; border: none;"
-        " border-radius: 11px; padding: 9px 18px; font-weight: 600;"
-        "}"
-        "QPushButton#DangerPrimary:hover { background: #d83838; }"
-    )
     return btn
 
 
@@ -440,15 +433,18 @@ class ProgressDialog(QDialog):
             return
         self._step_idx = i
         for j, lbl in enumerate(self._step_labels):
+            lbl.setObjectName("StepLabel")  # styled by redesign.qss via [status]
             if j < i:
                 lbl.setText(f"✓  {self._steps[j]}")
-                lbl.setStyleSheet("color: #34d399;")
+                lbl.setProperty("status", "done")
             elif j == i:
                 lbl.setText(f"●  {self._steps[j]}  · now")
-                lbl.setStyleSheet("color: #7c6cff; font-weight: 700;")
+                lbl.setProperty("status", "now")
             else:
                 lbl.setText(f"○  {self._steps[j]}")
-                lbl.setStyleSheet("")
+                lbl.setProperty("status", "")
+            lbl.style().unpolish(lbl)
+            lbl.style().polish(lbl)
 
     def setComplete(
         self,
@@ -464,7 +460,7 @@ class ProgressDialog(QDialog):
         # Swap intent icon to success
         cfg = _INTENT["success"]
         self._icon.setText(cfg["glyph"])
-        self._icon.setStyleSheet(
+        self._icon.setStyleSheet(  # pragma: no-qss — completion-state colour is data-driven
             f"background: rgba(52,211,153,0.10); color: {cfg['color']};"
             f" border: 1px solid {cfg['color']}; border-radius: 14px;"
             f" font-size: 20px; font-weight: 800;"

@@ -39,6 +39,15 @@ QFrame#TileCard    { background: {card}; border: none; border-radius: 0px; }
 QFrame#Card2,
 QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
 
+/* ---- Text labels are transparent by default ----
+ * Plain QLabels (field labels, counts, %s, Picked/Skipped, subtitles) must
+ * sit on a transparent background, not pick up the legacy `QWidget {
+ * background-color: window }` fill that made them read as filled boxes over
+ * a card (Nelson 2026, Days Lists). Chips / tags / badges / tiles set their
+ * own fill via more-specific `QLabel#Role` selectors, so this base does not
+ * touch them. spec/92. */
+QLabel             { background: transparent; }
+
 /* ---- Headings ---- */
 QLabel#PageTitle   { font-size: 30px; font-weight: 800; }
 /* Padding-bottom: 4px reserves descender room for p/g/j/q/y under the
@@ -300,6 +309,91 @@ QLineEdit#SearchField               { background: {card2}; color: {ink}; border:
                                       border-radius: {radius_md}px; padding: 8px 12px 8px 34px;
                                       min-height: 22px; }
 QLineEdit#SearchField:focus         { border: 1px solid {accent}; }
+
+/* ---- Preview pane (empty-state image well in the pickers) ----
+ * One token-based role replacing two identical inline styles that
+ * hardcoded rgba(0,0,0,0.08) + #c0c0c0 (theme-broken: stayed dark-tinted
+ * with a grey border in light mode). spec/92 Stage 1. */
+QLabel#PreviewPane          { background: {card2}; border: 1px solid {line};
+                              border-radius: {radius_md}px; }
+
+/* ---- Warning / suggestion banner (amber) — camera-clock TZ suggestion + any
+ * inline-amber warning. Replaces hardcoded #6b4d00/#fff4d6/#d6b96e which were
+ * a light-mode-only design (illegible in dark). spec/92 Stage 1. */
+QLabel#TzSuggestionBanner   { color: {amber}; background-color: rgba(251,191,36,0.18);
+                              border: 1px solid {amber}; border-radius: {radius_sm}px;
+                              padding: 6px 10px; }
+
+/* ---- Plain data table gridline (Past-Photos cameras table). Replaces a
+ * hardcoded #9ca3af gridline that stayed mid-grey in both themes. spec/92
+ * Stage 1; folds into the DataTable role at Stage 3. */
+QTableWidget#PastPhotosTable { gridline-color: {line}; }
+
+/* ---- Icon tile — one small rounded holder for a tinted glyph. Unifies four
+ * drifted inline tiles (event-card category tiles, cross-event glyph, share
+ * globe; was #1e222d / #211f3a at radii 9/13/14) onto a single role + `tone`
+ * property at the canonical lg radius. Type-less selector so it covers the
+ * QLabel and QFrame hosts alike. spec/92 Stage 1 (radius unified). */
+#IconTile                                  { background: {card2}; border: none;
+                                             border-radius: {radius_lg}px; }
+#IconTile[tone="accent"]                   { background: {accent_soft}; color: {accent}; }
+#IconTile[tone="accent"][bordered="true"]  { border: 1px solid {accent}; }
+
+/* ---- The canonical named group box — Mira's one input-presentation primitive
+ * (spec/92 §2.3.1). Every input field sits inside one of these; boxes nest for
+ * related fields. ONE look at every nesting level: transparent fill, 1px {line}
+ * frame, md radius, title notched into the top border in ink_soft micro-caps.
+ * Lives here (single source) and overrides the legacy dark/light FormFieldGroup
+ * so every group box across the app reads identically. */
+QGroupBox#FormFieldGroup {
+    background: transparent;
+    border: 1px solid {line};
+    border-radius: {radius_md}px;
+    margin-top: 14px;
+    padding: 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    color: {ink_soft};
+}
+QGroupBox#FormFieldGroup::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px; padding: 0 6px;
+    color: {ink_soft};
+}
+QGroupBox#FilterRailGroup {
+    background: transparent;
+    border: 1px solid {line};
+    border-radius: {radius_md}px;
+    margin-top: 12px;
+    padding: 8px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    color: {ink_soft};
+}
+QGroupBox#FilterRailGroup::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px; padding: 0 6px;
+    color: {ink_soft};
+}
+
+/* ---- Danger primary button (destructive-confirm) — solid red. Was hardcoded
+ * #ef4444/#d83838 inline (stayed dark-red in light mode). spec/92 Stage 1. */
+QPushButton#DangerPrimary        { background: {red}; color: #ffffff; border: none;
+                                   border-radius: {radius_md}px; padding: 9px 18px;
+                                   font-weight: 600; }
+QPushButton#DangerPrimary:hover  { background: {red}; }
+
+/* ---- Stepper labels (ProgressDialog multi-step) — done=green, now=accent.
+ * Was hardcoded #34d399/#7c6cff inline; now property-driven so it themes and
+ * live-switches. spec/92 Stage 1. */
+QLabel#StepLabel[status="done"]  { color: {green}; }
+QLabel#StepLabel[status="now"]   { color: {accent}; font-weight: 700; }
+
+/* ---- Section eyebrow — the small accent caps above a form/dialog section
+ * (IDENTITY / LOGISTICS …). One role so every dialog's section header reads
+ * the same. spec/92 §2.4. */
+QLabel#SectionEyebrow            { color: {accent}; font-size: 10px;
+                                   font-weight: 800; letter-spacing: 1.5px; }
 
 /* ---- Event Days Table (Surface 04) — themed chrome that overrides the
  *      legacy QTableWidget rules in dark.qss/light.qss. The legacy theme

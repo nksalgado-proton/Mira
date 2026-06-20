@@ -368,10 +368,7 @@ class EventDaysTableDialog(QDialog):
     def _divider() -> QFrame:
         d = QFrame()
         d.setFrameShape(QFrame.Shape.HLine)
-        line = PALETTE[_palette_mode()]["line"]
-        d.setStyleSheet(
-            f"background: {line}; max-height: 1px; min-height: 1px;"
-        )
+        d.setObjectName("DialogDivider")  # themed hairline (redesign.qss)
         return d
 
     def _build_header_bar(self) -> QWidget:
@@ -388,10 +385,7 @@ class EventDaysTableDialog(QDialog):
         tile = QLabel()
         tile.setFixedSize(32, 32)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(
-            f"background: {p['accent_soft']}; color: {p['accent']};"
-            " border: none; border-radius: 9px;"
-        )
+        tile.setObjectName("CutHeaderTile")  # shared accent-soft dialog tile (redesign.qss)
         tile.setPixmap(
             tinted_svg_pixmap(GLYPH_EVENT, 18, QColor(p["accent"]))
         )
@@ -424,16 +418,7 @@ class EventDaysTableDialog(QDialog):
         ))
         close.setIconSize(QSize(14, 14))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.setToolTip(tr("Cancel and close"))
-        close.setStyleSheet(
-            "QPushButton#DialogClose {"
-            f" background: transparent;"
-            f" border: 1px solid {p['line']}; border-radius: 9px;"
-            "}"
-            "QPushButton#DialogClose:hover {"
-            f" border-color: {p['accent']};"
-            "}"
-        )
+        close.setToolTip(tr("Cancel and close"))  # styled by QPushButton#DialogClose (redesign.qss)
         close.clicked.connect(self.reject)
         h.addWidget(close)
         return host

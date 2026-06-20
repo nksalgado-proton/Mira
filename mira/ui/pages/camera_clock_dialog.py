@@ -210,15 +210,6 @@ class CameraClockDialog(QDialog):
                 banner = QLabel("⚠ " + tr(suggestion.reason))
                 banner.setObjectName("TzSuggestionBanner")
                 banner.setWordWrap(True)
-                banner.setStyleSheet(
-                    "QLabel#TzSuggestionBanner { "
-                    "color: #6b4d00; "
-                    "background-color: #fff4d6; "
-                    "border: 1px solid #d6b96e; "
-                    "border-radius: 4px; "
-                    "padding: 6px 10px; "
-                    "}"
-                )
                 grid.addWidget(banner, next_row, 0, 1, 3)
                 next_row += 1
             self._rows[cam] = {"state": state, "combo": combo}

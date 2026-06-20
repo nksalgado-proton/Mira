@@ -1,31 +1,5 @@
 {
-  "_comment": "spec/92 \u00a77 inline-style guard baseline. Counts may only shrink. Run `python scripts/qss_guard.py --update-baseline` after a migration stage removes violations. New/grown entries fail the guard.",
-  "total": 57,
-  "counts": {
-    "mira/ui/base/sync_pair_picker.py": 1,
-    "mira/ui/design/about_dialog.py": 1,
-    "mira/ui/design/cards.py": 1,
-    "mira/ui/design/carousel.py": 1,
-    "mira/ui/design/dialogs.py": 7,
-    "mira/ui/design/headers.py": 1,
-    "mira/ui/design/inputs.py": 1,
-    "mira/ui/design/media_nav.py": 1,
-    "mira/ui/exported/compare_dialog.py": 1,
-    "mira/ui/pages/_cross_event_band.py": 1,
-    "mira/ui/pages/_event_card_redesign.py": 3,
-    "mira/ui/pages/_event_tile.py": 1,
-    "mira/ui/pages/camera_clock_dialog.py": 1,
-    "mira/ui/pages/collect_photo_picker.py": 1,
-    "mira/ui/pages/days_grid_page.py": 1,
-    "mira/ui/pages/days_lists_page.py": 3,
-    "mira/ui/pages/event_days_table_dialog.py": 3,
-    "mira/ui/pages/event_header_dialog.py": 5,
-    "mira/ui/pages/events_page.py": 4,
-    "mira/ui/pages/missing_originals_dialog.py": 4,
-    "mira/ui/pages/new_recipe_dialog.py": 2,
-    "mira/ui/pages/past_photos_cameras.py": 1,
-    "mira/ui/pages/phases_page.py": 6,
-    "mira/ui/pages/share_cuts_page.py": 1,
-    "mira/ui/shared/cut_play.py": 5
-  }
+  "_comment": "spec/92 §7 inline-style guard baseline. Every inline setStyleSheet in mira/ui has been moved to a QSS role or marked `# pragma: no-qss` (reviewed exception). Baseline is now zero: any new un-pragma'd inline style fails the guard. mira/ui/theme.py is excluded in qss_guard.py as the sanctioned global apply point.",
+  "total": 0,
+  "counts": {}
 }

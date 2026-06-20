@@ -158,7 +158,7 @@ class Carousel(QWidget):
         # resizeEvent. A translucent dark host pill keeps the dots legible
         # over both bright and dark photo regions.
         self._dots_host = QWidget(self._stack)
-        self._dots_host.setStyleSheet(
+        self._dots_host.setStyleSheet(  # pragma: no-qss — translucent overlay over photos
             "background: rgba(8,10,16,0.55); border-radius: 9px;"
         )
         self._dots_host.setAttribute(

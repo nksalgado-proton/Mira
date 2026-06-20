@@ -150,14 +150,11 @@ class _PhotoPanel(QFrame):
         # Preview area — a QLabel that holds either a scaled pixmap
         # or a textual placeholder. Centered, expanding.
         self._preview = QLabel(tr("(no photo picked)"))
+        self._preview.setObjectName("PreviewPane")
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._preview.setMinimumHeight(220)
-        self._preview.setStyleSheet(
-            "QLabel { background: rgba(0, 0, 0, 0.08);"
-            " border: 1px solid #c0c0c0; }"
-        )
         outer.addWidget(self._preview, stretch=1)
 
         # Overlay text — filename + EXIF DateTimeOriginal.

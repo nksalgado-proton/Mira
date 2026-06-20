@@ -112,7 +112,7 @@ class _DayBadge(QLabel):
         self.setFixedSize(40, 40)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         p = PALETTE[_palette_mode()]
-        self.setStyleSheet(
+        self.setStyleSheet(  # pragma: no-qss — accent-soft day badge, token colours
             f"background: {p['accent_soft']}; color: {p['accent']};"
             " border: none; border-radius: 12px;"
             " font-size: 15px; font-weight: 800;"
@@ -195,7 +195,7 @@ def _mini_button(label: str, color_token: str, tooltip: str) -> QPushButton:
     btn.setFlat(True)
     p = PALETTE[_palette_mode()]
     color_hex = p.get(color_token, p["ink_soft"])
-    btn.setStyleSheet(
+    btn.setStyleSheet(  # pragma: no-qss — dynamic per-colour mini-button role
         f"QPushButton#DayRowMini_{color_token} {{"
         f"  background: transparent; color: {p['ink_soft']};"
         f"  border: 1px solid {p['line']}; border-radius: 8px;"
@@ -418,7 +418,7 @@ class DayRow(Card):
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         line_color = PALETTE[_palette_mode()]["line"]
-        sep.setStyleSheet(
+        sep.setStyleSheet(  # pragma: no-qss — vertical separator, token colour
             f"color: {line_color}; background: {line_color};"
             " border: none; max-width: 1px; min-width: 1px;"
         )

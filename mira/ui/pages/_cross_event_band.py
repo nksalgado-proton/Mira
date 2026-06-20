@@ -46,9 +46,8 @@ class _CrossEventGlyph(QLabel):
         self.setFixedSize(50, 50)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._tint = tint
-        self.setStyleSheet(
-            "background: #211f3a; border-radius: 14px;"
-        )
+        self.setObjectName("IconTile")
+        self.setProperty("tone", "accent")  # accent_soft holder (redesign.qss)
 
     def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
         super().paintEvent(evt)

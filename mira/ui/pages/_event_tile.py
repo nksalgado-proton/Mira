@@ -156,11 +156,7 @@ class _CategoryIcon(QFrame):
         path = _CATEGORY_ICONS_DIR / f"{icon_name}.svg"
         self._icon_path = path if path.exists() else None
         self._tint = QColor("#8b94a7" if dim else "#7c6cff")
-        # Inline style: the tile is a tiny self-painted chrome bit; no
-        # themable QSS role covers "small card2 holder with no border".
-        self.setStyleSheet(
-            "background: #1e222d; border: none; border-radius: 9px;"
-        )
+        self.setObjectName("IconTile")  # themed card2 icon holder (redesign.qss)
 
     def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
         super().paintEvent(evt)

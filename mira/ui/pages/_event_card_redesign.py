@@ -176,9 +176,7 @@ class _CategoryTile(QFrame):
         self._tint = QColor("#8b94a7" if dim else "#7c6cff")
         # Both states share the card2 backdrop with no border. The icon
         # carries the semantic; the tile is a quiet holder.
-        self.setStyleSheet(
-            "background: #1e222d; border: none; border-radius: 13px;"
-        )
+        self.setObjectName("IconTile")  # themed card2 icon holder (redesign.qss)
 
     def paintEvent(self, evt) -> None:  # noqa: N802 — Qt override
         super().paintEvent(evt)
@@ -360,7 +358,7 @@ class EventCardRedesign(Card):
         arrow = QLabel("↓")
         arrow.setObjectName("DateArrow")
         accent = self._palette_color("accent")
-        arrow.setStyleSheet(
+        arrow.setStyleSheet(  # pragma: no-qss — token accent glyph
             f"color: {accent}; font-size: 14px; font-weight: 700;"
         )
         date_box.addSpacing(4)
@@ -406,7 +404,7 @@ class EventCardRedesign(Card):
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setObjectName("DatesSep")
         line_color = self._palette_color("line")
-        sep.setStyleSheet(
+        sep.setStyleSheet(  # pragma: no-qss — vertical separator, token colour
             f"color: {line_color}; background: {line_color};"
             " border: none; max-width: 1px; min-width: 1px;"
         )

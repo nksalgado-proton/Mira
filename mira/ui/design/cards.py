@@ -113,7 +113,7 @@ class StatTile(QFrame):
         big = QLabel()
         big.setObjectName("StatValue")
         big.setTextFormat(Qt.TextFormat.RichText)
-        big.setStyleSheet(
+        big.setStyleSheet(  # pragma: no-qss — value colour is data-driven
             "background: transparent; font-size: 24px; font-weight: 800;"
             f" color: {value_color};" if value_color else
             "background: transparent; font-size: 24px; font-weight: 800;"

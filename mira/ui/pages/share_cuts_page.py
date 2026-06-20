@@ -461,11 +461,12 @@ class _PoolCard(QFrame):
         tile = QLabel("🌐")
         tile.setFixedSize(50, 50)
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(
-            "background: #211f3a; color: #7c6cff;"
-            " border: 1px solid #7c6cff; border-radius: 14px;"
-            " font-size: 22px;"
-        )
+        tile.setObjectName("IconTile")
+        tile.setProperty("tone", "accent")
+        tile.setProperty("bordered", "true")  # accent-outlined holder (redesign.qss)
+        _tile_font = tile.font()
+        _tile_font.setPixelSize(22)
+        tile.setFont(_tile_font)
         h.addWidget(tile)
         # Label block
         block = QVBoxLayout()

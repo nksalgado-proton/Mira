@@ -531,6 +531,13 @@ class CutRow(Card):
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
+        # Nelson 2026-06-20 eyeball: per-row #Card border + shadow stacked
+        # under the tab-content #Card2 border read as too many borders in
+        # dark mode. Re-role to #ShareListRow + drop the inherited
+        # shadow so each tile separates by bg tone + spacing alone; the
+        # outer Card2 carries the only visible boundary.
+        self.setObjectName("ShareListRow")
+        self.setGraphicsEffect(None)
         self.setFixedHeight(self.ROW_HEIGHT)
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
@@ -631,6 +638,10 @@ class DCRow(Card):
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
+        # Same border / shadow treatment as :class:`CutRow` — borderless
+        # inside the tab-content #Card2 (Nelson 2026-06-20, see CutRow).
+        self.setObjectName("ShareListRow")
+        self.setGraphicsEffect(None)
         self.setFixedHeight(self.ROW_HEIGHT)
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed

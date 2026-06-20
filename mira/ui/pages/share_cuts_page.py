@@ -771,9 +771,17 @@ class _CutsListView(QWidget):
         outer.addWidget(self._tabs, 1)
 
     def _build_cuts_tab(self) -> QWidget:
-        host = QWidget()
+        # Nelson 2026-06-20 eyeball: the tabs floated unanchored from
+        # their content. Wrapping the host in a #Card2 QFrame draws a
+        # visible box around the tab's content area (card2 bg + line
+        # border + 14-px radius from the existing QSS role). The
+        # QTabWidget's ::pane subcontrol was invisible in documentMode;
+        # a regular QFrame paints reliably across themes.
+        host = QFrame()
+        host.setObjectName("Card2")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
-        v.setContentsMargins(0, 12, 0, 0)
+        v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(12)
 
         self._section_label = QLabel("Cuts · 0")
@@ -799,9 +807,13 @@ class _CutsListView(QWidget):
         return host
 
     def _build_dcs_tab(self) -> QWidget:
-        host = QWidget()
+        # Same #Card2 wrapper as :meth:`_build_cuts_tab` so both tabs
+        # carry a visible content box (Nelson 2026-06-20 eyeball).
+        host = QFrame()
+        host.setObjectName("Card2")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
-        v.setContentsMargins(0, 12, 0, 0)
+        v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(12)
 
         self._dc_section_label = QLabel("Dynamic Collections · 0")

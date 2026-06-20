@@ -808,7 +808,11 @@ class _CutsListView(QWidget):
         inner = QWidget()
         self._cuts_layout = QVBoxLayout(inner)
         self._cuts_layout.setContentsMargins(0, 0, 0, 0)
-        self._cuts_layout.setSpacing(12)
+        # Zero spacing: rows butt against each other and separate via the
+        # bottom hairline on QFrame#ShareListRow (Nelson 2026-06-20 — the
+        # previous 12-px gap painted bands of card2 between rows that
+        # read visually as borders).
+        self._cuts_layout.setSpacing(0)
         self._cuts_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._scroll.setWidget(inner)
         self._scroll.setSizePolicy(
@@ -849,7 +853,9 @@ class _CutsListView(QWidget):
         dc_inner = QWidget()
         self._dcs_layout = QVBoxLayout(dc_inner)
         self._dcs_layout.setContentsMargins(0, 0, 0, 0)
-        self._dcs_layout.setSpacing(12)
+        # Match the cuts list — zero spacing + hairline divider
+        # (see _build_cuts_tab for the rationale).
+        self._dcs_layout.setSpacing(0)
         self._dcs_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._dc_scroll.setWidget(dc_inner)
         self._dc_scroll.setSizePolicy(

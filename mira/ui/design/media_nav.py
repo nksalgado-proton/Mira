@@ -71,14 +71,11 @@ class _FilmstripThumb(QFrame):
         super().__init__(parent)
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        # ObjectName drives the QSS state-border rule; Neutral when state is None
-        role = {
-            "picked": "StatePicked",
-            "skipped": "StateSkipped",
-            "compare": "StateCompare",
-            "mixed": "StateMixed",
-        }.get(state or "", "StateNeutral")
-        self.setObjectName(role)
+        # ObjectName + `state` property drive the QSS #StateBorder[state] rule
+        # (spec/92 §2.3). Property values mirror §5a; unknown / None → "neutral".
+        state_value = state if state in ("picked", "skipped", "compare", "mixed") else "neutral"
+        self.setObjectName("StateBorder")
+        self.setProperty("state", state_value)
         # Dim non-current items (design-system §3 MediaNav filmstrip rule)
         if not current:
             self.setStyleSheet(  # pragma: no-qss — runtime hover opacity toggle

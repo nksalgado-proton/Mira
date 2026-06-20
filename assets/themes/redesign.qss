@@ -290,12 +290,17 @@ QLabel#SurfaceHeaderPurpose                    { color: {ink}; font-size: 13px; 
 QLabel#SurfaceHeaderReminder                   { color: {ink_soft}; font-size: 12px;
                                                  font-style: italic; }
 
-/* ---- Photo-state border tag (used on legends + thumbnails when not painted manually) ---- */
-QFrame#StatePicked    { border: 3px solid {picked}; border-radius: {radius_md}px; }
-QFrame#StateSkipped   { border: 3px solid {skipped}; border-radius: {radius_md}px; }
-QFrame#StateCompare   { border: 3px solid {compare}; border-radius: {radius_md}px; }
-QFrame#StateMixed     { border: 3px solid {mixed}; border-radius: {radius_md}px; }
-QFrame#StateNeutral   { border: 3px solid {line}; border-radius: {radius_md}px; }
+/* ---- Photo-state border (spec/92 §2.3 → StateBorder[state]).
+ * One role + a `state` property selects the §5a-locked colour. Used on
+ * legends + filmstrip thumbnails when the border is not painted manually.
+ * Property values: picked / skipped / compare / mixed / neutral.
+ * Base rule = the neutral fallback (matches when no `state` property set). */
+QFrame#StateBorder                    { border: 3px solid {line};    border-radius: {radius_md}px; }
+QFrame#StateBorder[state="picked"]    { border: 3px solid {picked}; }
+QFrame#StateBorder[state="skipped"]   { border: 3px solid {skipped}; }
+QFrame#StateBorder[state="compare"]   { border: 3px solid {compare}; }
+QFrame#StateBorder[state="mixed"]     { border: 3px solid {mixed}; }
+QFrame#StateBorder[state="neutral"]   { border: 3px solid {line}; }
 
 /* ---- Translucent overlay chips (visited eye, exported badge, etc.) ---- */
 QLabel#OverlayChip          { background: rgba(8,10,16,0.74); color: #ffffff;

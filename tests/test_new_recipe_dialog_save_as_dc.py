@@ -73,18 +73,19 @@ def _dialog(qapp, *, dc_creator=None, ctx=None, **over) -> NewRecipeDialog:
 # --------------------------------------------------------------------------- #
 
 
-def test_source_picker_shows_save_as_dc_button(qapp):
-    """Source target keeps the Save as DC affordance (item-set expression
-    → named DC)."""
+def test_source_picker_hides_save_as_dc_button(qapp):
+    """spec/90 §5.5 — Source-level Save as DC moved to the "Which items?"
+    band header; the popover no longer carries its own entry so there's
+    one canonical path."""
     picker = _OperandPickerPopover(
         _pools(), target=PICKER_TARGET_SOURCE,
     )
-    assert picker._save_btn is not None
+    assert picker._save_btn is None
 
 
 def test_rule_predicate_picker_shows_save_as_dc_button(qapp):
-    """Rule-predicate target also exposes Save as DC — predicates are
-    item-set expressions, the same shape as Source."""
+    """Rule-predicate target keeps the popover entry — that's the only
+    entry point for saving a predicate as a reusable DC (spec/90 §5.5)."""
     picker = _OperandPickerPopover(
         _pools(), target=PICKER_TARGET_RULE_PREDICATE,
     )
@@ -98,6 +99,42 @@ def test_scope_picker_hides_save_as_dc_button(qapp):
         events=[OperandOption(name="[Trip]", kind="event", uuid="evt-1")],
     )
     assert picker._save_btn is None
+
+
+def test_band_header_save_as_dc_button_routes_through_same_code_path(
+        qapp, monkeypatch):
+    """spec/90 §5.5 — the band-header Save as DC button and the popover
+    Save as DC button both end up in :meth:`_on_save_as_dc_clicked`; the
+    band button sets the source context explicitly so the dc_creator
+    receives the source expression + filters payload."""
+    seen = {}
+
+    def _dc_creator(name, expr, filters):
+        seen["name"] = name
+        seen["expr"] = expr
+        seen["filters"] = filters
+        return OperandOption(
+            name=f"#{name}", count=1, kind="dc", tag=name, id=f"id-{name}")
+
+    # Construct with dc_creator so the band button enables once Source
+    # has chips; the click below is only a no-op on a disabled button.
+    dlg = _dialog(qapp, dc_creator=_dc_creator)
+    dlg._source_chips = [(JOIN_OR, dlg._ctx.available_pools[0])]
+    dlg._refresh_source_row()
+    assert dlg._save_dc_btn.isEnabled() is True
+
+    from PyQt6.QtWidgets import QDialog, QMessageBox
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: None)
+    monkeypatch.setattr(
+        _SaveAsDcNameDialog, "exec",
+        lambda self: (self._edit.setText("from_band")
+                      or QDialog.DialogCode.Accepted))
+
+    # Click the band-header Save as DC button (the canonical Source path).
+    dlg._save_dc_btn.click()
+    assert seen["name"] == "from_band"
+    assert seen["expr"] == [["+", "exported"]]
+    assert "styles" in seen["filters"]
 
 
 # --------------------------------------------------------------------------- #

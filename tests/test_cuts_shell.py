@@ -163,9 +163,14 @@ def test_make_new_recipe_dialog_wires_recipe_store(qapp, gw, tmp_path):
     assert shell.open_event("evt-c")
     kwargs = shell._dialog_kwargs()
     dlg = shell._make_new_recipe_dialog(kwargs)
-    # The Save + Load buttons enable when a RecipeStore is wired.
-    assert dlg._save_recipe_btn.isEnabled() is True
+    # Load enables on store wiring alone (no compositional preconditions
+    # — the user is loading from outside this dialog's state).
     assert dlg._load_btn.isEnabled() is True
+    # Save as Recipe also needs a non-empty Name + Source (spec/90 §5.5).
+    # The page seeds Source with #exported; typing a name flips the
+    # band button enabled.
+    dlg._name_edit.setText("clean_exports")
+    assert dlg._save_recipe_btn.isEnabled() is True
     # The Cut face hides Scope + hardware.
     from mira.ui.pages.new_recipe_dialog import FLAVOUR_CUT
     assert dlg._flavour == FLAVOUR_CUT

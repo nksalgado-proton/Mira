@@ -378,6 +378,18 @@ QLabel#PoolFormulaMult           { color: {ink_soft}; font-size: 12px; font-weig
 QLabel#MatchCount                { color: {green}; font-weight: 700; background: transparent; }
 QLabel#MatchCount[state="empty"] { color: {ink_faint}; }
 
+/* New Cut / Collection dialog — Q4-style band headers (spec/90 §5.5).
+ * The dialog body groups into two bands: "Which items?" (Source + Filters)
+ * and "What to do with them?" (Rules + Otherwise + Runtime). Each band
+ * header is a row with the human-prose question on the left and the
+ * relevant save button on the right; BandQuestion is the larger
+ * secondary-text label, BandHint is the inline italic afterthought
+ * ("(across the events above)" / "events to look in"). */
+QLabel#BandQuestion              { color: {ink_soft}; font-size: 15px; font-weight: 600;
+                                   background: transparent; }
+QLabel#BandHint                  { color: {ink_faint}; font-size: 12px;
+                                   font-style: italic; background: transparent; }
+
 /* Custom days-table checkbox — bumped to the mockup's 20px tile + 6px
  * radius + accent fill on :checked. The check tick comes from the
  * legacy ``QCheckBox::indicator:checked`` rule's ``image:`` (it knows

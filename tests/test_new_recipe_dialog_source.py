@@ -89,9 +89,25 @@ def test_picker_emits_chosen_for_clicked_row(qapp):
     assert seen[0].name == "#long"
 
 
-def test_picker_save_as_dc_emits_signal(qapp):
+def test_source_picker_hides_save_as_dc_entry(qapp):
+    """spec/90 §5.5 — the Source-target popover no longer carries its
+    own Save as DC entry; the band-header button on "Which items?" is
+    the canonical path so the picker stays focused on operand pick."""
+    from mira.ui.pages.new_recipe_dialog import PICKER_TARGET_SOURCE
     ctx = _make_ctx()
-    picker = _OperandPickerPopover(ctx.available_pools)
+    picker = _OperandPickerPopover(
+        ctx.available_pools, target=PICKER_TARGET_SOURCE)
+    assert picker._save_btn is None
+
+
+def test_rule_predicate_picker_save_as_dc_emits_signal(qapp):
+    """The popover Save as DC entry stays on the rule-predicate target —
+    spec/90 §5.5 — that's the only entry point for saving a predicate
+    as a reusable DC."""
+    from mira.ui.pages.new_recipe_dialog import PICKER_TARGET_RULE_PREDICATE
+    ctx = _make_ctx()
+    picker = _OperandPickerPopover(
+        ctx.available_pools, target=PICKER_TARGET_RULE_PREDICATE)
     fired = []
     picker.save_as_dc_requested.connect(lambda: fired.append(True))
     picker._save_btn.click()

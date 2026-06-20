@@ -105,18 +105,44 @@ def test_save_flow_writes_through_recipe_store(qapp, store):
     assert json.loads(recipe.composition_json)["source"]
 
 
-def test_save_button_enabled_when_store_wired(qapp, store):
-    """With a :class:`RecipeStore`, the footer Save button enables."""
+def test_save_button_enabled_when_store_wired_and_name_set(qapp, store):
+    """spec/90 §5.5 — Save as Recipe (now on the "What to do?" band
+    header) enables when a store is wired AND Source is non-empty AND
+    Name is non-empty. The default ctx fills Source; typing a name flips
+    the button enabled."""
     dlg = _dialog(qapp, store)
+    # Initial: Source is non-empty (ctx seeds #exported) but Name is
+    # blank, so the band button stays disabled.
+    assert dlg._save_recipe_btn.isEnabled() is False
+    dlg._name_edit.setText("short")
     assert dlg._save_recipe_btn.isEnabled() is True
 
 
 def test_save_button_disabled_when_no_store(qapp):
-    """No store wired (smokes / unit tests) → button stays disabled."""
+    """No store wired (smokes / unit tests) → button stays disabled
+    regardless of Source / Name."""
     dlg = NewRecipeDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
     )
+    dlg._name_edit.setText("anything")
+    assert dlg._save_recipe_btn.isEnabled() is False
+
+
+def test_save_button_disabled_when_source_empty(qapp, store):
+    """spec/90 §5.5 + §1.1 — a Recipe with no Source is meaningless;
+    even with a wired store and a typed Name, the button stays disabled
+    until the user composes a Source."""
+    empty_ctx = NewRecipeContext(
+        event_name="Costa Rica 2026",
+        available_pools=[OperandOption(
+            name="#exported", count=42, kind="base", tag="exported")],
+        available_styles=["macro"],
+        # selected_source is left empty.
+    )
+    dlg = _dialog(qapp, store, ctx=empty_ctx)
+    dlg._name_edit.setText("short")
+    assert not dlg._source_chips
     assert dlg._save_recipe_btn.isEnabled() is False
 
 

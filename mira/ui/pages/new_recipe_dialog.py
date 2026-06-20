@@ -603,19 +603,18 @@ class _OperandPickerPopover(QFrame):
 
         self._populate_sections()
 
-        # "Save as DC…" applies to the Source + Rule-predicate pickers —
-        # both produce item-set expressions that can become a named DC.
-        # Scope hides it: events don't compose into DCs (that's the Event
-        # Collection track).
-        if self._target in (
-            PICKER_TARGET_SOURCE,
-            PICKER_TARGET_RULE_PREDICATE,
-        ):
+        # "Save as DC…" in the popover is the per-rule-predicate entry
+        # point only (spec/90 §5.5). Source-level Save as DC is the
+        # canonical band-header button on the "Which items?" band, so the
+        # Source popover hides this affordance to avoid two paths for the
+        # same intent. Scope hides it too — events don't compose into DCs
+        # (Event Collection track).
+        if self._target == PICKER_TARGET_RULE_PREDICATE:
             outer.addWidget(_divider())
             self._save_btn = ghost_button(tr("Save as DC…"))
             self._save_btn.setObjectName("OperandPickerSaveAsDc")
             self._save_btn.setToolTip(tr(
-                "Save the current expression as a Dynamic Collection."))
+                "Save this predicate as a reusable DC."))
             self._save_btn.clicked.connect(self._on_save_as_dc)
             outer.addWidget(self._save_btn)
         else:
@@ -1567,6 +1566,7 @@ class NewRecipeDialog(QDialog):
         if self._show_scope:
             self._refresh_scope_row()
         self._refresh_rules_rows()
+        self._refresh_save_button_states()
         # Fire one probe at end-of-init so the metrics row reflects any
         # initial selections (Recipe-load path — Phase 4e).
         self._kick_probe()
@@ -1643,6 +1643,20 @@ class NewRecipeDialog(QDialog):
         return host
 
     def _build_body(self) -> QWidget:
+        """The dialog body — Name on top, then (Collection only) the Scope
+        universe, then two bands that mirror spec/90 §5.5:
+
+        * **Which items?** band — Source + Filters. The band header carries
+          the band-scoped *Save as DC…* button (the set layer becomes a
+          reusable DC).
+        * **What to do with them?** band — Rules + Otherwise + Runtime.
+          The band header carries the band-scoped *Save as Recipe…* button
+          (the whole composition becomes a reusable Recipe).
+
+        Hairline dividers (``DialogDivider`` QSS role) sit above the Scope
+        row, above each band, and above the Metrics row so the bands read
+        as visually-distinct groups even with the default 14-px spacing
+        between sections."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1655,17 +1669,97 @@ class NewRecipeDialog(QDialog):
 
         v.addWidget(self._build_name_section())
         if self._show_scope:
+            v.addWidget(_divider())
             v.addWidget(self._build_scope_section())
+        v.addWidget(_divider())
+        v.addWidget(self._build_which_items_band())
         v.addWidget(self._build_source_section())
         v.addWidget(self._build_filters_section())
+        v.addWidget(_divider())
+        v.addWidget(self._build_what_to_do_band())
         v.addWidget(self._build_rules_section())
         v.addWidget(self._build_otherwise_section())
         v.addWidget(self._build_runtime_section())
+        v.addWidget(_divider())
         v.addWidget(self._build_metrics_section())
 
         v.addStretch()
         scroll.setWidget(inner)
         return scroll
+
+    # -------- Band headers (spec/90 §5.5) ---------------------------- #
+
+    def _build_band_header(
+        self,
+        *,
+        question: str,
+        save_button: QPushButton,
+        hint: str = "",
+        object_name: str = "",
+    ) -> QWidget:
+        """One band-header row — Q4-style question on the left, optional
+        italic hint next to it, and a save button on the right. The host
+        widget carries an explicit object name so tests can locate it."""
+        host = QWidget()
+        if object_name:
+            host.setObjectName(object_name)
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        q = QLabel(question)
+        q.setObjectName("BandQuestion")
+        row.addWidget(q)
+        if hint:
+            h = QLabel(hint)
+            h.setObjectName("BandHint")
+            row.addWidget(h)
+        row.addStretch()
+        row.addWidget(save_button)
+        return host
+
+    def _build_which_items_band(self) -> QWidget:
+        """The "Which items?" band header. Hosts the Save as DC… button
+        (spec/90 §5.5 — saves the set layer: Source + Filters). The
+        ``(across the events above)`` hint appears only when the
+        Collection face is showing a Scope row above."""
+        self._save_dc_btn = ghost_button(tr("Save as DC…"))
+        self._save_dc_btn.setObjectName("BandSaveAsDc")
+        self._save_dc_btn.setToolTip(tr(
+            "Save the current source + filters as a reusable DC."))
+        self._save_dc_btn.clicked.connect(self._on_band_save_as_dc_clicked)
+        hint = tr("(across the events above)") if self._show_scope else ""
+        return self._build_band_header(
+            question=tr("Which items?"),
+            save_button=self._save_dc_btn,
+            hint=hint,
+            object_name="WhichItemsBand",
+        )
+
+    def _build_what_to_do_band(self) -> QWidget:
+        """The "What to do with them?" band header. Hosts the Save as
+        Recipe… button (spec/90 §5.5 — saves the whole composition: Source
+        + Filters + Rules + Otherwise + Runtime, plus Scope on Collection
+        flavour)."""
+        self._save_recipe_btn = ghost_button(tr("Save as Recipe…"))
+        self._save_recipe_btn.setObjectName("BandSaveAsRecipe")
+        self._save_recipe_btn.setToolTip(
+            tr("Save the whole composition as a Recipe to re-instantiate later.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
+        return self._build_band_header(
+            question=tr("What to do with them?"),
+            save_button=self._save_recipe_btn,
+            object_name="WhatToDoBand",
+        )
+
+    def _on_band_save_as_dc_clicked(self) -> None:
+        """The band-header Save as DC click is the Source-level entry
+        point. Pin the context so :meth:`_on_save_as_dc_clicked` ships
+        the source expression + filters payload (and not, say, a stale
+        predicate context from a previously-opened rule picker)."""
+        self._save_as_dc_context = ("source", None)
+        self._on_save_as_dc_clicked()
 
     def _build_name_section(self) -> QWidget:
         host = QWidget()
@@ -1697,7 +1791,15 @@ class NewRecipeDialog(QDialog):
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
-        v.addWidget(_micro(tr("Scope")))
+        label_row = QHBoxLayout()
+        label_row.setContentsMargins(0, 0, 0, 0)
+        label_row.setSpacing(8)
+        label_row.addWidget(_micro(tr("Scope")))
+        scope_hint = QLabel(tr("events to look in"))
+        scope_hint.setObjectName("BandHint")
+        label_row.addWidget(scope_hint)
+        label_row.addStretch()
+        v.addLayout(label_row)
 
         self._scope_box = QWidget()
         self._scope_row = QHBoxLayout(self._scope_box)
@@ -1765,6 +1867,7 @@ class NewRecipeDialog(QDialog):
             self._source_row.addWidget(self._build_add_operand_button())
             self._source_row.addStretch()
             self._refresh_source_summary()
+            self._refresh_save_button_states()
             return
 
         for index, (join, operand) in enumerate(self._source_chips):
@@ -1786,6 +1889,7 @@ class NewRecipeDialog(QDialog):
         self._source_row.addWidget(self._build_add_operand_button())
         self._source_row.addStretch()
         self._refresh_source_summary()
+        self._refresh_save_button_states()
 
     def _set_source_join(self, index: int, join: str) -> None:
         """Swap one Source chip's preceding join word. ``index`` is the
@@ -1822,9 +1926,9 @@ class NewRecipeDialog(QDialog):
             parent=self,
         )
         popover.chosen.connect(self._add_source_chip)
-        self._save_as_dc_context = ("source", None)
-        popover.save_as_dc_requested.connect(self._on_save_as_dc_clicked)
-        # Anchor: just below the button's bottom-left corner.
+        # Source-level Save as DC lives on the band header, not in the
+        # popover — see :meth:`_OperandPickerPopover._populate_sections`
+        # and :meth:`_build_which_items_band`.
         pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
         popover.move(pos)
         popover.show()
@@ -2686,21 +2790,15 @@ class NewRecipeDialog(QDialog):
     # -------- Footer ------------------------------------------------- #
 
     def _build_footer(self) -> QWidget:
+        """The dialog footer — Cancel + Start ▶ only (spec/90 §5.5).
+
+        Save as DC and Save as Recipe moved to the band headers so each
+        save sits with the data it captures; the footer is purely about
+        closing the dialog (discard or run)."""
         host = QWidget()
         h = QHBoxLayout(host)
         h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
-        # Save as Recipe… — opens :class:`_SaveRecipeNameDialog` then
-        # writes through :class:`RecipeStore`. Disabled when no store is
-        # wired (smokes / unit tests without persistence).
-        self._save_recipe_btn = ghost_button(tr("Save as Recipe…"))
-        self._save_recipe_btn.setEnabled(self._recipe_store is not None)
-        self._save_recipe_btn.setToolTip(
-            tr("Save these choices as a Recipe.")
-            if self._recipe_store is not None
-            else tr("No Recipe store wired — saving / loading disabled."))
-        self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
-        h.addWidget(self._save_recipe_btn)
         h.addStretch()
         cancel = ghost_button(tr("Cancel"))
         cancel.clicked.connect(self.reject)
@@ -3093,6 +3191,32 @@ class NewRecipeDialog(QDialog):
             self._name_tag_hint.setText(f"#{cleaned}")
         else:
             self._name_tag_hint.setText("(tag will preview here)")
+        # Save as Recipe gates on Name + Source; refresh both bands.
+        self._refresh_save_button_states()
+
+    # ------------------------------------------------------------------ #
+    # Band-header save-button enablement  (spec/90 §5.5)
+    # ------------------------------------------------------------------ #
+
+    def _refresh_save_button_states(self) -> None:
+        """Gate the two band-header save buttons:
+
+        * **Save as DC** — needs a non-empty Source (nothing to save
+          otherwise) and a wired :attr:`_dc_creator` (smokes / unit
+          tests without persistence pass ``None``).
+        * **Save as Recipe** — needs a non-empty Source (spec/90 §1.1)
+          AND a non-empty Name, plus a wired :attr:`_recipe_store`.
+
+        Called from every source / name mutator + the Recipe-load path."""
+        has_source = bool(self._source_chips)
+        if hasattr(self, "_save_dc_btn"):
+            self._save_dc_btn.setEnabled(
+                has_source and self._dc_creator is not None)
+        if hasattr(self, "_save_recipe_btn"):
+            has_name = bool(self._name_edit.text().strip())
+            self._save_recipe_btn.setEnabled(
+                has_source and has_name
+                and self._recipe_store is not None)
 
     # ------------------------------------------------------------------ #
     # Public output — spec/90 §5.1 composition shape (read-only in 4a)

@@ -173,8 +173,9 @@ def test_source_picker_hides_events_collections_and_date_ranges(qapp):
     assert "event collections" not in lowered
     assert "date ranges" not in lowered
     assert picker._date_range_row is None
-    # Source picker keeps the Save as DC… button.
-    assert picker._save_btn is not None
+    # Source-level Save as DC moved to the "Which items?" band header
+    # (spec/90 §5.5); the popover no longer carries its own entry.
+    assert picker._save_btn is None
 
 
 def test_scope_picker_omits_save_as_dc_button(qapp):

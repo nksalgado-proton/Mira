@@ -343,28 +343,33 @@ named DC.
 
 ### 5.0 Save as DC vs Save as Recipe (two seams, two payloads)
 
-The dialog exposes two separate "save" affordances and they save different
-things:
+The dialog organises around two saves, and the layout makes the split
+visual. The body groups into two **bands** between Name and Metrics; each
+band carries the save button for the data it groups:
 
-- **Save as DC** lives in the operand picker popover (spec/90 §3.4) and is
-  reachable from any picker whose output is an item-set — the Source picker
-  and the per-rule predicate picker. The saved payload is the **expression
-  the picker just composed** plus, for Source-target saves, the dialog's
-  current Filters block. Rule-predicate saves carry an empty filters block
-  (predicates don't compose with the dialog-level Filters row). The Scope
-  picker hides this affordance — events don't compose into DCs; that's the
-  Event Collection track (§5.3).
-- **Save as Recipe…** lives in the dialog footer and saves the **whole
-  workflow** — Source + Scope + Filters + Rules + Otherwise + presentation
-  — under the dialog's flavour (Cut / Collection). It is the "share the
-  decision-making procedure" seam (§5.1).
+- **Save as DC** captures the **set layer** — Source and Filters. The DC
+  then becomes a chip droppable into any other expression. Its button
+  lives on the *Which items?* band header (above Source). A second entry
+  point sits in the rule-predicate popover (the only path for saving a
+  per-rule predicate as a DC); the Source popover hides its own entry so
+  the band-header button is the canonical Source-level path.
+- **Save as Recipe** captures the **whole composition** — the set layer
+  plus Rules, Otherwise, Runtime (and Scope for the Collection flavour).
+  Its button lives on the *What to do with them?* band header (above
+  Rules). It is the "share the decision-making procedure" seam (§5.1).
 
-Both are reachable from the same dialog at different points; mixing them
-is intentional — the source-level set becomes a reusable named DC, the
-whole workflow becomes a reusable named Recipe. The Save as DC affordance
-fires the host's `dc_creator(name, expr, filters)` callable and, on
-success, drops the returned operand into the dialog's local operand
-inventory so it's pickable as a chip immediately.
+Scope, when present (Collection flavour), sits **above both bands** —
+neither captured by a DC nor by a Recipe scope-field; it's the universe
+both operate within. The Cut flavour hides it (Scope = "this event"). The
+dialog footer simplifies to *Cancel* + *Start ▶* — closing the dialog
+(discard or run); saves live with their data.
+
+The Save as DC affordance fires the host's `dc_creator(name, expr, filters)`
+callable and, on success, drops the returned operand into the dialog's
+local operand inventory so it's pickable as a chip immediately. The Save
+as DC button gates on a non-empty Source; the Save as Recipe button gates
+on a non-empty Source AND a non-empty Name (a nameless Recipe has no
+identity to load by).
 
 ### 5.1 Recipe (the saved decision-making procedure)
 

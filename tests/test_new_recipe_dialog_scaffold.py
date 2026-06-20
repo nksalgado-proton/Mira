@@ -215,6 +215,103 @@ def test_load_recipe_button_disabled_without_store(qapp):
 
 
 def test_save_recipe_button_disabled_without_store(qapp):
-    """Same gating as Load — no store wired → no save path."""
+    """Same gating as Load — no store wired → no save path. Also gated
+    on a non-empty Source + Name per spec/90 §5.5 (the band-header
+    button's new gating)."""
     dlg = _cut_dialog(qapp)
     assert dlg._save_recipe_btn.isEnabled() is False
+
+
+# --------------------------------------------------------------------------- #
+# Band layout — spec/90 §5.5 reorganization
+# --------------------------------------------------------------------------- #
+
+
+def test_both_band_headers_render(qapp):
+    """spec/90 §5.5 — the dialog body groups into two visible bands
+    between Name and Metrics."""
+    dlg = _cut_dialog(qapp)
+    assert dlg.findChild(object, "WhichItemsBand") is not None
+    assert dlg.findChild(object, "WhatToDoBand") is not None
+
+
+def test_band_headers_carry_their_save_buttons(qapp):
+    """The "Which items?" band hosts Save as DC; the "What to do?"
+    band hosts Save as Recipe (spec/90 §5.5)."""
+    dlg = _cut_dialog(qapp)
+    which = dlg.findChild(object, "WhichItemsBand")
+    what = dlg.findChild(object, "WhatToDoBand")
+    assert dlg._save_dc_btn.parent() is which
+    assert dlg._save_recipe_btn.parent() is what
+
+
+def test_band_header_question_labels(qapp):
+    """The band headers carry Q4-style human prose, not micro / uppercase
+    section labels (spec/90 §5.5)."""
+    dlg = _cut_dialog(qapp)
+    which = dlg.findChild(object, "WhichItemsBand")
+    what = dlg.findChild(object, "WhatToDoBand")
+    which_labels = [
+        lbl.text() for lbl in which.findChildren(QLabel)
+        if lbl.objectName() == "BandQuestion"
+    ]
+    what_labels = [
+        lbl.text() for lbl in what.findChildren(QLabel)
+        if lbl.objectName() == "BandQuestion"
+    ]
+    assert "Which items?" in which_labels
+    assert "What to do with them?" in what_labels
+
+
+def test_which_items_band_hint_only_when_scope_visible(qapp):
+    """The "(across the events above)" hint sits next to the Which
+    items? question only when ``show_scope=True`` (Collection face);
+    the Cut face suppresses it."""
+    cut = _cut_dialog(qapp)
+    cut_hints = [
+        lbl.text()
+        for lbl in cut.findChild(object, "WhichItemsBand").findChildren(QLabel)
+        if lbl.objectName() == "BandHint"
+    ]
+    assert cut_hints == []
+
+    coll = _collection_dialog(qapp)
+    coll_hints = [
+        lbl.text()
+        for lbl in coll.findChild(object, "WhichItemsBand").findChildren(QLabel)
+        if lbl.objectName() == "BandHint"
+    ]
+    assert any("events above" in h for h in coll_hints)
+
+
+def test_scope_section_carries_inline_hint(qapp):
+    """The Scope row's section label is followed by a small italic
+    "events to look in" hint (spec/90 §5.5)."""
+    dlg = _collection_dialog(qapp)
+    scope = dlg.findChild(object, "ScopeSection")
+    hints = [
+        lbl.text() for lbl in scope.findChildren(QLabel)
+        if lbl.objectName() == "BandHint"
+    ]
+    assert any("events to look in" in h for h in hints)
+
+
+def test_footer_contains_only_cancel_and_start(qapp):
+    """spec/90 §5.5 — the footer is just Cancel + Start ▶; the two
+    saves now live with their data on the band headers."""
+    from PyQt6.QtWidgets import QPushButton
+    dlg = _cut_dialog(qapp)
+    # Walk the dialog's children to find the footer host (the bottom
+    # widget that hosts the Start primary button).
+    footer = dlg._start_btn.parent()
+    button_texts = sorted(
+        (b.text() or "") for b in footer.findChildren(QPushButton)
+        # ignore close-X buttons / hidden helpers
+        if b.text() and b is not None
+    )
+    # The footer has Cancel + Start. Save as Recipe… is on the band, not
+    # the footer.
+    assert "Cancel" in button_texts
+    assert any("Start" in t for t in button_texts)
+    assert not any("Save as Recipe" in t for t in button_texts)
+    assert not any("Save as DC" in t for t in button_texts)

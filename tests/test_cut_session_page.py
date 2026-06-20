@@ -192,6 +192,51 @@ def test_single_view_wheel_steps_like_the_picker(qapp, gw, tmp_path):
     assert page._single.current_file().export_relpath == "Exported Media/e3a.jpg"
 
 
+def test_single_view_shows_standard_f10_f11_buttons(qapp, gw, tmp_path):
+    """spec/63 — the Cut single view follows the same PhotoViewport
+    chrome pattern as picker_page / quick_sweep_page / editor_page:
+    the corner 🔍 magnifier hides and a labelled Full Resolution F10 +
+    Full Screen F11 button pair sits at the bottom."""
+    page = _page(gw, tmp_path)
+    page._open_day(1)
+    page._open_single(0)
+    single = page._single
+    # The labelled buttons exist and are visible.
+    assert hasattr(single, "_fullres_btn")
+    assert hasattr(single, "_fullscreen_btn")
+    assert single._fullres_btn.isVisibleTo(single)
+    assert single._fullscreen_btn.isVisibleTo(single)
+    # The corner inspect glyph is suppressed (the labelled button is
+    # the canonical affordance on every PhotoViewport host).
+    assert single._viewport._corner_inspect_visible is False
+    assert not single._viewport._inspect_btn.isVisible()
+
+
+def test_single_view_fullres_button_emits_truth_requested(qapp, gw, tmp_path):
+    """Clicking Full Resolution fires the viewport's ``truth_requested``
+    signal — the same signal F10 produces inside the viewport."""
+    page = _page(gw, tmp_path)
+    page._open_day(1)
+    page._open_single(0)
+    seen = []
+    page._single._viewport.truth_requested.connect(lambda: seen.append(True))
+    page._single._fullres_btn.click()
+    assert seen == [True]
+
+
+def test_single_view_fullscreen_button_emits_fullscreen_requested(qapp, gw, tmp_path):
+    """Clicking Full Screen fires the SingleView's ``fullscreen_requested``
+    signal — the same signal the F11 shortcut + the viewport's F-key
+    bubble up."""
+    page = _page(gw, tmp_path)
+    page._open_day(1)
+    page._open_single(0)
+    seen = []
+    page._single.fullscreen_requested.connect(lambda: seen.append(True))
+    page._single._fullscreen_btn.click()
+    assert seen == [True]
+
+
 def test_touched_decisions_repaint_their_cells_on_back(qapp, gw, tmp_path):
     """Decisions made while stepping the single view repaint their grid
     cells on Back — ALL of them, not just the last (the Day-Grid

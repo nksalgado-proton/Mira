@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
 from mira.shared.cut_session import CutSession, SessionFile
 from mira.ui.base.shortcuts import show_shortcuts
 from mira.ui.base.surface import back_button, help_button
-from mira.ui.design import ThumbGrid, ThumbGridItem
+from mira.ui.design import ThumbGrid, ThumbGridItem, ghost_button
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
 
@@ -257,8 +257,35 @@ class _SingleView(QWidget):
         # The F10 lens opens CLEAN here — no zoom/peaking bar on the
         # Cut surfaces (Nelson 2026-06-12 standardisation).
         self._viewport.set_lens_tools_visible(False)
+        # The labelled "Full Resolution F10" button below covers the
+        # corner 🔍 affordance, same pattern as picker_page /
+        # quick_sweep_page / editor_page.
+        self._viewport.set_corner_inspect_visible(False)
         frame_box.addWidget(self._viewport)
         box.addWidget(self._frame, stretch=1)
+        # Bottom row — Full Resolution + Full Screen labelled buttons,
+        # centred under the frame. Matches the visible affordance every
+        # other PhotoViewport host carries; the F10 / F11 keys still
+        # flow through the viewport + the page-level shortcut.
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 6, 0, 0)
+        bottom.addStretch(1)
+        self._fullres_btn = ghost_button(tr("Full Resolution  F10"))
+        self._fullres_btn.setToolTip(tr(
+            "Inspect this frame up close at full resolution  (F10)"))
+        self._fullres_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._fullres_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._fullres_btn.clicked.connect(self._viewport.truth_requested.emit)
+        bottom.addWidget(self._fullres_btn)
+        self._fullscreen_btn = ghost_button(tr("Full Screen  F11"))
+        self._fullscreen_btn.setToolTip(tr(
+            "Toggle fullscreen  (F11)"))
+        self._fullscreen_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._fullscreen_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._fullscreen_btn.clicked.connect(self.fullscreen_requested.emit)
+        bottom.addWidget(self._fullscreen_btn)
+        bottom.addStretch(1)
+        box.addLayout(bottom)
         self.setFocusProxy(self._viewport)
         self._picked = False
         self._picked_lookup: Callable[[str], bool] = lambda _r: False

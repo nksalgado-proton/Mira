@@ -17,20 +17,16 @@ QWidget#RedesignRoot { background: qradialgradient(cx:0.8, cy:-0.1, radius:1.1, 
 
 /* ---- Cards / panels ---- */
 QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
-/* Share-list tile (Cut row + DC row). Sits INSIDE the tab content
- * #ShareTabPane wrapper. Hairline-only treatment (Nelson 2026-06-20):
- * rows blend into the wash; the only visible separator is a single
- * 1-px bottom hairline. Cuts/DCs scroll layouts use spacing(0) so
- * rows butt-up directly. */
+/* Share-list tile (Cut row + DC row) + tab-content wrapper. Calm
+ * gray-hairline treatment (Nelson 2026-06-20 round 2): no fills, no
+ * accent borders — same softness as the New Cut dialog so the whole
+ * Share surface reads as a uniform family. Rows separated by a
+ * 1-px {line} bottom hairline; the wrapper carries a thin {line}
+ * border on the page background. */
 QFrame#ShareListRow { background: transparent; border: none;
-                      border-bottom: 1px solid {accent};
+                      border-bottom: 1px solid {line};
                       border-radius: 0px; }
-
-/* Share-tab content wrapper — accent/purple hairline border to match
- * the #exported pool card's border colour; ``card2`` wash inside so
- * the rows above stay readable (Nelson 2026-06-20: replace the gray
- * Card2 border with the accent one). */
-QFrame#ShareTabPane { background: {card2}; border: 1px solid {accent};
+QFrame#ShareTabPane { background: transparent; border: 1px solid {line};
                       border-radius: {radius_lg}px; }
 /* Event tiles — spec/77 §7.2. QSS owns the rounded background fill;
  * the border is painted by ``EventTile.paintEvent`` (copying the
@@ -163,16 +159,15 @@ QProgressBar#StageBar[state="done"]::chunk  { background: {green}; }
 QProgressBar#StageBar[state="prog"]::chunk  { background: {amber}; }
 QProgressBar#StageBar[state="skip"]::chunk  { background: {red}; }
 
-/* ---- Cross-Event Cuts band (accent-bordered hero card on Surface 01) ---- */
-QFrame#CrossEventBand    { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                              stop:0 {accent_soft}, stop:0.55 {card}, stop:1 {card});
-                           border: 1px solid {accent}; border-radius: {radius_xl}px; }
-/* The legacy ``QWidget { background-color: window }`` rule in dark.qss
- * paints an opaque window-coloured rectangle behind every QLabel by
- * default — so the band's title + subtitle came out on black boxes
- * over the gradient. Override here for ALL non-pill labels under the
- * band so they paint flat over the accent wash. ``#Tag`` keeps its
- * own pill background; ``#SearchGlyph`` is already transparent. */
+/* ---- Cross-Event Cuts band (#exported pool card on Surface 01) ----
+ * Calm gray-hairline treatment (Nelson 2026-06-20 round 2): no accent
+ * fill, no accent border — matches the rest of the Share surface +
+ * the New Cut dialog. Labels under the band still need an explicit
+ * transparent background to override the legacy dark.qss
+ * ``QWidget { background-color: window }`` rule. */
+QFrame#CrossEventBand    { background: transparent;
+                           border: 1px solid {line};
+                           border-radius: {radius_xl}px; }
 QFrame#CrossEventBand QLabel              { background: transparent; }
 QFrame#CrossEventBand QLabel#Tag          { background: {accent_soft}; }
 

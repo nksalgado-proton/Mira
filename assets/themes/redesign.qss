@@ -30,7 +30,13 @@ QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radiu
 
 /* ---- Headings ---- */
 QLabel#PageTitle   { font-size: 30px; font-weight: 800; }
-QLabel#CardTitle   { font-size: 18px; font-weight: 700; }
+/* Padding-bottom: 4px reserves descender room for p/g/j/q/y under the
+ * 18-px bold font (Nelson 2026-06-20: descenders clipped on Cut tiles).
+ * Qt extends contentsRect by padding so sizeHint grows accordingly,
+ * which prevents the host layout from compressing the label below its
+ * natural ascent+descent. */
+QLabel#CardTitle   { font-size: 18px; font-weight: 700;
+                     padding: 0 0 4px 0; }
 QLabel#EventTitle  { font-size: 24px; font-weight: 800; }
 QLabel#Sub,
 QLabel#Label       { color: {ink_soft}; font-size: 13px; }
@@ -206,6 +212,34 @@ QToolButton#CutRowKebab           { background: transparent; color: {ink_soft};
                                     font-size: 18px; font-weight: 800; }
 QToolButton#CutRowKebab:hover     { border-color: {accent}; color: {accent}; }
 QToolButton#CutRowKebab::menu-indicator { image: none; width: 0; }
+
+/* ---- Share tabs (Cuts / Dynamic Collections) ----
+ * QTabWidget in documentMode has no native pane border, so the tab
+ * row floats unanchored from its content. Wrap the pane in a clear
+ * card2 box so the user sees "the tab encloses this content" at a
+ * glance. The tab bar sits flush against the box's top edge; the
+ * selected tab dips into the pane (negative bottom margin) so the
+ * active tab "owns" the pane below it. */
+QTabWidget#ShareTabs::pane          { background: {card2};
+                                      border: 1px solid {line};
+                                      border-radius: {radius_lg}px;
+                                      top: -1px;
+                                      padding: 14px 4px 4px 4px; }
+QTabWidget#ShareTabs::tab-bar       { left: 12px; }
+QTabBar#qt_tabwidget_tabbar         { background: transparent; }
+QTabWidget#ShareTabs QTabBar::tab   { background: transparent;
+                                      color: {ink_soft};
+                                      border: 1px solid transparent;
+                                      border-bottom: none;
+                                      border-top-left-radius: 10px;
+                                      border-top-right-radius: 10px;
+                                      padding: 8px 18px;
+                                      margin-right: 4px;
+                                      font-weight: 600; }
+QTabWidget#ShareTabs QTabBar::tab:hover     { color: {ink}; background: {card}; }
+QTabWidget#ShareTabs QTabBar::tab:selected  { color: {ink};
+                                              background: {card2};
+                                              border-color: {line}; }
 
 /* ---- Surface identity header (spec/71) ----
  * Every decision surface (Quick Sweep, Picker, Editor, Export) carries the

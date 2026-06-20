@@ -508,9 +508,16 @@ class CutRow(Card):
     cover-thumb slot was empty (``cover_pixmap`` never wired) and has
     been removed — spec/61 §3 lists the row fields as tag · item count
     · duration · music category · exported status only.
+
+    Row height bumped 92 → 104 (Nelson 2026-06-20): the CardTitle's
+    descenders (p / g / j / q / y) were clipped on a 2-line meta
+    because the VBox compressed the title to fit the wrapped Sub label
+    inside the 56-px content area. The 12-px bump + CardTitle's new
+    4-px descender padding (assets/themes/redesign.qss) give the
+    layout enough breathing room.
     """
 
-    ROW_HEIGHT = 92
+    ROW_HEIGHT = 104
 
     open_requested = pyqtSignal(str)
     adjust_requested = pyqtSignal(str)
@@ -607,9 +614,12 @@ class DCRow(Card):
     exportable on its own (spec/81 §2) — the only action available is
     "Pin → New Cut" which opens the New Cut dialog with this DC
     pre-selected as the source. Delete drops the DC; pinned Cuts survive
-    (ON DELETE SET NULL, the freeze invariant)."""
+    (ON DELETE SET NULL, the freeze invariant).
 
-    ROW_HEIGHT = 92
+    Height matches :class:`CutRow.ROW_HEIGHT` — same title-descender
+    fix applies (Nelson 2026-06-20, see CutRow docstring)."""
+
+    ROW_HEIGHT = 104
 
     pin_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)

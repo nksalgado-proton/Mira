@@ -390,6 +390,60 @@ QLabel#BandQuestion              { color: {ink_soft}; font-size: 15px; font-weig
 QLabel#BandHint                  { color: {ink_faint}; font-size: 12px;
                                    font-style: italic; background: transparent; }
 
+/* Nested-box layout (spec/90 §5) — three visual tiers:
+ *   RecipeToolbar — thin row at the top of the dialog body, light
+ *     secondary surface, no border. Hosts the "Recipe" label + Load /
+ *     Save Recipe buttons.
+ *   BandGroup    — secondary tint surface that wraps the inner cards;
+ *     no hard border, generous radius.
+ *   SectionCard  — proper card-style inner box (Source, Filters,
+ *     Rules, Otherwise, Runtime, Metrics). Card surface + line border +
+ *     medium radius + interior padding.
+ * QSS background only paints when WA_StyledBackground is set on the
+ * QWidget/QFrame; the dialog code sets that on each host. */
+QFrame#RecipeToolbar             { background: {card2}; border: none;
+                                   border-radius: {radius_md}px; }
+QLabel#RecipeToolbarLabel        { color: {ink_soft}; font-size: 12px;
+                                   font-weight: 700; letter-spacing: 0.5px;
+                                   background: transparent; }
+QFrame#BandGroup,
+QFrame#WhichItemsBand,
+QFrame#WhatToDoBand,
+QFrame#NameBox,
+QFrame#ScopeBox                  { background: {card2}; border: none;
+                                   border-radius: {radius_lg}px; }
+QFrame#SectionCard,
+QFrame#SourceSection,
+QFrame#FiltersSection,
+QFrame#RulesSectionCard,
+QFrame#OtherwiseSectionCard,
+QFrame#RuntimeSectionCard,
+QFrame#MetricsSectionCard        { background: {card}; border: 1px solid {line};
+                                   border-radius: {radius_md}px; }
+
+/* Verb / join-word popover rows — two-line buttons with a key + faint
+ * description (spec/90 §1.2, §3.3). The labels inside the button stay
+ * transparent for mouse events so clicks reach the QPushButton. The
+ * selected="true" property highlights the current choice. */
+QPushButton#VerbPopoverRow,
+QPushButton#JoinWordPopoverRow   { text-align: left; background: transparent;
+                                   border: 1px solid transparent;
+                                   border-radius: {radius_sm}px; }
+QPushButton#VerbPopoverRow:hover,
+QPushButton#JoinWordPopoverRow:hover {
+                                   background: {accent_soft};
+                                   border-color: {accent_soft}; }
+QPushButton#VerbPopoverRow[selected="true"],
+QPushButton#JoinWordPopoverRow[selected="true"] {
+                                   background: {accent_soft};
+                                   border-color: {accent}; }
+QLabel#VerbPopoverKey,
+QLabel#JoinWordPopoverKey        { color: {ink}; font-size: 13px;
+                                   font-weight: 700; background: transparent; }
+QLabel#VerbPopoverDesc,
+QLabel#JoinWordPopoverDesc       { color: {ink_faint}; font-size: 11px;
+                                   background: transparent; }
+
 /* Custom days-table checkbox — bumped to the mockup's 20px tile + 6px
  * radius + accent fill on :checked. The check tick comes from the
  * legacy ``QCheckBox::indicator:checked`` rule's ``image:`` (it knows

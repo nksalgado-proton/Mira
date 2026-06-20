@@ -522,6 +522,22 @@ class EventsPage(QWidget):
                 id=sf.id,
             )
 
+        def _dc_loader(operand: OperandOption) -> tuple[list, dict]:
+            """spec/90 §5 — Load DC for the cross-event Collection
+            dialog. Resolves a saved DC operand to its (expr, filters)
+            so Load DC can replace the dialog's Source + Filters."""
+            sf = None
+            if operand.id:
+                sf = library_gateway.dynamic_collection(operand.id)
+            if sf is None and operand.tag:
+                sf = library_gateway.dc_by_tag(operand.tag)
+            if sf is None:
+                return ([], {})
+            return (
+                list(library_gateway.dc_expr(sf)),
+                dict(library_gateway.dc_filters(sf)),
+            )
+
         dlg = NewRecipeDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
@@ -532,6 +548,7 @@ class EventsPage(QWidget):
             recipe_probe=library_gateway.resolve_recipe,
             recipe_store=recipe_store,
             dc_creator=_dc_creator,
+            dc_loader=_dc_loader,
             parent=self,
         )
 

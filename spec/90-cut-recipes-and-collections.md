@@ -341,35 +341,56 @@ named DC.
 
 ## 5. New entities
 
-### 5.0 Save as DC vs Save as Recipe (two seams, two payloads)
+### 5.0 The dialog's two saves + two loads, laid out
 
-The dialog organises around two saves, and the layout makes the split
-visual. The body groups into two **bands** between Name and Metrics; each
-band carries the save button for the data it groups:
+The dialog organises around **two save / load pairs**, and the layout
+makes the split visual. The body has three vertical tiers:
 
-- **Save as DC** captures the **set layer** — Source and Filters. The DC
-  then becomes a chip droppable into any other expression. Its button
-  lives on the *Which items?* band header (above Source). A second entry
-  point sits in the rule-predicate popover (the only path for saving a
-  per-rule predicate as a DC); the Source popover hides its own entry so
-  the band-header button is the canonical Source-level path.
-- **Save as Recipe** captures the **whole composition** — the set layer
-  plus Rules, Otherwise, Runtime (and Scope for the Collection flavour).
-  Its button lives on the *What to do with them?* band header (above
-  Rules). It is the "share the decision-making procedure" seam (§5.1).
+1. **Recipe toolbar** at the top — light secondary surface, no border,
+   carries the *Recipe* label on the left and the *Load Recipe…* +
+   *Save as Recipe…* buttons on the right. Save as Recipe captures
+   *the whole composition* — Name + Scope + Source + Filters + Rules +
+   Otherwise + Runtime — under the dialog's flavour. Load Recipe is
+   its mirror: pick a saved Recipe and the entire dialog state
+   replaces.
+2. **Name** + (Collection only) **Scope** — light secondary surface
+   boxes between the toolbar and the items group. Scope is the
+   universe both saves operate within; neither captures it.
+3. **Two band groups** — secondary-tint containers wrapping
+   card-bordered inner section boxes (Source, Filters, Rules,
+   Otherwise, Runtime, Metrics):
+   - **Which items?** wraps Source + Filters and carries *Load DC…* +
+     *Save as DC…* on its header. Save as DC captures the items layer
+     — Source + Filters — and the returned DC drops into the local
+     operand inventory so it's pickable as a chip immediately. Load
+     DC is its mirror: pick a saved DC and *only* the items layer
+     replaces (Rules / Otherwise / Runtime stay put); if the items
+     layer carries unsaved state, a small confirm gates the replace.
+   - **What to do with them?** wraps Rules + Otherwise + Runtime +
+     Metrics. No header buttons — the Recipe-layer save is the only
+     way to capture the whole workflow, and that lives on the
+     toolbar.
 
-Scope, when present (Collection flavour), sits **above both bands** —
-neither captured by a DC nor by a Recipe scope-field; it's the universe
-both operate within. The Cut flavour hides it (Scope = "this event"). The
-dialog footer simplifies to *Cancel* + *Start ▶* — closing the dialog
-(discard or run); saves live with their data.
+Save as DC has two entry points: the band-header button (canonical for
+Source-level saves) and, for the rule-predicate save path, a row inside
+the rule-predicate operand picker popover. The Source-target popover
+hides its own entry so there's one canonical Source-level path. The
+Scope-target picker hides Save as DC entirely — events don't compose
+into DCs (that's the Event Collection track).
 
-The Save as DC affordance fires the host's `dc_creator(name, expr, filters)`
-callable and, on success, drops the returned operand into the dialog's
-local operand inventory so it's pickable as a chip immediately. The Save
-as DC button gates on a non-empty Source; the Save as Recipe button gates
-on a non-empty Source AND a non-empty Name (a nameless Recipe has no
-identity to load by).
+Footer is *Cancel* + *Start ▶* — closing the dialog (discard or run).
+Saves live with their data; the footer is purely about the dialog
+lifecycle.
+
+Button gates:
+- Save as DC enables when Source is non-empty AND `dc_creator` is wired.
+- Save as Recipe enables when Source is non-empty AND Name is non-empty
+  AND `recipe_store` is wired (a nameless Recipe has no identity to load
+  by).
+- Load DC enables when the operand inventory carries at least one DC AND
+  `dc_loader` is wired.
+- Load Recipe enables when `recipe_store` is wired (no compositional
+  preconditions — the user is loading from outside this dialog).
 
 ### 5.1 Recipe (the saved decision-making procedure)
 

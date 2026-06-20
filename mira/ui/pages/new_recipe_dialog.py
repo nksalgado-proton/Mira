@@ -326,11 +326,14 @@ PICKER_TARGET_RULE_PREDICATE = "rule_predicate"
 class _ChoicePopover(QFrame):
     """Shared base for the small two-/three-option popovers Phase 4c adds.
 
-    Each option renders as a left-aligned button with the choice token in
-    bold + a faint plain-language description per spec/90 §1.2 / §3.3.
-    The currently-selected option carries a ``selected="true"`` Qt property
-    so the QSS cascade can mark it (the rule itself lives in the project's
-    theme stylesheets; the widget only sets the property).
+    Each option renders as a two-line button — the choice token in bold on
+    top, a faint plain-language description below — per spec/90 §1.2 /
+    §3.3. The two lines are real :class:`QLabel`'s inside the button's
+    layout (Qt's ``QPushButton.setText`` renders HTML markup literally —
+    a ``<b>pick</b>`` would show up as the raw tags). The currently-
+    selected option carries a ``selected="true"`` Qt property so the QSS
+    cascade can mark it; the row stays a :class:`QPushButton` so click /
+    hover / keyboard semantics come for free.
 
     Subclasses pass the option list, the currently-selected key, and a
     ``role`` object name that QSS targets ("JoinWordPopover" / "VerbPopover")."""
@@ -359,12 +362,22 @@ class _ChoicePopover(QFrame):
             btn = QPushButton(self)
             btn.setObjectName(f"{role}Row")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet("text-align: left; padding: 6px 10px;")
-            # Two-line label: the key in bold + a faint plain-language
-            # description (§1.2). HTML keeps the layout flexible without
-            # nesting widgets.
-            btn.setText(f"<b>{key}</b><br/><span style='color:#888'>"
-                        f"{tr(description)}</span>")
+            # Two-line layout inside the button: real QLabel widgets so
+            # the markup never reaches Qt's text rendering.
+            inner = QVBoxLayout(btn)
+            inner.setContentsMargins(10, 6, 10, 6)
+            inner.setSpacing(1)
+            key_lbl = QLabel(key, btn)
+            key_lbl.setObjectName(f"{role}Key")
+            key_lbl.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            inner.addWidget(key_lbl)
+            desc_lbl = QLabel(tr(description), btn)
+            desc_lbl.setObjectName(f"{role}Desc")
+            desc_lbl.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            desc_lbl.setWordWrap(True)
+            inner.addWidget(desc_lbl)
             btn.setProperty("_key", key)
             btn.setProperty("selected", "true" if key == selected else "false")
             btn.clicked.connect(
@@ -1053,6 +1066,114 @@ class _SaveAsDcNameDialog(QDialog):
             self._ok.setEnabled(bool(text))
 
 
+class _LoadDcDialog(QDialog):
+    """Saved-DC picker the Which items? band's "Load DC…" button opens.
+
+    Lists the DC operands from the dialog's local inventory
+    (``ctx.available_pools`` filtered to ``kind == 'dc'``). Single-select;
+    double-click or OK loads. The picker does NOT itself replace state —
+    it emits :attr:`dc_chosen` with the picked :class:`OperandOption` and
+    closes; the parent dialog decides whether to confirm-replace or load
+    directly. spec/90 §5 — Load DC mirrors Load Recipe but only touches
+    the *items* layer (Source + Filters).
+    """
+
+    dc_chosen = pyqtSignal(object)             # OperandOption
+
+    def __init__(
+        self,
+        dcs: Sequence["OperandOption"],
+        *,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("LoadDcDialog")
+        self.setWindowTitle(tr("Load DC"))
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setMinimumHeight(340)
+        self._dcs = [d for d in (dcs or ()) if getattr(d, "kind", "") == "dc"]
+        self._rows: List[Tuple[OperandOption, QListWidgetItem]] = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
+
+        hint = QLabel(tr(
+            "Pick a DC to replace the Source + Filters with. Rules, "
+            "Otherwise, and Runtime stay as they are."))
+        hint.setObjectName("PageHint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        self._list = QListWidget(self)
+        self._list.setObjectName("LoadDcList")
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        outer.addWidget(self._list, 1)
+
+        for dc in self._dcs:
+            label = self._format_label(dc)
+            item = QListWidgetItem(label, self._list)
+            self._rows.append((dc, item))
+
+        empty = (not self._dcs)
+        if empty:
+            empty_lbl = QLabel(tr(
+                "No DCs in this library yet. Compose a Source and click "
+                "Save as DC to make one."))
+            empty_lbl.setObjectName("Faint")
+            empty_lbl.setWordWrap(True)
+            outer.addWidget(empty_lbl)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Load"))
+            self._ok.setToolTip(tr(
+                "Load the selected DC into Source + Filters."))
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        self._list.itemSelectionChanged.connect(self._refresh_ok)
+        self._refresh_ok()
+
+    def selected_dc(self) -> Optional["OperandOption"]:
+        items = self._list.selectedItems()
+        if not items:
+            return None
+        for dc, item in self._rows:
+            if item is items[0]:
+                return dc
+        return None
+
+    @staticmethod
+    def _format_label(dc: "OperandOption") -> str:
+        # Show "#tag    (count)" for visual parity with the operand
+        # picker rows the dialog already uses.
+        name = getattr(dc, "name", "") or ""
+        count = getattr(dc, "count", 0) or 0
+        return f"{name}    ({count})" if count else name
+
+    def _refresh_ok(self) -> None:
+        if self._ok is not None:
+            self._ok.setEnabled(bool(self._list.selectedItems()))
+
+    def _on_double_click(self, _item) -> None:
+        if self.selected_dc() is not None:
+            self._on_accept()
+
+    def _on_accept(self) -> None:
+        dc = self.selected_dc()
+        if dc is None:
+            return
+        self.dc_chosen.emit(dc)
+        self.accept()
+
+
 class _LoadRecipeDialog(QDialog):
     """Saved-Recipe picker the header "Load Recipe…" button opens.
 
@@ -1455,6 +1576,8 @@ class NewRecipeDialog(QDialog):
         recipe_store: Optional[RecipeStore] = None,
         dc_creator: Optional[Callable[
             [str, list, dict], "OperandOption"]] = None,
+        dc_loader: Optional[Callable[
+            ["OperandOption"], Tuple[list, dict]]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1476,6 +1599,7 @@ class NewRecipeDialog(QDialog):
         self._recipe_probe = recipe_probe
         self._recipe_store = recipe_store
         self._dc_creator = dc_creator
+        self._dc_loader = dc_loader
         # Tracks which picker is "active" for a save_as_dc click:
         # ("source", None) for the source picker, ("rule_predicate", row)
         # for a rule row's predicate picker. Read inside
@@ -1555,7 +1679,6 @@ class NewRecipeDialog(QDialog):
         self.setWindowTitle(
             tr("New Collection") if is_collection else tr("New Cut"))
         self.setModal(True)
-        self.resize(660, 880)
 
         self._build_ui()
 
@@ -1567,6 +1690,13 @@ class NewRecipeDialog(QDialog):
             self._refresh_scope_row()
         self._refresh_rules_rows()
         self._refresh_save_button_states()
+        # Initial size — at least wide enough that the widest header row
+        # (Which items? + Load DC… + Save as DC…) doesn't clip on first
+        # paint. ``sizeHint()`` reflects the contents the build pass just
+        # laid out; bumping the floor to it fixes the right-edge clip a
+        # naked 660-px ``resize`` produced before the toolbar arrived.
+        hint = self.sizeHint()
+        self.resize(max(hint.width(), 660), max(hint.height(), 880))
         # Fire one probe at end-of-init so the metrics row reflects any
         # initial selections (Recipe-load path — Phase 4e).
         self._kick_probe()
@@ -1619,16 +1749,9 @@ class NewRecipeDialog(QDialog):
         block.addStretch()
         h.addLayout(block, 1)
 
-        # Load Recipe… — opens a picker over :class:`RecipeStore`. Disabled
-        # when no store is wired (smokes / unit tests without persistence).
-        self._load_btn = ghost_button(tr("Load Recipe…"))
-        self._load_btn.setEnabled(self._recipe_store is not None)
-        self._load_btn.setToolTip(
-            tr("Pre-fill every section from a saved Recipe.")
-            if self._recipe_store is not None
-            else tr("No Recipe store wired — saving / loading disabled."))
-        self._load_btn.clicked.connect(self._on_load_recipe_clicked)
-        h.addWidget(self._load_btn)
+        # Load Recipe… moved to the Recipe toolbar at the top of the
+        # body (spec/90 §5 — saves live with their data; the header bar
+        # carries only title + close).
 
         # Close X — same line-icon as the legacy dialog.
         close = QPushButton()
@@ -1643,20 +1766,23 @@ class NewRecipeDialog(QDialog):
         return host
 
     def _build_body(self) -> QWidget:
-        """The dialog body — Name on top, then (Collection only) the Scope
-        universe, then two bands that mirror spec/90 §5.5:
+        """The dialog body — three visual tiers per spec/90 §5:
 
-        * **Which items?** band — Source + Filters. The band header carries
-          the band-scoped *Save as DC…* button (the set layer becomes a
+        * **Recipe toolbar** (top) — light secondary surface, no border,
+          hosts the *Recipe* label + Load Recipe… + Save as Recipe…
+          buttons. The Recipe save captures the whole composition.
+        * **Name** + (Collection only) **Scope** — sit between the
+          toolbar and the items group. Scope is the universe both saves
+          operate within; neither captures it.
+        * **Which items?** group — secondary-tint container wrapping the
+          Source and Filters inner cards. The group header carries
+          *Load DC…* and *Save as DC…* (the items layer becomes a
           reusable DC).
-        * **What to do with them?** band — Rules + Otherwise + Runtime.
-          The band header carries the band-scoped *Save as Recipe…* button
-          (the whole composition becomes a reusable Recipe).
-
-        Hairline dividers (``DialogDivider`` QSS role) sit above the Scope
-        row, above each band, and above the Metrics row so the bands read
-        as visually-distinct groups even with the default 14-px spacing
-        between sections."""
+        * **What to do with them?** group — secondary-tint container
+          wrapping the Rules, Otherwise, Runtime, and Metrics inner
+          cards. No header buttons (Recipe is the only save that
+          captures this layer).
+        """
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1667,89 +1793,194 @@ class NewRecipeDialog(QDialog):
         v.setContentsMargins(22, 18, 22, 18)
         v.setSpacing(14)
 
-        v.addWidget(self._build_name_section())
+        v.addWidget(self._build_recipe_toolbar())
+        v.addWidget(self._wrap_as_lightbox(
+            self._build_name_section(), object_name="NameBox"))
         if self._show_scope:
-            v.addWidget(_divider())
-            v.addWidget(self._build_scope_section())
-        v.addWidget(_divider())
-        v.addWidget(self._build_which_items_band())
-        v.addWidget(self._build_source_section())
-        v.addWidget(self._build_filters_section())
-        v.addWidget(_divider())
-        v.addWidget(self._build_what_to_do_band())
-        v.addWidget(self._build_rules_section())
-        v.addWidget(self._build_otherwise_section())
-        v.addWidget(self._build_runtime_section())
-        v.addWidget(_divider())
-        v.addWidget(self._build_metrics_section())
+            v.addWidget(self._wrap_as_lightbox(
+                self._build_scope_section(), object_name="ScopeBox"))
+        v.addWidget(self._build_which_items_group())
+        v.addWidget(self._build_what_to_do_group())
 
         v.addStretch()
         scroll.setWidget(inner)
         return scroll
 
-    # -------- Band headers (spec/90 §5.5) ---------------------------- #
+    # -------- Recipe toolbar (spec/90 §5) ---------------------------- #
 
-    def _build_band_header(
-        self,
-        *,
-        question: str,
-        save_button: QPushButton,
-        hint: str = "",
-        object_name: str = "",
-    ) -> QWidget:
-        """One band-header row — Q4-style question on the left, optional
-        italic hint next to it, and a save button on the right. The host
-        widget carries an explicit object name so tests can locate it."""
-        host = QWidget()
-        if object_name:
-            host.setObjectName(object_name)
-        row = QHBoxLayout(host)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        q = QLabel(question)
-        q.setObjectName("BandQuestion")
-        row.addWidget(q)
-        if hint:
-            h = QLabel(hint)
-            h.setObjectName("BandHint")
-            row.addWidget(h)
-        row.addStretch()
-        row.addWidget(save_button)
-        return host
+    def _build_recipe_toolbar(self) -> QWidget:
+        """Top-of-body toolbar — Recipe label on the left, Load Recipe…
+        + Save as Recipe… buttons on the right. Light secondary surface,
+        no border."""
+        host = QFrame()
+        host.setObjectName("RecipeToolbar")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        h = QHBoxLayout(host)
+        h.setContentsMargins(14, 10, 14, 10)
+        h.setSpacing(8)
+        label = QLabel(tr("Recipe").upper())
+        label.setObjectName("RecipeToolbarLabel")
+        h.addWidget(label)
+        h.addStretch()
 
-    def _build_which_items_band(self) -> QWidget:
-        """The "Which items?" band header. Hosts the Save as DC… button
-        (spec/90 §5.5 — saves the set layer: Source + Filters). The
-        ``(across the events above)`` hint appears only when the
-        Collection face is showing a Scope row above."""
-        self._save_dc_btn = ghost_button(tr("Save as DC…"))
-        self._save_dc_btn.setObjectName("BandSaveAsDc")
-        self._save_dc_btn.setToolTip(tr(
-            "Save the current source + filters as a reusable DC."))
-        self._save_dc_btn.clicked.connect(self._on_band_save_as_dc_clicked)
-        hint = tr("(across the events above)") if self._show_scope else ""
-        return self._build_band_header(
-            question=tr("Which items?"),
-            save_button=self._save_dc_btn,
-            hint=hint,
-            object_name="WhichItemsBand",
-        )
+        # Load Recipe…
+        self._load_btn = ghost_button(tr("Load Recipe…"))
+        self._load_btn.setEnabled(self._recipe_store is not None)
+        self._load_btn.setToolTip(
+            tr("Pre-fill every section from a saved Recipe.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._load_btn.clicked.connect(self._on_load_recipe_clicked)
+        h.addWidget(self._load_btn)
 
-    def _build_what_to_do_band(self) -> QWidget:
-        """The "What to do with them?" band header. Hosts the Save as
-        Recipe… button (spec/90 §5.5 — saves the whole composition: Source
-        + Filters + Rules + Otherwise + Runtime, plus Scope on Collection
-        flavour)."""
+        # Save as Recipe…
         self._save_recipe_btn = ghost_button(tr("Save as Recipe…"))
-        self._save_recipe_btn.setObjectName("BandSaveAsRecipe")
+        self._save_recipe_btn.setObjectName("ToolbarSaveAsRecipe")
         self._save_recipe_btn.setToolTip(
             tr("Save the whole composition as a Recipe to re-instantiate later.")
             if self._recipe_store is not None
             else tr("No Recipe store wired — saving / loading disabled."))
         self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
-        return self._build_band_header(
+        h.addWidget(self._save_recipe_btn)
+        return host
+
+    # -------- Nested-box helpers ------------------------------------- #
+
+    def _wrap_as_section_card(
+        self,
+        inner: QWidget,
+        *,
+        object_name: str = "",
+    ) -> QWidget:
+        """Wrap an inner section widget in a card-style frame
+        (``SectionCard`` QSS role — card surface, line border, padding).
+        Tests + QSS target the wrapper via its object name."""
+        host = QFrame()
+        host.setObjectName(object_name or "SectionCard")
+        # WA_StyledBackground so the QSS ``background`` fills the frame
+        # in addition to the painted border.
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        host.setProperty("kind", "section-card")
+        v = QVBoxLayout(host)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+        v.addWidget(inner)
+        return host
+
+    def _wrap_as_lightbox(
+        self,
+        inner: QWidget,
+        *,
+        object_name: str = "",
+    ) -> QWidget:
+        """Wrap a section in a light-secondary-surface container — the
+        same visual tier as the Recipe toolbar and the band groups but
+        without a header row or inner cards. Used for Name and Scope
+        (spec/90 §5 — sibling siblings of the items + actions bands)."""
+        host = QFrame()
+        host.setObjectName(object_name or "BandGroup")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(host)
+        v.setContentsMargins(16, 12, 16, 12)
+        v.setSpacing(8)
+        v.addWidget(inner)
+        return host
+
+    def _build_band_group(
+        self,
+        *,
+        question: str,
+        sections: Sequence[QWidget],
+        header_buttons: Sequence[QPushButton] = (),
+        hint: str = "",
+        object_name: str = "",
+    ) -> QWidget:
+        """A band group — secondary-tint outer frame wrapping a header
+        row + a stack of inner section cards. spec/90 §5: Q4-style
+        question on the left, optional inline hint, optional header
+        buttons on the right, then the inner cards below."""
+        host = QFrame()
+        if object_name:
+            host.setObjectName(object_name)
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(host)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(10)
+
+        # Header row.
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        q = QLabel(question)
+        q.setObjectName("BandQuestion")
+        header.addWidget(q)
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setObjectName("BandHint")
+            header.addWidget(hint_lbl)
+        header.addStretch()
+        for btn in header_buttons:
+            header.addWidget(btn)
+        v.addLayout(header)
+
+        # Inner section cards.
+        for section in sections:
+            v.addWidget(section)
+        return host
+
+    def _build_which_items_group(self) -> QWidget:
+        """The "Which items?" group — Source + Filters wrapped as inner
+        cards inside a secondary-tint container. Header carries Load
+        DC… and Save as DC… buttons (spec/90 §5)."""
+        self._load_dc_btn = ghost_button(tr("Load DC…"))
+        self._load_dc_btn.setObjectName("BandLoadDc")
+        self._load_dc_btn.setToolTip(
+            tr("Replace Source + Filters with a saved DC.")
+            if self._dc_loader is not None
+            else tr("No DC loader wired — Load DC disabled."))
+        self._load_dc_btn.clicked.connect(self._on_load_dc_clicked)
+
+        self._save_dc_btn = ghost_button(tr("Save as DC…"))
+        self._save_dc_btn.setObjectName("BandSaveAsDc")
+        self._save_dc_btn.setToolTip(tr(
+            "Save the current source + filters as a reusable DC."))
+        self._save_dc_btn.clicked.connect(self._on_band_save_as_dc_clicked)
+
+        hint = tr("(across the events above)") if self._show_scope else ""
+        sections = [
+            self._wrap_as_section_card(
+                self._build_source_section(), object_name="SourceSection"),
+            self._wrap_as_section_card(
+                self._build_filters_section(), object_name="FiltersSection"),
+        ]
+        return self._build_band_group(
+            question=tr("Which items?"),
+            sections=sections,
+            header_buttons=[self._load_dc_btn, self._save_dc_btn],
+            hint=hint,
+            object_name="WhichItemsBand",
+        )
+
+    def _build_what_to_do_group(self) -> QWidget:
+        """The "What to do with them?" group — Rules + Otherwise +
+        Runtime + Metrics wrapped as inner cards. No header buttons
+        (Save as Recipe lives in the Recipe toolbar)."""
+        sections = [
+            self._wrap_as_section_card(
+                self._build_rules_section(), object_name="RulesSectionCard"),
+            self._wrap_as_section_card(
+                self._build_otherwise_section(),
+                object_name="OtherwiseSectionCard"),
+            self._wrap_as_section_card(
+                self._build_runtime_section(),
+                object_name="RuntimeSectionCard"),
+            self._wrap_as_section_card(
+                self._build_metrics_section(),
+                object_name="MetricsSectionCard"),
+        ]
+        return self._build_band_group(
             question=tr("What to do with them?"),
-            save_button=self._save_recipe_btn,
+            sections=sections,
             object_name="WhatToDoBand",
         )
 
@@ -2886,6 +3117,107 @@ class NewRecipeDialog(QDialog):
         dlg.recipe_chosen.connect(self._apply_recipe)
         dlg.exec()
 
+    # ------------------------------------------------------------------ #
+    # Load DC…  (spec/90 §5 — items-layer mirror of Load Recipe)
+    # ------------------------------------------------------------------ #
+
+    def _on_load_dc_clicked(self) -> None:
+        """Which items? band's Load DC… — open a DC picker over the
+        available DCs in the operand inventory; on select, resolve the
+        DC via :attr:`_dc_loader` and replace Source + Filters with the
+        loaded ``(expr, filters)``.
+
+        Spec/90 §5 — Load DC replaces ONLY the items layer (Source +
+        Filters); Rules / Otherwise / Runtime / Scope / Name stay put.
+        If the user has unsaved state in Source or Filters a small
+        confirm dialog gates the replace so an accidental click doesn't
+        nuke their composition."""
+        if self._dc_loader is None:
+            return
+        dcs = [
+            p for p in (self._ctx.available_pools or ())
+            if getattr(p, "kind", "") == "dc"
+        ]
+        picker = _LoadDcDialog(dcs, parent=self)
+
+        chosen: List[OperandOption] = []
+        picker.dc_chosen.connect(chosen.append)
+        if picker.exec() != QDialog.DialogCode.Accepted or not chosen:
+            return
+        dc_operand = chosen[0]
+
+        if self._items_layer_has_state() and not self._confirm_replace_items():
+            return
+
+        try:
+            expr, filters = self._dc_loader(dc_operand)
+        except Exception as exc:                           # noqa: BLE001
+            log.exception("dc_loader raised — keeping current items layer")
+            self._show_metrics_error(tr("Load DC failed: ") + str(exc))
+            return
+        self._apply_dc_to_items_layer(expr or [], filters or {})
+
+    def _items_layer_has_state(self) -> bool:
+        """True when the items layer (Source + any filter selection)
+        has user content. Used by Load DC to decide whether to confirm
+        the replace."""
+        if self._source_chips:
+            return True
+        if any(chip.isChecked() for chip in self._style_chips.values()):
+            return True
+        if self._photos_cb is not None and not self._photos_cb.isChecked():
+            return True
+        if self._videos_cb is not None and not self._videos_cb.isChecked():
+            return True
+        if any(chip.isChecked() for chip in self._camera_chips.values()):
+            return True
+        if any(chip.isChecked() for chip in self._lens_chips.values()):
+            return True
+        return False
+
+    def _confirm_replace_items(self) -> bool:
+        """Confirm dialog before Load DC overwrites a non-empty items
+        layer. Returns True when the user picked Replace."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Load DC"))
+        box.setText(tr(
+            "This will replace your current Source and Filters with the "
+            "loaded DC's. Continue?"))
+        replace_btn = box.addButton(
+            tr("Replace"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(
+            tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(replace_btn)
+        box.exec()
+        return box.clickedButton() is replace_btn
+
+    def _apply_dc_to_items_layer(
+        self, expr: Sequence[Sequence[Any]], filters: Mapping[str, Any],
+    ) -> None:
+        """Replace the Source sentence + Filter chip selections with the
+        loaded DC's expression + filter block. Rules / Otherwise /
+        Runtime / Scope / Name stay untouched."""
+        self._source_chips = self._decode_expr(expr or [])
+        self._refresh_source_row()
+
+        styles = list((filters or {}).get("styles") or [])
+        for style, chip in self._style_chips.items():
+            chip.setChecked(style in styles)
+        media_type = (filters or {}).get("media_type") or "both"
+        if self._photos_cb is not None:
+            self._photos_cb.setChecked(media_type in ("both", "photo"))
+        if self._videos_cb is not None:
+            self._videos_cb.setChecked(media_type in ("both", "video"))
+        if self._show_hardware:
+            cams = (filters or {}).get("camera_ids") or []
+            for cam, chip in self._camera_chips.items():
+                chip.setChecked(cam in cams)
+            lenses = (filters or {}).get("lens_models") or []
+            for lens, chip in self._lens_chips.items():
+                chip.setChecked(lens in lenses)
+        self._kick_probe()
+
     def _apply_recipe(self, recipe: Any) -> None:
         """Pre-fill every section from a :class:`um.Recipe`. Tears down
         the in-memory chip / rule state, repopulates Source / Scope /
@@ -3199,13 +3531,15 @@ class NewRecipeDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _refresh_save_button_states(self) -> None:
-        """Gate the two band-header save buttons:
+        """Gate the items-band + recipe-toolbar buttons:
 
         * **Save as DC** — needs a non-empty Source (nothing to save
           otherwise) and a wired :attr:`_dc_creator` (smokes / unit
           tests without persistence pass ``None``).
         * **Save as Recipe** — needs a non-empty Source (spec/90 §1.1)
           AND a non-empty Name, plus a wired :attr:`_recipe_store`.
+        * **Load DC** — needs at least one DC in the operand inventory
+          and a wired :attr:`_dc_loader`.
 
         Called from every source / name mutator + the Recipe-load path."""
         has_source = bool(self._source_chips)
@@ -3217,6 +3551,12 @@ class NewRecipeDialog(QDialog):
             self._save_recipe_btn.setEnabled(
                 has_source and has_name
                 and self._recipe_store is not None)
+        if hasattr(self, "_load_dc_btn"):
+            has_dcs = any(
+                getattr(p, "kind", "") == "dc"
+                for p in (self._ctx.available_pools or ()))
+            self._load_dc_btn.setEnabled(
+                has_dcs and self._dc_loader is not None)
 
     # ------------------------------------------------------------------ #
     # Public output — spec/90 §5.1 composition shape (read-only in 4a)
@@ -3412,5 +3752,6 @@ __all__ = [
     "NewRecipeContext",
     "NewRecipeDialog",
     "OperandOption",
+    "_LoadDcDialog",
     "_SaveAsDcNameDialog",
 ]

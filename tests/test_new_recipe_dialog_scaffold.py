@@ -236,13 +236,31 @@ def test_both_band_headers_render(qapp):
 
 
 def test_band_headers_carry_their_save_buttons(qapp):
-    """The "Which items?" band hosts Save as DC; the "What to do?"
-    band hosts Save as Recipe (spec/90 §5.5)."""
+    """spec/90 §5 — the Recipe toolbar hosts Load Recipe + Save as
+    Recipe (the recipe-layer save), and the "Which items?" band hosts
+    Load DC + Save as DC (the items-layer save). The "What to do?"
+    band has no header buttons (Recipe is the only save that captures
+    that layer)."""
+    from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
+    toolbar = dlg.findChild(object, "RecipeToolbar")
     which = dlg.findChild(object, "WhichItemsBand")
     what = dlg.findChild(object, "WhatToDoBand")
+    # Recipe toolbar carries the Recipe-layer buttons.
+    assert dlg._save_recipe_btn.parent() is toolbar
+    assert dlg._load_btn.parent() is toolbar
+    # Which items? band carries the DC-layer buttons.
     assert dlg._save_dc_btn.parent() is which
-    assert dlg._save_recipe_btn.parent() is what
+    assert dlg._load_dc_btn.parent() is which
+    # What to do? band has no header buttons.
+    what_buttons = [
+        b for b in what.findChildren(QPushButton)
+        if b.objectName() in (
+            "BandSaveAsRecipe", "ToolbarSaveAsRecipe", "BandLoadDc",
+            "BandSaveAsDc",
+        )
+    ]
+    assert what_buttons == []
 
 
 def test_band_header_question_labels(qapp):
@@ -297,8 +315,8 @@ def test_scope_section_carries_inline_hint(qapp):
 
 
 def test_footer_contains_only_cancel_and_start(qapp):
-    """spec/90 §5.5 — the footer is just Cancel + Start ▶; the two
-    saves now live with their data on the band headers."""
+    """spec/90 §5 — the footer is just Cancel + Start ▶; saves live with
+    their data (Recipe toolbar / Which items? band)."""
     from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
     # Walk the dialog's children to find the footer host (the bottom
@@ -309,9 +327,67 @@ def test_footer_contains_only_cancel_and_start(qapp):
         # ignore close-X buttons / hidden helpers
         if b.text() and b is not None
     )
-    # The footer has Cancel + Start. Save as Recipe… is on the band, not
-    # the footer.
     assert "Cancel" in button_texts
     assert any("Start" in t for t in button_texts)
     assert not any("Save as Recipe" in t for t in button_texts)
     assert not any("Save as DC" in t for t in button_texts)
+    assert not any("Load Recipe" in t for t in button_texts)
+    assert not any("Load DC" in t for t in button_texts)
+
+
+def test_recipe_toolbar_present_with_both_recipe_buttons(qapp):
+    """spec/90 §5 — top-of-body Recipe toolbar carries Load Recipe… and
+    Save as Recipe…; the dialog header bar no longer hosts them."""
+    from PyQt6.QtWidgets import QPushButton
+    dlg = _cut_dialog(qapp)
+    toolbar = dlg.findChild(object, "RecipeToolbar")
+    assert toolbar is not None
+    texts = sorted(
+        (b.text() or "") for b in toolbar.findChildren(QPushButton)
+        if b.text()
+    )
+    assert any("Load Recipe" in t for t in texts)
+    assert any("Save as Recipe" in t for t in texts)
+
+
+def test_load_dc_button_lives_on_which_items_band(qapp):
+    """spec/90 §5 — Load DC… sits next to Save as DC… on the Which
+    items? header (the items-layer mirror of Load Recipe)."""
+    dlg = _cut_dialog(qapp)
+    which = dlg.findChild(object, "WhichItemsBand")
+    assert dlg._load_dc_btn.parent() is which
+
+
+def test_inner_section_cards_render_for_each_inner_box(qapp):
+    """spec/90 §5 — every inner section (Source / Filters / Rules /
+    Otherwise / Runtime / Metrics) is wrapped in a card-style frame so
+    the visual hierarchy reads cleanly inside the band groups."""
+    dlg = _collection_dialog(qapp)
+    for name in (
+        "SourceSection", "FiltersSection",
+        "RulesSectionCard", "OtherwiseSectionCard",
+        "RuntimeSectionCard", "MetricsSectionCard",
+    ):
+        assert dlg.findChild(object, name) is not None, name
+
+
+def test_initial_resize_accommodates_widest_header_row(qapp):
+    """spec/90 §5 — the dialog opens wide enough that the Recipe-toolbar
+    and Which items? header buttons don't fall off the right edge."""
+    dlg = _collection_dialog(qapp)
+    # Initial resize was set in __init__ via max(sizeHint(), 660). The
+    # sizeHint reflects the laid-out band-group + toolbar widths, so
+    # the dialog's current width must cover the layout's minimum.
+    layout = dlg.layout()
+    assert layout is not None
+    min_w = layout.minimumSize().width() if layout else 660
+    assert dlg.width() >= min_w
+
+
+def test_name_and_scope_wrapped_as_lightboxes(qapp):
+    """Name and (Collection) Scope are wrapped as light-secondary-surface
+    containers — the same visual tier as the Recipe toolbar and band
+    groups — so the dialog's top tier reads as a uniform family."""
+    dlg = _collection_dialog(qapp)
+    assert dlg.findChild(object, "NameBox") is not None
+    assert dlg.findChild(object, "ScopeBox") is not None

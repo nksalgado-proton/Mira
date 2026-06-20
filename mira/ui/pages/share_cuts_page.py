@@ -1354,11 +1354,36 @@ class ShareCutsPage(QWidget):
                           if eg is not None else None,
             recipe_store=self._recipe_store(),
             dc_creator=self._make_dc_creator(),
+            dc_loader=self._make_dc_loader(),
             parent=self,
         )
         if heading_text:
             dlg.setWindowTitle(heading_text)
         return dlg
+
+    def _make_dc_loader(self):
+        """Build the :meth:`NewRecipeDialog.dc_loader` closure for the
+        Cut-face dialog (spec/90 §5). Resolves an
+        :class:`OperandOption` to ``(expr, filters)`` so Load DC can
+        replace the dialog's Source + Filters with the saved DC's
+        contents.
+
+        Returns ``None`` when no per-event gateway is open."""
+        eg = self._eg
+        if eg is None:
+            return None
+
+        def dc_loader(operand: OperandOption) -> tuple[list, dict]:
+            dc = None
+            if operand.id:
+                dc = eg.dynamic_collection(operand.id)
+            if dc is None and operand.tag:
+                dc = eg.dc_by_tag(operand.tag)
+            if dc is None:
+                return ([], {})
+            return (list(eg.dc_expr(dc)), dict(eg.dc_filters(dc)))
+
+        return dc_loader
 
     def _make_dc_creator(self):
         """Build the :meth:`NewRecipeDialog.dc_creator` closure for the

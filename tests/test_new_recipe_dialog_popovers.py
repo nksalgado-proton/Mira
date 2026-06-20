@@ -94,11 +94,21 @@ def test_verb_popover_renders_both_options(qapp):
 
 
 def test_verb_popover_rows_include_plain_language_description(qapp):
+    """Each row is a QPushButton hosting two child QLabels (key + faint
+    description) — Qt's setText renders HTML literally, so the previous
+    ``<b>pick</b><br/>…`` markup showed up as raw tags on screen. The
+    fix replaces the HTML with real label widgets; this test reads the
+    children to confirm the description is rendered as widget content."""
+    from PyQt6.QtWidgets import QLabel
     popover = _VerbPopover(selected=VERDICT_SKIP)
     for verdict, description in VERB_OPTIONS:
-        txt = popover._rows[verdict].text() or ""
-        # Description is in the second line of the row's HTML label.
-        assert description in txt
+        row = popover._rows[verdict]
+        # No HTML markup leaked into the button's own text.
+        assert "<b>" not in (row.text() or "")
+        labels = [lbl.text() for lbl in row.findChildren(QLabel)]
+        assert description in labels
+        # Key label sits alongside the description.
+        assert verdict in labels
 
 
 def test_verb_popover_marks_selected(qapp):
@@ -135,10 +145,16 @@ def test_join_word_popover_renders_all_three_options(qapp):
 
 
 def test_join_word_popover_rows_include_plain_language_description(qapp):
+    """Same widget shape as :class:`_VerbPopover` — the description is a
+    child QLabel, not HTML inside the button's text."""
+    from PyQt6.QtWidgets import QLabel
     popover = _JoinWordPopover()
     for join, description in JOIN_WORD_OPTIONS:
-        txt = popover._rows[join].text() or ""
-        assert description in txt
+        row = popover._rows[join]
+        assert "<b>" not in (row.text() or "")
+        labels = [lbl.text() for lbl in row.findChildren(QLabel)]
+        assert description in labels
+        assert join in labels
 
 
 def test_join_word_popover_marks_selected(qapp):

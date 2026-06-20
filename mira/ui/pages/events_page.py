@@ -497,6 +497,31 @@ class EventsPage(QWidget):
         )
 
         recipe_store = RecipeStore(library_gateway.user_store)
+
+        def _dc_creator(name: str, expr: list, filters: dict) -> OperandOption:
+            """spec/90 §5 — Save as DC for the cross-event Collection
+            dialog. The library-gateway's :meth:`create_dc` takes the
+            full spec/32 §2 filter catalogue verbatim, so the dialog's
+            ``filters_payload()`` flows through untouched (camera_ids /
+            lens_models / styles / media_type all already use the keys
+            the gateway expects)."""
+            sf = library_gateway.create_dc(
+                name, expr=expr, filters=dict(filters or {}))
+            try:
+                live = library_gateway.dc_probe(
+                    library_gateway.dc_expr(sf),
+                    library_gateway.dc_filters(sf),
+                )
+            except Exception:                              # noqa: BLE001
+                live = 0
+            return OperandOption(
+                name=f"#{sf.tag}",
+                count=int(live or 0),
+                kind="dc",
+                tag=sf.tag,
+                id=sf.id,
+            )
+
         dlg = NewRecipeDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
@@ -506,6 +531,7 @@ class EventsPage(QWidget):
             pool_probe=lambda expr: library_gateway.dc_probe(expr),
             recipe_probe=library_gateway.resolve_recipe,
             recipe_store=recipe_store,
+            dc_creator=_dc_creator,
             parent=self,
         )
 

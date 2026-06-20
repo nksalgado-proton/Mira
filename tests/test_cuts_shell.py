@@ -440,6 +440,49 @@ def test_save_as_dc_creates_a_dc_and_refreshes(qapp, gw, tmp_path):
     assert any(d.name == "best_macros" for d in shell.list_page._dcs)
 
 
+def test_make_new_recipe_dialog_wires_dc_creator(qapp, gw, tmp_path):
+    """spec/90 §5 — the page's dialog factory wires a dc_creator closure
+    that calls the per-event gateway's ``create_dc`` and returns an
+    :class:`OperandOption` ready to drop into the operand inventory.
+    Calling it directly mirrors what the dialog's naming sub-dialog does
+    on OK; the DC lands in the gateway and the page's DC inventory both."""
+    from mira.user_store.repo import UserStore
+    us = UserStore.create(tmp_path / "mira.db", app_version="t",
+                          created_at="2026-06-20T12:00:00+00:00")
+
+    class _G:
+        def __init__(self, eg, settings, us):
+            self._eg = eg
+            self.settings = settings
+            self.user_store = us
+
+        def open_event(self, _id): return self._eg
+
+    g = _G(gw, Settings(), us)
+    shell = ShareCutsPage(g)
+    assert shell.open_event("evt-c")
+    kwargs = shell._dialog_kwargs()
+    dlg = shell._make_new_recipe_dialog(kwargs)
+    assert dlg._dc_creator is not None
+    # Drive the closure the dialog's sub-dialog would call on OK.
+    operand = dlg._dc_creator(
+        "Clean exports",
+        [["+", "exported"]],
+        {"styles": [], "media_type": "both"},
+    )
+    # The DC is live in the gateway.
+    tags = [dc.tag for dc in gw.dynamic_collections()]
+    assert "clean_exports" in tags
+    # The returned OperandOption carries the new DC's identity.
+    assert operand.kind == "dc"
+    assert operand.tag == "clean_exports"
+    assert operand.id
+    # The page refreshed; the DCs tab snapshot picks the new DC up.
+    assert any(d.name == "clean_exports" for d in shell.list_page._dcs)
+    dlg.deleteLater()
+    us.close()
+
+
 def test_dialog_kwargs_offers_existing_dcs(qapp, gw, tmp_path):
     """Spec/81 §2: the New Cut dialog's add row offers DCs as operands
     so a DC can be composed out of other DCs (all-time-best =

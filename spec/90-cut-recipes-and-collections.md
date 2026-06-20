@@ -341,6 +341,31 @@ named DC.
 
 ## 5. New entities
 
+### 5.0 Save as DC vs Save as Recipe (two seams, two payloads)
+
+The dialog exposes two separate "save" affordances and they save different
+things:
+
+- **Save as DC** lives in the operand picker popover (spec/90 §3.4) and is
+  reachable from any picker whose output is an item-set — the Source picker
+  and the per-rule predicate picker. The saved payload is the **expression
+  the picker just composed** plus, for Source-target saves, the dialog's
+  current Filters block. Rule-predicate saves carry an empty filters block
+  (predicates don't compose with the dialog-level Filters row). The Scope
+  picker hides this affordance — events don't compose into DCs; that's the
+  Event Collection track (§5.3).
+- **Save as Recipe…** lives in the dialog footer and saves the **whole
+  workflow** — Source + Scope + Filters + Rules + Otherwise + presentation
+  — under the dialog's flavour (Cut / Collection). It is the "share the
+  decision-making procedure" seam (§5.1).
+
+Both are reachable from the same dialog at different points; mixing them
+is intentional — the source-level set becomes a reusable named DC, the
+whole workflow becomes a reusable named Recipe. The Save as DC affordance
+fires the host's `dc_creator(name, expr, filters)` callable and, on
+success, drops the returned operand into the dialog's local operand
+inventory so it's pickable as a chip immediately.
+
 ### 5.1 Recipe (the saved decision-making procedure)
 
 A **Recipe** is the saved Cut / Collection configuration. It holds **everything

@@ -1353,11 +1353,47 @@ class ShareCutsPage(QWidget):
             recipe_probe=(lambda comp: eg.resolve_recipe(comp))
                           if eg is not None else None,
             recipe_store=self._recipe_store(),
+            dc_creator=self._make_dc_creator(),
             parent=self,
         )
         if heading_text:
             dlg.setWindowTitle(heading_text)
         return dlg
+
+    def _make_dc_creator(self):
+        """Build the :meth:`NewRecipeDialog.dc_creator` closure for the
+        Cut-face dialog (spec/90 §5). Translates the dialog's
+        ``filters_payload()`` dict back into the gateway's
+        ``styles`` / ``media_type`` parameters and refreshes the page
+        so the new DC lands in the DCs tab after the sub-dialog closes.
+
+        Returns ``None`` when no per-event gateway is open — the dialog
+        keeps the Save as DC button visible-but-inert in that case
+        (smokes / unit tests without persistence)."""
+        eg = self._eg
+        if eg is None:
+            return None
+        page = self
+
+        def dc_creator(name: str, expr: list, filters: dict) -> OperandOption:
+            styles = list((filters or {}).get("styles") or [])
+            media_type = (filters or {}).get("media_type") or "both"
+            dc = eg.create_dc(
+                name, expr=expr, styles=styles, media_type=media_type)
+            try:
+                live = eg.dc_probe(eg.dc_expr(dc), eg.dc_filters(dc))
+            except Exception:                              # noqa: BLE001
+                live = 0
+            page.refresh()
+            return OperandOption(
+                name=f"#{dc.tag}",
+                count=int(live or 0),
+                kind="dc",
+                tag=dc.tag,
+                id=dc.id,
+            )
+
+        return dc_creator
 
     def _save_dc(self, name: str, info: dict) -> None:
         """Save the dialog's current source as a Dynamic Collection

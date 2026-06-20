@@ -603,16 +603,19 @@ class _OperandPickerPopover(QFrame):
 
         self._populate_sections()
 
-        # "Save as DC…" only applies to the Source picker — Scope's
-        # output is event sets, not item sets, and a rule predicate's
-        # output is a per-item match set the resolver consumes once. The
-        # rule-predicate picker also hides it.
-        if self._target == PICKER_TARGET_SOURCE:
+        # "Save as DC…" applies to the Source + Rule-predicate pickers —
+        # both produce item-set expressions that can become a named DC.
+        # Scope hides it: events don't compose into DCs (that's the Event
+        # Collection track).
+        if self._target in (
+            PICKER_TARGET_SOURCE,
+            PICKER_TARGET_RULE_PREDICATE,
+        ):
             outer.addWidget(_divider())
             self._save_btn = ghost_button(tr("Save as DC…"))
             self._save_btn.setObjectName("OperandPickerSaveAsDc")
             self._save_btn.setToolTip(tr(
-                "Save the current source as a Dynamic Collection — Phase 4e."))
+                "Save the current expression as a Dynamic Collection."))
             self._save_btn.clicked.connect(self._on_save_as_dc)
             outer.addWidget(self._save_btn)
         else:
@@ -969,6 +972,86 @@ class _SaveRecipeNameDialog(QDialog):
             self._error.setText("")
         if self._ok is not None:
             self._ok.setEnabled(bool(self._edit.text().strip()))
+
+
+class _SaveAsDcNameDialog(QDialog):
+    """One-line name dialog the picker's "Save as DC…" button opens.
+
+    Mirrors :class:`_SaveRecipeNameDialog`: defaults to empty so the user
+    types fresh, a leading ``#`` preview shows beneath the input, and a
+    conflict from the host's dc_creator surfaces via :meth:`show_error`
+    inline so the user retries without retyping.
+    """
+
+    def __init__(
+        self,
+        *,
+        default: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("SaveAsDcNameDialog")
+        self.setWindowTitle(tr("Save as DC"))
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        box = QVBoxLayout(self)
+        group = QGroupBox(tr("Dynamic Collection name"))
+        group.setObjectName("FormFieldGroup")
+        gbox = QVBoxLayout(group)
+        self._edit = QLineEdit(default)
+        self._edit.setObjectName("SaveAsDcNameEdit")
+        self._edit.setToolTip(tr(
+            "How this DC appears in operand pickers — # is added for you."))
+        self._edit.textChanged.connect(self._refresh)
+        gbox.addWidget(self._edit)
+        self._preview = QLabel("")
+        self._preview.setObjectName("Faint")
+        gbox.addWidget(self._preview)
+        self._error = QLabel("")
+        self._error.setObjectName("SaveAsDcNameError")
+        self._error.setWordWrap(True)
+        self._error.setVisible(False)
+        gbox.addWidget(self._error)
+        box.addWidget(group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok, parent=self)
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._ok is not None:
+            self._ok.setObjectName("Primary")
+            self._ok.setText(tr("Save"))
+            self._ok.setToolTip(tr("Save as a Dynamic Collection."))
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel is not None:
+            cancel.setToolTip(tr("Don't save a DC."))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        box.addWidget(buttons)
+        self._refresh()
+
+    def dc_name(self) -> str:
+        return self._edit.text().strip()
+
+    def show_error(self, message: str) -> None:
+        """Display ``message`` inline; called by the parent when the
+        host's dc_creator raised on the name."""
+        self._error.setText(message)
+        self._error.setVisible(True)
+
+    def _refresh(self, _text: str = "") -> None:
+        text = self._edit.text().strip()
+        if text:
+            cleaned = text.lower().replace(" ", "_")
+            self._preview.setText(f"#{cleaned}")
+        else:
+            self._preview.setText("(tag will preview here)")
+        if not self._error.isHidden():
+            self._error.setVisible(False)
+            self._error.setText("")
+        if self._ok is not None:
+            self._ok.setEnabled(bool(text))
 
 
 class _LoadRecipeDialog(QDialog):
@@ -1371,6 +1454,8 @@ class NewRecipeDialog(QDialog):
         recipe_probe: Optional[Callable[
             [dict], "_recipe_resolver.RecipeResolution"]] = None,
         recipe_store: Optional[RecipeStore] = None,
+        dc_creator: Optional[Callable[
+            [str, list, dict], "OperandOption"]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1391,6 +1476,13 @@ class NewRecipeDialog(QDialog):
         self._totals_probe = totals_probe
         self._recipe_probe = recipe_probe
         self._recipe_store = recipe_store
+        self._dc_creator = dc_creator
+        # Tracks which picker is "active" for a save_as_dc click:
+        # ("source", None) for the source picker, ("rule_predicate", row)
+        # for a rule row's predicate picker. Read inside
+        # :meth:`_on_save_as_dc_clicked` so the dialog knows which
+        # expression + filter block to ship.
+        self._save_as_dc_context: Optional[Tuple[str, Optional["_RuleRow"]]] = None
         # Cross-flavour banner widget — created in :meth:`_build_metrics_section`
         # and toggled in :meth:`_show_cross_flavour_banner` /
         # :meth:`_clear_cross_flavour_banner`. spec/90 §5.5 — when a Collection
@@ -1730,6 +1822,7 @@ class NewRecipeDialog(QDialog):
             parent=self,
         )
         popover.chosen.connect(self._add_source_chip)
+        self._save_as_dc_context = ("source", None)
         popover.save_as_dc_requested.connect(self._on_save_as_dc_clicked)
         # Anchor: just below the button's bottom-left corner.
         pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
@@ -1767,11 +1860,121 @@ class NewRecipeDialog(QDialog):
         self._source_summary.setText(f"source: {pool_n} files")
 
     def _on_save_as_dc_clicked(self) -> None:
-        """Placeholder — emits :attr:`save_as_dc_requested` so Phase 4e
-        wires the actual save modal. For now, surface the no-op honestly
-        via the existing toast / log path."""
-        log.info("save_as_dc_requested — Phase 4e will wire this")
+        """Picker "Save as DC…" — open the naming sub-dialog and route
+        the result through :attr:`_dc_creator`.
+
+        Source target ships ``(name, source_expression(), filters_payload())``
+        — saving the source alone would lose the Style/Media/Camera/Lens
+        narrowing the user has set. Rule-predicate target ships
+        ``(name, predicate_expr, {})`` — predicates don't carry filters
+        (the dialog's filters apply at the pool level, not per-rule).
+
+        With no :attr:`_dc_creator` wired the signal still fires so
+        legacy tests / smokes that listen for the placeholder behaviour
+        keep working — but the sub-dialog isn't opened (the creator is
+        what materialises the DC)."""
         self.save_as_dc_requested.emit()
+        if self._dc_creator is None:
+            log.info("save_as_dc_requested — no dc_creator wired")
+            return
+        context = self._save_as_dc_context
+        if context is None:
+            # Defensive: a stray emit with no opener context. Honour
+            # the source flavour so the click does *something*.
+            context = ("source", None)
+        target, row = context
+        expr, filters = self._build_save_as_dc_payload(target, row)
+        if not expr:
+            log.info("save_as_dc clicked with empty expression — skipping")
+            return
+        self._open_save_as_dc_dialog(expr, filters)
+
+    def _build_save_as_dc_payload(
+        self,
+        target: str,
+        row: Optional["_RuleRow"],
+    ) -> Tuple[list, dict]:
+        """Encode the current expression + filters for the dc_creator.
+
+        spec/90 §5 separates the two seams: Source-level Save as DC carries
+        the dialog's filters block; predicate-level Save as DC carries an
+        empty filters block (predicates don't compose with the dialog's
+        Filters row)."""
+        if target == "rule_predicate" and row is not None:
+            return self._encode_rule_predicate_expr(row), {}
+        return self.source_expression(), self.filters_payload()
+
+    def _encode_rule_predicate_expr(self, row: "_RuleRow") -> list:
+        """Translate one :class:`_RuleRow`'s predicate chip list into the
+        spec/90 §5.1 ``[[op, operand], …]`` shape — same encoder
+        :meth:`source_expression` uses."""
+        out: List[List[Any]] = []
+        for index, (join, operand) in enumerate(row.predicate()):
+            op = "+" if index == 0 else _JOIN_TO_OP.get(join, "+")
+            out.append([op, self._encode_operand(operand)])
+        return out
+
+    def _open_save_as_dc_dialog(
+        self, expr: list, filters: dict,
+    ) -> None:
+        """The naming sub-dialog loop — mirrors
+        :meth:`_on_save_recipe_clicked`. Keeps the sub-dialog open on
+        conflict so the user retries without retyping; on success
+        appends the returned :class:`OperandOption` to the inventory,
+        toasts, and leaves the main dialog + the operand picker open."""
+        dlg = _SaveAsDcNameDialog(parent=self)
+        while True:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            name = dlg.dc_name()
+            try:
+                operand = self._dc_creator(name, expr, filters)
+            except ValueError as exc:
+                code = str(exc)
+                if code == "taken":
+                    msg = tr(
+                        "A DC named '{name}' already exists. Pick another."
+                    ).format(name=name)
+                elif code == "reserved":
+                    msg = tr(
+                        "'{name}' is a reserved name. Pick another."
+                    ).format(name=name)
+                elif code == "empty":
+                    msg = tr(
+                        "Pick a name with at least one letter or digit.")
+                elif code == "cycle":
+                    msg = tr(
+                        "This expression refers back to itself — pick a "
+                        "different combination.")
+                else:
+                    msg = str(exc) or tr("Could not save the DC.")
+                dlg.show_error(msg)
+                continue
+            except Exception as exc:                       # noqa: BLE001
+                log.exception("dc_creator raised — keeping the sub-dialog open")
+                dlg.show_error(str(exc) or tr("Could not save the DC."))
+                continue
+            if operand is not None:
+                self._append_operand_to_inventory(operand)
+            self._toast(tr("DC '{name}' saved.").format(name=name))
+            return
+
+    def _append_operand_to_inventory(self, operand: "OperandOption") -> None:
+        """Drop a freshly-created DC into the dialog's local operand
+        inventory so the next picker open lists it. Replaces any prior
+        entry that matches the new operand's id (tag-by-tag fallback)."""
+        pools = self._ctx.available_pools
+        for i, existing in enumerate(pools):
+            same_id = (operand.id and existing.id == operand.id)
+            same_tag = (
+                operand.tag and existing.tag
+                and existing.kind == operand.kind
+                and existing.tag == operand.tag
+            )
+            if same_id or same_tag:
+                pools[i] = operand
+                return
+        pools.append(operand)
 
     # -------- Scope (Collection face only) --------------------------- #
 
@@ -2109,7 +2312,13 @@ class NewRecipeDialog(QDialog):
     ) -> None:
         """Open the operand picker with ``target='rule_predicate'`` for
         a specific :class:`_RuleRow`. Faces appear when the dialog
-        enables hardware filters AND the People catalog has entries."""
+        enables hardware filters AND the People catalog has entries.
+
+        The picker also surfaces "Save as DC…" for the rule's predicate
+        — spec/90 §5: a rule's predicate is an item-set expression, the
+        same shape as Source, so it can become a named DC (the saved
+        DC carries an empty filters block; predicates don't compose
+        with the dialog-level Filters row)."""
         popover = _OperandPickerPopover(
             self._ctx.available_pools,
             target=PICKER_TARGET_RULE_PREDICATE,
@@ -2119,6 +2328,8 @@ class NewRecipeDialog(QDialog):
         )
         popover.chosen.connect(
             lambda operand, r=row: self._on_predicate_operand_chosen(r, operand))
+        self._save_as_dc_context = ("rule_predicate", row)
+        popover.save_as_dc_requested.connect(self._on_save_as_dc_clicked)
         pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
         popover.move(pos)
         popover.show()
@@ -3077,4 +3288,5 @@ __all__ = [
     "NewRecipeContext",
     "NewRecipeDialog",
     "OperandOption",
+    "_SaveAsDcNameDialog",
 ]

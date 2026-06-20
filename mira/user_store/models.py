@@ -127,7 +127,12 @@ class Person:
     """One catalogued person. The reference photo BYTES live at
     ``%LOCALAPPDATA%\\Mira\\people\\<id>.{jpg,png}`` — only the relpath
     is stored here. Per-photo links in ``event.db.photo_person`` reference
-    this row's ``id`` via the user-level business key."""
+    this row's ``id`` via the user-level business key.
+
+    ``representative_face_id`` (spec/90 §5.2, schema v7): opaque pointer to a
+    ``face`` row in event.db — the chosen face box that represents this
+    Person in dialogs / chips. No FK because the reference spans stores. NULL
+    until recognition runs (the default for legacy rows)."""
 
     id: str
     display_name: str
@@ -135,6 +140,7 @@ class Person:
     updated_at: str
     reference_photo_relpath: Optional[str] = None
     embedding_json: Optional[str] = None       # face-rec embedding cached (simplest tier; spec/51 §3.13)
+    representative_face_id: Optional[str] = None
     extras_json: str = '{}'
 
 
@@ -237,6 +243,54 @@ class SavedFilter:
     created_at: str
     updated_at: str
     description: Optional[str] = None
+    expr_json: str = '[]'
+    filters_json: str = '{}'
+    extras_json: str = '{}'
+
+
+# --------------------------------------------------------------------------- #
+# spec/90 Phase 1 — Recipe + Event Collection (schema v7)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Recipe:
+    """One saved Recipe (spec/90 §5.1) — the New Cut / New Collection dialog
+    configuration, persisted at the library level so the user replays it
+    across events. ``flavour`` discriminates the two dialog faces: ``'cut'``
+    (event-scope, audience-facing — no Scope, no hardware / face filters),
+    ``'collection'`` (cross-event, curation-facing — full sections).
+    ``composition_json`` is the opaque blob that captures Scope, Source,
+    Filters, Rules (predicates + verdicts), Otherwise verdict, and
+    presentation settings (card style, target/max minutes, photo seconds,
+    music). Its shape is dialog-defined — Phase 1 is substrate only.
+    UNIQUE(flavour, name) splits the namespace by flavour so a Cut Recipe
+    and a Collection Recipe may share a name (spec/90 §5.5)."""
+
+    id: str
+    name: str
+    flavour: str                              # 'cut' | 'collection'
+    composition_json: str
+    created_at: str
+    updated_at: str
+    extras_json: str = '{}'
+
+
+@dataclass
+class EventCollection:
+    """One saved Event Collection (spec/90 §5.3) — the cross-event analogue
+    of a DC, at the event level. Same set-algebra shape as
+    :class:`DynamicCollection` / :class:`SavedFilter`, but the universe is
+    EVENTS (not items). Operands the resolver will admit are events (by
+    uuid) and other Event Collections (nested grouping). ``filters_json``
+    holds the date-range predicate today and grows to the broader
+    event-metadata catalogue from spec/86 as needed. Tag namespace is
+    global at the user level, ``COLLATE NOCASE UNIQUE``. Empty in Phase 1."""
+
+    id: str
+    tag: str
+    created_at: str
+    updated_at: str
     expr_json: str = '[]'
     filters_json: str = '{}'
     extras_json: str = '{}'

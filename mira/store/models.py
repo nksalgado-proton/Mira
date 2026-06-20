@@ -305,6 +305,25 @@ class PhotoPerson:
 
 
 @dataclass
+class Face:
+    """One detected face on an item (spec/90 §5.2). ``person_id`` references
+    the library-level ``person`` table in mira.db — opaque TEXT because no FK
+    can span stores (NULL = unrecognized, same shape as ``photo_person``).
+    Bounding box is normalised 0..1 over the item's pixel space so the
+    coordinates stay correct across thumb / proxy / original tiers."""
+
+    id: str
+    item_id: str
+    detected_at: str
+    person_id: Optional[str] = None
+    bbox_x: Optional[float] = None
+    bbox_y: Optional[float] = None
+    bbox_w: Optional[float] = None
+    bbox_h: Optional[float] = None
+    confidence: Optional[float] = None
+
+
+@dataclass
 class Lineage:
     export_relpath: str
     phase: str
@@ -397,6 +416,7 @@ class EventDocument:
     cuts: List[Cut] = field(default_factory=list)
     cut_members: List[CutMember] = field(default_factory=list)
     photo_persons: List[PhotoPerson] = field(default_factory=list)
+    faces: List[Face] = field(default_factory=list)
     buckets: List[Bucket] = field(default_factory=list)
     item_visits: List[ItemVisit] = field(default_factory=list)
     lineage: List[Lineage] = field(default_factory=list)

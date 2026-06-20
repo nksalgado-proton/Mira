@@ -14,8 +14,14 @@ cross-event projection of every event's items so cross-event queries hit ONE
 SQLite file) + ``saved_filter`` (spec/32 §4 — the cross-event DC home; same
 typed-ref shape as event.db ``dynamic_collection``, the spec/32 §4 predicate
 tree reconciled to spec/81 §2's ``expr_json`` + ``filters_json``). Both arrive
-as new tables — no ALTER, no CHECK loss. Existing files migrate in place on
-open; fresh files are created at the current version.
+as new tables — no ALTER, no CHECK loss. **v7 (spec/90 Phase 1)** adds the
+three saved-noun substrates the rule-list Recipe model needs: ``recipe`` (the
+saved Cut/Collection configuration, the unified noun §5.1), ``event_collection``
+(saved event sets — the cross-event analogue of a DC at the event level, §5.3),
+and ``representative_face_id`` on the existing ``person`` table (pointer to a
+``face`` row in event.db, §5.2). All four tables stay empty in this slice; the
+resolver / dialog / UI work lands in later phases. Existing files migrate in
+place on open; fresh files are created at the current version.
 """
 from __future__ import annotations
 
@@ -28,7 +34,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -134,11 +140,23 @@ CREATE INDEX ix_cut_template_name ON cut_template(name);
 -- ``photo_person`` reference ``person.id`` here. Simplest tier per spec/51
 -- §3.13: one reference photo per person, embedding computed and cached at
 -- upload; face-matching runs at filter time only.
+--
+-- spec/90 §5.2 (schema v7): ``representative_face_id`` is the pointer to a
+-- ``face`` row in event.db (one event's worth of detected boxes). Opaque TEXT
+-- because no FK can span stores — the same shape as ``photo_person.person_id``
+-- but in the opposite direction. NULL = no representative face has been
+-- chosen yet (the default for legacy rows and for People created before any
+-- recognition pass runs). spec/90 also names this column ``name`` and a
+-- ``name UNIQUE`` constraint; the existing ``display_name`` (NOT UNIQUE)
+-- column is kept verbatim — two People may legitimately carry the same
+-- display name (different ``id``), and Phase 1 has no lookup-by-name path
+-- that would benefit from a UNIQUE.
 CREATE TABLE person (
   id                       TEXT PRIMARY KEY,
   display_name             TEXT NOT NULL,
   reference_photo_relpath  TEXT,
   embedding_json           TEXT,
+  representative_face_id   TEXT,
   created_at               TEXT NOT NULL,
   updated_at               TEXT NOT NULL,
   extras_json              TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
@@ -267,6 +285,59 @@ CREATE TABLE saved_filter (
   tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
   description  TEXT,                       -- free-text one-liner; UI only
   expr_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+
+-- ===== recipe (D) — the saved Cut/Collection configuration (spec/90 §5.1) ==
+-- One row per saved Recipe — everything the user composed in the New Cut /
+-- New Collection dialog except the Picker session's per-file hand decisions.
+-- The Recipe schema is **flavoured** (spec/90 §5.1): 'cut' (no Scope, no
+-- hardware / face filters — the event-Cut audience-facing face) or
+-- 'collection' (full sections — the cross-event curation face). Composition
+-- (Scope sentence, Source sentence, Filter selections, Rules list +
+-- verdicts, Otherwise verdict, presentation settings) is one opaque JSON
+-- blob; the shape is determined by the dialog code, not the schema (Phase
+-- 1 is substrate only).
+--
+-- UNIQUE(flavour, name): the user can have a Cut Recipe and a Collection
+-- Recipe sharing a #name (different audiences, different surfaces, separate
+-- pools) — the namespaces are split by flavour (spec/90 §5.5). Within one
+-- flavour, names are exclusive.
+--
+-- Lives alongside ``cut_template`` — that table is the legacy New Cut dialog
+-- recipe (spec/61 §2). spec/90 supersedes ``cut_template`` once the dialog
+-- rewrite lands (§7 Phase 4); Phase 1 leaves both tables present so the
+-- existing dialog keeps working.
+CREATE TABLE recipe (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  flavour           TEXT NOT NULL CHECK (flavour IN ('cut','collection')),
+  composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  UNIQUE (flavour, name)
+);
+CREATE INDEX ix_recipe_flavour ON recipe(flavour);
+
+-- ===== event_collection (D) — saved event sets (spec/90 §5.3) ==============
+-- Cross-event analogue of a DC, at the EVENT level (vs spec/81's DC at the
+-- ITEM level). Same shape as ``dynamic_collection`` / ``saved_filter`` —
+-- set algebra over operands + filters, resolved live — but the universe is
+-- events, not items. Operands the resolver admits are events (by uuid) and
+-- other Event Collections (nested grouping); ``filters_json`` holds the
+-- date-range predicate today and grows to the broader event-metadata
+-- catalogue from spec/86 as needed. Tag namespace is global at the user
+-- level, COLLATE NOCASE + non-empty check matching the other Recipe-grammar
+-- nouns (DC, Cut, saved_filter). ``#adventure_events``, ``#wildlife_trips``
+-- are Event Collections. Stays empty in Phase 1.
+CREATE TABLE event_collection (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  expr_json    TEXT NOT NULL CHECK (json_valid(expr_json)),
   filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
@@ -587,12 +658,59 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
         conn.execute(sql)
 
 
+def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """spec/90 Phase 1 — schema additions for Recipe, Event Collection, Person.
+
+    Three additions, all empty until later phases:
+
+    * ``recipe`` (spec/90 §5.1) — the saved Cut/Collection configuration,
+      flavoured cut/collection, composition_json carries Scope/Source/Filters/
+      Rules/Otherwise/presentation. UNIQUE(flavour, name) lets a Cut Recipe
+      and a Collection Recipe share a name across the flavour boundary.
+    * ``event_collection`` (spec/90 §5.3) — saved event sets, same shape as
+      ``dynamic_collection`` / ``saved_filter`` but the universe is events.
+    * ``person.representative_face_id`` (spec/90 §5.2) — opaque pointer to a
+      ``face`` row in event.db. ALTER TABLE ADD COLUMN — existing rows land
+      NULL (no representative face chosen).
+
+    The recipe + event_collection tables arrive as CREATE TABLE so the full
+    CHECK + index complement survives. The person column is the only ALTER —
+    its NULL default is the right legacy semantics. Uses individual
+    ``conn.execute`` calls (not ``executescript``) so the wrapper's explicit
+    BEGIN/COMMIT stays intact."""
+    conn.execute("""
+CREATE TABLE recipe (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  flavour           TEXT NOT NULL CHECK (flavour IN ('cut','collection')),
+  composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  UNIQUE (flavour, name)
+)""")
+    conn.execute("CREATE INDEX ix_recipe_flavour ON recipe(flavour)")
+    conn.execute("""
+CREATE TABLE event_collection (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  expr_json    TEXT NOT NULL CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+)""")
+    conn.execute(
+        "ALTER TABLE person ADD COLUMN representative_face_id TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
     _migrate_v3_to_v4,
     _migrate_v4_to_v5,
     _migrate_v5_to_v6,
+    _migrate_v6_to_v7,
 ]
 
 

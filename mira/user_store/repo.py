@@ -54,6 +54,8 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.GlobalItem, "global_items", ("event_uuid", "item_id"),
                ("event_uuid", "capture_time", "item_id")),
     _TableInfo(m.SavedFilter, "saved_filter", ("id",), ("created_at", "id")),
+    _TableInfo(m.Recipe, "recipe", ("id",), ("flavour", "name", "id")),
+    _TableInfo(m.EventCollection, "event_collection", ("id",), ("created_at", "id")),
     _TableInfo(m.Person, "person", ("id",), ("display_name",)),
     _TableInfo(m.UserCamera, "user_camera", ("camera_id",)),
     _TableInfo(m.GearProfile, "gear_profile", ("kind", "key")),

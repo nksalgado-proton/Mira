@@ -366,16 +366,63 @@ A Recipe **does not** hold:
   current data at instantiate time, modulo the strict-rule guard for missing
   references).
 
+**Phase 1 schema (mira.db, schema v7):**
+
+```sql
+CREATE TABLE recipe (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  flavour           TEXT NOT NULL CHECK (flavour IN ('cut','collection')),
+  composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  UNIQUE (flavour, name)
+);
+```
+
+`composition_json` is one opaque blob carrying Scope / Source / Filters / Rules
+(predicates + verdicts) / Otherwise / presentation. The shape is dialog-defined
+so the storage schema doesn't lock the dialog in. `extras_json` joins as the
+house escape hatch (spec/53 §1.1 — every table that might grow gets one).
+`UNIQUE (flavour, name)` splits the namespace by flavour so a Cut Recipe and a
+Collection Recipe may share a name (§5.5).
+
 ### 5.2 Person + Face (face recognition substrate)
 
 Forward-compatible model for face recognition. **Not implemented in v1 of this
 spec** — the schema spec/90 needs is small and additive, so future face
 work doesn't reshape the dialog grammar.
 
-| Entity | Scope | Columns |
-|---|---|---|
-| `person` | library | `id`, `name`, `representative_face_id`, `created_at` |
-| `face` | per item | `id`, `item_id`, `person_id` (nullable for unrecognized), `bbox_*`, `confidence`, `detected_at` |
+| Entity | Scope | Where it lives | Columns landed |
+|---|---|---|---|
+| `person` | library | `mira.db` (schema v7 — extended) | `id`, `display_name`, `reference_photo_relpath`, `embedding_json`, **`representative_face_id`** (new), `created_at`, `updated_at`, `extras_json` |
+| `face` | per item | `event.db` (schema v12 — new) | `id`, `item_id`, `person_id` (nullable for unrecognized), `bbox_x` / `bbox_y` / `bbox_w` / `bbox_h` (normalised 0..1), `confidence`, `detected_at` |
+
+The Person table predates spec/90 (spec/53 §2.5 — the simplest face-recognition
+tier) and is **extended** in Phase 1, not recreated: the only new column is
+`representative_face_id`, an opaque pointer to a `face` row in event.db (no FK
+spans stores; same shape as `photo_person.person_id`). `display_name`
+substitutes for the spec's `name` field (kept verbatim; legacy callers and the
+spec/53 dialog draft already write to it). No `UNIQUE` on `display_name` —
+Phase 1 has no lookup-by-name path that benefits, and two People may
+legitimately carry the same display name (different `id`).
+
+```sql
+CREATE TABLE face (
+  id           TEXT PRIMARY KEY,
+  item_id      TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  person_id    TEXT,                                   -- NULL = unrecognized
+  bbox_x       REAL CHECK (bbox_x IS NULL OR (bbox_x >= 0 AND bbox_x <= 1)),
+  bbox_y       REAL CHECK (bbox_y IS NULL OR (bbox_y >= 0 AND bbox_y <= 1)),
+  bbox_w       REAL CHECK (bbox_w IS NULL OR (bbox_w >  0 AND bbox_w <= 1)),
+  bbox_h       REAL CHECK (bbox_h IS NULL OR (bbox_h >  0 AND bbox_h <= 1)),
+  confidence   REAL,
+  detected_at  TEXT NOT NULL
+);
+CREATE INDEX ix_face_item   ON face(item_id);
+CREATE INDEX ix_face_person ON face(person_id) WHERE person_id IS NOT NULL;
+```
 
 Person chips in the Recipe resolve via `SELECT item_id FROM face WHERE
 person_id = ?`. The library-level scope means a Recipe's Person reference works
@@ -395,6 +442,26 @@ expression-JSON shape as DCs, and an event-universe resolver. Tagging an
 event is then "add it to a tag-named Event Collection" — no new column on the
 event table needed (`spec/86` already catalogued the event-filter dimensions
 this collection model unifies).
+
+**Phase 1 schema (mira.db, schema v7):**
+
+```sql
+CREATE TABLE event_collection (
+  id           TEXT PRIMARY KEY,
+  tag          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  expr_json    TEXT NOT NULL CHECK (json_valid(expr_json)),
+  filters_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filters_json)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+```
+
+`tag` carries `COLLATE NOCASE UNIQUE CHECK (tag <> '')` matching the existing
+`dynamic_collection` / `saved_filter` pattern — the cross-event Recipe
+grammar's named-operand resolution is case-blind. `filters_json` defaults to
+`'{}'` so callers that only set an expression don't have to thread a literal.
+`extras_json` joins as the standard escape hatch.
 
 ### 5.4 People Collections (future, parked)
 

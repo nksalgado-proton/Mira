@@ -68,6 +68,7 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.Cut, "cut", ("id",), ("created_at", "id")),
     _TableInfo(m.CutMember, "cut_member", ("cut_id", "member_id")),
     _TableInfo(m.PhotoPerson, "photo_person", ("item_id", "person_id")),
+    _TableInfo(m.Face, "face", ("id",), ("item_id", "id")),
     _TableInfo(m.Bucket, "bucket", ("bucket_key", "phase")),
     _TableInfo(m.ItemVisit, "item_visit", ("item_id", "phase")),
     _TableInfo(m.Lineage, "lineage", ("export_relpath",)),
@@ -86,6 +87,7 @@ _DOC_CLASSES: tuple = (
     m.PhaseState, m.VideoMarker, m.VideoSegment, m.VideoSnapshot,
     m.Adjustment, m.VideoAdjustment,
     m.StackBracket, m.StackMember, m.PhotoPerson,
+    m.Face,                # spec/90 §5.2 — references item; cascade-deletes with it
     m.Bucket, m.ItemVisit, m.Lineage,
     m.DynamicCollection,  # before Cut — cut.source_dc_id FKs it (deferred anyway)
     m.Cut, m.CutMember,   # after Lineage — cut_member FKs lineage (deferred anyway)
@@ -270,6 +272,7 @@ class EventStore:
             m.Cut: doc.cuts,
             m.CutMember: doc.cut_members,
             m.PhotoPerson: doc.photo_persons,
+            m.Face: doc.faces,
             m.Bucket: doc.buckets,
             m.ItemVisit: doc.item_visits,
             m.Lineage: doc.lineage,
@@ -305,6 +308,7 @@ class EventStore:
             cuts=self.all(m.Cut),
             cut_members=self.all(m.CutMember),
             photo_persons=self.all(m.PhotoPerson),
+            faces=self.all(m.Face),
             buckets=self.all(m.Bucket),
             item_visits=self.all(m.ItemVisit),
             lineage=self.all(m.Lineage),

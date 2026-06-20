@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -577,6 +577,31 @@ CREATE TABLE photo_person (
   PRIMARY KEY (item_id, person_id)
 );
 CREATE INDEX ix_photo_person_person ON photo_person(person_id);
+
+-- ===== face (D) — per-item detected face boxes (spec/90 §5.2) ================
+-- Forward-compatible substrate for face recognition. Empty in v1 — the
+-- detection pipeline is a separate sprint (spec/90 §7 Phase 6) — so Person
+-- chips in a Recipe resolve to "no matches" leniently until rows arrive.
+--
+-- ``person_id`` is nullable: an unrecognized face stays NULL (the
+-- ``#unrecognized_faces`` operand in spec/90 §4.3). The id references the
+-- library-level ``person`` table in mira.db; no FK can span stores, so the
+-- reference is opaque TEXT — same pattern as ``photo_person.person_id``.
+-- Bounding box is normalised 0..1 over the item's pixel space so it stays
+-- correct across thumb / proxy / original tiers (spec/63).
+CREATE TABLE face (
+  id           TEXT PRIMARY KEY,
+  item_id      TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  person_id    TEXT,
+  bbox_x       REAL CHECK (bbox_x IS NULL OR (bbox_x >= 0 AND bbox_x <= 1)),
+  bbox_y       REAL CHECK (bbox_y IS NULL OR (bbox_y >= 0 AND bbox_y <= 1)),
+  bbox_w       REAL CHECK (bbox_w IS NULL OR (bbox_w >  0 AND bbox_w <= 1)),
+  bbox_h       REAL CHECK (bbox_h IS NULL OR (bbox_h >  0 AND bbox_h <= 1)),
+  confidence   REAL,
+  detected_at  TEXT NOT NULL
+);
+CREATE INDEX ix_face_item   ON face(item_id);
+CREATE INDEX ix_face_person ON face(person_id) WHERE person_id IS NOT NULL;
 
 -- ===== lineage (D) — real FKs both directions; discriminated ===============
 CREATE TABLE lineage (
@@ -1179,6 +1204,32 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
         "DEFAULT 'picked'")
 
 
+def _migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """spec/90 §5.2 Phase 1 — the ``face`` table arrives as the per-item
+    substrate for face recognition.
+
+    Empty in v1 of spec/90 (the detection pipeline is a separate sprint —
+    spec/90 §7 Phase 6); the table exists so Person chips in a Recipe
+    resolve to "no matches" leniently before recognition ships. New
+    table, no ALTER, full CHECK + index complement intact."""
+    conn.execute("""
+CREATE TABLE face (
+  id           TEXT PRIMARY KEY,
+  item_id      TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  person_id    TEXT,
+  bbox_x       REAL CHECK (bbox_x IS NULL OR (bbox_x >= 0 AND bbox_x <= 1)),
+  bbox_y       REAL CHECK (bbox_y IS NULL OR (bbox_y >= 0 AND bbox_y <= 1)),
+  bbox_w       REAL CHECK (bbox_w IS NULL OR (bbox_w >  0 AND bbox_w <= 1)),
+  bbox_h       REAL CHECK (bbox_h IS NULL OR (bbox_h >  0 AND bbox_h <= 1)),
+  confidence   REAL,
+  detected_at  TEXT NOT NULL
+)""")
+    conn.execute("CREATE INDEX ix_face_item   ON face(item_id)")
+    conn.execute(
+        "CREATE INDEX ix_face_person ON face(person_id) "
+        "WHERE person_id IS NOT NULL")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1190,6 +1241,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v8_to_v9,
     _migrate_v9_to_v10,
     _migrate_v10_to_v11,
+    _migrate_v11_to_v12,
 ]
 
 

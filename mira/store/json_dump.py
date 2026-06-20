@@ -8,9 +8,10 @@ it converts the flat :class:`EventDocument` to a nested JSON dict and back. The 
 lives *here only*; the store and the dataclasses stay flat.
 
 dynamic_collection (spec/81 — the live-query formula noun), cut + cut_member
-(spec/81/§61 — frozen Cut definitions + FILE-based membership referencing lineage)
-and photo_person (M:N people links) serialize flat at the top level — none of them fit
-the "nested under each item" pattern the legacy share_tag (1:1) used.
+(spec/81/§61 — frozen Cut definitions + FILE-based membership referencing lineage),
+photo_person (M:N people links) and face (spec/90 §5.2 — per-item detected face
+boxes) serialize flat at the top level — none of them fit the "nested under each
+item" pattern the legacy share_tag (1:1) used.
 
 In the relational-core model a segment/snapshot is its **own item** (a child of its
 source video via ``parent_item_id``), so it appears as a top-level entry in ``items``
@@ -92,6 +93,7 @@ def to_json(doc: m.EventDocument) -> Dict[str, Any]:
         "cuts": [asdict(x) for x in doc.cuts],
         "cut_members": [asdict(x) for x in doc.cut_members],
         "photo_persons": [asdict(x) for x in doc.photo_persons],
+        "faces": [asdict(x) for x in doc.faces],
         "lineage": [asdict(x) for x in doc.lineage],
     }
 
@@ -137,6 +139,7 @@ def from_json(data: Dict[str, Any]) -> m.EventDocument:
     doc.cuts = [_build(m.Cut, x) for x in data.get("cuts", [])]
     doc.cut_members = [_build(m.CutMember, x) for x in data.get("cut_members", [])]
     doc.photo_persons = [_build(m.PhotoPerson, x) for x in data.get("photo_persons", [])]
+    doc.faces = [_build(m.Face, x) for x in data.get("faces", [])]
     doc.lineage = [_build(m.Lineage, x) for x in data.get("lineage", [])]
 
     for idict in data.get("items", []):

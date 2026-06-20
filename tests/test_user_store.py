@@ -110,6 +110,9 @@ def test_ddl_creates_every_spec53_table(tmp_path):
     # live in event.db; only templates are user-level.
     # spec/81 Phase 2 (schema v3): cross-event surface arrived — global_items
     # (cross-event projection) + saved_filter (cross-event DC home).
+    # spec/90 Phase 1 (schema v7): recipe (saved Cut/Collection configuration)
+    # + event_collection (saved event sets) arrived; ``person`` gained a
+    # ``representative_face_id`` column but is not a new table.
     assert names == {
         "schema_info",
         "installation_profile",
@@ -119,6 +122,8 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "cut_template",
         "global_items",
         "saved_filter",
+        "recipe",
+        "event_collection",
         "person",
         "user_camera",
         "gear_profile",
@@ -403,6 +408,11 @@ def test_migrate_v1_to_v2_reshapes_cut_tables(tmp_path):
     conn.execute("DROP TABLE global_items")
     conn.execute("DROP TABLE saved_filter")
     conn.execute("DROP TABLE gear_profile")
+    # v7 (spec/90 Phase 1) additions also need to roll back so the chain
+    # re-creates them: drop the new tables and the new person column.
+    conn.execute("DROP TABLE recipe")
+    conn.execute("DROP TABLE event_collection")
+    conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
     conn.execute("CREATE TABLE cut (id TEXT PRIMARY KEY, name TEXT)")
     conn.execute(
         "CREATE TABLE cut_template (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
@@ -602,6 +612,11 @@ def test_migrate_v2_to_v3_adds_cross_event_tables(tmp_path):
     conn.execute("DROP TABLE global_items")
     conn.execute("DROP TABLE saved_filter")
     conn.execute("DROP TABLE gear_profile")
+    # v7 (spec/90 Phase 1) additions roll back too — recipe + event_collection
+    # arrive only at v7, and the new person column too.
+    conn.execute("DROP TABLE recipe")
+    conn.execute("DROP TABLE event_collection")
+    conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -658,6 +673,10 @@ def test_migrate_v4_to_v5_adds_gear_profile(tmp_path):
         "participants", "event_start", "event_end",
     ):
         conn.execute(f"ALTER TABLE global_items DROP COLUMN {col}")
+    # v7 (spec/90 Phase 1) additions roll back too.
+    conn.execute("DROP TABLE recipe")
+    conn.execute("DROP TABLE event_collection")
+    conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
     conn.execute("UPDATE schema_info SET schema_version = 4 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -709,6 +728,10 @@ def test_migrate_v5_to_v6_adds_event_qualifier_columns(tmp_path):
         "participants", "event_start", "event_end",
     ):
         conn.execute(f"ALTER TABLE global_items DROP COLUMN {col}")
+    # v7 (spec/90 Phase 1) additions roll back too.
+    conn.execute("DROP TABLE recipe")
+    conn.execute("DROP TABLE event_collection")
+    conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
     conn.execute("UPDATE schema_info SET schema_version = 5 WHERE id = 1")
     # Seed a pre-migration global_items row that should survive.
     conn.execute(

@@ -171,10 +171,12 @@ def test_otherwise_section_renders_phase_4c_placeholder(qapp):
     assert dlg.findChild(object, "OtherwiseSection") is not None
 
 
-def test_metrics_section_renders_phase_4d_placeholder(qapp):
+def test_metrics_section_renders(qapp):
+    """Phase 4d shipped the live metrics row; the placeholder retired.
+    The section host is still findable; tests for the actual metrics
+    behaviour live in test_new_recipe_dialog_metrics.py."""
     dlg = _cut_dialog(qapp)
     assert dlg.findChild(object, "MetricsSection") is not None
-    assert _find_placeholder(dlg, "Phase 4d")
 
 
 def test_faces_placeholder_only_when_hardware_visible(qapp):

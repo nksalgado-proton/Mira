@@ -34,23 +34,26 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QDate, QPoint, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QDate, QPoint, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDateEdit,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from core import recipe_resolver as _recipe_resolver
 from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
@@ -221,6 +224,15 @@ class NewRecipeContext:
     selected_lenses: List[str] = field(default_factory=list)
     include_photos: bool = True
     include_videos: bool = True
+
+    # Runtime presentation (Phase 4d) — the metrics row's projection.
+    # ``target_minutes`` / ``max_minutes`` define the budget zones in
+    # :mod:`core.cut_budget`; ``per_photo_seconds`` is the seconds-per-
+    # slide cost the runtime math multiplies by. Defaults match the
+    # legacy New Cut dialog's spec/61 §2 step 5 numbers.
+    target_minutes: int = 10
+    max_minutes: int = 12
+    per_photo_seconds: float = 6.0
 
 
 # --------------------------------------------------------------------------- #
@@ -706,6 +718,17 @@ def _iso(d: date) -> str:
     return d.isoformat()
 
 
+def _format_mm_ss(seconds: float) -> str:
+    """Format ``seconds`` as ``MM:SS`` for the metrics row (spec/90 §10).
+    Negative or NaN values clamp to ``0:00``."""
+    try:
+        total = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return "0:00"
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}:{secs:02d}"
+
+
 @dataclass(frozen=True)
 class DateRangeQuickSelect:
     """One quick-select preset in :class:`_DateRangePickerPopover`."""
@@ -1001,6 +1024,37 @@ class _RuleRow(QFrame):
             self._refresh_predicate_row()
             self.changed.emit()
 
+    def show_match_placeholder(self) -> None:
+        """Render the "(— match)" stand-in. Used before the first probe
+        lands and when the probe fails."""
+        self._match_label.setText(tr("(— match)"))
+        self._match_label.setToolTip("")
+
+    def show_match_count(self, predicate_match: int, new_match: int) -> None:
+        """Render the live count per spec/90 §1.3:
+        ``N match`` when ``predicate_match == new_match`` (no overlap)
+        or ``N match · M new`` when items were already covered by an
+        earlier rule (some matches don't actually take this rule's
+        verdict).
+
+        Tooltip carries the §1.3 plain-language explanation so the
+        user understands why ``new`` is smaller than ``match``."""
+        if predicate_match == new_match:
+            self._match_label.setText(f"{predicate_match} {tr('match')}")
+            self._match_label.setToolTip(
+                tr("Predicate matches {n} items in the pool.").format(
+                    n=predicate_match))
+        else:
+            self._match_label.setText(
+                f"{predicate_match} {tr('match')} · "
+                f"{new_match} {tr('new')}")
+            self._match_label.setToolTip(
+                tr(
+                    "Predicate matches {n} items in the pool; {m} of those "
+                    "weren't covered by an earlier rule and start picked "
+                    "(or skipped) by this rule's verdict."
+                ).format(n=predicate_match, m=new_match))
+
     # ----- internal ------------------------------------------------- #
 
     def _refresh_index(self) -> None:
@@ -1071,6 +1125,8 @@ class NewRecipeDialog(QDialog):
         ctx: NewRecipeContext,
         pool_probe: Optional[Callable[[list], int]] = None,
         totals_probe: Optional[Callable] = None,
+        recipe_probe: Optional[Callable[
+            [dict], "_recipe_resolver.RecipeResolution"]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1089,6 +1145,28 @@ class NewRecipeDialog(QDialog):
         self._ctx = ctx
         self._pool_probe = pool_probe
         self._totals_probe = totals_probe
+        self._recipe_probe = recipe_probe
+
+        # Runtime presentation state (Phase 4d). Seeded from the ctx;
+        # the spin widgets in the Runtime row mutate these on change.
+        self._target_minutes: int = max(1, int(ctx.target_minutes))
+        self._max_minutes: int = max(1, int(ctx.max_minutes))
+        self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
+
+        # Debounce timer — every section-state mutator calls
+        # :meth:`_kick_probe`; the timer restarts on each kick and fires
+        # :meth:`_run_probe` after a short quiet period. 200ms is fast
+        # enough that the UI feels live, long enough that the probe
+        # doesn't fire on every keystroke.
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setInterval(200)
+        self._probe_timer.setSingleShot(True)
+        self._probe_timer.timeout.connect(self._run_probe)
+
+        # Last successful resolution — read by tests and by the per-rule
+        # label refresh path.
+        self._last_resolution: Optional[
+            "_recipe_resolver.RecipeResolution"] = None
 
         # Source state — the ordered chip list. Each entry is
         # ``(join, operand)`` where ``join`` is one of the spec/90 §3.2
@@ -1144,6 +1222,9 @@ class NewRecipeDialog(QDialog):
         if self._show_scope:
             self._refresh_scope_row()
         self._refresh_rules_rows()
+        # Fire one probe at end-of-init so the metrics row reflects any
+        # initial selections (Recipe-load path — Phase 4e).
+        self._kick_probe()
 
     # ------------------------------------------------------------------ #
     # Build
@@ -1230,6 +1311,7 @@ class NewRecipeDialog(QDialog):
         v.addWidget(self._build_filters_section())
         v.addWidget(self._build_rules_section())
         v.addWidget(self._build_otherwise_section())
+        v.addWidget(self._build_runtime_section())
         v.addWidget(self._build_metrics_section())
 
         v.addStretch()
@@ -1364,6 +1446,7 @@ class NewRecipeDialog(QDialog):
             _old_join, operand = self._source_chips[index]
             self._source_chips[index] = (join, operand)
             self._refresh_source_row()
+            self._kick_probe()
 
     def _build_add_operand_button(self) -> QPushButton:
         """The ``+`` affordance that opens the operand picker (spec/90 §3.4)."""
@@ -1404,11 +1487,13 @@ class NewRecipeDialog(QDialog):
         join = JOIN_OR if not self._source_chips else JOIN_OR
         self._source_chips.append((join, operand))
         self._refresh_source_row()
+        self._kick_probe()
 
     def _remove_source_chip(self, index: int) -> None:
         if 0 <= index < len(self._source_chips):
             self._source_chips.pop(index)
             self._refresh_source_row()
+            self._kick_probe()
 
     def _refresh_source_summary(self) -> None:
         """Call ``pool_probe`` with the current expression; fall back to
@@ -1517,6 +1602,7 @@ class NewRecipeDialog(QDialog):
         join = JOIN_OR
         self._scope_chips.append((join, operand))
         self._refresh_scope_row()
+        self._kick_probe()
 
     def _add_date_range_chip(self, start_iso: str, end_iso: str) -> None:
         """Turn a confirmed date range into a Scope chip. The chip's
@@ -1530,11 +1616,13 @@ class NewRecipeDialog(QDialog):
         )
         self._scope_chips.append((JOIN_OR, operand))
         self._refresh_scope_row()
+        self._kick_probe()
 
     def _remove_scope_chip(self, index: int) -> None:
         if 0 <= index < len(self._scope_chips):
             self._scope_chips.pop(index)
             self._refresh_scope_row()
+            self._kick_probe()
 
     def _set_scope_join(self, index: int, join: str) -> None:
         """Swap one Scope chip's preceding join word (spec/90 §3.2). The
@@ -1543,6 +1631,7 @@ class NewRecipeDialog(QDialog):
             _old_join, operand = self._scope_chips[index]
             self._scope_chips[index] = (join, operand)
             self._refresh_scope_row()
+            self._kick_probe()
 
     def _refresh_scope_summary(self) -> None:
         """Live-count hint for the Scope sentence. Phase 4b counts the
@@ -1594,6 +1683,7 @@ class NewRecipeDialog(QDialog):
             chip = pill_toggle(
                 style, checked=(style in self._ctx.selected_styles))
             chip.setObjectName("StyleChip")
+            chip.toggled.connect(self._on_filter_chip_toggled)
             self._style_chips[style] = chip
             row.addWidget(chip)
         row.addStretch()
@@ -1609,10 +1699,12 @@ class NewRecipeDialog(QDialog):
         self._photos_cb = QCheckBox(tr("Photos"))
         self._photos_cb.setObjectName("DaysTableCheck")
         self._photos_cb.setChecked(self._ctx.include_photos)
+        self._photos_cb.toggled.connect(self._on_filter_chip_toggled)
         row.addWidget(self._photos_cb)
         self._videos_cb = QCheckBox(tr("Videos"))
         self._videos_cb.setObjectName("DaysTableCheck")
         self._videos_cb.setChecked(self._ctx.include_videos)
+        self._videos_cb.toggled.connect(self._on_filter_chip_toggled)
         row.addWidget(self._videos_cb)
         row.addStretch()
         return row
@@ -1628,6 +1720,7 @@ class NewRecipeDialog(QDialog):
             chip = pill_toggle(
                 cam, checked=(cam in self._ctx.selected_cameras))
             chip.setObjectName("CameraChip")
+            chip.toggled.connect(self._on_filter_chip_toggled)
             self._camera_chips[cam] = chip
             row.addWidget(chip)
         row.addStretch()
@@ -1644,6 +1737,7 @@ class NewRecipeDialog(QDialog):
             chip = pill_toggle(
                 lens, checked=(lens in self._ctx.selected_lenses))
             chip.setObjectName("LensChip")
+            chip.toggled.connect(self._on_filter_chip_toggled)
             self._lens_chips[lens] = chip
             row.addWidget(chip)
         row.addStretch()
@@ -1735,12 +1829,14 @@ class NewRecipeDialog(QDialog):
         verdict. spec/90 §3.5 — pick-in is the most common shape."""
         self._rules.append(([], VERDICT_SKIP))
         self._refresh_rules_rows()
+        self._kick_probe()
 
     def _delete_rule(self, row: "_RuleRow") -> None:
         if row in self._rule_rows:
             idx = self._rule_rows.index(row)
             del self._rules[idx]
             self._refresh_rules_rows()
+            self._kick_probe()
 
     def _on_rule_row_changed(self, row: "_RuleRow") -> None:
         """A rule's predicate or verdict changed in-row — mirror to the
@@ -1749,6 +1845,7 @@ class NewRecipeDialog(QDialog):
         if row in self._rule_rows:
             idx = self._rule_rows.index(row)
             self._rules[idx] = (row.predicate(), row.verdict())
+        self._kick_probe()
 
     def _open_rule_predicate_picker(
         self, row: "_RuleRow", anchor: QWidget,
@@ -1782,6 +1879,13 @@ class NewRecipeDialog(QDialog):
         itself; mirror to the model."""
         if verdict in VERDICTS:
             self._otherwise = verdict
+            self._kick_probe()
+
+    def _on_filter_chip_toggled(self, _checked: bool = False) -> None:
+        """Style / Media / Camera / Lens chip toggled → probe re-runs.
+        The selection state itself lives on the chip widgets;
+        :meth:`filters_payload` re-reads it on demand."""
+        self._kick_probe()
 
     # ---- drag-to-reorder ------------------------------------------- #
 
@@ -1823,16 +1927,245 @@ class NewRecipeDialog(QDialog):
         rule = self._rules.pop(from_idx)
         self._rules.insert(to_idx, rule)
         self._refresh_rules_rows()
+        self._kick_probe()
+
+    # -------- Runtime presentation (Phase 4d) ------------------------ #
+
+    def _build_runtime_section(self) -> QWidget:
+        """Small triple-spinner row carrying the runtime presentation
+        settings (spec/61 §2 step 5 / spec/90 §10). Phase 4d only needs
+        Target / Max / Per-photo to feed the metrics row's runtime math;
+        Music + slide-cards still live on the spec/61 §3.1 settings
+        surface and don't influence the live count."""
+        host = QWidget()
+        host.setObjectName("RuntimeSection")
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        v.addWidget(_micro(tr("Runtime")))
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        # Target minutes.
+        target_box = QWidget()
+        tv = QVBoxLayout(target_box)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(2)
+        tv.addWidget(QLabel(tr("Target (min)")))
+        self._target_spin = QSpinBox()
+        self._target_spin.setObjectName("RuntimeTargetSpin")
+        self._target_spin.setRange(1, 240)
+        self._target_spin.setValue(self._target_minutes)
+        self._target_spin.setSuffix(" min")
+        self._target_spin.valueChanged.connect(self._on_target_changed)
+        tv.addWidget(self._target_spin)
+        row.addWidget(target_box)
+
+        # Max minutes.
+        max_box = QWidget()
+        mv = QVBoxLayout(max_box)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(2)
+        mv.addWidget(QLabel(tr("Max (min)")))
+        self._max_spin = QSpinBox()
+        self._max_spin.setObjectName("RuntimeMaxSpin")
+        self._max_spin.setRange(1, 480)
+        self._max_spin.setValue(self._max_minutes)
+        self._max_spin.setSuffix(" min")
+        self._max_spin.valueChanged.connect(self._on_max_changed)
+        mv.addWidget(self._max_spin)
+        row.addWidget(max_box)
+
+        # Per-photo seconds.
+        pp_box = QWidget()
+        pv = QVBoxLayout(pp_box)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(2)
+        pv.addWidget(QLabel(tr("Per photo (s)")))
+        self._per_photo_spin = QDoubleSpinBox()
+        self._per_photo_spin.setObjectName("RuntimePerPhotoSpin")
+        self._per_photo_spin.setRange(0.5, 60.0)
+        self._per_photo_spin.setSingleStep(0.5)
+        self._per_photo_spin.setDecimals(2)
+        self._per_photo_spin.setValue(self._per_photo_seconds)
+        self._per_photo_spin.setSuffix(" s")
+        self._per_photo_spin.valueChanged.connect(self._on_per_photo_changed)
+        pv.addWidget(self._per_photo_spin)
+        row.addWidget(pp_box)
+
+        row.addStretch()
+        v.addLayout(row)
+        return host
+
+    def _on_target_changed(self, value: int) -> None:
+        self._target_minutes = int(value)
+        self._refresh_metrics_from_state()
+
+    def _on_max_changed(self, value: int) -> None:
+        self._max_minutes = int(value)
+        self._refresh_metrics_from_state()
+
+    def _on_per_photo_changed(self, value: float) -> None:
+        self._per_photo_seconds = float(value)
+        self._refresh_metrics_from_state()
+
+    # -------- Live metrics row (Phase 4d) ---------------------------- #
 
     def _build_metrics_section(self) -> QWidget:
+        """The live metrics row (spec/90 §10 worked example). Renders as
+        ``N in pool · M initially picked · MM:SS of MM:SS target``;
+        updates after a debounced probe call.
+
+        Two error surfaces ride alongside:
+
+        * **Error banner** — red, shown when the probe raises
+          :class:`RecipeResolutionError` (a missing named operand).
+          Carries the operand label + kind so the user knows which
+          named ref to fix.
+        * **Soft hint** — faint, shown when the probe raises a plain
+          :class:`ValueError` (author mistake: empty source, invalid
+          Otherwise verdict). Phase 4d uses one shared label slot and
+          flips its object name to mark the severity."""
         host = QWidget()
         host.setObjectName("MetricsSection")
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
         v.addWidget(_micro(tr("Metrics")))
-        v.addWidget(_placeholder(tr("Metrics: (Phase 4d)")))
+
+        # Error / hint banner — hidden until a probe surfaces something.
+        self._metrics_banner = QLabel("")
+        self._metrics_banner.setObjectName("MetricsBanner")
+        self._metrics_banner.setWordWrap(True)
+        self._metrics_banner.setVisible(False)
+        v.addWidget(self._metrics_banner)
+
+        # The metrics line itself. spec/90 §10:
+        # "386 in pool · 11 initially picked · 1:30 of 5:00 target"
+        self._metrics_label = QLabel(tr("(no probe wired yet)"))
+        self._metrics_label.setObjectName("MetricsLine")
+        v.addWidget(self._metrics_label)
         return host
+
+    def _kick_probe(self) -> None:
+        """Restart the debounce timer. Called from every section's
+        change path so the probe only fires once after a quiet 200ms
+        regardless of how many edits the user made."""
+        if not hasattr(self, "_probe_timer"):
+            return                                       # called pre-init
+        self._probe_timer.start()
+
+    def _run_probe(self) -> None:
+        """Build the composition + call :attr:`_recipe_probe`. Updates
+        the metrics row, the banner, and per-rule labels.
+
+        Public-ish: tests call this directly to bypass the debounce
+        timer's wall-clock wait."""
+        if self._recipe_probe is None:
+            self._show_metrics_hint(tr("(no probe wired yet)"))
+            return
+        composition = self.composition()
+        try:
+            resolution = self._recipe_probe(composition)
+        except _recipe_resolver.RecipeResolutionError as exc:
+            self._show_metrics_error(
+                tr("Missing operand: ") + (exc.missing_operand or "")
+                + (f" ({exc.kind})" if exc.kind else ""))
+            self._last_resolution = None
+            self._clear_rule_breakdown_labels()
+            return
+        except ValueError as exc:
+            self._show_metrics_hint(str(exc))
+            self._last_resolution = None
+            self._clear_rule_breakdown_labels()
+            return
+        except Exception as exc:                         # noqa: BLE001
+            log.exception("recipe_probe raised — keeping previous metrics")
+            self._show_metrics_error(tr("Probe error: ") + str(exc))
+            return
+
+        self._last_resolution = resolution
+        self._apply_metrics(resolution)
+        self._apply_rule_breakdown(resolution.rule_breakdown)
+        self._clear_banner()
+
+    def _refresh_metrics_from_state(self) -> None:
+        """Re-render the metrics line using the last successful
+        resolution + the current runtime settings. Doesn't re-run the
+        probe — used for spin-box changes where the resolver output
+        hasn't changed, only the projected runtime numbers."""
+        if self._last_resolution is None:
+            return
+        self._apply_metrics(self._last_resolution)
+
+    def _apply_metrics(
+        self, resolution: "_recipe_resolver.RecipeResolution",
+    ) -> None:
+        """Render the metrics line from a fresh resolution."""
+        pool_size = len(resolution.pool)
+        picked = sum(1 for v in resolution.seed.values() if v)
+        total_s = float(picked) * float(self._per_photo_seconds)
+        target_s = int(self._target_minutes) * 60
+        text = (
+            f"{pool_size} {tr('in pool')} · "
+            f"{picked} {tr('initially picked')} · "
+            f"{_format_mm_ss(total_s)} {tr('of')} "
+            f"{_format_mm_ss(target_s)} {tr('target')}"
+        )
+        self._metrics_label.setText(text)
+
+    def _apply_rule_breakdown(
+        self,
+        breakdown: Sequence["_recipe_resolver.RuleMatchInfo"],
+    ) -> None:
+        """Per-rule match labels (spec/90 §1.3 + §10).
+
+        Map each ``RuleMatchInfo`` to the dialog's _rule_rows. The
+        resolver only emits entries for non-empty predicates; the
+        dialog's ``rules_expression()`` makes the same skip-empty
+        decision so the indices line up if we iterate rows AND skip
+        empty-predicate rows."""
+        breakdown = list(breakdown)
+        expressing_idx = 0
+        for row in self._rule_rows:
+            if not row.predicate():
+                row.show_match_placeholder()
+                continue
+            if expressing_idx < len(breakdown):
+                info = breakdown[expressing_idx]
+                row.show_match_count(info.predicate_match, info.new_match)
+            else:
+                row.show_match_placeholder()
+            expressing_idx += 1
+
+    def _clear_rule_breakdown_labels(self) -> None:
+        for row in self._rule_rows:
+            row.show_match_placeholder()
+
+    def _show_metrics_error(self, message: str) -> None:
+        self._metrics_banner.setText(message)
+        self._metrics_banner.setProperty("severity", "error")
+        self._metrics_banner.setVisible(True)
+        self._repolish(self._metrics_banner)
+
+    def _show_metrics_hint(self, message: str) -> None:
+        self._metrics_banner.setText(message)
+        self._metrics_banner.setProperty("severity", "hint")
+        self._metrics_banner.setVisible(True)
+        self._repolish(self._metrics_banner)
+
+    def _clear_banner(self) -> None:
+        self._metrics_banner.setVisible(False)
+        self._metrics_banner.setText("")
+
+    @staticmethod
+    def _repolish(widget: QWidget) -> None:
+        """Force QSS to re-evaluate after a property change. Without
+        this the cascade keeps the previous severity colour."""
+        style = widget.style()
+        if style is not None:
+            style.unpolish(widget)
+            style.polish(widget)
 
     # -------- Footer ------------------------------------------------- #
 

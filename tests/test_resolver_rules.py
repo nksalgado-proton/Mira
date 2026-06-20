@@ -306,3 +306,162 @@ def test_invalid_otherwise_raises_value_error(gw):
             "source": [["+", "exported"]],
             "otherwise": "maybe",
         })
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4d — per-rule match breakdown (spec/90 §1.3 + §10)
+# --------------------------------------------------------------------------- #
+
+
+def test_rule_breakdown_empty_when_no_rules(gw):
+    """No rules → no breakdown entries. Default value, back-compat with
+    Phase 2 callers that don't introspect it."""
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+    })
+    assert result.rule_breakdown == []
+
+
+def test_rule_breakdown_single_rule_covering_all_pool(gw):
+    """When one rule's predicate covers the entire pool,
+    ``predicate_match == new_match == pool_size``."""
+    # The fixture's #bests = {p1, p2, p3} on a 6-photo pool.
+    # An exported-as-predicate rule covers all 6.
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "rules": [
+            {"predicate": [["+", "exported"]], "verdict": "pick"},
+        ],
+        "otherwise": "skip",
+    })
+    assert len(result.rule_breakdown) == 1
+    info = result.rule_breakdown[0]
+    assert info.rule_index == 0
+    assert info.predicate_match == len(result.pool)
+    assert info.new_match == len(result.pool)
+
+
+def test_rule_breakdown_two_rules_no_overlap(gw):
+    """Two disjoint predicates — each rule's new_match equals its
+    predicate_match because neither rule covers the other's items."""
+    # #bests = {p1, p2, p3}; #rejects = {p4}. Disjoint.
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "rules": [
+            {"predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+             "verdict": "pick"},
+            {"predicate": [["+", {"kind": "cut", "tag": "rejects"}]],
+             "verdict": "skip"},
+        ],
+        "otherwise": "skip",
+    })
+    assert len(result.rule_breakdown) == 2
+    info_bests, info_rejects = result.rule_breakdown
+    assert info_bests.predicate_match == 3
+    assert info_bests.new_match == 3
+    assert info_rejects.predicate_match == 1
+    assert info_rejects.new_match == 1
+
+
+def test_rule_breakdown_two_rules_with_overlap(gw):
+    """Two overlapping predicates — first-match-wins means the second
+    rule's ``new_match`` is the size of its predicate set MINUS the
+    overlap with rules 1..N-1.
+
+    Stage: a synthetic Cut ``overlap = {p1, p2}`` against
+    ``bests = {p1, p2, p3}``. Rules: [pick #bests, skip #overlap].
+    Both bests and overlap match {p1, p2}, but rule 1 wins them.
+    Rule 2's predicate_match = 2, new_match = 0."""
+    # Stage the overlap cut + its members.
+    gw.store.upsert(m.Cut(id="cut-o", tag="overlap",
+                          created_at=FIXED_NOW, updated_at=FIXED_NOW))
+    gw.store.upsert(m.CutMember(
+        cut_id="cut-o", export_relpath="Exported Media/p1.jpg",
+        added_at=FIXED_NOW))
+    gw.store.upsert(m.CutMember(
+        cut_id="cut-o", export_relpath="Exported Media/p2.jpg",
+        added_at=FIXED_NOW))
+
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "rules": [
+            {"predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+             "verdict": "pick"},
+            {"predicate": [["+", {"kind": "cut", "tag": "overlap"}]],
+             "verdict": "skip"},
+        ],
+        "otherwise": "skip",
+    })
+    info_bests, info_overlap = result.rule_breakdown
+    assert info_bests.predicate_match == 3
+    assert info_bests.new_match == 3
+    assert info_overlap.predicate_match == 2
+    assert info_overlap.new_match == 0
+
+
+def test_rule_breakdown_indices_match_emit_order(gw):
+    """``rule_index`` reflects the order of rules in the composition's
+    emit — not the original dialog-row position (which may include
+    empty predicates dropped at emit). For the dialog this is the same
+    because ``rules_expression()`` already drops empties."""
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "rules": [
+            {"predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+             "verdict": "pick"},
+            {"predicate": [["+", {"kind": "cut", "tag": "rejects"}]],
+             "verdict": "skip"},
+        ],
+        "otherwise": "skip",
+    })
+    assert [info.rule_index for info in result.rule_breakdown] == [0, 1]
+
+
+def test_rule_breakdown_predicate_match_is_pool_intersected(gw):
+    """If a predicate matches items NOT in the pool (e.g. style filter
+    narrowed the pool), the breakdown reports only the pool-intersected
+    count."""
+    # Narrow the pool to wildlife only — drops p1, p3, p4, p5, p6.
+    # #bests = {p1, p2, p3} but the pool excludes p1 and p3.
+    # So bests ∩ pool = {p2}.
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "filters": {"styles": ["wildlife"]},
+        "rules": [
+            {"predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+             "verdict": "pick"},
+        ],
+        "otherwise": "skip",
+    })
+    # The fixture's wildlife items: none classified — wait, the fixture
+    # doesn't classify the photos. So with styles=['wildlife'], the
+    # style filter excludes every photo (none have classification);
+    # videos pass through (no videos in this fixture either). Pool is
+    # empty → predicate_match is 0.
+    assert result.pool == []
+    info = result.rule_breakdown[0]
+    assert info.predicate_match == 0
+    assert info.new_match == 0
+
+
+def test_rule_breakdown_short_scenario_matches_spec_section_10(gw):
+    """spec/90 §10 worked example — the live-metrics shape the dialog
+    renders. Two rules: blurry → skip, bests → pick. The breakdown is
+    what the dialog uses to fill the per-rule "(N match · M new)"
+    label."""
+    result = gw.resolve_recipe({
+        "source": [["+", "exported"]],
+        "rules": [
+            {"predicate": [["+", {"kind": "cut", "tag": "rejects"}]],
+             "verdict": "skip"},
+            {"predicate": [["+", {"kind": "cut", "tag": "bests"}]],
+             "verdict": "pick"},
+        ],
+        "otherwise": "skip",
+    })
+    # Each rule should have a breakdown entry; sets are disjoint in the
+    # fixture, so new_match == predicate_match for both.
+    assert len(result.rule_breakdown) == 2
+    for info in result.rule_breakdown:
+        assert info.predicate_match == info.new_match

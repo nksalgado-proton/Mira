@@ -77,17 +77,46 @@ EVENT_COLLECTION_KIND = "event_collection"
 
 
 @dataclass(frozen=True)
+class RuleMatchInfo:
+    """Per-rule match breakdown the resolver emits (spec/90 §1.3 / §10 +
+    §7 Phase 4d).
+
+    The dialog renders each rule's live count beside its verdict pill —
+    ``42 match`` when ``predicate_match == new_match`` (no overlap with
+    earlier rules), ``42 match · 12 new`` when ``new_match <
+    predicate_match`` (some items were already covered by an earlier
+    rule and don't actually get this rule's verdict per the first-match-
+    wins rule)."""
+
+    rule_index: int          # 0-based index into the *non-empty* rules in
+                             # composition['rules'] — matches the dialog's
+                             # rules_expression() emit order.
+    predicate_match: int     # items in the pool matching this rule's predicate
+    new_match: int           # of which were NOT already covered by an earlier
+                             # rule (so they actually take this rule's verdict)
+
+
+@dataclass(frozen=True)
 class RecipeResolution:
-    """The resolver's output (spec/90 §7 Phase 2).
+    """The resolver's output (spec/90 §7 Phase 2 + Phase 4d).
 
     ``pool`` is the ordered member-key list (export relpaths for event scope;
     cross-event packed keys for cross-event). ``seed`` maps each key to its
     initial picked-state (``True`` = pick / ``False`` = skip). The key sets
     of ``pool`` and ``seed`` are identical by construction; ``pool`` carries
-    the chronological order, ``seed`` carries the per-item verdict."""
+    the chronological order, ``seed`` carries the per-item verdict.
+
+    ``rule_breakdown`` (Phase 4d) carries one :class:`RuleMatchInfo` per
+    *non-empty* rule from the composition, in order. The dialog's metrics
+    row reads it to render the per-rule "(N match · M new)" counts beside
+    each verdict pill (spec/90 §1.3 — "of which N already covered by
+    earlier rules"). Empty list when the composition has no rules — the
+    field defaults to ``[]`` for back-compat with Phase 2 callers that
+    don't introspect it."""
 
     pool: List[str]
     seed: Dict[str, bool]
+    rule_breakdown: List["RuleMatchInfo"] = field(default_factory=list)
 
 
 class RecipeResolutionError(ValueError):
@@ -322,24 +351,42 @@ def resolve_recipe(
     # --- rules → seed -------------------------------------------------------- #
     # Resolve each predicate once to a set; for each item, walk rules
     # first-match-wins; items matching no rule fall through to Otherwise.
+    pool_set = set(pool)                                # narrow per-rule set to the live pool
     rule_sets: List[Tuple[Set[str], str]] = [
-        (set(resolve_predicate_keys(predicate)), verdict)
+        (set(resolve_predicate_keys(predicate)) & pool_set, verdict)
         for predicate, verdict in rules
     ]
 
     pick_default = (otherwise == "pick")
     seed: Dict[str, bool] = {}
+    # Phase 4d — track the keys an earlier rule has already covered so the
+    # per-rule "new_match" count (the §1.3 nuance) lands correctly.
+    covered_by_earlier: Set[str] = set()
+    new_match_counts: List[int] = [0] * len(rules)
     for key in pool:
         matched = False
-        for predicate_set, verdict in rule_sets:
+        for rule_idx, (predicate_set, verdict) in enumerate(rule_sets):
             if key in predicate_set:
                 seed[key] = (verdict == "pick")
+                if key not in covered_by_earlier:
+                    new_match_counts[rule_idx] += 1
+                    covered_by_earlier.add(key)
                 matched = True
                 break
         if not matched:
             seed[key] = pick_default
 
-    return RecipeResolution(pool=pool, seed=seed)
+    rule_breakdown = [
+        RuleMatchInfo(
+            rule_index=i,
+            predicate_match=len(rule_sets[i][0]),
+            new_match=new_match_counts[i],
+        )
+        for i in range(len(rule_sets))
+    ]
+
+    return RecipeResolution(
+        pool=pool, seed=seed, rule_breakdown=rule_breakdown)
 
 
 __all__ = [
@@ -349,5 +396,6 @@ __all__ = [
     "EVENT_COLLECTION_KIND",
     "RecipeResolution",
     "RecipeResolutionError",
+    "RuleMatchInfo",
     "resolve_recipe",
 ]

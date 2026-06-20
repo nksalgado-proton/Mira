@@ -782,14 +782,13 @@ class _CutsListView(QWidget):
         outer.addWidget(self._tabs, 1)
 
     def _build_cuts_tab(self) -> QWidget:
-        # Nelson 2026-06-20 eyeball: the tabs floated unanchored from
-        # their content. Wrapping the host in a #Card2 QFrame draws a
-        # visible box around the tab's content area (card2 bg + line
-        # border + 14-px radius from the existing QSS role). The
-        # QTabWidget's ::pane subcontrol was invisible in documentMode;
-        # a regular QFrame paints reliably across themes.
+        # Nelson 2026-06-20 final: wrapper box around tab content with
+        # the SAME accent/purple border the #exported pool card uses —
+        # not the gray Card2 hairline. Distinct object name so the
+        # styling can be accent-tinted without touching the rest of
+        # Card2's usages across the app.
         host = QFrame()
-        host.setObjectName("Card2")
+        host.setObjectName("ShareTabPane")
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
         v.setContentsMargins(16, 14, 16, 14)
@@ -827,10 +826,10 @@ class _CutsListView(QWidget):
         return host
 
     def _build_dcs_tab(self) -> QWidget:
-        # Same #Card2 wrapper as :meth:`_build_cuts_tab` so both tabs
-        # carry a visible content box (Nelson 2026-06-20 eyeball).
+        # Same #ShareTabPane wrapper as :meth:`_build_cuts_tab`
+        # (accent-bordered).
         host = QFrame()
-        host.setObjectName("Card2")
+        host.setObjectName("ShareTabPane")
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
         v.setContentsMargins(16, 14, 16, 14)

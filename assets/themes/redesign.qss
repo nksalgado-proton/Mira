@@ -390,39 +390,23 @@ QLabel#BandQuestion              { color: {ink_soft}; font-size: 15px; font-weig
 QLabel#BandHint                  { color: {ink_faint}; font-size: 12px;
                                    font-style: italic; background: transparent; }
 
-/* Nested-box layout (spec/90 §5) — three visual tiers:
- *   RecipeToolbar — thin row at the top of the dialog body, light
- *     secondary surface, no border. Hosts the "Recipe" label + Load /
- *     Save Recipe buttons.
- *   BandGroup    — secondary tint surface that wraps the inner cards;
- *     no hard border, generous radius.
- *   SectionCard  — soft inset inner box (Source, Filters, Rules,
- *     Otherwise, Runtime, Metrics). Card surface + medium radius;
- *     NO border — the band's ``{card2}`` tint reads the inner card's
- *     ``{card}`` surface as inset on its own (heavy borders made the
- *     dialog read as a grid of boxed tiles; tint alone carries the
- *     hierarchy per Nelson eyeball 2026-06-20).
- * QSS background only paints when WA_StyledBackground is set on the
- * QWidget/QFrame; the dialog code sets that on each host. */
-QFrame#RecipeToolbar             { background: {card2}; border: none;
-                                   border-radius: {radius_md}px; }
-QLabel#RecipeToolbarLabel        { color: {ink_soft}; font-size: 12px;
-                                   font-weight: 700; letter-spacing: 0.5px;
-                                   background: transparent; }
-QFrame#BandGroup,
+/* New Cut dialog — minimal hairline borders on every group box.
+ * No tinted backgrounds, no nested visual treatments. Hierarchy is
+ * carried by the section labels and spacing alone (Nelson 2026-06-20). */
+QFrame#RecipeToolbar,
+QFrame#NameBox,
+QFrame#ScopeBox,
 QFrame#WhichItemsBand,
 QFrame#WhatToDoBand,
-QFrame#NameBox,
-QFrame#ScopeBox                  { background: {card2}; border: none;
-                                   border-radius: {radius_lg}px; }
-QFrame#SectionCard,
 QFrame#SourceSection,
 QFrame#FiltersSection,
 QFrame#RulesSectionCard,
 QFrame#OtherwiseSectionCard,
 QFrame#RuntimeSectionCard,
-QFrame#MetricsSectionCard        { background: {card}; border: none;
-                                   border-radius: {radius_md}px; }
+QFrame#MetricsSectionCard,
+QFrame#SectionCard               { background: transparent;
+                                   border: 1px solid {line};
+                                   border-radius: {radius_sm}px; }
 
 /* Verb / join-word popover rows — two-line buttons with a key + faint
  * description (spec/90 §1.2, §3.3). The labels inside the button stay

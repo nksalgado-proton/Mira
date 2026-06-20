@@ -670,8 +670,23 @@ Sequencing is **strictly bottom-up** so each layer is verifiable in isolation.
 ### Phase 5 — entry points
 - Event-Cut dialog launches from today's *New Cut* button with the Cut
   configuration.
-- Collection dialog launches from a new library-level *New Collection* action
-  (surface to be designed; spec/76 update).
+- Collection-flavour Start: **works as of Phase 4f**. The Collection face
+  reaches the cross-event picker session via the existing
+  [`CrossEventCutSession`](../mira/shared/cross_event_cut_session.py)
+  + [`CrossEventPickerDialog`](../mira/ui/pages/cross_event_picker_dialog.py)
+  through the new [`recipe_to_cross_event_cut_draft`](../mira/shared/recipe_draft_adapter.py)
+  adapter. The dialog opens today from
+  [`EventsPage._pin_cross_event_dc`](../mira/ui/pages/events_page.py) (the
+  Pin → Cut button on a cross-event DC row), pre-seeded with that DC as
+  the Source. The cross-event session resolves library-wide; scope chips
+  in the composition are an accepted-but-not-yet-enforced hint, and rules
+  collapse to `pin_mode` via the §1.5 sugar — a future phase will extend
+  the cross-event session to honour scope-narrowing + rule-based seeding.
+- **Still deferred** (the piece spec/90's earlier text conflated with
+  "Collection Start works"): a **library-level New Collection action** —
+  a discoverable surface in the home / library UI that opens the
+  Collection face with no prefill. The dialog + engine are ready; only
+  the entry point needs design (spec/76 update).
 - *Save as Recipe…* in the dialog footer (both flavours).
 - *Load Recipe…* in the dialog header (pool filtered by flavour, see §5.5).
 

@@ -19,6 +19,7 @@ import json
 import pytest
 
 from mira.shared.cut_draft import (
+    CrossEventCutDraft,
     CutDraft,
     CutDraftRule,
     OTHERWISE_PICK,
@@ -29,7 +30,9 @@ from mira.shared.cut_draft import (
     PIN_WEED_OUT,
 )
 from mira.shared.recipe_draft_adapter import (
+    cross_event_cut_draft_to_recipe_composition,
     cut_draft_to_recipe_composition,
+    recipe_to_cross_event_cut_draft,
     recipe_to_cut_draft,
 )
 from mira.user_store import models as um
@@ -372,3 +375,196 @@ def test_rule_based_round_trip():
     assert restored.pin_mode == PIN_RULE_BASED
     assert restored.otherwise == OTHERWISE_SKIP
     assert restored.rules == original.rules
+
+
+# --------------------------------------------------------------------------- #
+# spec/90 Phase 4f — Collection-flavour Recipe ↔ CrossEventCutDraft
+# --------------------------------------------------------------------------- #
+
+
+def _collection_recipe(name: str, composition: dict) -> um.Recipe:
+    return um.Recipe(
+        id="rcp-c",
+        name=name,
+        flavour="collection",
+        composition_json=json.dumps(composition),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
+def test_collection_no_rules_otherwise_skip_maps_to_pick_in():
+    """spec/90 §1.5 — Collection face: no rules + Otherwise=skip
+    collapses to :data:`PIN_PICK_IN` on the cross-event draft."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert isinstance(draft, CrossEventCutDraft)
+    assert draft.pin_mode == PIN_PICK_IN
+    assert draft.expr == (("+", "exported"),)
+
+
+def test_collection_no_rules_otherwise_pick_maps_to_weed_out():
+    """spec/90 §1.5 — Collection face: no rules + Otherwise=pick
+    collapses to :data:`PIN_WEED_OUT`."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "pick",
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.pin_mode == PIN_WEED_OUT
+
+
+def test_collection_filters_forward_full_catalogue():
+    """spec/32 §2 / spec/81 §2.1 — every cross-event filter key the
+    catalogue admits forwards verbatim from the composition's filters
+    block into the draft's ``filters`` dict."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "filters": {
+            "styles": ["macro"],
+            "media_type": "photo",
+            "camera_ids": ["Pana+G9M2"],
+            "lens_models": ["100-500mm"],
+            "person_ids": ["person-pedro"],
+            "stars_min": 4,
+            "country_codes": ["BR"],
+        },
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.filters["styles"] == ["macro"]
+    assert draft.filters["media_type"] == "photo"
+    assert draft.filters["camera_ids"] == ["Pana+G9M2"]
+    assert draft.filters["lens_models"] == ["100-500mm"]
+    assert draft.filters["person_ids"] == ["person-pedro"]
+    assert draft.filters["stars_min"] == 4
+    assert draft.filters["country_codes"] == ["BR"]
+
+
+def test_collection_separators_default_off():
+    """spec/81 §3.1 — cross-event default for separators is OFF (no
+    single timeline to orient). Honoured when the composition omits
+    the field."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.separators is False
+
+
+def test_collection_separators_explicit_override_honoured():
+    """An explicit ``presentation.separators=True`` overrides the
+    cross-event default."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "presentation": {"separators": True},
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.separators is True
+
+
+def test_collection_presentation_fields_carry_through():
+    """All presentation fields land on the draft."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "otherwise": "skip",
+        "presentation": {
+            "target_s": 600,
+            "max_s": 900,
+            "photo_s": 4.5,
+            "music_category": "ambient",
+            "card_style": "single",
+            "overlay_fields": ["when", "where"],
+            "overlay_mode": "embedded",
+        },
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.target_s == 600
+    assert draft.max_s == 900
+    assert draft.photo_s == 4.5
+    assert draft.music_category == "ambient"
+    assert draft.card_style == "single"
+    assert draft.overlay_fields == ("when", "where")
+    assert draft.overlay_mode == "embedded"
+
+
+def test_collection_single_dc_source_populates_source_dc_id():
+    """Mirror of the event-scope inference: a single ``+`` over a typed
+    DC ref surfaces the DC id on the draft."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", {"kind": "dc", "id": "dc-42", "tag": "macro"}]],
+        "otherwise": "skip",
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    assert draft.source_dc_id == "dc-42"
+
+
+def test_collection_rules_collapse_to_pin_mode():
+    """spec/90 Phase 4f — the cross-event session has no rule-list
+    seeding yet; rules in the composition collapse to ``pin_mode`` via
+    the §1.5 sugar (Otherwise verdict drives the mode). A future phase
+    will extend the session to honour rule-based seeding directly."""
+    recipe = _collection_recipe("curated", {
+        "source": [["+", "exported"]],
+        "rules": [{"predicate": [["+", "exported"]], "verdict": "pick"}],
+        "otherwise": "skip",
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe)
+    # Otherwise=skip → pick-in regardless of rule list.
+    assert draft.pin_mode == PIN_PICK_IN
+
+
+def test_recipe_to_cross_event_cut_draft_rejects_cut_flavour():
+    """spec/90 §5.5 — adapter fails loudly on cross-pollination misuse."""
+    recipe = um.Recipe(
+        id="rcp-cut", name="short", flavour="cut",
+        composition_json='{"source":[["+","exported"]],"otherwise":"skip"}',
+        created_at=NOW, updated_at=NOW,
+    )
+    with pytest.raises(ValueError, match="collection"):
+        recipe_to_cross_event_cut_draft(recipe)
+
+
+def test_cross_event_pick_in_round_trip():
+    """A pick-in cross-event draft → composition → draft preserves
+    every legacy field plus the explicit Otherwise the adapter
+    materialises."""
+    original = CrossEventCutDraft(
+        name="curated", tag="curated",
+        expr=(("+", "exported"),),
+        filters={"styles": ["macro"], "media_type": "photo",
+                 "camera_ids": ["G9"]},
+        pin_mode=PIN_PICK_IN,
+        target_s=120,
+        photo_s=5.0,
+    )
+    comp = cross_event_cut_draft_to_recipe_composition(original)
+    recipe = _collection_recipe(original.name, comp)
+    restored = recipe_to_cross_event_cut_draft(recipe)
+    assert restored.pin_mode == original.pin_mode
+    assert restored.expr == original.expr
+    assert restored.filters["styles"] == ["macro"]
+    assert restored.filters["camera_ids"] == ["G9"]
+    assert restored.target_s == original.target_s
+    assert restored.photo_s == original.photo_s
+
+
+def test_cross_event_weed_out_round_trip():
+    """A weed-out draft round-trips to Otherwise=pick + back to
+    weed-out."""
+    original = CrossEventCutDraft(
+        name="curated", tag="curated",
+        expr=(("+", "exported"),),
+        filters={"media_type": "both"},
+        pin_mode=PIN_WEED_OUT,
+    )
+    comp = cross_event_cut_draft_to_recipe_composition(original)
+    assert comp["otherwise"] == "pick"
+    recipe = _collection_recipe(original.name, comp)
+    restored = recipe_to_cross_event_cut_draft(recipe)
+    assert restored.pin_mode == PIN_WEED_OUT

@@ -354,35 +354,50 @@ def test_events_page_new_dc_signal_opens_list_dialog(qapp, tmp_path,
 
 def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
                                                     monkeypatch):
-    """Clicking Pin → Cut on a DC row opens the NewCrossEventCutDialog
-    pre-populated from the DC + the umbrella's inventories."""
+    """Clicking Pin → Cut on a DC row opens the New Collection face of
+    :class:`NewRecipeDialog`, pre-seeded with that DC as the Source.
+
+    spec/90 Phase 4f swapped the legacy
+    :class:`NewCrossEventCutDialog` for the new dialog; this test
+    pins the Collection-face configuration (show_scope=True,
+    show_hardware=True, inventory_scope="library")."""
     from mira.gateway.library_gateway import LibraryGateway
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     from mira.ui.pages.events_page import EventsPage
-    from mira.ui.pages.new_cross_event_cut_dialog import NewCrossEventCutDialog
+    from mira.ui.pages.new_recipe_dialog import (
+        FLAVOUR_COLLECTION,
+        INVENTORY_LIBRARY,
+        NewRecipeDialog,
+    )
     from mira.user_store import models as um
 
     gw, photos_base = _make_umbrella(tmp_path)
-    # Seed one cross-event DC.
     lg = LibraryGateway(gw.user_store)
     sf = lg.create_dc("hero", expr=[["+", "exported"]])
 
     cut_dialogs: list = []
-    orig_cut_init = NewCrossEventCutDialog.__init__
+    orig_cut_init = NewRecipeDialog.__init__
 
     def _capture(self, *a, **kw):
         orig_cut_init(self, *a, **kw)
         cut_dialogs.append(self)
-    monkeypatch.setattr(NewCrossEventCutDialog, "__init__", _capture)
-    monkeypatch.setattr(NewCrossEventCutDialog, "exec", lambda self: 0)
+    monkeypatch.setattr(NewRecipeDialog, "__init__", _capture)
+    monkeypatch.setattr(NewRecipeDialog, "exec", lambda self: 0)
     monkeypatch.setattr(CrossEventDcsDialog, "exec", lambda self: 0)
 
     page = EventsPage(gateway=gw)
-    # Drive directly: open the DCs dialog, fetch the seeded DC, fire pin.
     page._pin_cross_event_dc(lg, sf)
     assert len(cut_dialogs) == 1
-    # The dialog's inventories were populated.
-    cut_dialog = cut_dialogs[0]
-    assert any(label for _, label in cut_dialog._inventories.dynamic_collections)
+    dlg = cut_dialogs[0]
+    # The dialog opens in the Collection face — Scope + hardware visible.
+    assert dlg._flavour == FLAVOUR_COLLECTION
+    assert dlg._show_scope is True
+    assert dlg._show_hardware is True
+    assert dlg._inventory_scope == INVENTORY_LIBRARY
+    # The clicked DC pre-seeded the Source.
+    assert dlg._source_chips
+    _, first_operand = dlg._source_chips[0]
+    assert first_operand.tag == "hero"
+    assert first_operand.kind == "dc"
     page.deleteLater()
     gw.close()

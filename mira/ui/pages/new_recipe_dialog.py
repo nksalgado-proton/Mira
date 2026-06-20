@@ -2742,18 +2742,26 @@ class NewRecipeDialog(QDialog):
         self._start_btn.setEnabled(bool(res.pool))
 
     def _on_start_clicked(self) -> None:
-        """Footer ▶ Start — build the composition, adapt it to a
-        :class:`CutDraft`, emit :attr:`start_requested`, and accept().
+        """Footer ▶ Start — build the composition, adapt it to the right
+        draft flavour, emit :attr:`start_requested`, and accept().
 
-        Collection-flavour Start is out of scope for Phase 4e —
-        cross-event Collection sessions wait for spec/76's library
-        surface. The Cut-flavour path is the only Start that wires the
-        picker session today."""
-        if self._flavour == FLAVOUR_COLLECTION:
-            raise NotImplementedError(
-                "Cross-event Collection Start not yet wired; coming in a "
-                "future phase")
-        from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
+        Cut flavour → :class:`CutDraft` via :func:`recipe_to_cut_draft`;
+        the host wires :class:`CutSession.from_draft` + the event-scope
+        picker.
+
+        Collection flavour (spec/90 §7 Phase 5, completed Phase 4f) →
+        :class:`CrossEventCutDraft` via
+        :func:`recipe_to_cross_event_cut_draft`; the host wires
+        :class:`CrossEventCutSession.from_draft` + the cross-event
+        picker. The downstream session resolves library-wide; scope
+        chips in the composition are an accepted-but-not-yet-enforced
+        hint (the cross-event session has no scope param). Rules
+        collapse to the §1.5 sugar via the Otherwise verdict — the
+        cross-event picker doesn't yet honour rule-based seeding."""
+        from mira.shared.recipe_draft_adapter import (
+            recipe_to_cross_event_cut_draft,
+            recipe_to_cut_draft,
+        )
         from mira.user_store import models as um
         composition = self.composition()
         name = self._name_edit.text().strip()
@@ -2765,7 +2773,10 @@ class NewRecipeDialog(QDialog):
             created_at="",
             updated_at="",
         )
-        draft = recipe_to_cut_draft(recipe)
+        if self._flavour == FLAVOUR_COLLECTION:
+            draft = recipe_to_cross_event_cut_draft(recipe)
+        else:
+            draft = recipe_to_cut_draft(recipe)
         self.start_requested.emit(draft)
         self.accept()
 

@@ -39,6 +39,7 @@ from dataclasses import asdict
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from mira.shared.cut_draft import (
+    CrossEventCutDraft,
     CutDraft,
     CutDraftRule,
     OTHERWISE_PICK,
@@ -366,7 +367,201 @@ def _infer_source_dc_id(expr: Sequence[Tuple[str, Any]]) -> Optional[str]:
     return dc_id if isinstance(dc_id, str) and dc_id else None
 
 
+# --------------------------------------------------------------------------- #
+# Recipe → CrossEventCutDraft  (the Collection-flavour Start path, spec/90
+# §7 Phase 5 / spec/81 Phase 2)
+# --------------------------------------------------------------------------- #
+
+
+#: spec/32 §2 / spec/81 §2.1 cross-event filter keys this adapter
+#: forwards verbatim. Unknown keys round-trip through ``filters`` so a
+#: forward-looking composition (e.g. a future EXIF facet) reaches the
+#: resolver even before the dialog UI catches up.
+_CROSS_EVENT_FILTER_KEYS: Tuple[str, ...] = (
+    "styles",
+    "media_type",
+    "stars_min",
+    "color_labels",
+    "flag",
+    "iso_min", "iso_max",
+    "aperture_min", "aperture_max",
+    "shutter_min", "shutter_max",
+    "focal_min", "focal_max",
+    "flash_fired",
+    "lens_models",
+    "camera_ids",
+    "capture_from", "capture_to",
+    "country_codes",
+    "cities",
+    "person_ids",                                  # spec/90 §4.3
+)
+
+
+def recipe_to_cross_event_cut_draft(recipe: um.Recipe) -> CrossEventCutDraft:
+    """Translate a Collection-flavoured :class:`Recipe` into a
+    :class:`CrossEventCutDraft` (spec/90 §7 Phase 5).
+
+    The cross-event sibling of :func:`recipe_to_cut_draft`. The
+    composition's Source, Filters, and Presentation map onto the draft
+    fields the cross-event session reads. The §1.5 sugar collapse runs
+    here too: with **no rules**, Otherwise drives the legacy pin mode
+    (``skip`` → :data:`PIN_PICK_IN`, ``pick`` → :data:`PIN_WEED_OUT`).
+    Cross-event :class:`CrossEventCutDraft` has no ``rules`` field — for
+    now a non-trivial rule list collapses to the §1.5 sugar via the
+    Otherwise verdict (a future phase will extend the cross-event session
+    to honour rule-based seeding, matching the event-scope picker).
+
+    The composition's Scope section is **carried as a hint, not enforced
+    by this adapter**: the cross-event session resolves library-wide via
+    :meth:`LibraryGateway.resolve_dc_keys`, which has no scope parameter.
+    Callers that want scope-narrowing pre-resolve the scope chips into
+    event uuids and apply the narrowing themselves (see
+    :meth:`LibraryGateway.resolve_recipe` for the pattern). Documented
+    here so a future phase that wires Scope into the cross-event picker
+    knows the gap is intentional.
+
+    The Recipe MUST be ``flavour == 'collection'``; the cut-flavour
+    counterpart is :func:`recipe_to_cut_draft`. Misuse raises
+    ``ValueError`` rather than silently producing a wrong-shaped draft."""
+    if recipe.flavour != "collection":
+        raise ValueError(
+            f"recipe_to_cross_event_cut_draft requires flavour='collection', "
+            f"got {recipe.flavour!r}")
+
+    composition = _decode(recipe.composition_json)
+
+    source_expr = _expr_to_tuples(composition.get("source"))
+    filters_raw = composition.get("filters") if isinstance(
+        composition.get("filters"), Mapping) else {}
+    filters: dict[str, Any] = {}
+    for key in _CROSS_EVENT_FILTER_KEYS:
+        if key in filters_raw and filters_raw[key] not in (None, ""):
+            filters[key] = filters_raw[key]
+    if "media_type" not in filters:
+        filters["media_type"] = "both"
+
+    rules_raw = composition.get("rules") or []
+    has_rules = bool(
+        rules_raw
+        if isinstance(rules_raw, (list, tuple))
+        else []
+    )
+
+    otherwise = _normalise_otherwise(
+        composition.get("otherwise"), default=OTHERWISE_SKIP)
+
+    # §1.5 sugar — cross-event Picker only reads pin_mode (no rule-list
+    # mode yet on the cross-event session). The dialog's rule list, if
+    # any, is intentionally dropped here; the picker's pre-seed lands on
+    # the Otherwise verdict for items the dialog can't yet differentiate.
+    if otherwise == OTHERWISE_PICK:
+        pin_mode = PIN_WEED_OUT
+    else:
+        pin_mode = PIN_PICK_IN
+    if has_rules:
+        log.debug(
+            "recipe_to_cross_event_cut_draft: dropping %d rule(s) — the "
+            "cross-event session does not yet honour rule-list seeding "
+            "(spec/90 §1.5 sugar collapses to pin_mode=%s)",
+            len(rules_raw), pin_mode)
+
+    presentation = composition.get("presentation") or {}
+    if not isinstance(presentation, Mapping):
+        presentation = {}
+
+    target_s = _opt_int(presentation.get("target_s"))
+    max_s = _opt_int(presentation.get("max_s"))
+    photo_s = _opt_float(
+        presentation.get("photo_s"), default=_DEFAULT_PHOTO_S)
+    music_category = _opt_str(presentation.get("music_category"))
+    card_style = presentation.get("card_style") or _DEFAULT_CARD_STYLE
+    if card_style not in ("black", "single", "multi"):
+        card_style = _DEFAULT_CARD_STYLE
+    overlay_fields = _string_tuple(presentation.get("overlay_fields"))
+    overlay_mode = presentation.get("overlay_mode")
+    if overlay_mode not in ("embedded", "burn_in"):
+        overlay_mode = None
+    # spec/81 §3.1 — cross-event default for separators is OFF (no single
+    # timeline to orient). Honour an explicit composition override.
+    separators_raw = presentation.get("separators")
+    separators = (
+        bool(separators_raw) if separators_raw is not None else False
+    )
+
+    source_dc_id = _infer_source_dc_id(source_expr)
+
+    return CrossEventCutDraft(
+        name=recipe.name,
+        tag=_slug(recipe.name),
+        source_dc_id=source_dc_id,
+        expr=source_expr,
+        filters=filters,
+        pin_mode=pin_mode,
+        target_s=target_s,
+        max_s=max_s,
+        photo_s=photo_s,
+        music_category=music_category,
+        separators=separators,
+        overlay_fields=overlay_fields,
+        overlay_mode=overlay_mode,
+        card_style=card_style,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CrossEventCutDraft → composition  (the inverse, for round-trip + Save)
+# --------------------------------------------------------------------------- #
+
+
+def cross_event_cut_draft_to_recipe_composition(
+    draft: CrossEventCutDraft,
+) -> dict:
+    """Translate a :class:`CrossEventCutDraft` into a Collection-flavoured
+    Recipe composition dict ready for :meth:`RecipeStore.create` / update.
+
+    The shape follows spec/90 §5.1. For a legacy-mode draft (only
+    :data:`PIN_PICK_IN` / :data:`PIN_WEED_OUT` / :data:`PIN_KEEP_ALL`
+    are expressible in :class:`CrossEventCutDraft`), the composition has
+    no rules and an explicit Otherwise verdict that round-trips through
+    :func:`recipe_to_cross_event_cut_draft`. The full ``filters`` dict
+    forwards verbatim — every spec/32 §2 / spec/81 §2.1 catalogue key
+    survives.
+
+    The cross-event draft has no ``rules``/``otherwise`` fields (the
+    session doesn't honour them yet), so the inverse always produces a
+    no-rules composition with Otherwise derived from ``pin_mode``."""
+    composition: dict[str, Any] = {
+        "source": _expr_to_lists(draft.expr),
+        "filters": dict(draft.filters or {}),
+    }
+    if draft.pin_mode == PIN_PICK_IN:
+        composition["otherwise"] = OTHERWISE_SKIP
+    else:
+        # keep-all + weed-out both start all-in (spec/90 §1.5).
+        composition["otherwise"] = OTHERWISE_PICK
+
+    presentation: dict[str, Any] = {
+        "photo_s": draft.photo_s,
+        "card_style": draft.card_style,
+        "separators": draft.separators,
+    }
+    if draft.target_s is not None:
+        presentation["target_s"] = int(draft.target_s)
+    if draft.max_s is not None:
+        presentation["max_s"] = int(draft.max_s)
+    if draft.music_category:
+        presentation["music_category"] = draft.music_category
+    if draft.overlay_fields:
+        presentation["overlay_fields"] = list(draft.overlay_fields)
+    if draft.overlay_mode:
+        presentation["overlay_mode"] = draft.overlay_mode
+    composition["presentation"] = presentation
+    return composition
+
+
 __all__ = [
     "recipe_to_cut_draft",
     "cut_draft_to_recipe_composition",
+    "recipe_to_cross_event_cut_draft",
+    "cross_event_cut_draft_to_recipe_composition",
 ]

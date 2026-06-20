@@ -18,7 +18,12 @@ from core.recipe_resolver import (
     RecipeResolution,
     RecipeResolutionError,
 )
-from mira.shared.cut_draft import CutDraft, PIN_PICK_IN
+from mira.shared.cut_draft import (
+    CrossEventCutDraft,
+    CutDraft,
+    PIN_PICK_IN,
+    PIN_WEED_OUT,
+)
 from mira.ui.pages.new_recipe_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
@@ -168,9 +173,13 @@ def test_start_accepts_the_dialog(qapp):
     assert accepted == [True]
 
 
-def test_collection_flavour_start_raises_not_implemented(qapp):
-    """Cross-event Collection Start is out of scope for v1 — clicking
-    Start raises :class:`NotImplementedError` with a clear message."""
+def test_collection_flavour_start_emits_cross_event_cut_draft(qapp):
+    """spec/90 Phase 4f — Collection-flavour Start no longer raises.
+    Clicking Start translates the composition via
+    :func:`recipe_to_cross_event_cut_draft` and emits a
+    :class:`CrossEventCutDraft` on :attr:`start_requested`. The host
+    wires :class:`CrossEventCutSession.from_draft` + the cross-event
+    picker."""
     ctx = NewRecipeContext(
         event_name="Library",
         available_pools=[OperandOption(name="#exported", count=42,
@@ -188,5 +197,66 @@ def test_collection_flavour_start_raises_not_implemented(qapp):
         recipe_probe=lambda _comp: _resolution(5, picked=2),
     )
     dlg._run_probe()
-    with pytest.raises(NotImplementedError, match="Collection"):
-        dlg._on_start_clicked()
+    dlg._name_edit.setText("curated_macro")
+    drafts: list = []
+    dlg.start_requested.connect(drafts.append)
+    dlg._on_start_clicked()
+    assert len(drafts) == 1
+    draft = drafts[0]
+    assert isinstance(draft, CrossEventCutDraft)
+    assert draft.name == "curated_macro"
+    assert draft.tag == "curated_macro"
+    assert ("+", "exported") in draft.expr
+    # Otherwise default (skip) → pin_mode = PIN_PICK_IN (spec/90 §1.5 sugar).
+    assert draft.pin_mode == PIN_PICK_IN
+
+
+def test_collection_flavour_start_uses_pin_mode_from_otherwise(qapp):
+    """spec/90 §1.5 — no rules + Otherwise=pick collapses to
+    :data:`PIN_WEED_OUT` on the cross-event draft."""
+    ctx = NewRecipeContext(
+        available_pools=[OperandOption(name="#exported", count=42,
+                                       kind="base", tag="exported")],
+        selected_source=[(JOIN_OR, OperandOption(
+            name="#exported", count=42, kind="base", tag="exported"))],
+        otherwise="pick",
+    )
+    dlg = _dialog(
+        qapp,
+        ctx=ctx,
+        flavour=FLAVOUR_COLLECTION,
+        show_scope=True,
+        show_hardware=True,
+        inventory_scope=INVENTORY_LIBRARY,
+        recipe_probe=lambda _comp: _resolution(5, picked=2),
+    )
+    dlg._run_probe()
+    drafts: list = []
+    dlg.start_requested.connect(drafts.append)
+    dlg._on_start_clicked()
+    assert drafts[0].pin_mode == PIN_WEED_OUT
+
+
+def test_collection_flavour_start_accepts_dialog(qapp):
+    """Collection Start emits then accepts() — same lifecycle as the
+    Cut-flavour path."""
+    ctx = NewRecipeContext(
+        available_pools=[OperandOption(name="#exported", count=42,
+                                       kind="base", tag="exported")],
+        selected_source=[(JOIN_OR, OperandOption(
+            name="#exported", count=42, kind="base", tag="exported"))],
+    )
+    dlg = _dialog(
+        qapp,
+        ctx=ctx,
+        flavour=FLAVOUR_COLLECTION,
+        show_scope=True,
+        show_hardware=True,
+        inventory_scope=INVENTORY_LIBRARY,
+        recipe_probe=lambda _comp: _resolution(5),
+    )
+    dlg._run_probe()
+    accepted = []
+    dlg.accepted.connect(lambda: accepted.append(True))
+    dlg._on_start_clicked()
+    assert accepted == [True]

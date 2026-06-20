@@ -417,167 +417,134 @@ class EventsPage(QWidget):
         )
 
     def _pin_cross_event_dc(self, library_gateway, dc) -> None:
-        """Open the cross-event New Cut dialog with ``dc`` pre-selected;
-        on save, build the session via
-        :meth:`CrossEventCutSession.from_draft`, default-anchor it to the
-        event contributing the most resolved members, and commit via the
-        anchor event's gateway."""
-        from mira.gateway.cross_event_resolver import unpack_key
+        """Open the New Collection dialog with ``dc`` pre-selected as the
+        Source; on Start, build the cross-event session via
+        :meth:`CrossEventCutSession.from_draft`, default-anchor it to
+        the event contributing the most resolved members, and commit
+        via the anchor event's gateway.
+
+        spec/90 Phase 4f: routes through :class:`NewRecipeDialog`'s
+        Collection face (the cut-flavour equivalent in spec/61 §2 routes
+        through the same dialog at the event scope). The legacy
+        :class:`NewCrossEventCutDialog` retired with this phase."""
+        from PyQt6.QtWidgets import QMessageBox
         from mira.shared.cross_event_cut_session import (
             CrossEventCutSession,
             pick_anchor_event,
         )
-        from mira.shared.cut_draft import CrossEventCutDraft
-        from mira.ui.pages.new_cross_event_cut_dialog import (
-            CrossEventCutInventories,
-            NewCrossEventCutDialog,
-        )
-        from PyQt6.QtWidgets import QMessageBox
-
-        # Probe the DC to find a sensible default anchor: the event that
-        # contributes the most resolved keys. Empty DC → no default;
-        # the user picks an anchor anyway.
-        keys = library_gateway.resolve_dc_keys(
-            library_gateway.dc_expr(dc),
-            library_gateway.dc_filters(dc))
-        contrib_counts: dict = {}
-        for k in keys:
-            evt, _ = unpack_key(k)
-            contrib_counts[evt] = contrib_counts.get(evt, 0) + 1
-        default_anchor = None
-        if contrib_counts:
-            top = max(contrib_counts.values())
-            candidates = sorted(
-                [e for e, n in contrib_counts.items() if n == top])
-            default_anchor = candidates[0]
-
-        # Inventories: cross-event DCs (with current DC labelled), events
-        # from the umbrella, music categories from settings (if any).
-        dcs = library_gateway.dynamic_collections()
-        events_list = self._cross_event_event_inventory()
-        music = self._cross_event_music_inventory()
-        inventories = CrossEventCutInventories(
-            dynamic_collections=tuple(
-                (d.id, "#" + d.tag) for d in dcs),
-            events=tuple(events_list),
-            music_categories=tuple(music),
-        )
-        cut_dialog = NewCrossEventCutDialog(
-            inventories=inventories,
-            default_anchor_event_id=default_anchor,
-            default_dc_id=dc.id,
-            parent=self,
-        )
-
-        def _on_save(info):
-            try:
-                self._commit_cross_event_cut(library_gateway, info)
-            except Exception as exc:                       # noqa: BLE001
-                QMessageBox.warning(
-                    cut_dialog,
-                    "Cross-event Cut",
-                    f"Could not create cross-event Cut: {exc}",
-                )
-                return
-            from core import cut_names as _names
-            QMessageBox.information(
-                cut_dialog,
-                "Cross-event Cut",
-                f"Created #{_names.slugify(info.name)} in event {info.anchor_event_id}.",
-            )
-
-        cut_dialog.saved.connect(_on_save)
-        cut_dialog.exec()
-
-    def _commit_cross_event_cut(self, library_gateway, info) -> None:
-        """Drive the engine: build a draft from the dialog info, resolve via
-        the library gateway, commit through the anchor event's gateway.
-
-        Keep-all mode commits directly with every resolved item picked.
-        Weed-out / pick-in modes route through :class:`CrossEventPickerDialog`
-        so the user refines the ledger before commit."""
-        from mira.shared.cross_event_cut_session import CrossEventCutSession
-        from mira.shared.cut_draft import (
-            CrossEventCutDraft, PIN_KEEP_ALL,
-        )
-
-        if not info.anchor_event_id:
-            raise ValueError("no anchor event picked")
-        draft = CrossEventCutDraft(
-            name=info.name,
-            tag="",
-            source_dc_id=info.source_dc_id,
-            expr=(),
-            filters={},
-            pin_mode=info.pin_mode,
-            target_s=info.target_s,
-            max_s=info.max_s,
-            photo_s=info.photo_s,
-            music_category=info.music_category,
-            anchor_event_id=info.anchor_event_id,
-            separators=info.separators,
-            overlay_fields=tuple(info.overlay_fields),
-            overlay_mode=info.overlay_mode,
-        )
-        session = CrossEventCutSession.from_draft(
-            library_gateway, draft,
-            anchor_event_id=info.anchor_event_id)
-
-        if info.pin_mode == PIN_KEEP_ALL:
-            self._direct_commit_cross_event_cut(session, info.anchor_event_id)
-            return
-
-        # Weed/Pick mode: open the Picker, let the user refine, commit on
-        # accept.
+        from mira.shared.recipe_store import RecipeStore
         from mira.ui.pages.cross_event_picker_dialog import (
             CrossEventPickerDialog,
         )
+        from mira.ui.pages.new_recipe_dialog import (
+            FLAVOUR_COLLECTION,
+            INVENTORY_LIBRARY,
+            JOIN_OR,
+            NewRecipeContext,
+            NewRecipeDialog,
+            OperandOption,
+        )
 
-        def _commit_cb(sess):
-            self._direct_commit_cross_event_cut(sess, info.anchor_event_id)
+        # Inventory: every cross-event DC the user can pin (the picker
+        # offers these as Source operands), the library's events for the
+        # Scope sentence, and the per-facet vocabularies for the Filters
+        # block.
+        available_pools: list[OperandOption] = [
+            OperandOption(
+                name="#exported", count=0, kind="base", tag="exported"),
+        ]
+        dcs = library_gateway.dynamic_collections()
+        for d in dcs:
+            try:
+                live = library_gateway.dc_probe(
+                    library_gateway.dc_expr(d),
+                    library_gateway.dc_filters(d))
+            except Exception:                              # noqa: BLE001
+                live = 0
+            available_pools.append(OperandOption(
+                name=f"#{d.tag}", count=int(live or 0),
+                kind="dc", id=d.id, tag=d.tag))
 
-        picker = CrossEventPickerDialog(
-            session, commit_callback=_commit_cb, parent=self)
-        picker.exec()
+        events_inventory: list[OperandOption] = []
+        try:
+            for ev in library_gateway.list_events_for_scope():
+                events_inventory.append(OperandOption(
+                    name=f"[{ev.get('name') or ev.get('uuid')}]",
+                    count=int(ev.get("item_count") or 0),
+                    kind="event", uuid=ev.get("uuid")))
+        except Exception:                                  # noqa: BLE001
+            log.exception("cross-event Scope inventory failed")
+
+        styles = [v for v, _n in library_gateway.available_classifications()]
+        cameras = [v for v, _n in library_gateway.available_cameras()]
+        lenses = [v for v, _n in library_gateway.available_lenses()]
+
+        # Pre-seed the Source with the clicked DC (the user just clicked
+        # Pin → Cut on that row — landing the dialog on a different
+        # composition would surprise them).
+        pre_source = [(JOIN_OR, OperandOption(
+            name=f"#{dc.tag}", count=0, kind="dc", id=dc.id, tag=dc.tag))]
+
+        ctx = NewRecipeContext(
+            event_name="",
+            name=dc.tag,
+            available_pools=available_pools,
+            available_events=events_inventory,
+            available_styles=styles,
+            available_cameras=cameras,
+            available_lenses=lenses,
+            selected_source=pre_source,
+        )
+
+        recipe_store = RecipeStore(library_gateway.user_store)
+        dlg = NewRecipeDialog(
+            flavour=FLAVOUR_COLLECTION,
+            show_scope=True,
+            show_hardware=True,
+            inventory_scope=INVENTORY_LIBRARY,
+            ctx=ctx,
+            pool_probe=lambda expr: library_gateway.dc_probe(expr),
+            recipe_probe=library_gateway.resolve_recipe,
+            recipe_store=recipe_store,
+            parent=self,
+        )
+
+        def _on_start(draft) -> None:
+            try:
+                session = CrossEventCutSession.from_draft(
+                    library_gateway, draft)
+                if not session.files:
+                    QMessageBox.warning(
+                        self, "Cross-event Cut",
+                        "The Recipe resolved to zero items — nothing "
+                        "to pin.")
+                    return
+                anchor = pick_anchor_event(session.files)
+                session.anchor_event_id = anchor
+            except Exception as exc:                       # noqa: BLE001
+                QMessageBox.warning(
+                    self, "Cross-event Cut",
+                    f"Could not build cross-event Cut: {exc}")
+                return
+
+            def _commit_cb(sess):
+                self._direct_commit_cross_event_cut(sess, anchor)
+
+            picker = CrossEventPickerDialog(
+                session, commit_callback=_commit_cb, parent=self)
+            picker.exec()
+
+        dlg.start_requested.connect(_on_start)
+        dlg.exec()
 
     def _direct_commit_cross_event_cut(self, session, anchor_event_id) -> None:
         """Open the anchor event's gateway + drive ``session.commit`` +
-        close. Shared by keep-all and Picker-routed commits."""
+        close."""
         anchor_gw = self.gateway.open_event(anchor_event_id)
         try:
             session.commit(anchor_gw)
         finally:
             anchor_gw.close()
-
-    def _cross_event_event_inventory(self) -> list:
-        """``(event_id, label)`` for every event in the library — the
-        anchor-event picker's vocabulary."""
-        out: list = []
-        try:
-            rows = self.gateway.list_events()
-        except Exception:                                    # noqa: BLE001
-            return out
-        for r in rows:
-            eid = r.get("id") or r.get("uuid")
-            name = r.get("name") or eid
-            if eid:
-                out.append((eid, name))
-        return out
-
-    def _cross_event_music_inventory(self) -> list:
-        """Audio-library subdirectories (the music-category picker
-        vocabulary). Empty when audio_library_path is unset / invalid.
-        Reads via :func:`core.audio_library.list_moods` against the
-        configured library root."""
-        try:
-            from core import audio_library
-            settings = self.gateway.settings.load()
-            root = getattr(settings, "audio_library_path", None)
-            if not root:
-                return []
-            return list(audio_library.list_moods(root))
-        except Exception:                                    # noqa: BLE001
-            return []
 
     # ── data ────────────────────────────────────────────────────────────
 

@@ -815,8 +815,9 @@ class _CutsListView(QWidget):
         inner.setAutoFillBackground(False)
         self._cuts_layout = QVBoxLayout(inner)
         self._cuts_layout.setContentsMargins(0, 0, 0, 0)
-        # Spacing between bordered tile cards.
-        self._cuts_layout.setSpacing(10)
+        # Zero spacing: rows butt-up; the hairline on QFrame#ShareListRow
+        # is the only divider (Nelson 2026-06-20 final).
+        self._cuts_layout.setSpacing(0)
         self._cuts_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._scroll.setWidget(inner)
         self._scroll.setSizePolicy(
@@ -861,8 +862,8 @@ class _CutsListView(QWidget):
         dc_inner.setAutoFillBackground(False)
         self._dcs_layout = QVBoxLayout(dc_inner)
         self._dcs_layout.setContentsMargins(0, 0, 0, 0)
-        # Match the cuts list — bordered tile spacing.
-        self._dcs_layout.setSpacing(10)
+        # Match the cuts list — zero spacing + hairline divider.
+        self._dcs_layout.setSpacing(0)
         self._dcs_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._dc_scroll.setWidget(dc_inner)
         self._dc_scroll.setSizePolicy(

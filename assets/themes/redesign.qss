@@ -18,16 +18,13 @@ QWidget#RedesignRoot { background: qradialgradient(cx:0.8, cy:-0.1, radius:1.1, 
 /* ---- Cards / panels ---- */
 QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
 /* Share-list tile (Cut row + DC row). Sits INSIDE the tab content
- * #Card2 wrapper.
- *
- * v5 (Nelson 2026-06-20 — screenshot): the accent-tinted border in v4
- * read as chunky/saturated when repeated per-row against the solid
- * dark bg (the pool card masks its accent border with a gradient;
- * solid-bg tiles can't). Settle on the same ``line`` colour Card2
- * uses for the outer wrapper — subtle, consistent, no per-row purple
- * noise. */
-QFrame#ShareListRow { background: {card}; border: 1px solid {line};
-                      border-radius: {radius_lg}px; }
+ * #Card2 wrapper. Hairline-only treatment (Nelson 2026-06-20 — final):
+ * rows blend into the Card2 wash; the only visible separator is a
+ * single 1-px bottom hairline. Cuts/DCs scroll layouts use spacing(0)
+ * so rows butt-up directly. */
+QFrame#ShareListRow { background: transparent; border: none;
+                      border-bottom: 1px solid {line};
+                      border-radius: 0px; }
 /* Event tiles — spec/77 §7.2. QSS owns the rounded background fill;
  * the border is painted by ``EventTile.paintEvent`` (copying the
  * days-grid Thumb's pattern in ``mira/ui/design/thumbs.py``: 2px

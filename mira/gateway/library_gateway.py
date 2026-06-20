@@ -522,6 +522,43 @@ class LibraryGateway:
                         "operand": {"kind": "dc", "id": d.id, "tag": d.tag}})
         return inv
 
+    def list_events_for_scope(self) -> List[dict]:
+        """Inventory of events for the Recipe dialog's Scope picker
+        (spec/90 §1.1, §3.1). Returns one dict per known event with:
+
+        * ``uuid`` — the stable event id used in the spec/90 operand
+          encoding ``{"kind": "event", "uuid": …}``.
+        * ``name`` — the cached event name (or ``"(unnamed)"`` fallback).
+        * ``item_count`` — count of ``global_items`` rows in this event;
+          the dialog renders this as the live count beside each chip.
+
+        Ordered newest-first when start_date is available — the dialog's
+        Scope picker reads "what did I shoot recently" most often, so the
+        common case lands at the top. Events without a start_date trail.
+        spec/53 §2.3 — ``event_index`` is the authoritative list of
+        library-known events; counts ride the ``global_items`` projection
+        the cross-event resolver already syncs to."""
+        rows = self.user_store.conn.execute(
+            "SELECT ei.event_uuid AS uuid, "
+            "       ei.name_cached AS name, "
+            "       ei.start_date_cached AS start_date, "
+            "       COUNT(gi.item_id) AS item_count "
+            "FROM event_index ei "
+            "LEFT JOIN global_items gi ON gi.event_uuid = ei.event_uuid "
+            "GROUP BY ei.event_uuid, ei.name_cached, ei.start_date_cached "
+            "ORDER BY "
+            "  CASE WHEN ei.start_date_cached IS NULL THEN 1 ELSE 0 END, "
+            "  ei.start_date_cached DESC, ei.name_cached"
+        ).fetchall()
+        return [
+            {
+                "uuid": r["uuid"],
+                "name": r["name"] or "(unnamed)",
+                "item_count": int(r["item_count"] or 0),
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------ #
     # Per-facet inventories (spec/83 §5)
     #

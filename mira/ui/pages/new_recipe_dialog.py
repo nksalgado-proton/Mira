@@ -31,13 +31,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QDate, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDateEdit,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -119,18 +121,30 @@ def _placeholder(text: str, *, object_name: str = "Faint") -> QLabel:
 
 @dataclass
 class OperandOption:
-    """One operand the user can drop into a Source / Rule predicate.
+    """One operand the user can drop into a Source / Scope / Rule predicate.
 
     spec/90 §3.1 alphabet: base universes, DCs, Cuts, Event Collections,
-    Date ranges, Persons, hardware vocabulary, item vocabulary. Each
-    chip in the dialog renders one of these. Phase 4a admits the source-
-    section operands; Phase 4c grows the set to cover rule predicates."""
+    Events, Date ranges, Persons, hardware vocabulary, item vocabulary.
+    Each chip in the dialog renders one of these.
 
-    name: str               # display string, e.g. '#exported'
+    Optional fields support the kinds Phase 4b adds for Scope:
+
+    * ``uuid`` — set for ``kind='event'`` operands; the encoded operand
+      becomes ``{"kind": "event", "uuid": ...}``.
+    * ``start`` / ``end`` — set for ``kind='date_range'`` operands; the
+      encoded operand becomes ``{"kind": "date_range", "start": ...,
+      "end": ...}``. Date strings are ISO-8601 (``YYYY-MM-DD``).
+    """
+
+    name: str               # display string, e.g. '#exported' or '[Alaska]'
     count: int = 0          # live count beside the name (spec/90 §3.4)
-    kind: str = "base"      # 'base' | 'dc' | 'cut' | 'event_collection'
+    # 'base' | 'dc' | 'cut' | 'event_collection' | 'event' | 'date_range'
+    kind: str = "base"
     id: Optional[str] = None
     tag: Optional[str] = None  # canonical tag without '#'; falls back to ``name``
+    uuid: Optional[str] = None       # event operand identity
+    start: Optional[str] = None      # date_range start (YYYY-MM-DD)
+    end: Optional[str] = None        # date_range end (YYYY-MM-DD)
 
 
 @dataclass
@@ -147,9 +161,16 @@ class NewRecipeContext:
     name: str = ""
 
     # Source operand inventory (spec/90 §3.4 picker). Base universes,
-    # DCs, Cuts ship in Phase 4a; Event Collections + Persons join the
-    # picker in Phase 4b/4c via the same shape.
+    # DCs, Cuts. Persons join the picker in Phase 4c via the same shape
+    # (Person operand in rule predicates).
     available_pools: List[OperandOption] = field(default_factory=list)
+
+    # Scope operand inventory (spec/90 §3.1 — Collection-face only).
+    # Events list comes from :meth:`LibraryGateway.list_events_for_scope`;
+    # Event Collections from :meth:`EventCollectionStore.list`.
+    available_events: List[OperandOption] = field(default_factory=list)
+    available_event_collections: List[OperandOption] = field(
+        default_factory=list)
 
     # Filter vocabularies (spec/90 §4). Each is the list of distinct
     # values the picker offers; the user multi-selects.
@@ -160,6 +181,7 @@ class NewRecipeContext:
     # Initial selections — empty for a fresh Recipe; populated when
     # loading a saved Recipe (Phase 4e).
     selected_source: List[Tuple[str, OperandOption]] = field(default_factory=list)
+    selected_scope: List[Tuple[str, OperandOption]] = field(default_factory=list)
     selected_styles: List[str] = field(default_factory=list)
     selected_cameras: List[str] = field(default_factory=list)
     selected_lenses: List[str] = field(default_factory=list)
@@ -213,26 +235,49 @@ class _SourceChip(QFrame):
         h.addWidget(close)
 
 
+#: Target identifiers for :class:`_OperandPickerPopover`. The Source picker
+#: surfaces item-set operands (Base / DCs / Cuts); the Scope picker surfaces
+#: event-set operands (Events / Event Collections / Date ranges).
+PICKER_TARGET_SOURCE = "source"
+PICKER_TARGET_SCOPE = "scope"
+
+
 class _OperandPickerPopover(QFrame):
     """Sectioned popover for picking an operand to add (spec/90 §3.4).
 
     Floats over the dialog body as a small modal frame (anchored under the
-    ``+`` button). Sectioned by chip type — base universes first, then
-    DCs, then Cuts (Event Collections appear only when
-    ``show_event_collections=True`` — Collection-face Scope picker; Phase
-    4b wires that). A search line input at the top narrows by name; live
-    counts ride beside every entry from :attr:`OperandOption.count`.
+    ``+`` button). The picker has two **targets** (one widget, two
+    inventories):
 
-    "Save as DC…" sits at the bottom as a placeholder button — Phase 4e
-    wires the modal that fires :attr:`NewRecipeDialog.save_as_dc_requested`."""
+    * ``PICKER_TARGET_SOURCE`` — Source sentence picker. Sections are
+      Base universes · Dynamic Collections · Cuts. The "Save as DC…"
+      affordance sits at the bottom (spec/90 §3.4 — opens the new-DC
+      sub-dialog with the current Source's chips pre-filled).
+    * ``PICKER_TARGET_SCOPE`` — Scope sentence picker (Collection face
+      only). Sections are Events · Event Collections · Date ranges
+      (spec/90 §3.1, §3.4). The Date ranges section is a single
+      ``+ Add date range…`` button that opens
+      :class:`_DateRangePickerPopover`. "Save as DC…" is hidden — Scope
+      doesn't compose into a Dynamic Collection.
 
-    chosen = pyqtSignal(object)            # OperandOption
+    A search line input at the top narrows by name; live counts ride
+    beside every entry from :attr:`OperandOption.count`. Empty sections
+    silently disappear so the picker stays compact when the user has no
+    DCs / Cuts / Event Collections."""
+
+    chosen = pyqtSignal(object)              # OperandOption
     save_as_dc_requested = pyqtSignal()
+    add_date_range_requested = pyqtSignal()
 
     def __init__(
         self,
-        pools: Sequence[OperandOption],
+        pools: Sequence[OperandOption] = (),
         *,
+        target: str = PICKER_TARGET_SOURCE,
+        events: Sequence[OperandOption] = (),
+        event_collections: Sequence[OperandOption] = (),
+        # Legacy alias from Phase 4a — accepted for back-compat. Maps
+        # to ``target=PICKER_TARGET_SCOPE`` when True.
         show_event_collections: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
@@ -241,9 +286,20 @@ class _OperandPickerPopover(QFrame):
         self.setObjectName("OperandPickerPopover")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumWidth(280)
+        if show_event_collections and target == PICKER_TARGET_SOURCE:
+            # Phase 4a callers passed show_event_collections=True to opt
+            # into Event Collections in the picker. Phase 4b's Scope target
+            # is the proper home for that vocabulary.
+            target = PICKER_TARGET_SCOPE
+        if target not in (PICKER_TARGET_SOURCE, PICKER_TARGET_SCOPE):
+            raise ValueError(
+                f"picker target must be 'source' or 'scope', got {target!r}")
+        self._target = target
         self._pools = list(pools)
-        self._show_event_collections = show_event_collections
+        self._events = list(events)
+        self._event_collections = list(event_collections)
         self._rows: List[Tuple[OperandOption, QPushButton]] = []
+        self._date_range_row: Optional[QPushButton] = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -262,26 +318,39 @@ class _OperandPickerPopover(QFrame):
 
         self._populate_sections()
 
-        outer.addWidget(_divider())
-        self._save_btn = ghost_button(tr("Save as DC…"))
-        self._save_btn.setObjectName("OperandPickerSaveAsDc")
-        self._save_btn.setToolTip(tr(
-            "Save the current source as a Dynamic Collection — Phase 4e."))
-        self._save_btn.clicked.connect(self._on_save_as_dc)
-        outer.addWidget(self._save_btn)
+        # "Save as DC…" only applies to the Source picker — Scope's
+        # output is event sets, not item sets, so the affordance is
+        # nonsensical there.
+        if self._target == PICKER_TARGET_SOURCE:
+            outer.addWidget(_divider())
+            self._save_btn = ghost_button(tr("Save as DC…"))
+            self._save_btn.setObjectName("OperandPickerSaveAsDc")
+            self._save_btn.setToolTip(tr(
+                "Save the current source as a Dynamic Collection — Phase 4e."))
+            self._save_btn.clicked.connect(self._on_save_as_dc)
+            outer.addWidget(self._save_btn)
+        else:
+            self._save_btn = None
 
     def _populate_sections(self) -> None:
-        """Group the pool inventory by kind, render a section header per
-        group, then one row per operand. spec/90 §3.4 order: Base
-        universes · DCs · Cuts · Event Collections."""
+        """Render the section headers + rows for the active target.
+
+        Source target (spec/90 §3.4): Base universes · Dynamic
+        Collections · Cuts — pulled from ``pools`` grouped by kind.
+
+        Scope target (spec/90 §3.4 — Collection dialog only): Events ·
+        Event Collections · Date ranges. The Date ranges section has
+        no inventory; instead it shows one ``+ Add date range…`` button
+        that opens :class:`_DateRangePickerPopover`."""
+        if self._target == PICKER_TARGET_SCOPE:
+            self._populate_scope_sections()
+            return
+
         order = [
             ("base", tr("Base universes")),
             ("dc", tr("Dynamic Collections")),
             ("cut", tr("Cuts")),
         ]
-        if self._show_event_collections:
-            order.append(("event_collection", tr("Event Collections")))
-
         for kind, label in order:
             in_kind = [p for p in self._pools if p.kind == kind]
             if not in_kind:
@@ -292,6 +361,32 @@ class _OperandPickerPopover(QFrame):
                 row = self._make_row(pool)
                 self._list_layout.addWidget(row)
                 self._rows.append((pool, row))
+
+    def _populate_scope_sections(self) -> None:
+        """The Scope picker's three sections (spec/90 §3.1)."""
+        if self._events:
+            self._list_layout.addWidget(_micro(tr("Events")))
+            for ev in self._events:
+                row = self._make_row(ev)
+                self._list_layout.addWidget(row)
+                self._rows.append((ev, row))
+        if self._event_collections:
+            self._list_layout.addWidget(_micro(tr("Event Collections")))
+            for ec in self._event_collections:
+                row = self._make_row(ec)
+                self._list_layout.addWidget(row)
+                self._rows.append((ec, row))
+
+        # Date ranges section — single "+ Add date range…" button that
+        # opens the date-range picker.
+        self._list_layout.addWidget(_micro(tr("Date ranges")))
+        btn = QPushButton(tr("+ Add date range…"), self)
+        btn.setObjectName("OperandPickerAddDateRange")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet("text-align: left; padding: 6px 8px;")
+        btn.clicked.connect(self._on_add_date_range)
+        self._list_layout.addWidget(btn)
+        self._date_range_row = btn
 
     def _make_row(self, pool: OperandOption) -> QPushButton:
         """One entry row — the name on the left, the live count on the
@@ -317,6 +412,163 @@ class _OperandPickerPopover(QFrame):
     def _on_save_as_dc(self) -> None:
         self.save_as_dc_requested.emit()
         self.close()
+
+    def _on_add_date_range(self) -> None:
+        """Click on the Scope picker's ``+ Add date range…`` row.
+
+        Doesn't ship the chip itself — the dialog owns the date-range
+        picker (it's bound to the dialog's parent + the current QDate
+        defaults). The picker emits :attr:`add_date_range_requested`
+        and closes; the dialog opens :class:`_DateRangePickerPopover`
+        and adds the resulting chip on confirm."""
+        self.add_date_range_requested.emit()
+        self.close()
+
+
+# --------------------------------------------------------------------------- #
+# Date-range picker (spec/90 §3.1 — Scope's "date range" operand)
+# --------------------------------------------------------------------------- #
+
+
+def _today() -> date:
+    """Wall-clock today, injected as a callable so tests can freeze it.
+    The class consults the module-level reference so a monkeypatch hits
+    every instance in the same process."""
+    return datetime.now(timezone.utc).date()
+
+
+def _iso(d: date) -> str:
+    return d.isoformat()
+
+
+@dataclass(frozen=True)
+class DateRangeQuickSelect:
+    """One quick-select preset in :class:`_DateRangePickerPopover`."""
+
+    label: str
+    years: Optional[int]   # None = all-time (no lower bound — opens 1900-01-01)
+
+
+_DEFAULT_QUICK_SELECTS: Tuple[DateRangeQuickSelect, ...] = (
+    DateRangeQuickSelect(label="Last 12 months", years=1),
+    DateRangeQuickSelect(label="Last 3 years", years=3),
+    DateRangeQuickSelect(label="Last 5 years", years=5),
+    DateRangeQuickSelect(label="All time", years=None),
+)
+#: Lower bound for "All time" — spec/90 §3.1's date-range operand is
+#: bounded both sides; the resolver treats the start as inclusive.
+_ALL_TIME_START = date(1900, 1, 1)
+
+
+class _DateRangePickerPopover(QDialog):
+    """Modal-ish dialog for picking a date-range operand (spec/90 §3.1 —
+    Scope only). Two :class:`QDateEdit`'s + a row of quick-selects + OK /
+    Cancel.
+
+    Doesn't enforce ``start <= end`` — the dialog re-orders on confirm so
+    the emitted operand always carries the lower date as ``start``."""
+
+    range_chosen = pyqtSignal(str, str)   # (start_iso, end_iso)
+
+    def __init__(
+        self,
+        *,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        quick_selects: Sequence[DateRangeQuickSelect] = _DEFAULT_QUICK_SELECTS,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DateRangePicker")
+        self.setWindowTitle(tr("Add date range"))
+        self.setModal(True)
+        self.setMinimumWidth(360)
+
+        today = _today()
+        start = start or date(today.year - 1, today.month, today.day)
+        end = end or today
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(12)
+
+        # Two QDateEdits in a labelled grid-ish row.
+        fields = QHBoxLayout()
+        fields.setSpacing(12)
+        start_col = QVBoxLayout()
+        start_col.addWidget(_micro(tr("Start")))
+        self._start_edit = QDateEdit()
+        self._start_edit.setObjectName("DateRangeStart")
+        self._start_edit.setCalendarPopup(True)
+        self._start_edit.setDisplayFormat("yyyy-MM-dd")
+        self._start_edit.setDate(QDate(start.year, start.month, start.day))
+        start_col.addWidget(self._start_edit)
+        end_col = QVBoxLayout()
+        end_col.addWidget(_micro(tr("End")))
+        self._end_edit = QDateEdit()
+        self._end_edit.setObjectName("DateRangeEnd")
+        self._end_edit.setCalendarPopup(True)
+        self._end_edit.setDisplayFormat("yyyy-MM-dd")
+        self._end_edit.setDate(QDate(end.year, end.month, end.day))
+        end_col.addWidget(self._end_edit)
+        fields.addLayout(start_col, 1)
+        fields.addLayout(end_col, 1)
+        outer.addLayout(fields)
+
+        # Quick-select chips. Buttons rather than pill_toggles because
+        # they fire-and-fill rather than carry state.
+        self._quick_buttons: List[QPushButton] = []
+        outer.addWidget(_micro(tr("Quick selects")))
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(6)
+        for preset in quick_selects:
+            btn = ghost_button(tr(preset.label))
+            btn.setObjectName("DateRangeQuickSelect")
+            btn.clicked.connect(
+                lambda _checked=False, p=preset: self._apply_quick_select(p))
+            quick_row.addWidget(btn)
+            self._quick_buttons.append(btn)
+        quick_row.addStretch()
+        outer.addLayout(quick_row)
+
+        # OK / Cancel.
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = ghost_button(tr("Cancel"))
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(cancel)
+        self._ok_btn = primary_button(tr("OK"))
+        self._ok_btn.setObjectName("DateRangeOk")
+        self._ok_btn.clicked.connect(self._on_ok)
+        actions.addWidget(self._ok_btn)
+        outer.addLayout(actions)
+
+    def _apply_quick_select(self, preset: DateRangeQuickSelect) -> None:
+        """Quick-select math: ``years=N`` means "last N years from
+        today" — start is N years ago, end is today. ``years=None`` is
+        all-time, anchored at :data:`_ALL_TIME_START`."""
+        today = _today()
+        end = today
+        if preset.years is None:
+            start = _ALL_TIME_START
+        else:
+            try:
+                start = today.replace(year=today.year - preset.years)
+            except ValueError:
+                # Feb 29 in a non-leap target year. Slide to Feb 28.
+                start = today.replace(year=today.year - preset.years, day=28)
+        self._start_edit.setDate(QDate(start.year, start.month, start.day))
+        self._end_edit.setDate(QDate(end.year, end.month, end.day))
+
+    def _on_ok(self) -> None:
+        start_q = self._start_edit.date()
+        end_q = self._end_edit.date()
+        start_d = date(start_q.year(), start_q.month(), start_q.day())
+        end_d = date(end_q.year(), end_q.month(), end_q.day())
+        if start_d > end_d:
+            start_d, end_d = end_d, start_d
+        self.range_chosen.emit(_iso(start_d), _iso(end_d))
+        self.accept()
 
 
 # --------------------------------------------------------------------------- #
@@ -375,6 +627,12 @@ class NewRecipeDialog(QDialog):
         self._source_chips: List[Tuple[str, OperandOption]] = list(
             ctx.selected_source or [])
 
+        # Scope state — same shape, populated only when ``show_scope=True``
+        # (Collection face). Empty for Cut-face Recipes (the Scope is
+        # implicit = "this event"; spec/90 §1.1).
+        self._scope_chips: List[Tuple[str, OperandOption]] = list(
+            ctx.selected_scope or [])
+
         # Filter state. Pill-toggle chips + checkboxes drive these.
         self._style_chips: Dict[str, QPushButton] = {}
         self._camera_chips: Dict[str, QPushButton] = {}
@@ -395,6 +653,8 @@ class NewRecipeDialog(QDialog):
             self._name_edit.setText(self._ctx.name)
 
         self._refresh_source_row()
+        if self._show_scope:
+            self._refresh_scope_row()
 
     # ------------------------------------------------------------------ #
     # Build
@@ -502,15 +762,36 @@ class NewRecipeDialog(QDialog):
         return host
 
     def _build_scope_section(self) -> QWidget:
-        """Phase 4b placeholder. Cross-event Scope sentence — events +
-        Event Collections + date ranges (spec/90 §3.1)."""
+        """The Scope sentence (spec/90 §1.1, §3.1) — Collection face only.
+
+        Renders as ``Events: [chip] or [chip] …`` with a ``+`` button at
+        the end that opens the Scope-target operand picker (Events ·
+        Event Collections · Date ranges). Mirrors the Source section
+        layout so the two sentences read the same.
+
+        The Cut face hides this section entirely — Scope is implicit
+        ("this event"); the resolver substitutes the current event for
+        an empty composition.scope per spec/90 §1.1."""
         host = QWidget()
         host.setObjectName("ScopeSection")
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
+        v.setSpacing(8)
         v.addWidget(_micro(tr("Scope")))
-        v.addWidget(_placeholder(tr("Scope: (Phase 4b)")))
+
+        self._scope_box = QWidget()
+        self._scope_row = QHBoxLayout(self._scope_box)
+        self._scope_row.setContentsMargins(0, 0, 0, 0)
+        self._scope_row.setSpacing(8)
+        v.addWidget(self._scope_box)
+
+        # Live summary — count of events the scope expression resolves
+        # to. Phase 4b doesn't wire scope resolution yet (the resolver
+        # takes pre-resolved uuids; the dialog-level scope evaluator
+        # lands later), so this stays as a chip-count hint.
+        self._scope_summary = QLabel("scope: 0 events")
+        self._scope_summary.setObjectName("PoolSummary")
+        v.addWidget(self._scope_summary)
         return host
 
     # -------- Source ------------------------------------------------- #
@@ -648,6 +929,123 @@ class NewRecipeDialog(QDialog):
         via the existing toast / log path."""
         log.info("save_as_dc_requested — Phase 4e will wire this")
         self.save_as_dc_requested.emit()
+
+    # -------- Scope (Collection face only) --------------------------- #
+
+    def _refresh_scope_row(self) -> None:
+        """Rebuild the Scope sentence — ``Events:`` lead label, each
+        chip with its preceding join-word label, then the trailing
+        ``+`` button. Same shape as :meth:`_refresh_source_row` so the
+        two sentences read the same."""
+        if not hasattr(self, "_scope_row"):
+            return                                        # Cut face — no Scope
+        while self._scope_row.count():
+            item = self._scope_row.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.deleteLater()
+
+        if not self._scope_chips:
+            lead = QLabel(tr("Events:"))
+            lead.setObjectName("PoolAddLabel")
+            self._scope_row.addWidget(lead)
+            self._scope_row.addWidget(self._build_add_scope_button())
+            self._scope_row.addStretch()
+            self._refresh_scope_summary()
+            return
+
+        for index, (join, operand) in enumerate(self._scope_chips):
+            if index == 0:
+                lead = QLabel(tr("Events:"))
+                lead.setObjectName("PoolAddLabel")
+                self._scope_row.addWidget(lead)
+            else:
+                join_lbl = QLabel(join)
+                join_lbl.setObjectName("PoolFormulaOp")
+                self._scope_row.addWidget(join_lbl)
+            chip = _SourceChip(operand.name, operand.count, self._scope_box)
+            chip.removed.connect(
+                lambda i=index: self._remove_scope_chip(i))
+            self._scope_row.addWidget(chip)
+
+        self._scope_row.addWidget(self._build_add_scope_button())
+        self._scope_row.addStretch()
+        self._refresh_scope_summary()
+
+    def _build_add_scope_button(self) -> QPushButton:
+        btn = QPushButton("+", self._scope_box)
+        btn.setObjectName("PoolStepperBtn")
+        btn.setFixedSize(26, 26)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(tr(
+            "Add an event, Event Collection, or date range."))
+        btn.clicked.connect(lambda: self._open_scope_picker(btn))
+        return btn
+
+    def _open_scope_picker(self, anchor: QWidget) -> None:
+        """Open the operand picker in Scope mode. Inventory shows Events,
+        Event Collections, and a ``+ Add date range…`` row (spec/90 §3.4)."""
+        popover = _OperandPickerPopover(
+            target=PICKER_TARGET_SCOPE,
+            events=self._ctx.available_events,
+            event_collections=self._ctx.available_event_collections,
+            parent=self,
+        )
+        popover.chosen.connect(self._add_scope_chip)
+        popover.add_date_range_requested.connect(
+            self._open_date_range_picker)
+        pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
+        popover.move(pos)
+        popover.show()
+        self._picker_popover = popover
+
+    def _open_date_range_picker(self) -> None:
+        """Open :class:`_DateRangePickerPopover` and add the chosen range
+        as a Scope chip on confirm."""
+        picker = _DateRangePickerPopover(parent=self)
+        picker.range_chosen.connect(self._add_date_range_chip)
+        # Dialog rather than popover — exec so the modal blocks until
+        # the user confirms or cancels.
+        picker.exec()
+
+    def _add_scope_chip(self, operand: OperandOption) -> None:
+        """Append an Event or Event Collection operand to the Scope
+        sentence. Default join is ``or`` (spec/90 §3.2)."""
+        join = JOIN_OR
+        self._scope_chips.append((join, operand))
+        self._refresh_scope_row()
+
+    def _add_date_range_chip(self, start_iso: str, end_iso: str) -> None:
+        """Turn a confirmed date range into a Scope chip. The chip's
+        display name is the compact ``[YYYY-MM-DD — YYYY-MM-DD]``
+        shape per spec/90 §3.1."""
+        operand = OperandOption(
+            name=f"[{start_iso} — {end_iso}]",
+            kind="date_range",
+            start=start_iso,
+            end=end_iso,
+        )
+        self._scope_chips.append((JOIN_OR, operand))
+        self._refresh_scope_row()
+
+    def _remove_scope_chip(self, index: int) -> None:
+        if 0 <= index < len(self._scope_chips):
+            self._scope_chips.pop(index)
+            self._refresh_scope_row()
+
+    def _refresh_scope_summary(self) -> None:
+        """Live-count hint for the Scope sentence. Phase 4b counts the
+        chips' declared event counts as a stand-in until the dialog-level
+        scope evaluator lands (the resolver currently takes pre-resolved
+        scope uuids; turning a date_range chip into a uuid set is a
+        future-phase job)."""
+        if not hasattr(self, "_scope_summary"):
+            return
+        total = 0
+        for _join, op in self._scope_chips:
+            if op.kind in ("event", "event_collection"):
+                total += op.count
+        self._scope_summary.setText(f"scope: {total} events")
 
     # -------- Filters ------------------------------------------------ #
 
@@ -826,14 +1224,46 @@ class NewRecipeDialog(QDialog):
             out.append([op, self._encode_operand(operand)])
         return out
 
+    def scope_expression(self) -> list:
+        """The Scope sentence encoded into the spec/90 §5.1 expr shape.
+
+        Empty list when the user composed nothing — the resolver
+        substitutes "this event" for Cut-flavour Recipes and refuses to
+        evaluate a Collection Recipe with no Scope (spec/90 §1.1)."""
+        if not self._show_scope:
+            return []
+        out: List[List[Any]] = []
+        for index, (join, operand) in enumerate(self._scope_chips):
+            op = "+" if index == 0 else _JOIN_TO_OP.get(join, "+")
+            out.append([op, self._encode_operand(operand)])
+        return out
+
     @staticmethod
     def _encode_operand(operand: OperandOption) -> Any:
         """Operand encoding mirroring
         :meth:`mira.ui.pages.new_cut_dialog.NewCutDialog._operand_for_name`.
-        Base universes stay bare strings; named kinds become typed refs."""
-        tag = operand.tag or operand.name.lstrip("#")
+
+        * Base universes stay bare strings.
+        * DC / Cut / Event Collection refs become ``{"kind": …, "tag":
+          …, "id": …}`` dicts.
+        * Event refs become ``{"kind": "event", "uuid": …}`` per spec/90
+          §3.1; spec/90 §5.1's strict-ref check reads ``uuid``.
+        * Date-range refs become ``{"kind": "date_range", "start": …,
+          "end": …}`` — the one operand kind not derived from a named
+          inventory (spec/90 §3.1, §1.1).
+        """
         if operand.kind == "base":
-            return tag
+            return operand.tag or operand.name.lstrip("#")
+        if operand.kind == "event":
+            return {"kind": "event", "uuid": operand.uuid or ""}
+        if operand.kind == "date_range":
+            return {
+                "kind": "date_range",
+                "start": operand.start or "",
+                "end": operand.end or "",
+            }
+        # DC / Cut / Event Collection
+        tag = operand.tag or operand.name.lstrip("#")
         ref: Dict[str, Any] = {"kind": operand.kind, "tag": tag}
         if operand.id:
             ref["id"] = operand.id
@@ -884,6 +1314,9 @@ __all__ = [
     "JOIN_OR",
     "JOIN_AND",
     "JOIN_BUT_NOT",
+    "PICKER_TARGET_SOURCE",
+    "PICKER_TARGET_SCOPE",
+    "DateRangeQuickSelect",
     "NewRecipeContext",
     "NewRecipeDialog",
     "OperandOption",

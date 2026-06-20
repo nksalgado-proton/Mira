@@ -805,11 +805,11 @@ class _CutsListView(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        # Transparent scroll + viewport + inner widget so the Card2 wash
-        # behind shows through — without this the scroll area paints its
-        # default light bg, which reads as a thin horizontal line under
-        # the section label (Nelson 2026-06-20 screenshot).
-        self._scroll.setStyleSheet("background: transparent;")
+        # Transparent viewport + inner widget so the Card2 wash shows
+        # through. CRITICAL: do NOT use setStyleSheet on the scroll
+        # area — it cascades to every descendant (including the
+        # row's QPushButton fills) and flattens them. autoFillBackground
+        # is the safe per-widget switch.
         self._scroll.viewport().setAutoFillBackground(False)
         inner = QWidget()
         inner.setAutoFillBackground(False)
@@ -854,7 +854,8 @@ class _CutsListView(QWidget):
         self._dc_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self._dc_scroll.setStyleSheet("background: transparent;")
+        # Same per-widget approach as the Cuts scroll (no setStyleSheet
+        # cascade — see _build_cuts_tab).
         self._dc_scroll.viewport().setAutoFillBackground(False)
         dc_inner = QWidget()
         dc_inner.setAutoFillBackground(False)

@@ -17,6 +17,7 @@ import pytest
 
 from core import library_lock
 from core.library_lock import (
+    LOCK_DIRNAME,
     LOCK_FILENAME,
     STALENESS_TIMEOUT_SECONDS,
     LockInfo,
@@ -35,7 +36,7 @@ def root(tmp_path: Path) -> Path:
 
 
 def _lock_file(root: Path) -> Path:
-    return root / LOCK_FILENAME
+    return root / LOCK_DIRNAME / LOCK_FILENAME
 
 
 def _backdate(path: Path, *, seconds_ago: int) -> None:
@@ -185,6 +186,7 @@ def test_acquire_takes_over_immediately_when_prior_pid_is_dead(
     # fresh mtime so the legacy timeout-only rule would refuse takeover.
     import socket
     lock_file = _lock_file(root)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
     lock_file.write_text(json.dumps({
         "hostname": socket.gethostname(),
         "pid": 0x7fffffff,
@@ -271,6 +273,7 @@ def test_corrupt_lock_file_is_treated_as_absent(root):
     spec/76 §A.5 says it's treated as stale, not a crash. acquire()
     then takes it over."""
     p = _lock_file(root)
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{not valid json", encoding="utf-8")
     assert read_holder(root) is None
     # And acquire() proceeds — the corrupt file is overwritten.
@@ -284,6 +287,7 @@ def test_lock_file_with_non_object_payload_is_absent(root):
     """A JSON array (or string, or number) where an object was
     expected is also treated as absent."""
     p = _lock_file(root)
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("[1, 2, 3]", encoding="utf-8")
     assert read_holder(root) is None
 
@@ -291,11 +295,14 @@ def test_lock_file_with_non_object_payload_is_absent(root):
 # ── Pure-logic / module-shape assertions ──────────────────────────
 
 
-def test_lock_filename_is_at_library_root(root):
-    """The lock lives at the root, named .mira-writer.lock per spec
-    A.1 — not per-event.db."""
+def test_lock_filename_is_inside_dot_mira(root):
+    """The lock lives at ``<root>/.mira/writer.lock`` per spec/76 §B.4
+    (refining §A.1) — inside the hidden machinery folder so the
+    user-data, user store, and lock all relocate as one unit."""
     acquire(root)
-    assert (root / ".mira-writer.lock").exists()
+    assert (root / ".mira" / "writer.lock").exists()
+    # And the legacy root-level path is gone.
+    assert not (root / ".mira-writer.lock").exists()
 
 
 def test_lockinfo_carries_filesystem_mtime(root):

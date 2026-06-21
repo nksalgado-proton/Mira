@@ -5,10 +5,14 @@ opens read-only. The lock is filesystem-only — no sockets, no server,
 no network calls — so it preserves charter invariant #3
 (offline-first).
 
-The advisory file lives at ``<library_root>/.mira-writer.lock`` and
+The advisory file lives at ``<library_root>/.mira/writer.lock`` and
 carries a JSON payload with the holder's identity + a heartbeat. The
 lock is library-wide, not per-``event.db``: one writer owns the whole
-library for the session.
+library for the session. (Path refined by spec/76 §B.4 — the lock
+moved INSIDE the hidden ``.mira/`` machinery folder so the user-data,
+the user store, and the lock all relocate together when the library
+moves; the older ``<library_root>/.mira-writer.lock`` location is
+retired.)
 
 Why advisory + heartbeat instead of OS file locks: ``flock`` /
 ``LockFileEx`` semantics are unreliable over SMB / NFS, which is
@@ -37,7 +41,12 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-LOCK_FILENAME = ".mira-writer.lock"
+#: Hidden machinery folder inside the library root (spec/76 §B.4). Kept
+#: in sync with :data:`core.library_root.MIRA_DIRNAME` — the two
+#: modules don't import each other (one-way dep keeps ``library_lock``
+#: a leaf), so the constant is duplicated rather than shared.
+LOCK_DIRNAME = ".mira"
+LOCK_FILENAME = "writer.lock"
 
 # Heartbeat cadence and staleness window are intentionally generous
 # — the lock has to ride out brief NAS hiccups without prematurely
@@ -79,7 +88,13 @@ class LockResult:
 
 
 def _lock_path(root: Path) -> Path:
-    return Path(root) / LOCK_FILENAME
+    """Resolved location of the lock file under ``root``.
+
+    spec/76 §B.4 nests it inside ``<root>/.mira/`` so the user-data,
+    user store, and the lock all move as one unit when the library
+    relocates.
+    """
+    return Path(root) / LOCK_DIRNAME / LOCK_FILENAME
 
 
 def _now_unix() -> float:
@@ -268,7 +283,7 @@ def acquire(root: Path) -> LockResult:
     (the user is told which machine owns the lock).
     """
     p = _lock_path(root)
-    holder = read_holder(p.parent)
+    holder = read_holder(root)
     if holder is not None and not is_stale(holder):
         return LockResult(acquired=False, holder=holder)
     # Either no lock file at all, or stale → take it.
@@ -277,7 +292,7 @@ def acquire(root: Path) -> LockResult:
     except OSError as exc:
         log.warning("library_lock: failed to write lock at %s: %s", p, exc)
         return LockResult(acquired=False, holder=None)
-    fresh = read_holder(p.parent)
+    fresh = read_holder(root)
     if fresh is None:
         log.warning("library_lock: wrote lock but couldn't re-read it.")
         return LockResult(acquired=False, holder=None)
@@ -294,7 +309,7 @@ def refresh(root: Path) -> bool:
     of the lock has been lost.
     """
     p = _lock_path(root)
-    current = read_holder(p.parent)
+    current = read_holder(root)
     if current is None:
         log.warning("library_lock: refresh found no lock file at %s.", p)
         return False
@@ -321,7 +336,7 @@ def release(root: Path) -> bool:
     in place so the new owner isn't silently kicked out).
     """
     p = _lock_path(root)
-    current = read_holder(p.parent)
+    current = read_holder(root)
     if current is None:
         return False
     if current.hostname != socket.gethostname() or current.pid != os.getpid():
@@ -342,6 +357,7 @@ def release(root: Path) -> bool:
 
 __all__ = [
     "HEARTBEAT_INTERVAL_SECONDS",
+    "LOCK_DIRNAME",
     "LOCK_FILENAME",
     "LockInfo",
     "LockResult",

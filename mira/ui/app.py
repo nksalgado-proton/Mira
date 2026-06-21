@@ -226,14 +226,29 @@ def _silence_libav_stderr() -> None:
 
 
 def _resolve_library_root(settings_obj, data_dir: Path) -> Path:
-    """Where the library's writer lock lives (spec/76 §A.1).
+    """Where the library's writer lock lives (spec/76 §A.1 + §B.4).
 
-    The "library root" is the base that holds every event — today
-    that's ``settings.photos_base_path``; on a future NAS setup it
-    will be a UNC share. We fall back to the user-data dir when no
-    base path is set yet (first run, pre-wizard) so there's always a
-    place for the lock — never a hardcoded path (invariant #2).
+    Resolution order (post spec/76 §B.4):
+
+      1. :func:`mira.paths.library_root` — the bootstrap-pointer-driven
+         user-chosen root, written by the first-run dialog. This is the
+         primary path on every normal launch.
+      2. Legacy fallback: ``settings.photos_base_path`` when set (older
+         installs that haven't migrated through first-run yet — for
+         instance the bootstrap path right before the dialog runs).
+      3. ``data_dir`` (= :func:`mira.paths.user_data_dir`) — final
+         fallback for the moments before any user choice exists, so the
+         lock always has somewhere to live (never a hardcoded path —
+         invariant #2).
+
+    The lock file itself relocates inside the root per spec/76 §B.4:
+    ``<root>/.mira/writer.lock`` (was ``<root>/.mira-writer.lock``); the
+    move is owned by :mod:`core.library_lock`.
     """
+    from mira.paths import library_root as _library_root_from_paths
+    root = _library_root_from_paths()
+    if root is not None:
+        return root
     raw = getattr(settings_obj, "photos_base_path", "") or ""
     return Path(raw) if raw else data_dir
 
@@ -373,13 +388,35 @@ def main(argv: list[str] | None = None) -> int:
     # level — after the QApplication exists, before the first clip opens.
     _silence_libav_stderr()
 
+    # spec/76 §B.4 — the bootstrap pointer (~/.config/mira/config.json or
+    # %LOCALAPPDATA%\Mira\config.json) tells Mira where the library lives.
+    # If it isn't set yet, show the two-doors first-run dialog BEFORE any
+    # path-bound code runs: settings / events index / mira.db all live under
+    # ``<library_root>/.mira/``, so they can't be loaded until the user picks
+    # a root. Settings the user had in the legacy AppData dir get migrated
+    # into the new ``.mira/`` as part of the Create flow.
+    from mira.paths import library_root as _library_root_from_paths
+    if _library_root_from_paths() is None:
+        from PyQt6.QtWidgets import QDialog
+        from mira.ui.wizard.first_run_library import FirstRunLibraryDialog
+        dlg = FirstRunLibraryDialog()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            log.info(
+                "First-run library picker cancelled; aborting launch.")
+            return 1
+        if dlg.did_migrate_legacy():
+            log.info(
+                "First-run library: migrated legacy %%LOCALAPPDATA%% "
+                "user-data into the new library's .mira/.")
+
     settings = SettingsRepo().load()
 
     # spec/76 §A — the library single-writer lock. Acquire at the
-    # library root (photos_base_path, or user_data_dir until the
-    # wizard sets one). Replaces the old PID-only running.lock — the
-    # advisory file + heartbeat works on local disks AND the future
-    # NAS share; the old kill(pid, 0) check did not.
+    # library root (post-§B.4, that's the bootstrap-pointer-driven path;
+    # legacy fallbacks live in :func:`_resolve_library_root`). Replaces
+    # the old PID-only running.lock — the advisory file + heartbeat
+    # works on local disks AND the future NAS share; the old kill(pid,
+    # 0) check did not.
     from core import library_lock
     from mira import session as mira_session
     library_root = _resolve_library_root(settings, data_dir)

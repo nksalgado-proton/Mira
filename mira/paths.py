@@ -2,11 +2,28 @@
 
 Ported from legacy ``core/settings.py::user_data_dir`` so the ``mira/``
 package is self-contained: when ``core/`` is archived (charter §4 step 8) nothing
-here breaks. Resolution order:
+here breaks.
 
-  1. ``MIRA_DATA_DIR`` env var (tests, custom deployments)
-  2. Windows: ``%LOCALAPPDATA%\\Mira``
-  3. Other OS: ``~/.mira``
+**spec/76 §B.4 — the library-root relocation.** The library root is the
+user-chosen folder holding everything Mira durably owns; ``.mira/`` is the
+hidden machinery dir inside it (settings, ``mira.db``, events index, lock,
+logs). The library root is resolved via :func:`library_root` from
+:mod:`core.library_root` (env override → bootstrap pointer → first-run).
+
+For backward compat with existing tests + custom deployments, this module
+still honours ``MIRA_DATA_DIR`` as a direct override on
+:func:`user_data_dir` — tests that point it at a tmpdir continue to find
+their settings / mira.db / events_index there (no ``.mira/`` subdir
+introduced). When no override is set, :func:`user_data_dir` returns
+``library_root() / ".mira"`` once first-run has written the pointer; on a
+fresh install (no pointer yet) it falls back to the legacy
+``%LOCALAPPDATA%\\Mira`` location so the first-run wizard has somewhere
+to read prior settings from. Resolution order:
+
+  1. ``MIRA_DATA_DIR`` env var (tests, custom deployments) → returned verbatim
+  2. ``library_root() / ".mira"`` (pointer is set)
+  3. Windows: ``%LOCALAPPDATA%\\Mira`` (legacy fallback; first-run reads here)
+  4. Other OS: ``~/.mira`` (legacy fallback)
 
 This is where every cross-event domain lives (settings, the events index, the
 future user-knowledge / rules / tone-corpus stores). Per-event ``event.db`` files
@@ -19,16 +36,56 @@ import logging
 import os
 import platform
 from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
 
+def library_root() -> Optional[Path]:
+    """The user-chosen library root (spec/76 §B.4), or ``None`` when the
+    bootstrap pointer hasn't been written yet (first-run).
+
+    Delegates to :func:`core.library_root.resolve_library_root` so the
+    pure-logic seam stays one module. Callers that need a directory to
+    write into RIGHT NOW (the events index, settings) should use
+    :func:`user_data_dir` instead — it falls back to the legacy
+    ``%LOCALAPPDATA%\\Mira`` location when no library is configured yet,
+    so the first-run wizard can still bootstrap.
+
+    Imports inside the function so :mod:`core` doesn't pay the
+    ``mira.paths`` import on bare CLI uses.
+    """
+    from core.library_root import resolve_library_root
+    return resolve_library_root()
+
+
 def user_data_dir() -> Path:
-    """Base directory for all cross-event Mira user data. Created on demand."""
+    """Base directory for all cross-event Mira user data. Created on demand.
+
+    Resolution order (per the module docstring):
+
+      1. ``MIRA_DATA_DIR`` → returned verbatim (tests, custom deployments).
+      2. ``library_root() / ".mira"`` when the library pointer is set.
+      3. Legacy ``%LOCALAPPDATA%\\Mira`` / ``~/.mira`` fallback.
+
+    The fallback exists so the first-run wizard can read prior
+    ``settings.json`` (e.g. the user's existing ``photos_base_path``) and
+    default the Create-library picker to it. Once first-run writes the
+    pointer, this function naturally pivots to the ``.mira/`` location and
+    every subsequent caller follows.
+    """
     override = os.environ.get("MIRA_DATA_DIR")
     if override:
         base = Path(override)
-    elif platform.system() == "Windows":
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    root = library_root()
+    if root is not None:
+        from core.library_root import MIRA_DIRNAME
+        base = root / MIRA_DIRNAME
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    if platform.system() == "Windows":
         base = Path.home() / "AppData" / "Local" / "Mira"
     else:
         base = Path.home() / ".mira"

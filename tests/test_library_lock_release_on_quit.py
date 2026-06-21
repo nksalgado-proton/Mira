@@ -4,16 +4,20 @@ writer lock — spec/76 §A.6 ("released on clean exit").
 The pure-logic ``core.library_lock`` primitive already has its own
 suite (``test_library_lock.py``). This file pins the UI wiring
 contract: that the teardown callback we hand to ``aboutToQuit``
-actually removes ``.mira-writer.lock`` when Qt is about to exit
-its event loop. It complements the manual eyeball check in the
-spec/76 brief — automated, headless, no GUI window.
+actually removes the writer lock file when Qt is about to exit its
+event loop. It complements the manual eyeball check in the spec/76
+brief — automated, headless, no GUI window.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from core import library_lock
-from core.library_lock import LOCK_FILENAME, acquire
+from core.library_lock import LOCK_DIRNAME, LOCK_FILENAME, acquire
+
+
+def _lock_file(root: Path) -> Path:
+    return root / LOCK_DIRNAME / LOCK_FILENAME
 
 
 def test_about_to_quit_releases_lock(qapp, tmp_path: Path):
@@ -23,7 +27,7 @@ def test_about_to_quit_releases_lock(qapp, tmp_path: Path):
     library_root = tmp_path
     result = acquire(library_root)
     assert result.acquired is True
-    assert (library_root / LOCK_FILENAME).exists()
+    assert _lock_file(library_root).exists()
 
     def _teardown():
         library_lock.release(library_root)
@@ -31,7 +35,7 @@ def test_about_to_quit_releases_lock(qapp, tmp_path: Path):
 
     try:
         qapp.aboutToQuit.emit()
-        assert not (library_root / LOCK_FILENAME).exists()
+        assert not _lock_file(library_root).exists()
     finally:
         qapp.aboutToQuit.disconnect(_teardown)
 
@@ -55,7 +59,7 @@ def test_excepthook_release_chain_clears_lock_before_chaining(tmp_path: Path):
     import sys
     library_root = tmp_path
     acquire(library_root)
-    assert (library_root / LOCK_FILENAME).exists()
+    assert _lock_file(library_root).exists()
 
     chained_called: list = []
     prev_hook = sys.excepthook
@@ -76,7 +80,7 @@ def test_excepthook_release_chain_clears_lock_before_chaining(tmp_path: Path):
         # Lock gone BEFORE the chained hook ran (the order is the load
         # bearing part — we cleared the file first, then signalled the
         # prev hook).
-        assert not (library_root / LOCK_FILENAME).exists()
+        assert not _lock_file(library_root).exists()
         assert chained_called == [RuntimeError]
     finally:
         sys.excepthook = prev_hook
@@ -91,7 +95,7 @@ def test_atexit_handler_releases_lock_on_interpreter_exit(tmp_path: Path):
     import atexit
     library_root = tmp_path
     acquire(library_root)
-    assert (library_root / LOCK_FILENAME).exists()
+    assert _lock_file(library_root).exists()
 
     def handler():
         library_lock.release(library_root)
@@ -99,6 +103,6 @@ def test_atexit_handler_releases_lock_on_interpreter_exit(tmp_path: Path):
     atexit.register(handler)
     try:
         handler()                              # simulate atexit firing
-        assert not (library_root / LOCK_FILENAME).exists()
+        assert not _lock_file(library_root).exists()
     finally:
         atexit.unregister(handler)

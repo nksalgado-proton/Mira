@@ -414,12 +414,9 @@ class EventHeaderDialog(QDialog):
         # Supersedes spec/77 §5 floor; the Collect denominator now reads
         # the same (max − min + 1) range from the derived columns.
 
-        # 5. Duration / Unit
+        # 5. Duration / Unit — each its own FormFieldGroup, side-by-side.
         row_dur = QHBoxLayout()
         row_dur.setSpacing(14)
-        col_dur = QVBoxLayout()
-        col_dur.setSpacing(6)
-        col_dur.addWidget(_micro("Duration"))
         self._duration_value_spin = QSpinBox()
         self._duration_value_spin.setObjectName("DesignSpin")
         self._duration_value_spin.setMinimum(0)
@@ -428,12 +425,8 @@ class EventHeaderDialog(QDialog):
         self._duration_value_spin.setToolTip(tr(
             "How long the event lasted. Leave at — to skip."
         ))
-        col_dur.addWidget(self._duration_value_spin)
-        row_dur.addLayout(col_dur, 1)
+        row_dur.addWidget(_field("Duration", self._duration_value_spin), 1)
 
-        col_unit = QVBoxLayout()
-        col_unit.setSpacing(6)
-        col_unit.addWidget(_micro("Unit"))
         self._duration_unit_combo = QComboBox()
         self._duration_unit_combo.setObjectName("DesignSelect")
         self._duration_unit_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -443,12 +436,10 @@ class EventHeaderDialog(QDialog):
         self._duration_unit_combo.currentIndexChanged.connect(
             self._on_duration_unit_changed
         )
-        col_unit.addWidget(self._duration_unit_combo)
-        row_dur.addLayout(col_unit, 2)
+        row_dur.addWidget(_field("Unit", self._duration_unit_combo), 2)
         v.addLayout(row_dur)
 
         # 5. Context
-        v.addWidget(_micro("Context"))
         self._context_combo = self._make_single_select(
             event_classification.CONTEXT_OPTIONS,
             event_classification.CONTEXT_LABELS,
@@ -458,10 +449,9 @@ class EventHeaderDialog(QDialog):
                 " Hover an option for its definition."
             ),
         )
-        v.addWidget(self._context_combo)
+        v.addWidget(_field("Context", self._context_combo))
 
         # 6. Experience Type
-        v.addWidget(_micro("Experience Type"))
         self._experience_combo = self._make_single_select(
             event_classification.EXPERIENCE_TYPE_OPTIONS,
             event_classification.EXPERIENCE_TYPE_LABELS,
@@ -470,7 +460,7 @@ class EventHeaderDialog(QDialog):
                 "The primary vibe, intent, or creative energy."
             ),
         )
-        v.addWidget(self._experience_combo)
+        v.addWidget(_field("Experience Type", self._experience_combo))
 
         # ── Section 3: TAGS ─────────────────────────────────────────────
         v.addWidget(_section_header("Tags"))

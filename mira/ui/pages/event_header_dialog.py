@@ -45,6 +45,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -158,6 +159,31 @@ def _with_alpha(hex_color: str, alpha255: int) -> str:
 def _section_header(text: str) -> QWidget:
     """Back-compat wrapper so the body builder stays declarative."""
     return _SectionHeader(text)
+
+
+def _field(
+    title: str, widget: QWidget, *, required: bool = False
+) -> QGroupBox:
+    """Wrap ``widget`` in the canonical ``#FormFieldGroup`` titled group
+    box (spec/92 §2.3.1). The title is rendered UPPERCASE per §2.0
+    ('labelling chrome' tier); required fields append a trailing ``*``
+    (the accent-coloured ``[required="true"]`` selector is reserved for
+    a later sweep per spec/92 Appendix A — for now the asterisk inherits
+    the title's ink_soft tint, consistent with the New Cut surface).
+
+    The group box owns the title rendering (notched into the top
+    border); the inner ``QVBoxLayout`` holds the bare input widget so
+    caller-side wiring (``signals``, ``setObjectName``, ``setToolTip``)
+    is unchanged. spec/92 §4 Stage 2b."""
+    box = QGroupBox()
+    box.setObjectName("FormFieldGroup")
+    raw = title.upper() + (" *" if required else "")
+    box.setTitle(raw)
+    inner = QVBoxLayout(box)
+    inner.setContentsMargins(0, 6, 0, 0)
+    inner.setSpacing(0)
+    inner.addWidget(widget)
+    return box
 
 
 def _tinted_svg_icon(icon_stem: str, color_hex: str, size: int = 18) -> QIcon:
@@ -325,21 +351,17 @@ class EventHeaderDialog(QDialog):
         # ── Section 1: IDENTITY ─────────────────────────────────────────
         v.addWidget(_section_header("Identity"))
 
-        # 1. Name
-        v.addWidget(_micro("Name", required=True))
+        # 1. Name — spec/92 §2.3.1 canonical FormFieldGroup wrap.
         self._name_edit = line_input(tr("e.g. 2026 - Nepal trek"))
         self._name_edit.setToolTip(tr("The event's identity name."))
         self._name_edit.textChanged.connect(
             lambda _t: self._refresh_save_enabled()
         )
-        v.addWidget(self._name_edit)
+        v.addWidget(_field("Name", self._name_edit, required=True))
 
-        # 2. Type / Subtype side by side
+        # 2. Type / Subtype side by side — each its own FormFieldGroup.
         row2 = QHBoxLayout()
         row2.setSpacing(14)
-        col_type = QVBoxLayout()
-        col_type.setSpacing(6)
-        col_type.addWidget(_micro("Type", required=True))
         self._type_combo = select([])
         self._type_combo.setObjectName("DesignSelect")
         self._type_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -349,12 +371,10 @@ class EventHeaderDialog(QDialog):
             "What kind of event was this — files it under the right umbrella."
         ))
         self._type_combo.currentIndexChanged.connect(self._on_type_changed)
-        col_type.addWidget(self._type_combo)
-        row2.addLayout(col_type, 1)
+        row2.addWidget(
+            _field("Type", self._type_combo, required=True), 1
+        )
 
-        col_sub = QVBoxLayout()
-        col_sub.setSpacing(6)
-        col_sub.addWidget(_micro("Subtype", required=True))
         self._subtype_combo = QComboBox()
         self._subtype_combo.setObjectName("DesignSelect")
         self._subtype_combo.setEditable(True)
@@ -367,12 +387,12 @@ class EventHeaderDialog(QDialog):
         self._subtype_combo.editTextChanged.connect(
             lambda _t: self._refresh_save_enabled()
         )
-        col_sub.addWidget(self._subtype_combo)
-        row2.addLayout(col_sub, 1)
+        row2.addWidget(
+            _field("Subtype", self._subtype_combo, required=True), 1
+        )
         v.addLayout(row2)
 
         # 3. Description
-        v.addWidget(_micro("Description"))
         self._desc_edit = QPlainTextEdit()
         self._desc_edit.setObjectName("DesignText")
         self._desc_edit.setPlaceholderText(tr(
@@ -380,7 +400,7 @@ class EventHeaderDialog(QDialog):
         ))
         self._desc_edit.setFixedHeight(72)
         self._desc_edit.setToolTip(tr("Brief description of the event."))
-        v.addWidget(self._desc_edit)
+        v.addWidget(_field("Description", self._desc_edit))
 
         # ── Section 2: LOGISTICS ────────────────────────────────────────
         v.addWidget(_section_header("Logistics"))

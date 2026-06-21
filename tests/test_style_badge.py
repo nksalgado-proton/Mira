@@ -113,13 +113,16 @@ def test_set_state_never_emits_style_decided(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# QSS grammar — the four band variants exist in BOTH themes
+# QSS grammar — the four band variants exist in the canonical role catalog
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("theme", ["light.qss", "dark.qss"])
-def test_badge_band_roles_exist_in_theme(theme):
-    qss = (_THEMES / theme).read_text(encoding="utf-8")
-    for band in ("low", "mid", "high", "human"):
-        sel = f'QComboBox#ProcessStyleCombo[confidenceBand="{band}"]'
-        assert sel in qss, f"{theme} misses the {band} band rule"
+@pytest.mark.parametrize("band", ["low", "mid", "high", "human"])
+def test_badge_band_role_exists_in_redesign_qss(band):
+    """spec/92 §4 Stage 4c migrated every role-bearing rule into
+    redesign.qss. Both themes now resolve from the single template
+    via build_redesign_qss(theme, tokens=...), so the rule only needs
+    to exist in one canonical place."""
+    qss = (_THEMES / "redesign.qss").read_text(encoding="utf-8")
+    sel = f'QComboBox#ProcessStyleCombo[confidenceBand="{band}"]'
+    assert sel in qss, f"redesign.qss misses the {band} band rule"

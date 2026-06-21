@@ -23,6 +23,24 @@ from mira.ui.pages.new_recipe_dialog import (
 )
 
 
+def _section(parent, name: str):
+    """Find the dialog #SectionBox child whose `section` property == ``name``.
+
+    spec/92 §2.3 collapsed the 12 dialog frame roles (NameBox, ScopeBox,
+    SourceSection, FiltersSection, RulesSectionCard, OtherwiseSectionCard,
+    RuntimeSectionCard, MetricsSectionCard, WhichItemsBand, WhatToDoBand,
+    RecipeToolbar, SectionCard) onto one #SectionBox role; the legacy
+    semantic identity rides on a ``section`` Qt dynamic property. This
+    helper preserves the test API that used to be
+    ``parent.findChild(object, "<RoleName>")``.
+    """
+    from PyQt6.QtWidgets import QFrame
+    for w in parent.findChildren(QFrame):
+        if w.objectName() == "SectionBox" and w.property("section") == name:
+            return w
+    return None
+
+
 def _ctx(
     *,
     event_name: str = "Costa Rica 2026",
@@ -231,8 +249,8 @@ def test_both_band_headers_render(qapp):
     """spec/90 §5.5 — the dialog body groups into two visible bands
     between Name and Metrics."""
     dlg = _cut_dialog(qapp)
-    assert dlg.findChild(object, "WhichItemsBand") is not None
-    assert dlg.findChild(object, "WhatToDoBand") is not None
+    assert _section(dlg, "WhichItemsBand") is not None
+    assert _section(dlg, "WhatToDoBand") is not None
 
 
 def test_band_headers_carry_their_save_buttons(qapp):
@@ -243,9 +261,9 @@ def test_band_headers_carry_their_save_buttons(qapp):
     that layer)."""
     from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
-    toolbar = dlg.findChild(object, "RecipeToolbar")
-    which = dlg.findChild(object, "WhichItemsBand")
-    what = dlg.findChild(object, "WhatToDoBand")
+    toolbar = _section(dlg, "RecipeToolbar")
+    which = _section(dlg, "WhichItemsBand")
+    what = _section(dlg, "WhatToDoBand")
     # Recipe toolbar carries the Recipe-layer buttons.
     assert dlg._save_recipe_btn.parent() is toolbar
     assert dlg._load_btn.parent() is toolbar
@@ -267,8 +285,8 @@ def test_band_header_question_labels(qapp):
     """The band headers carry Q4-style human prose, not micro / uppercase
     section labels (spec/90 §5.5)."""
     dlg = _cut_dialog(qapp)
-    which = dlg.findChild(object, "WhichItemsBand")
-    what = dlg.findChild(object, "WhatToDoBand")
+    which = _section(dlg, "WhichItemsBand")
+    what = _section(dlg, "WhatToDoBand")
     which_labels = [
         lbl.text() for lbl in which.findChildren(QLabel)
         if lbl.objectName() == "BandQuestion"
@@ -288,7 +306,7 @@ def test_which_items_band_hint_only_when_scope_visible(qapp):
     cut = _cut_dialog(qapp)
     cut_hints = [
         lbl.text()
-        for lbl in cut.findChild(object, "WhichItemsBand").findChildren(QLabel)
+        for lbl in _section(cut, "WhichItemsBand").findChildren(QLabel)
         if lbl.objectName() == "BandHint"
     ]
     assert cut_hints == []
@@ -296,7 +314,7 @@ def test_which_items_band_hint_only_when_scope_visible(qapp):
     coll = _collection_dialog(qapp)
     coll_hints = [
         lbl.text()
-        for lbl in coll.findChild(object, "WhichItemsBand").findChildren(QLabel)
+        for lbl in _section(coll, "WhichItemsBand").findChildren(QLabel)
         if lbl.objectName() == "BandHint"
     ]
     assert any("events above" in h for h in coll_hints)
@@ -340,7 +358,7 @@ def test_recipe_toolbar_present_with_both_recipe_buttons(qapp):
     Save as Recipe…; the dialog header bar no longer hosts them."""
     from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
-    toolbar = dlg.findChild(object, "RecipeToolbar")
+    toolbar = _section(dlg, "RecipeToolbar")
     assert toolbar is not None
     texts = sorted(
         (b.text() or "") for b in toolbar.findChildren(QPushButton)
@@ -354,7 +372,7 @@ def test_load_dc_button_lives_on_which_items_band(qapp):
     """spec/90 §5 — Load DC… sits next to Save as DC… on the Which
     items? header (the items-layer mirror of Load Recipe)."""
     dlg = _cut_dialog(qapp)
-    which = dlg.findChild(object, "WhichItemsBand")
+    which = _section(dlg, "WhichItemsBand")
     assert dlg._load_dc_btn.parent() is which
 
 
@@ -368,7 +386,7 @@ def test_inner_section_cards_render_for_each_inner_box(qapp):
         "RulesSectionCard", "OtherwiseSectionCard",
         "RuntimeSectionCard", "MetricsSectionCard",
     ):
-        assert dlg.findChild(object, name) is not None, name
+        assert _section(dlg, name) is not None, name
 
 
 def test_initial_resize_accommodates_widest_header_row(qapp):
@@ -389,5 +407,5 @@ def test_name_and_scope_wrapped_as_lightboxes(qapp):
     containers — the same visual tier as the Recipe toolbar and band
     groups — so the dialog's top tier reads as a uniform family."""
     dlg = _collection_dialog(qapp)
-    assert dlg.findChild(object, "NameBox") is not None
-    assert dlg.findChild(object, "ScopeBox") is not None
+    assert _section(dlg, "NameBox") is not None
+    assert _section(dlg, "ScopeBox") is not None

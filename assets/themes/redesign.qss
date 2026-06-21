@@ -489,23 +489,18 @@ QLabel#BandQuestion              { color: {ink_soft}; font-size: 15px; font-weig
 QLabel#BandHint                  { color: {ink_faint}; font-size: 12px;
                                    font-style: italic; background: transparent; }
 
-/* New Cut dialog — minimal hairline borders on every group box.
- * No tinted backgrounds, no nested visual treatments. Hierarchy is
- * carried by the section labels and spacing alone (Nelson 2026-06-20). */
-QFrame#RecipeToolbar,
-QFrame#NameBox,
-QFrame#ScopeBox,
-QFrame#WhichItemsBand,
-QFrame#WhatToDoBand,
-QFrame#SourceSection,
-QFrame#FiltersSection,
-QFrame#RulesSectionCard,
-QFrame#OtherwiseSectionCard,
-QFrame#RuntimeSectionCard,
-QFrame#MetricsSectionCard,
-QFrame#SectionCard               { background: transparent;
-                                   border: 1px solid {line};
-                                   border-radius: {radius_sm}px; }
+/* Section box (spec/92 §2.3 → SectionBox). The dialog section family —
+ * Recipe toolbar, Name / Scope lightboxes, Source / Filters / Rules /
+ * Otherwise / Runtime / Metrics cards, the two band groups (Which
+ * items? / What to do?) — all share one transparent + hairline-border
+ * + sm-radius look (Nelson 2026-06-20: hierarchy via section labels +
+ * spacing, no tints or nested borders). Section identity (NameBox,
+ * SourceSection, RecipeToolbar, …) rides on the `section` property
+ * so tests can still find each box by its semantic name; visual
+ * variants are reserved on a future `tone` property per spec/92 §2.3. */
+QFrame#SectionBox { background: transparent;
+                    border: 1px solid {line};
+                    border-radius: {radius_sm}px; }
 
 /* Verb / join-word popover rows — two-line buttons with a key + faint
  * description (spec/90 §1.2, §3.3). The labels inside the button stay

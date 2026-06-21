@@ -1813,7 +1813,11 @@ class NewRecipeDialog(QDialog):
         + Save as Recipe… buttons on the right. Light secondary surface,
         no border."""
         host = QFrame()
-        host.setObjectName("RecipeToolbar")
+        # Collapsed onto the unified #SectionBox role (spec/92 §2.3);
+        # the `section` property keeps the legacy "RecipeToolbar" identity
+        # so tests + ad-hoc lookups still find this box.
+        host.setObjectName("SectionBox")
+        host.setProperty("section", "RecipeToolbar")
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         h = QHBoxLayout(host)
         h.setContentsMargins(14, 10, 14, 10)
@@ -1853,10 +1857,12 @@ class NewRecipeDialog(QDialog):
         object_name: str = "",
     ) -> QWidget:
         """Wrap an inner section widget in a card-style frame
-        (``SectionCard`` QSS role — card surface, line border, padding).
-        Tests + QSS target the wrapper via its object name."""
+        (unified ``SectionBox`` QSS role, spec/92 §2.3). The semantic
+        identity passed via ``object_name`` rides on the ``section``
+        property so tests + ad-hoc lookups still find each box by name."""
         host = QFrame()
-        host.setObjectName(object_name or "SectionCard")
+        host.setObjectName("SectionBox")
+        host.setProperty("section", object_name or "SectionCard")
         # WA_StyledBackground so the QSS ``background`` fills the frame
         # in addition to the painted border.
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1878,7 +1884,8 @@ class NewRecipeDialog(QDialog):
         without a header row or inner cards. Used for Name and Scope
         (spec/90 §5 — sibling siblings of the items + actions bands)."""
         host = QFrame()
-        host.setObjectName(object_name or "BandGroup")
+        host.setObjectName("SectionBox")
+        host.setProperty("section", object_name or "BandGroup")
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
         v.setContentsMargins(16, 12, 16, 12)
@@ -1900,8 +1907,12 @@ class NewRecipeDialog(QDialog):
         question on the left, optional inline hint, optional header
         buttons on the right, then the inner cards below."""
         host = QFrame()
+        # The band-group frames join the unified #SectionBox family
+        # (spec/92 §2.3); the legacy identity (WhichItemsBand /
+        # WhatToDoBand) rides on the `section` property.
+        host.setObjectName("SectionBox")
         if object_name:
-            host.setObjectName(object_name)
+            host.setProperty("section", object_name)
         host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
         v.setContentsMargins(16, 14, 16, 14)

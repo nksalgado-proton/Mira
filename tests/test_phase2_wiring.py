@@ -358,9 +358,11 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     :class:`NewRecipeDialog`, pre-seeded with that DC as the Source.
 
     spec/90 Phase 4f swapped the legacy
-    :class:`NewCrossEventCutDialog` for the new dialog; this test
-    pins the Collection-face configuration (show_scope=True,
-    show_hardware=True, inventory_scope="library")."""
+    :class:`NewCrossEventCutDialog` for the new dialog; spec/94 Phase
+    4a then gated the gear / EXIF / face dimensions off until the
+    indexing track lands. This test pins the resulting Collection-
+    face configuration (show_scope=True, show_hardware=**False** —
+    spec/94 4a, inventory_scope="library")."""
     from mira.gateway.library_gateway import LibraryGateway
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     from mira.ui.pages.events_page import EventsPage
@@ -389,10 +391,12 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     page._pin_cross_event_dc(lg, sf)
     assert len(cut_dialogs) == 1
     dlg = cut_dialogs[0]
-    # The dialog opens in the Collection face — Scope + hardware visible.
+    # The dialog opens in the Collection face — Scope visible; spec/94
+    # Phase 4a gates the hardware (gear / EXIF / face) filters until
+    # the indexing track lands.
     assert dlg._flavour == FLAVOUR_COLLECTION
     assert dlg._show_scope is True
-    assert dlg._show_hardware is True
+    assert dlg._show_hardware is False
     assert dlg._inventory_scope == INVENTORY_LIBRARY
     # The clicked DC pre-seeded the Source.
     assert dlg._source_chips

@@ -17,16 +17,20 @@ import pytest
 
 from mira.ui.pages._filter_family import (
     CROSS_EVENT_DIM_IDS,
+    CROSS_EVENT_PHASE4A_DIM_IDS,
     EVENT_SCOPE_DIM_IDS,
     GROUP_CAMERA_LENS,
     GROUP_CURATORIAL,
+    GROUP_EVENT,
     GROUP_ORDER,
     GROUP_SETTINGS,
     GROUP_WHEN_WHERE,
+    INDEXING_GATED_DIM_IDS,
     FilterDimension,
     _ActiveFilterRow,
     build_catalogue_subset,
     build_cross_event_catalogue,
+    build_cross_event_phase4a_catalogue,
     build_event_scope_catalogue,
     group_label,
 )
@@ -137,6 +141,66 @@ def test_build_catalogue_subset_skips_unknown_ids(qapp):
     cat = build_catalogue_subset(_StubHost(),
                                  ["styles", "doesnt_exist", "cities"])
     assert set(cat.keys()) == {"styles", "cities"}
+
+
+# --------------------------------------------------------------------------- #
+# spec/94 Phase 4a — indexing-gated filter dims hidden in the Collection face
+# --------------------------------------------------------------------------- #
+
+
+def test_indexing_gated_dim_ids_match_gear_exif_groups(qapp):
+    """The Phase 4a gate is the union of Camera & lens + Settings dims
+    (Faces joins when the catalogue carries it). Keeping the constant
+    in lockstep with the group definitions prevents drift if a new
+    gear / EXIF dim lands."""
+    full = build_cross_event_catalogue(_StubHost())
+    expected = {
+        dim_id for dim_id, dim in full.items()
+        if dim.group in (GROUP_CAMERA_LENS, GROUP_SETTINGS)
+    }
+    assert set(INDEXING_GATED_DIM_IDS) == expected
+
+
+def test_phase4a_catalogue_excludes_every_indexing_gated_dim(qapp):
+    """The Phase 4a builder hides gear / EXIF dims; only Curatorial /
+    Event / When & where survive (the brief: "the cross-event filter UI
+    must not offer them yet")."""
+    cat = build_cross_event_phase4a_catalogue(_StubHost())
+    for gated in INDEXING_GATED_DIM_IDS:
+        assert gated not in cat, \
+            f"{gated} leaked into the Phase 4a catalogue"
+
+
+def test_phase4a_catalogue_keeps_curatorial_event_and_when_where(qapp):
+    """The Phase 4a Collection face still gets Style, Media, Stars,
+    Color label, Flag, the spec/86 event-level qualifiers, Capture
+    date, Country, City — everything that doesn't require the indexing
+    track."""
+    cat = build_cross_event_phase4a_catalogue(_StubHost())
+    assert set(cat.keys()) == {
+        "styles", "media_type", "stars", "color_labels", "flag",
+        "event_type", "event_subtype", "scope",
+        "participants", "event_date",
+        "capture_date", "country_codes", "cities",
+    }
+
+
+def test_phase4a_catalogue_preserves_display_order(qapp):
+    """Dim order under the gate is the same display order the full
+    catalogue uses — Phase 4a doesn't re-shuffle, just trims."""
+    full = list(build_cross_event_catalogue(_StubHost()).keys())
+    phase4a = list(build_cross_event_phase4a_catalogue(_StubHost()).keys())
+    expected = [d for d in full if d not in INDEXING_GATED_DIM_IDS]
+    assert phase4a == expected
+    assert phase4a == list(CROSS_EVENT_PHASE4A_DIM_IDS)
+
+
+def test_phase4a_catalogue_dims_keep_filter_dimension_type(qapp):
+    """Same factory shape as the full builder so the Add-filter shell
+    works without changes."""
+    cat = build_cross_event_phase4a_catalogue(_StubHost())
+    for dim in cat.values():
+        assert isinstance(dim, FilterDimension)
 
 
 # --------------------------------------------------------------------------- #

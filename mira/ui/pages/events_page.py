@@ -642,7 +642,14 @@ class EventsPage(QWidget):
         dlg = NewRecipeDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
-            show_hardware=True,
+            # spec/94 Phase 4a — the gear / EXIF / face filters are
+            # gated on the indexing track (spec/94 — Cross-cutting
+            # track). The Collection face renders Scope + Source +
+            # the today-only filters (Style, Media, Stars, ColorLabel,
+            # Flag, event-level qualifiers, Capture date, Country,
+            # City) + Rules + Otherwise. Flip back to True once the
+            # indexing track lands and the dimensions have a picker.
+            show_hardware=False,
             inventory_scope=INVENTORY_LIBRARY,
             ctx=ctx,
             pool_probe=lambda expr: library_gateway.dc_probe(expr),
@@ -656,9 +663,24 @@ class EventsPage(QWidget):
         )
 
         def _on_start(draft) -> None:
+            # spec/94 Phase 4a — resolve the dialog's Scope sentence (chips:
+            # Events, Event Collections, date ranges) into the set of event
+            # uuids the resolver should narrow to. ``None`` = library-wide;
+            # an empty set narrows to nothing (the user composed Scope but
+            # nothing resolved). Empty composition.scope = no narrowing.
+            try:
+                composition = dlg.composition()
+            except Exception:                              # noqa: BLE001
+                composition = {}
+            scope_expr = composition.get("scope") or []
+            try:
+                scope_uuids = library_gateway.resolve_scope(scope_expr)
+            except Exception:                              # noqa: BLE001
+                scope_uuids = None
             try:
                 session = CrossEventCutSession.from_draft(
-                    library_gateway, draft)
+                    library_gateway, draft,
+                    scope_event_uuids=scope_uuids)
                 if not session.files:
                     QMessageBox.warning(
                         self, "Cross-event Cut",

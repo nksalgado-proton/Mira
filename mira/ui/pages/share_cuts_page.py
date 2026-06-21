@@ -476,8 +476,10 @@ class _PoolCard(QFrame):
         t = QLabel("#exported")
         t.setObjectName("CardTitle")
         title_row.addWidget(t)
-        # Spec/81 §2: #exported is the event's base DC — the chip says so.
-        title_row.addWidget(tag("Base DC"))
+        # Spec/81 §2: #exported is the event's base Collection — the
+        # chip says so (spec/93 vocab — "Collection" everywhere user-
+        # facing; the model is still :class:`DynamicCollection` in code).
+        title_row.addWidget(tag("Base Collection"))
         title_row.addStretch()
         block.addLayout(title_row)
         sub_text = pool.sub_line or (
@@ -679,8 +681,8 @@ class DCRow(Card):
         actions.setSpacing(8)
         pin_btn = primary_button("Pin → New Cut")
         pin_btn.setToolTip(tr(
-            "Open the New Cut dialog with this Dynamic Collection "
-            "pre-loaded as the source."))
+            "Open the New Cut dialog with this Collection pre-loaded "
+            "as the source."))
         pin_btn.clicked.connect(
             lambda: self.pin_requested.emit(snapshot.dc_id))
         actions.addWidget(pin_btn)
@@ -782,7 +784,7 @@ class _CutsListView(QWidget):
         self._tabs.setObjectName("ShareTabs")
         self._tabs.setDocumentMode(True)
         self._tabs.addTab(self._build_cuts_tab(), tr("Cuts"))
-        self._tabs.addTab(self._build_dcs_tab(), tr("Dynamic Collections"))
+        self._tabs.addTab(self._build_dcs_tab(), tr("Collections"))
         outer.addWidget(self._tabs, 1)
 
     def _build_cuts_tab(self) -> QWidget:
@@ -839,15 +841,15 @@ class _CutsListView(QWidget):
         v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(12)
 
-        self._dc_section_label = QLabel("Dynamic Collections · 0")
+        self._dc_section_label = QLabel("Collections · 0")
         self._dc_section_label.setObjectName("Micro")
         v.addWidget(self._dc_section_label)
 
         self._dc_empty_hint = QLabel(tr(
-            "Dynamic Collections are reusable recipes — set algebra over "
-            "the exported universe (and other DCs / Cuts), with optional "
-            "filters. Compose one in the New Cut dialog and Save as DC… "
-            "to see it here."))
+            "Collections are reusable recipes — set algebra over the "
+            "exported universe (and other Collections / Cuts), with "
+            "optional filters. Compose one in the New Cut dialog and "
+            "Save as Collection… to see it here."))
         self._dc_empty_hint.setObjectName("PageHint")
         self._dc_empty_hint.setWordWrap(True)
         v.addWidget(self._dc_empty_hint)
@@ -923,7 +925,7 @@ class _CutsListView(QWidget):
 
         # DCs tab — same clear-then-rebuild pattern.
         self._dc_section_label.setText(
-            f"Dynamic Collections · {len(self._dcs)}")
+            f"Collections · {len(self._dcs)}")
         self._dc_empty_hint.setVisible(not self._dcs)
         while self._dcs_layout.count():
             it = self._dcs_layout.takeAt(0)
@@ -1221,7 +1223,7 @@ class ShareCutsPage(QWidget):
         cut_tags = {tag for tag, _n in cut_rows}
         collisions = dc_tags & cut_tags
         for dc_id, tag, n in dc_rows:
-            suffix = " — DC" if tag in collisions else ""
+            suffix = " — Collection" if tag in collisions else ""
             available_pools.append(OperandOption(
                 name=f"#{tag}{suffix}", count=int(n or 0),
                 kind="dc", id=dc_id or None, tag=tag))
@@ -2142,7 +2144,7 @@ class ShareCutsPage(QWidget):
             return
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.NoIcon)
-        box.setWindowTitle(tr("Delete Dynamic Collection"))
+        box.setWindowTitle(tr("Delete Collection"))
         box.setText(tr(
             "Delete {tag}? The recipe goes; any Cuts pinned from it "
             "survive (their frozen membership is untouched)."

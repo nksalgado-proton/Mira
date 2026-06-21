@@ -286,6 +286,35 @@ CROSS_EVENT_DIM_IDS: Tuple[str, ...] = (
 EVENT_SCOPE_DIM_IDS: Tuple[str, ...] = ("styles", "media_type")
 
 
+# spec/94 Phase 4a — the gear / EXIF / face dimensions are the
+# "indexing-gated" set: they depend on the cross-cutting metadata
+# indexing + face-recognition track (spec/94 — Cross-cutting track,
+# spec/91), which lands separately. The Phase 4a cross-event UI must
+# not offer them yet, even though the resolver's ``_filter_clauses``
+# is fully capable today — the data lives in the projection, but the
+# UX bet is that we surface it AFTER the index lands and the picker /
+# inventory story is properly designed.
+#
+# The set is defined as the union of the Camera & lens + Settings
+# groups (and Faces when it joins the catalogue). Group-level gating
+# is the cheapest stable seam: when the indexing track lands its UI
+# we flip the flag, not the dim list.
+INDEXING_GATED_DIM_IDS: Tuple[str, ...] = (
+    "camera_ids", "lens_models", "flash",
+    "iso", "aperture", "shutter", "focal",
+)
+
+
+# spec/94 Phase 4a — the cross-event "power face" until the indexing
+# track lands. Curatorial + Event + When/Where only: Style, Media
+# type, Stars, Color label, Portfolio flag, the spec/86 event-level
+# qualifiers, Capture date, Country, City. No camera, no lens, no
+# exposure triangle, no faces.
+CROSS_EVENT_PHASE4A_DIM_IDS: Tuple[str, ...] = tuple(
+    d for d in CROSS_EVENT_DIM_IDS if d not in INDEXING_GATED_DIM_IDS
+)
+
+
 def build_event_scope_catalogue(host: Any) -> Dict[str, FilterDimension]:
     """The thin event-scope catalogue (spec/81 §2.1): Style + media type
     only. Same factory shape as the cross-event catalogue so the same
@@ -293,6 +322,19 @@ def build_event_scope_catalogue(host: Any) -> Dict[str, FilterDimension]:
     the menu."""
     full = build_cross_event_catalogue(host)
     return {dim_id: full[dim_id] for dim_id in EVENT_SCOPE_DIM_IDS}
+
+
+def build_cross_event_phase4a_catalogue(
+    host: Any,
+) -> Dict[str, FilterDimension]:
+    """The cross-event Collection catalogue with the indexing-gated
+    dimensions (gear / EXIF / faces) hidden (spec/94 Phase 4a).
+
+    Same factory shape as :func:`build_cross_event_catalogue`; the
+    indexing track lifts the gate by flipping callers to the full
+    builder, no dialog change required."""
+    full = build_cross_event_catalogue(host)
+    return {dim_id: full[dim_id] for dim_id in CROSS_EVENT_PHASE4A_DIM_IDS}
 
 
 def build_catalogue_subset(
@@ -314,8 +356,11 @@ __all__ = [
     "GROUP_ORDER",
     "group_label",
     "CROSS_EVENT_DIM_IDS",
+    "CROSS_EVENT_PHASE4A_DIM_IDS",
     "EVENT_SCOPE_DIM_IDS",
+    "INDEXING_GATED_DIM_IDS",
     "build_cross_event_catalogue",
+    "build_cross_event_phase4a_catalogue",
     "build_event_scope_catalogue",
     "build_catalogue_subset",
 ]

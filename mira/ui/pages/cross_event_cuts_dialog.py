@@ -158,8 +158,8 @@ class CrossEventCutsDialog(QDialog):
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(8)
         self._empty_label = QLabel(tr(
-            "No cross-event Cuts yet. Build a cross-event Dynamic Collection "
-            "and pin it into a Cut to populate this list."))
+            "No cross-event Cuts yet. Build a Collection and pin it into "
+            "a Cut to populate this list."))
         self._empty_label.setObjectName("CrossEventCutsEmpty")
         self._empty_label.setWordWrap(True)
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

@@ -174,7 +174,7 @@ class DCDetailPage(QWidget):
         # Back is in the shared title bar now (routed via
         # ShareCutsPage.on_titlebar_back). The grid's own back_requested
         # (Esc / edge) still fires the same signal.
-        self._header_lbl = QLabel(tr("#exported — the base Dynamic Collection"))
+        self._header_lbl = QLabel(tr("#exported — the base Collection"))
         self._header_lbl.setObjectName("DayGridHeader")
         chrome.addWidget(self._header_lbl, stretch=1)
         outer.addLayout(chrome)
@@ -245,7 +245,7 @@ class DCDetailPage(QWidget):
                 state=state,
                 payload=f.export_relpath,
             ))
-        self._header_lbl.setText(tr("#exported — the base Dynamic Collection"))
+        self._header_lbl.setText(tr("#exported — the base Collection"))
         self._grid.set_items(items)
         self._request_missing_thumbs()
 

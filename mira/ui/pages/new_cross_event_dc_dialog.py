@@ -60,7 +60,7 @@ from mira.ui.pages._filter_family import (
     FilterDimension,
     GROUP_ORDER,
     _ActiveFilterRow,
-    build_cross_event_catalogue,
+    build_cross_event_phase4a_catalogue,
     group_label as _group_label,
 )
 from mira.ui.pages.facet_picker_dialog import (
@@ -604,10 +604,12 @@ class NewCrossEventDcDialog(QDialog):
         existing: Optional[CrossEventDcInfo] = None,
         existing_tags: Sequence[str] = (),
         gear: Optional[GearProfileSnapshot] = None,
+        catalogue_builder: Optional[
+            Callable[[Any], Dict[str, FilterDimension]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("New cross-event collection"))
+        self.setWindowTitle(tr("New Collection"))
         self.setMinimumWidth(640)
         self._inventories = inventories
         self._dc_probe = dc_probe or (lambda _expr, _filters: 0)
@@ -623,12 +625,15 @@ class NewCrossEventDcDialog(QDialog):
         self._facets: List[_Facet] = []
         self._active_rows: "Dict[str, _ActiveFilterRow]" = {}
         # Catalogue built before _build_layout so the menu can read it.
-        # Cross-event dialog uses the full spec/32 §2 catalogue (spec/81 §2.1
-        # full ladder + every facet); the event-scope sibling uses
-        # :func:`build_event_scope_catalogue` instead (spec/81 §2.1 — thin
-        # surface). Slice 8 share is the catalogue itself.
-        self._dimensions: Dict[str, FilterDimension] = \
-            build_cross_event_catalogue(self)
+        # spec/94 Phase 4a: the cross-event Collection dialog offers the
+        # Phase-4a subset only — Curatorial + Event + When/Where. The
+        # gear / EXIF / face dimensions are gated on the indexing track
+        # (spec/94 — Cross-cutting track) and will light up when callers
+        # flip ``catalogue_builder`` back to
+        # :func:`build_cross_event_catalogue` (or whatever the full
+        # builder of the day is). The dialog wiring itself is unchanged.
+        builder = catalogue_builder or build_cross_event_phase4a_catalogue
+        self._dimensions: Dict[str, FilterDimension] = builder(self)
 
         self._build_layout()
         if existing is not None:

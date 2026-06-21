@@ -2002,7 +2002,7 @@ class NewRecipeDialog(QDialog):
         self._save_dc_btn = ghost_button(tr("Save as Collection…"))
         self._save_dc_btn.setObjectName("BandSaveAsDc")
         self._save_dc_btn.setToolTip(tr(
-            "Save the current source + filters as a reusable DC."))
+            "Save the current source + filters as a reusable Collection."))
         self._save_dc_btn.clicked.connect(self._on_band_save_as_dc_clicked)
 
         hint = tr("(across the events above)") if self._show_scope else ""
@@ -2327,8 +2327,8 @@ class NewRecipeDialog(QDialog):
                 code = str(exc)
                 if code == "taken":
                     msg = tr(
-                        "A DC named '{name}' already exists. Pick another."
-                    ).format(name=name)
+                        "A Collection named '{name}' already exists. "
+                        "Pick another.").format(name=name)
                 elif code == "reserved":
                     msg = tr(
                         "'{name}' is a reserved name. Pick another."
@@ -3362,7 +3362,7 @@ class NewRecipeDialog(QDialog):
         box.setWindowTitle(tr("Load Collection"))
         box.setText(tr(
             "This will replace your current Source and Filters with the "
-            "loaded DC's. Continue?"))
+            "loaded Collection's. Continue?"))
         replace_btn = box.addButton(
             tr("Replace"), QMessageBox.ButtonRole.AcceptRole)
         box.addButton(

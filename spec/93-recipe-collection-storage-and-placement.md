@@ -11,7 +11,10 @@ Captures where Dynamic Collections, Recipes, and Cuts live, and the
 deterministic rule that decides it **automatically** so the user never chooses.
 Extended the same day with the **filesystem recipe library** (§4) and the
 **user-defined library root** it sits under (the root + relocation + recovery
-are specced in [`spec/76`](76-home-library-and-cut-publishing.md)).
+are specced in [`spec/76`](76-home-library-and-cut-publishing.md)). **Refined the
+same day:** a definition's identity is a stable internal **`id`**, not its
+filename, so moving *or* renaming files in the OS file manager is always safe
+(§4, §8) — an OS rename we cannot prevent must never dangle a reference.
 **Implementation gated:** design only — coding agents wait for Nelson's word
 (same gate as spec/81 / spec/90).
 
@@ -99,7 +102,7 @@ what needs integrity and bytes — the dishes.
 
 ```
 <library_root>/                 (spec/76 — user-defined)
-  Collections/                  one JSON file per Dynamic Collection
+  Collections/                  one JSON file per Collection
     Wildlife/
       best-wildlife.json
     best-of-2024.json
@@ -109,27 +112,32 @@ what needs integrity and bytes — the dishes.
       long-cut.json
 ```
 
-- **One file per definition.** A DC is a JSON file under `Collections/`; a Recipe
-  under `Recipes/`. The file content is the definition (spec/81 expr + filters;
-  spec/90 rule-list for recipes). Two roots, not one typed tree, so the picker is
-  unambiguous about what kind it is offering.
-- **The folder is presentation; the name is identity.** Sub-folders of any depth
-  are the user's taxonomy — they create and rearrange them in their OS file
-  manager, at will. Moving a file between folders changes *nothing* about the
-  definition or anything that references it.
-- **Names are globally unique** (per kind), independent of folder. This is not a
-  database quirk — it is what makes the folder *presentation-only*: because the
-  name is the stable identity, references point at the name, so reorganising
-  folders never breaks a reference. The price (no two "Best" in different
-  folders — name them "Best wildlife" / "Best landscapes") buys reorg-stability.
-  Uniqueness is enforced with a scan-on-save (cheap at this scale).
-- **References are by name.** A DC nested inside another DC (spec/81
-  composability), and a Cut's `source_dc` link, point at the unique name.
-- **Rename = rename + update referrers.** Since the name is the identity, a
-  rename rewrites the file's name and the by-name references in any definition
-  that nests it. (Cuts are unaffected — they are frozen, §8.) A hidden stable id
-  per file was considered and rejected: it would make the human-readable JSON
-  opaque for a gain the rename-rewrite already covers.
+- **One file per definition.** A Collection is a JSON file under `Collections/`;
+  a Recipe under `Recipes/`. The file content is the definition (spec/81 expr +
+  filters; spec/90 rule-list for recipes) plus a stable internal **`id`**. Two
+  roots, not one typed tree, so the picker is unambiguous about what kind it is
+  offering.
+- **Identity is the internal `id`, not the filename.** Each file carries a stable
+  `id` (a UUID); that is what references point at. The filename is the
+  human-readable **display name**. So the folder *and* the filename are both
+  presentation — the user can move, rename, or reshuffle files in their own file
+  manager and nothing breaks, because the `id` does the holding. (This reverses
+  the first draft's "filename = identity"; an OS rename we cannot prevent must
+  never be able to dangle a reference.)
+- **References are `{id, name}`, resolved by id, name as fallback.** A nested
+  Collection operand and a Cut's source link carry both. Resolution uses the id;
+  if the id is absent — e.g. a file a power user hand-authored by typing only a
+  name — it falls back to the name and the app backfills the id on save, so
+  hand-editing stays possible and the JSON stays readable.
+- **Move and rename in the file manager are both safe.** On the next tree-scan
+  the app reconciles: an `id` whose filename changed → adopt the new filename as
+  the display name (the rename "takes," as the user expects) and refresh the name
+  hints in referrers; an `id` no longer present → a deleted definition, surfaced
+  as a graceful "missing ingredient" (§8). **Delete is the only unrecoverable
+  act.**
+- **Display names stay unique for menu clarity** — a soft scan-on-save warns on a
+  duplicate name — but the `id` is the load-bearing key, so a duplicate name is
+  non-fatal (references resolve by id).
 - **Listing is a cached tree-scan**, invalidated on change. Writes are atomic
   write-then-rename (invariant #6) under the spec/76 single-writer lock.
 
@@ -201,15 +209,18 @@ a heuristic.
 A database gives FK enforcement; the recipe files do not. The integrity story:
 
 - **A Cut freezes its formula** (`expr_snapshot_json`, spec/81 / schema v8), so
-  deleting, renaming, or editing a DC/Recipe **never breaks a Cut** already made
-  from it. This is the big one, already in the model.
-- **A missing nested operand fails gracefully.** If a DC nests another by name
-  and that name no longer resolves (the file was deleted out-of-band in the file
-  manager), the resolver reports "missing ingredient: *Best wildlife*" in place —
-  never a crash, never a silent empty.
-- **Uniqueness** is enforced at save with a tree scan; **rename** rewrites
-  referrers (§4); writes are atomic write-then-rename (invariant #6) under the
-  spec/76 single-writer lock.
+  deleting, renaming, or editing a Collection/Recipe **never breaks a Cut**
+  already made from it. This is the big one, already in the model.
+- **Identity is an internal `id`, so the file manager is safe.** Move and rename
+  hold every reference (the id is unchanged; the app reconciles the display name
+  on scan, §4). **Delete** is the only act that can dangle a reference.
+- **A missing operand fails gracefully.** If a Collection nests another and that
+  operand's `id` no longer resolves (the file was deleted out-of-band), the
+  resolver reports "missing ingredient: *Best wildlife*" in place — never a
+  crash, never a silent empty.
+- Display-name uniqueness is a **soft** scan-on-save check; the `id` is the hard
+  key. Writes are atomic write-then-rename (invariant #6) under the spec/76
+  single-writer lock.
 
 ## 9. Categorisation & the library surface — solved by the folder tree
 
@@ -231,9 +242,12 @@ them; the **definitions** are handled here.
 3. **Global definitions are JSON files** under `<library_root>/Collections/` and
    `/Recipes/` (spec/76); **bound** definitions live in their `event.db`;
    **dishes (Cuts)** live in the database (`event.db` or `mira.db`).
-4. **One file per definition; name = identity; globally unique per kind;**
-   references are by name; rename rewrites referrers; folders are presentation
-   only. Menus mirror the folder tree.
+4. **One file per definition; identity is a stable internal `id`** (not the
+   filename); references are `{id, name}` resolved by id with a name fallback;
+   filename *and* folder are both presentation, so move/rename in the file
+   manager never break a reference (an OS-rename's new name is adopted on scan).
+   Display names stay unique for menu clarity (soft check). Menus mirror the
+   folder tree.
 5. **Re-classify on every write;** migrate the file ↔ `event.db` atomically if
    the class changed; never leave a definition in two places.
 6. A Cut is **frozen** (`expr_snapshot_json`); editing/deleting/renaming the

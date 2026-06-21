@@ -376,29 +376,157 @@ class LibraryGateway:
         self,
         expr: Sequence[Sequence],
         filters: Optional[Mapping] = None,
+        *,
+        scope: Optional[Iterable[str]] = None,
     ) -> List[Tuple[str, str]]:
         """Resolve a cross-event DC formula (spec/81 §2). Returns
         ``(event_uuid, item_id)`` tuples in chronological show order. The
         formula's own filters apply at the top; nested DCs' filters apply
-        before they compose upward (the resolver handles both)."""
-        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        before they compose upward (the resolver handles both).
+
+        spec/94 Phase 4a — ``scope`` is an optional pre-resolved set of
+        event uuids to narrow the result to (the cross-event "power face"
+        Scope sentence resolves to this via :meth:`resolve_scope` before
+        the call). ``None`` means library-wide (the historical default).
+        Empty iterable means "narrow to nothing" → empty result."""
+        keys = self.resolve_dc_keys(expr, filters, scope=scope)
         return [cev.unpack_key(k) for k in keys]
 
     def resolve_dc_keys(
         self,
         expr: Sequence[Sequence],
         filters: Optional[Mapping] = None,
+        *,
+        scope: Optional[Iterable[str]] = None,
     ) -> List[str]:
         """The packed-key variant of :meth:`resolve_dc` — keep when the
         caller wants the resolver's native ``"event_uuid::item_id"`` strings
         (e.g. composing further set operations without re-packing). The flat
-        grid + export pipelines use :meth:`resolve_dc` directly."""
-        return cev.resolve_cross_event(self.user_store, expr, filters)
+        grid + export pipelines use :meth:`resolve_dc` directly.
+
+        spec/94 Phase 4a — ``scope`` narrows the resolved keys to the
+        passed-in event uuids. Mirrors the contract of
+        :meth:`resolve_recipe`'s ``scope`` parameter so the cross-event
+        session path threads a single shape end-to-end."""
+        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        if scope is None:
+            return keys
+        scope_set = frozenset(scope)
+        return [k for k in keys if cev.unpack_key(k)[0] in scope_set]
 
     def dc_probe(self, expr: Sequence[Sequence],
-                 filters: Optional[Mapping] = None) -> int:
-        """The dialog's live count for a draft DC formula (spec/81 §2)."""
-        return len(cev.resolve_cross_event(self.user_store, expr, filters))
+                 filters: Optional[Mapping] = None,
+                 *,
+                 scope: Optional[Iterable[str]] = None) -> int:
+        """The dialog's live count for a draft DC formula (spec/81 §2).
+        spec/94 Phase 4a — honours ``scope`` the same way as
+        :meth:`resolve_dc_keys`."""
+        return len(self.resolve_dc_keys(expr, filters, scope=scope))
+
+    # ----- Scope resolution (spec/90 §3 / spec/94 Phase 4a) --------------- #
+
+    def resolve_scope(
+        self,
+        scope_expr: Sequence[Sequence],
+    ) -> Optional[FrozenSet[str]]:
+        """Resolve a Scope expression (spec/90 §3.1, §3.2) — the
+        chip-and-join-word sentence the Collection face composes — to the
+        FROZEN SET of event uuids it covers.
+
+        Returns ``None`` for an empty expression — the "library-wide"
+        sentinel that :meth:`resolve_dc_keys` / :meth:`resolve_recipe`
+        treat as "no narrowing" (don't filter). A non-empty expression
+        that resolves to zero events returns ``frozenset()`` — the
+        caller should narrow to nothing, not fall back to library-wide.
+
+        Operand kinds accepted (spec/90 §3.1):
+
+        * ``"event"`` (``{"uuid": …}``) — that one event.
+        * ``"event_collection"`` (``{"id": …, "tag": …}``) — resolves the
+          collection's saved ``expr_json`` via recursion (events expand,
+          nested Event Collections expand). Missing → empty set
+          (graceful shrink, same as DC operands).
+        * ``"date_range"`` (``{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}``)
+          — events whose cached ``[start_date_cached, end_date_cached]``
+          overlaps the range. Half-open ends tolerated (only start, only
+          end, or neither).
+
+        Joins are evaluated left-to-right (spec/81 §2): ``+`` union,
+        ``∩`` intersection, ``−`` set difference. The first chip's join
+        is always treated as the seed (the empty-accumulator union
+        case)."""
+        if not scope_expr:
+            return None
+        accumulator: Optional[Set[str]] = None
+        for pair in scope_expr:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            op, operand = pair[0], pair[1]
+            if not isinstance(op, str):
+                continue
+            members = self._scope_operand_events(operand)
+            if accumulator is None:
+                accumulator = set(members)
+            elif op == "+":
+                accumulator |= members
+            elif op in ("∩", "and"):
+                accumulator &= members
+            elif op in ("−", "-", "not"):
+                accumulator -= members
+            else:
+                accumulator |= members
+        return frozenset(accumulator or set())
+
+    def _scope_operand_events(self, operand: Any) -> Set[str]:
+        """Map one Scope operand to its set of event uuids. Tolerant of
+        malformed shapes — anything we can't read becomes ``set()`` so
+        the resolver shrinks gracefully (same rule the DC resolver
+        applies to a deleted operand)."""
+        if not isinstance(operand, Mapping):
+            return set()
+        kind = operand.get("kind")
+        if kind == "event":
+            uuid = operand.get("uuid") or operand.get("id")
+            return {uuid} if uuid else set()
+        if kind == "event_collection":
+            ec = self._event_collection_by_ref(operand)
+            if ec is None:
+                return set()
+            try:
+                nested = json.loads(ec.expr_json or "[]")
+            except (ValueError, TypeError):
+                nested = []
+            inner = self.resolve_scope(nested)
+            return set(inner) if inner else set()
+        if kind == "date_range":
+            return self._events_in_date_range(
+                operand.get("start"), operand.get("end"))
+        return set()
+
+    def _events_in_date_range(
+        self,
+        start_iso: Any,
+        end_iso: Any,
+    ) -> Set[str]:
+        """Events whose cached date range overlaps ``[start_iso, end_iso]``.
+        Either bound may be missing (open-ended on that side); undated
+        events have NULL ``start_date_cached`` / ``end_date_cached`` and
+        correctly stay out of the result (NULL comparisons are false)."""
+        start = start_iso if isinstance(start_iso, str) and start_iso else None
+        end = end_iso if isinstance(end_iso, str) and end_iso else None
+        clauses: List[str] = []
+        params: list = []
+        if start is not None:
+            clauses.append("(end_date_cached >= ? OR start_date_cached >= ?)")
+            params.extend([start, start])
+        if end is not None:
+            clauses.append("(start_date_cached <= ? OR end_date_cached <= ?)")
+            params.extend([end, end])
+        sql = "SELECT event_uuid FROM event_index"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self.user_store.conn.execute(sql, params).fetchall()
+        return {r["event_uuid"] for r in rows}
 
     # ----- Recipe resolution (spec/90 §7 Phase 2) ------------------------- #
 

@@ -543,3 +543,64 @@ def test_from_draft_separators_default_off(tmp_path):
     session = CrossEventCutSession.from_draft(lg, draft)
     assert session.separators_on is False
     user_store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/94 Phase 4a — scope_event_uuids threading
+# --------------------------------------------------------------------------- #
+
+
+def test_from_draft_scope_event_uuids_narrows_pool(tmp_path):
+    """``scope_event_uuids`` narrows the resolved pool to the passed-in
+    set of events. The seam is end-to-end: dialog composes a Scope
+    sentence → events_page resolves it via :meth:`resolve_scope` →
+    ``from_draft`` receives the pre-resolved uuids → only members from
+    those events appear in the session cells.
+
+    Without scope, the projection has #exported items from A and B.
+    Narrowed to {"A"}, only A's items show up — Nepal stays out."""
+    user_store = _open_user_store(tmp_path)
+    _seed_projection(user_store)
+    lg = _make_lg(user_store)
+    draft = CrossEventCutDraft(
+        name="x", tag="x", expr=tuple([("+", "exported")]),
+        photo_s=6.0)
+    full = CrossEventCutSession.from_draft(lg, draft)
+    assert {f.event_uuid for f in full.files} == {"A", "B"}
+
+    scoped = CrossEventCutSession.from_draft(
+        lg, draft, scope_event_uuids={"A"})
+    assert {f.event_uuid for f in scoped.files} == {"A"}
+    user_store.close()
+
+
+def test_from_draft_scope_none_keeps_library_wide(tmp_path):
+    """The explicit ``scope_event_uuids=None`` matches the historical
+    no-narrowing behaviour — the default behaviour stays intact for
+    callers that don't compose a Scope."""
+    user_store = _open_user_store(tmp_path)
+    _seed_projection(user_store)
+    lg = _make_lg(user_store)
+    draft = CrossEventCutDraft(
+        name="x", tag="x", expr=tuple([("+", "exported")]),
+        photo_s=6.0)
+    session = CrossEventCutSession.from_draft(
+        lg, draft, scope_event_uuids=None)
+    assert {f.event_uuid for f in session.files} == {"A", "B"}
+    user_store.close()
+
+
+def test_from_draft_scope_empty_iterable_narrows_to_nothing(tmp_path):
+    """An empty iterable is the "Scope composed, nothing resolved" case
+    — the session resolves to zero candidates, not library-wide. (The
+    dialog Start path then warns and stops; see events_page._on_start.)"""
+    user_store = _open_user_store(tmp_path)
+    _seed_projection(user_store)
+    lg = _make_lg(user_store)
+    draft = CrossEventCutDraft(
+        name="x", tag="x", expr=tuple([("+", "exported")]),
+        photo_s=6.0)
+    session = CrossEventCutSession.from_draft(
+        lg, draft, scope_event_uuids=frozenset())
+    assert session.files == ()
+    user_store.close()

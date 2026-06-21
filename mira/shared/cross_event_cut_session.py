@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from core import cut_budget
 from mira.gateway.cross_event_resolver import pack_key, unpack_key
@@ -348,14 +348,22 @@ class CrossEventCutSession:
         *,
         separators_on: Optional[bool] = None,
         anchor_event_id: Optional[str] = None,
+        scope_event_uuids: Optional[Iterable[str]] = None,
     ) -> "CrossEventCutSession":
         """A fresh cross-event pin session from the New Cut dialog's draft.
         Resolves the draft's DC formula against ``global_items`` via
         ``library_gateway``, builds session cells. ``separators_on`` defaults
         to OFF for cross-event (spec/81 §3.1 — no single timeline to orient).
+
+        spec/94 Phase 4a — ``scope_event_uuids`` narrows the resolved pool
+        to the passed-in set of event uuids (the dialog's Scope sentence,
+        pre-resolved by :meth:`LibraryGateway.resolve_scope`). ``None``
+        means library-wide (the historical default); an empty iterable
+        narrows the pool to nothing.
         """
         expr, filters = cls._draft_expr_filters(library_gateway, draft)
-        keys = library_gateway.resolve_dc_keys(expr, filters)
+        keys = library_gateway.resolve_dc_keys(
+            expr, filters, scope=scope_event_uuids)
         # Pull the matching projection rows so we have export_relpath etc.
         rows = _pull_rows_for_keys(library_gateway, keys)
         files = session_files_from_global_items(rows, keys)

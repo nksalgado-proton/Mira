@@ -225,7 +225,7 @@ class CrossEventDcsDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("Cross-event collections"))
+        self.setWindowTitle(tr("Collections"))
         self.setMinimumSize(720, 480)
         self.setObjectName("CrossEventDcsDialog")
         self._lg = library_gateway
@@ -249,7 +249,7 @@ class CrossEventDcsDialog(QDialog):
 
         # Top bar: title + + New collection + Close.
         top = QHBoxLayout()
-        title = QLabel(tr("Cross-event collections"))
+        title = QLabel(tr("Collections"))
         title.setObjectName("CrossEventDcsTitle")
         f = title.font(); f.setBold(True); f.setPointSize(f.pointSize() + 2)
         title.setFont(f)
@@ -264,7 +264,7 @@ class CrossEventDcsDialog(QDialog):
         self._view_cuts_btn = ghost_button(tr("View Cuts"))
         self._view_cuts_btn.clicked.connect(self.view_cuts_requested.emit)
         top.addWidget(self._view_cuts_btn)
-        self._new_btn = primary_button(tr("+ New collection"))
+        self._new_btn = primary_button(tr("+ New Collection"))
         self._new_btn.clicked.connect(self._on_new)
         top.addWidget(self._new_btn)
         close_btn = ghost_button(tr("Close"))
@@ -280,9 +280,10 @@ class CrossEventDcsDialog(QDialog):
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(8)
         self._empty_label = QLabel(tr(
-            "No cross-event collections yet. Use + New collection to define "
-            "one — pick a ladder rung + the facets you want, save it, and it "
-            "becomes a reusable cross-event query you can pin into Cuts."))
+            "No Collections yet. Use + New Collection to define one — "
+            "pick a ladder rung + the facets you want, save it, and it "
+            "becomes a reusable query you can pin into Cuts across "
+            "events."))
         self._empty_label.setObjectName("CrossEventDcsEmpty")
         self._empty_label.setWordWrap(True)
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -370,8 +371,8 @@ class CrossEventDcsDialog(QDialog):
     def _on_delete(self, dc: um.SavedFilter) -> None:
         ok = QMessageBox.question(
             self,
-            tr("Delete cross-event collection"),
-            tr("Delete {tag}? The collection's recipe goes; Cuts that pinned "
+            tr("Delete Collection"),
+            tr("Delete {tag}? The Collection's recipe goes; Cuts that pinned "
                "from it survive (their frozen members + snapshot are "
                "untouched).").format(tag=cut_names.display_tag(dc.tag)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

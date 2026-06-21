@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QCheckBox, QRadioButton
 
 from core import collection_resolver as cr
+from mira.ui.pages._filter_family import build_cross_event_catalogue
 from mira.ui.pages.new_cross_event_dc_dialog import (
     CrossEventDcInfo,
     CrossEventInventories,
@@ -39,12 +40,24 @@ _INVENTORIES = CrossEventInventories.from_dict({
 })
 
 
-def _make_dialog(qapp, *, existing=None, existing_tags=(), probe=None):
+def _make_dialog(qapp, *, existing=None, existing_tags=(), probe=None,
+                 catalogue_builder=None):
+    """Default to the FULL catalogue so widget-capability tests exercise
+    every facet (camera / lens / iso / aperture / shutter / focal /
+    flash). The production dialog defaults to the Phase 4a gated
+    builder; the gating test below pins that.
+
+    spec/94 Phase 4a — :func:`build_cross_event_phase4a_catalogue` is
+    the production default (hides gear / EXIF / faces). These tests
+    pass ``build_cross_event_catalogue`` to keep the widget wiring
+    covered; the gate is a UI-presentation policy, not a missing
+    facet implementation."""
     return NewCrossEventDcDialog(
         inventories=_INVENTORIES,
         dc_probe=probe or (lambda _e, _f: 42),
         existing=existing,
         existing_tags=existing_tags,
+        catalogue_builder=catalogue_builder or build_cross_event_catalogue,
     )
 
 
@@ -304,6 +317,51 @@ def test_color_label_facet(qapp):
     _multi_check(d, "color_labels", "green")
     assert d.info().filters == {"color_labels": ["green"]}
     d.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
+# spec/94 Phase 4a — production default gates gear / EXIF / face filters
+# --------------------------------------------------------------------------- #
+
+
+def test_phase4a_default_hides_camera_lens_iso_dimensions(qapp):
+    """The production wiring (``catalogue_builder`` omitted) uses
+    :func:`build_cross_event_phase4a_catalogue`. The gated dims are
+    not in the menu — ``add_filter_dimension`` raises ``KeyError``."""
+    from mira.ui.pages._filter_family import INDEXING_GATED_DIM_IDS
+    d = NewCrossEventDcDialog(
+        inventories=_INVENTORIES,
+        dc_probe=lambda _e, _f: 0,
+    )
+    try:
+        for gated in INDEXING_GATED_DIM_IDS:
+            assert gated not in d._dimensions, \
+                f"{gated} leaked into the production Collection dialog"
+            with pytest.raises(KeyError):
+                d.add_filter_dimension(gated)
+    finally:
+        d.deleteLater()
+
+
+def test_phase4a_default_keeps_curatorial_event_when_where(qapp):
+    """The Phase 4a default still wires Curatorial, Event-level, and
+    When/Where dims — the user composes a Collection over today's
+    filters end-to-end."""
+    d = NewCrossEventDcDialog(
+        inventories=_INVENTORIES,
+        dc_probe=lambda _e, _f: 0,
+    )
+    try:
+        for dim_id in (
+            "styles", "media_type", "stars", "color_labels", "flag",
+            "event_type", "event_subtype", "scope", "participants",
+            "event_date",
+            "capture_date", "country_codes", "cities",
+        ):
+            assert dim_id in d._dimensions, \
+                f"{dim_id} missing from Phase 4a Collection dialog"
+    finally:
+        d.deleteLater()
 
 
 # --------------------------------------------------------------------------- #
@@ -770,13 +828,17 @@ def test_multi_select_picker_summary_reflects_selection(qapp):
 def test_dialog_routes_choose_button_to_picker(qapp, monkeypatch):
     """End-to-end: adding a picker-mode dimension wires the facet's
     Choose… click to :meth:`_open_facet_picker`. We stub the picker call
-    to record + skip the modal exec."""
+    to record + skip the modal exec.
+
+    Exercises ``camera_ids`` — a Phase 4a-gated dim — so the test opts
+    into the full catalogue via ``catalogue_builder``."""
     # Inflate the camera inventory so camera_ids is in picker mode (> 12).
     inv = CrossEventInventories.from_dict({
         "camera_ids": [(f"cam{i}", 10) for i in range(15)],
     })
     d = NewCrossEventDcDialog(
-        inventories=inv, dc_probe=lambda _e, _f: 5)
+        inventories=inv, dc_probe=lambda _e, _f: 5,
+        catalogue_builder=build_cross_event_catalogue)
     calls = []
     monkeypatch.setattr(
         d, "_open_facet_picker", lambda key: calls.append(key))
@@ -791,12 +853,14 @@ def test_dialog_routes_choose_button_to_picker(qapp, monkeypatch):
 
 
 def test_open_facet_picker_writes_back_on_ok(qapp, monkeypatch):
-    """When the picker exits OK, the facet's selected set is updated."""
+    """When the picker exits OK, the facet's selected set is updated.
+    Exercises ``camera_ids`` — Phase 4a-gated — via the full catalogue."""
     inv = CrossEventInventories.from_dict({
         "camera_ids": [(f"cam{i}", 10) for i in range(15)],
     })
     d = NewCrossEventDcDialog(
-        inventories=inv, dc_probe=lambda _e, _f: 5)
+        inventories=inv, dc_probe=lambda _e, _f: 5,
+        catalogue_builder=build_cross_event_catalogue)
     d.add_filter_dimension("camera_ids")
     facet = d._facets[0]
 

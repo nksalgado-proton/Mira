@@ -1275,15 +1275,48 @@ class EventGateway:
             self._touch()
 
     def dc_operand_inventory(self) -> List[dict]:
-        """The operands the New Cut dialog offers (spec/81 §2): the base
-        universe ``#exported`` plus every existing DC and Cut in this event,
-        each as a typed ref ready to drop into an expr. Base first, then DCs,
-        then Cuts (each oldest-first)."""
+        """The operands the New Cut dialog offers (spec/81 §2 + spec/93
+        §6): the base universe ``#exported``, then every Collection
+        offered in this event (GLOBAL ∪ BOUND-to-E), then every Cut.
+
+        spec/94 Phase 2 — the Collections set includes:
+
+        1. **Bound** DCs from ``event.db.dynamic_collection`` (oldest first).
+        2. **Global** Collections from the file-based library (spec/93 §4)
+           — every JSON file under ``<library_root>/Collections/`` whose
+           id isn't already a bound row. Cross-bound Collections appear
+           here too; the resolver handles the empty-resolution case when
+           the current event isn't in their bound set.
+
+        An id that appears in BOTH stores resolves to the bound row only
+        (event.db wins) so the dialog never shows two chips for what the
+        resolver treats as one definition.
+        """
         inv: List[dict] = [{"kind": "base", "tag": cut_names.EXPORTED_TAG,
                             "operand": cut_names.EXPORTED_TAG}]
+        seen_ids: set = set()
         for d in self.dynamic_collections():
+            seen_ids.add(d.id)
             inv.append({"kind": "dc", "tag": d.tag,
                         "operand": {"kind": "dc", "id": d.id, "tag": d.tag}})
+        # spec/93 §6 fallback to GLOBAL Collections. The cached library
+        # snapshot is the same one the resolver uses (built lazily, one
+        # scan per open_event lifetime).
+        snapshot = self._collections_library_snapshot()
+        if snapshot is not None:
+            library_by_id, by_name = snapshot
+            # Build a reverse map from payload-id to display name so we
+            # can attach a human-readable tag to each library chip.
+            name_by_payload_id = {
+                id(payload): name for name, payload in by_name.items()
+            }
+            for lib_id, payload in library_by_id.items():
+                if lib_id in seen_ids:
+                    continue
+                tag = name_by_payload_id.get(id(payload), lib_id)
+                inv.append({"kind": "dc", "tag": tag,
+                            "operand": {"kind": "dc", "id": lib_id,
+                                        "tag": tag}})
         for c in self.cuts():
             inv.append({"kind": "cut", "tag": c.tag,
                         "operand": {"kind": "cut", "id": c.id, "tag": c.tag}})

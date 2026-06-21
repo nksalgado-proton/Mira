@@ -26,14 +26,18 @@ one-way `ui → gateway/core` deps, `tr()` for strings, no inline QSS).
 ---
 
 ## Phase 1 — Foundations: library root + define / store / browse / save
-*(un-gated; assigned)*
+*(**complete** 2026-06-21, 12 commits on `main`, `verify.bat` green —
+substrate + host-wiring + cleanups all landed)*
 
 - **Library-root relocation** (spec/76 §B.4): user-defined root, hidden `.mira/`,
   bootstrap pointer, Create / Open first-run doors, one-shot migration, paths
   relative to the root, reinstall recovery.
-- **Collections / Recipes as JSON files** (spec/93 §4): name-as-identity,
-  per-kind global uniqueness, rename-updates-referrers, atomic writes under the
-  lock, cached tree-scan.
+- **Collections / Recipes as JSON files** (spec/93 §4): a stable internal **`id`**
+  is the identity (the filename is just the display name), references are
+  `{id, name}` resolved by id with a name fallback, so **move and rename in the
+  file manager are both safe** (the app adopts an OS-rename's new name on scan;
+  delete is the only unrecoverable act). Soft display-name uniqueness, atomic
+  writes under the lock, cached tree-scan.
 - **Auto-placement classifier** (spec/93 §5) + file ↔ `event.db` migration.
 - **Cascading folder menus** mirroring the tree (any depth).
 - **Compose / save dialog** (spec/90 five-section rule-list editor), speaking the
@@ -43,6 +47,24 @@ one-way `ui → gateway/core` deps, `tr()` for strings, no inline QSS).
 
 **Exit:** author, save, organise, and browse Collections and Recipes; placement
 is automatic and correct.
+
+**Landed (1a):** library-root resolution, first-run wizard, lock relocated to
+`<root>/.mira/writer.lock`, the binding-badge + migration-note + Collection
+vocabulary in `NewRecipeDialog`. `DefinitionLibrary`, the placement classifier +
+atomic file↔`event.db` switch, the cascading-menu widget, and the definitions
+gateway facade as substrate.
+
+**Landed (1b):** slug-collision disambiguation (case-folded — defends against
+NTFS / APFS-default) + reconcile-on-scan in `DefinitionLibrary`; one-shot
+`mira.db.saved_filter` + `mira.db.recipe` → JSON-file migration
+(`core/dual_home_migrate.py`, idempotent + marker-gated); `Gateway` wires
+`collections_library` + `recipes_library` + the facades + the migration on
+first access; `LibraryGateway` + `RecipeStore` route through the JSON tree as
+the single live source (legacy SQL paths fall back only on unit-test direct
+constructions); both `NewRecipeDialog` launch sites (Cut + Collection) pass
+`classify_placement` + `event_name_for_id`, and Load Recipe mounts the
+`CascadingTreeMenu` against the gateway facade — `tree_for_event` returns
+GLOBAL ∪ BOUND-to-E per spec/93 §6.
 
 ## Phase 2 — Resolve + pin (make definitions real, event-scope)  *(M–L)*
 

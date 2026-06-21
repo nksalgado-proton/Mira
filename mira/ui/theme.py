@@ -172,6 +172,45 @@ def resolve_theme_colors(
         "photo_canvas_bg": photo_canvas_bg,
         "focus_border": p["accent"],
         "menu_border": p["line"],
+        # spec/92 §4 Stage 4c slice 2 — per-theme aliases for what used
+        # to be theme-divergent literal colours in dark.qss / light.qss.
+        # Each token below picks the theme-specific value so the rule
+        # body can be IDENTICAL between modes (and migrate into the
+        # single redesign.qss model with no per-theme branching).
+        "primary_disabled_text": (
+            disabled_text.name() if win_is_dark else "#FFFFFF"
+        ),
+        "statusbreakdown_bg": (
+            p["card2"] if win_is_dark else p["line"]
+        ),
+        # spec/44 §3 — EventCardStatusBadge[state="open"] is the green
+        # "live event" pill. Per-theme tweak: dark gets a brighter
+        # green + higher alpha; light gets the desaturated green + a
+        # lower alpha so the badge reads as a soft chip on the white card.
+        "status_open_bg": (
+            "rgba(63, 157, 95, 0.22)" if win_is_dark
+            else "rgba(63, 157, 95, 0.18)"
+        ),
+        "status_open_color": "#6DC587" if win_is_dark else "#3F9D5F",
+        # spec/44 §3 — EventCardTypeBadge[type=...] base + per-type
+        # colours. Dark mode uses brighter saturated values; light uses
+        # darker desaturated ones so contrast against the white card
+        # stays readable.
+        "type_default_bg": "#4B5563" if win_is_dark else "#888888",
+        "type_trip":      "#3B82F6" if win_is_dark else "#2563EB",
+        "type_session":   "#22C55E" if win_is_dark else "#16A34A",
+        "type_occasion":  "#EC4899" if win_is_dark else "#DB2777",
+        "type_project":   "#A78BFA" if win_is_dark else "#7C3AED",
+        # F-032 — InfoCardRow[variant] border + title colours. Three
+        # named variants (bucket=warm amber, camera=steel blue,
+        # day=teal). Each tracks a dark-mode brighter / light-mode
+        # darker shift; hover bumps the same hue.
+        "info_bucket":        "#D49560" if win_is_dark else "#B07A3F",
+        "info_bucket_hover":  "#E5AC78" if win_is_dark else "#C99155",
+        "info_camera":        "#6088C0" if win_is_dark else "#4A6FA5",
+        "info_camera_hover":  "#7BA3D8" if win_is_dark else "#6088C0",
+        "info_day":           "#4AA3B0" if win_is_dark else "#2A7F8A",
+        "info_day_hover":     "#62BDC9" if win_is_dark else "#3A9EAE",
     }
 
     # new_tokens contains `accent` + `accent_soft`; legacy_aliases would also

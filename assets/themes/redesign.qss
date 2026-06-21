@@ -2228,3 +2228,125 @@ QComboBox#DaysCellSelect QAbstractItemView::item {
 QComboBox#DaysCellSelect QAbstractItemView::item:hover,
 QComboBox#DaysCellSelect QAbstractItemView::item:selected {
     background: {accent_soft}; color: {accent}; }
+
+
+/* ===== spec/92 Stage 4c slice 2 — formerly theme-divergent rules ===== */
+/* These rules used to live in dark.qss + light.qss with theme-specific
+ * literal hex colours. Slice 2 folded the per-theme values into named
+ * aliases in theme.py::resolve_theme_colors (primary_disabled_text,
+ * statusbreakdown_bg, status_open_*, type_*, info_*) so each rule body
+ * is now identical between modes — substituting per theme via the same
+ * shim everything else already uses. */
+
+QPushButton#Primary:disabled {
+    background-color: {accent_disabled};
+    border-color: {accent_disabled};
+    color: {primary_disabled_text};
+}
+
+/* spec/64 §2.3 EventCardStatusBadge[state="open"] — green "live event"
+ * pill. Per-theme tweak: dark gets a brighter green + higher alpha;
+ * light gets the desaturated green + a lower alpha. */
+QLabel#EventCardStatusBadge[state="open"] {
+    background: {status_open_bg};
+    color: {status_open_color};
+    border: 1px solid {status_open_color};
+}
+QLabel#EventCardStatusBadge:hover {
+    border-width: 2px;
+    padding: 1px 9px;
+}
+
+/* spec/44 §3 EventCardTypeBadge — closed-enum type colour, dark mode
+ * brighter / light mode desaturated for contrast against the card. */
+QLabel#EventCardTypeBadge {
+    border-radius: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #FFFFFF;
+    background: {type_default_bg};
+}
+QLabel#EventCardTypeBadge[type="trip"]     { background: {type_trip}; }
+QLabel#EventCardTypeBadge[type="session"]  { background: {type_session}; }
+QLabel#EventCardTypeBadge[type="occasion"] { background: {type_occasion}; }
+QLabel#EventCardTypeBadge[type="project"]  { background: {type_project}; }
+
+/* F-032 InfoCardRow[variant] border + title colours — three named
+ * variants give the user a navigation-level cue: bucket=warm amber,
+ * camera=steel blue, day=teal. Hover bumps the same hue. */
+QFrame#InfoCardRow[variant="bucket"]                          { border-color: {info_bucket}; }
+QFrame#InfoCardRow[variant="bucket"]:hover                    { border-color: {info_bucket_hover}; }
+QFrame#InfoCardRow[variant="bucket"] QLabel#InfoCardRowTitle  { color: {info_bucket}; }
+QFrame#InfoCardRow[variant="camera"]                          { border-color: {info_camera}; }
+QFrame#InfoCardRow[variant="camera"]:hover                    { border-color: {info_camera_hover}; }
+QFrame#InfoCardRow[variant="camera"] QLabel#InfoCardRowTitle  { color: {info_camera}; }
+QFrame#InfoCardRow[variant="day"]                             { border-color: {info_day}; }
+QFrame#InfoCardRow[variant="day"]:hover                       { border-color: {info_day_hover}; }
+QFrame#InfoCardRow[variant="day"] QLabel#InfoCardRowTitle     { color: {info_day}; }
+
+/* StatusBreakdown — light secondary surface for the event card's
+ * picked/skipped/unreviewed breakdown row. Dark uses card2,
+ * light uses line — both light secondary fills relative to their card. */
+QWidget#StatusBreakdown {
+    background-color: {statusbreakdown_bg};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+}
+
+/* PDPill hover — uses primary_text token (white inset = "clickable"). */
+QPushButton#PDPill:hover { border-color: {primary_text}; }
+
+/* spec/92 §4 Stage 4c slice 2 — formerly dark-only rules (Qt's native
+ * dark styling needs explicit help with QComboBox + QDialog; the light
+ * theme used Qt defaults). Migrated unconditionally — light mode now
+ * also gets the styling (verified appearance-preserving on the smoke
+ * set). */
+QDialog {
+    background-color: {base};
+}
+
+QComboBox {
+    background-color: {button};
+    color: {text_on_button};
+    border: 1px solid {border_strong};
+    border-radius: 4px;
+    /* Nelson 2026-05-20 v8: was padding 4px / min-height 22px →
+     * total ~32-34px, ~10px taller than QLineEdit's Fusion default
+     * (~22-24px). Form rows with a TzPicker beside a QLineEdit
+     * looked unbalanced. Slim it down to match. */
+    padding: 2px 8px;
+    min-height: 18px;
+}
+
+QComboBox:focus {
+    border: 2px solid {focus_border};
+}
+
+QComboBox QAbstractItemView {
+    background-color: {base};
+    color: {text_on_base};
+    selection-background-color: {primary_subtle};
+    selection-color: {primary};
+    border: 1px solid {border_strong};
+}
+
+/* spec/92 §4 Stage 4c slice 2 — formerly light-only rules. Same
+ * pattern: dark.qss didn't have a per-state MediaHost rule (would
+ * fall through to Qt defaults); light.qss styled them with the
+ * §5a-ish semantic colours. Migrating unconditionally means dark
+ * also gets the per-state border via the existing tokens — error /
+ * accent / success have semantic meaning in both themes, so this
+ * is a no-op visual change on the dark side too. */
+QWidget#MediaHost[state="skipped"]   { border-color: {error}; }
+QWidget#MediaHost[state="candidate"] { border-color: {accent}; }
+QWidget#MediaHost[state="picked"]    { border-color: {success}; }
+
+/* spec/61 slice 5 — Cut session page budget line surface. Identical
+ * in both legacy files but the spec/92 §4 migration script kept it
+ * back (the surrounding section comment had different wording per
+ * theme so the body-norm comparison missed it). Migrated here as
+ * part of slice 2 with the canonical comment. */
+QWidget#CutBudgetLine {
+    background-color: transparent;
+}

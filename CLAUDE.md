@@ -173,10 +173,23 @@ without an audit pass.
 ## QSS + clickable affordances
 
 Visual treatment lives in QSS, not in widget code. Never `setStyleSheet(...)`
-inline in widget modules. Themes under `assets/themes/{light,dark}.qss`
-carry every style rule; widgets opt into roles via `setObjectName("<Role>")`.
-Roles must exist in BOTH themes. See `spec/05-ui-standards.md` for the role
-catalog.
+inline in widget modules (the `tests/test_no_inline_qss.py` guard fails the
+suite on any growth past `scripts/qss_guard_baseline.json`; a reviewed
+exception is marked with a trailing `# pragma: no-qss`). The canonical
+stylesheet is **`assets/themes/redesign.qss`** — one token-substituted
+template covering both themes (substitution happens in
+`mira/ui/palette.py::build_redesign_qss`). Legacy `assets/themes/dark.qss`
+and `light.qss` are being retired per **spec/92**; what remains is the
+residue of still-referenced legacy roles plus the global `QWidget` base
+rule, all concatenated AFTER redesign.qss by `theme.py::apply_theme()`.
+
+Widgets opt into roles via `setObjectName("<Role>")`. Variation rides on
+**Qt dynamic properties + `polish/unpolish`**, never on sibling roles —
+e.g. `#Chip[tone="open"]`, `#Card[level="2"]`, `#StateBorder[state="picked"]`,
+`#SectionBox`, `#Tile[tone="stat\|cover"]`. The full canonical catalog lives
+in **spec/92 §2** (per-widget standard) and **Appendix B** (pixel-precise
+values); spec/92 Appendix A maps every retired legacy role to its canonical
+replacement.
 
 Every clickable widget gets visible border + hover + pressed + disabled
 states + a pointing-hand cursor on hover. The cursor is applied by an

@@ -187,22 +187,35 @@ does NOT mean "minimize all chrome everywhere":
 
 ### 5.1 QSS is the single source of visual treatment
 
-(Legacy docs/16.) Roles via `setObjectName`; light + dark themes always updated
-together; no inline `setStyleSheet` in widget code.
+(Legacy docs/16; rewritten 2026-06-20 to point at the spec/92 canonical
+catalog.) Roles via `setObjectName`; **one canonical role per widget
+purpose**, with variation expressed as Qt dynamic properties + repolish
+(never as sibling roles); light + dark themes resolved from one
+`mira/ui/palette.py` token vocabulary; no inline `setStyleSheet` in
+widget code (enforced by the spec/92 §7 inline-style guard).
 
-Recent additions to the role catalog (the QSS files are the canonical list;
-this is a discoverability aid):
+The canonical role catalog lives in **[spec/92 §2](92-widget-consolidation.md)**
+(per-widget standard) and **Appendix B** (pixel-precise values); spec/92
+Appendix A maps every retired legacy role to its canonical replacement.
+The primary stylesheet is `assets/themes/redesign.qss` (token-substituted
+once per theme); the residual `dark.qss` / `light.qss` carry only the
+roles still pending migration per spec/92 §4.
 
-- **Video Picker (surface 11)** — `#VideoTransport` (the strip card under the
-  stage), `#VideoScrubber` (position slider), `#VideoTime` (bold tabular time
-  readout), `#VideoVolume` (volume slider), `#VideoMuteToggle` (clickable mute
-  button with the line-icon family's `GLYPH_VOLUME` / `GLYPH_VOLUME_MUTED`
-  glyphs; carries a dynamic `[muted="true"]` selector for the dimmed state),
-  `#VideoSpeed` (speed selector — extends the base `QComboBox`),
-  `#VideoDurationChip` / `#VideoVisitedEye` / `#VideoExportedChip` /
-  `#VideoBigPlay` (stage overlays riding the PhotoViewport). Every clickable
-  role carries hover · pressed · disabled affordances + pointing-hand cursor
-  per §1.
+Variation patterns already in production:
+
+- `#Chip[tone="open|closed|done|prog|idle"]`
+- `#Card`  +  `#Card[level="2"]`
+- `#Tile[tone="stat|cover"]`
+- `#StateBorder[state="picked|skipped|compare|mixed|neutral"]` (the §5a
+  locked photo-state colours)
+- `#SectionBox` (the dialog section family; per-section semantic identity
+  on a `section` property — see new_recipe_dialog)
+- `#IconTile[tone]` / `#StepLabel[status]` / `#SurfaceHeaderRail[phase]` /
+  `#SurfaceHeaderBadge[phase]` / `#Ghost[active]`
+
+When adding a new role: define it in `redesign.qss` using `{token}`
+tokens from `palette.py`; if it varies, use a property rather than a new
+sibling role.
 
 ### 5.2 Keyboard nav + fullscreen on every photo-display surface
 

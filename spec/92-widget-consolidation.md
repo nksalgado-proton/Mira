@@ -609,12 +609,137 @@ role-collapse lands on an unrendered surface.
 
 ---
 
-## Appendix A — canonical role catalog (to be filled at Stage 0)
+## Appendix A — canonical role catalog (snapshot 2026-06-20)
 
-A single table: `canonical role → Qt type → primitive → properties → retired
-aliases it absorbs`. Populated by snapshotting today's 98 + 202 + 202 selectors
-and mapping each onto §2. This appendix becomes the single source the CI catalog
-check and spec/05 §5.1 both point to.
+The canonical role per widget purpose, after Stages 3a–3d and Stage 4a. The
+**Variants** column lists the Qt dynamic properties that select sub-styles
+(empty when the role has none); **Retires** lists the legacy sibling roles
+the canonical role replaces (deleted from `redesign.qss` per the migration
+commits in the brackets). Roles defined only in legacy `dark.qss`/`light.qss`
+that survive the Stage 4a dead-role purge but have not yet migrated to
+`redesign.qss` are listed at the end (Stage 4b/c/d target).
+
+### A.1 Buttons (`QPushButton`)
+
+| Canonical role | Primitive (in `mira/ui/design`) | Variants | Retires |
+|---|---|---|---|
+| `#Primary` | `primary_button()` | — | — |
+| `#Ghost` | `ghost_button()` | `[active="true"]` (toggled-on) | `BatchOpButton`, `ListButton*`, `FilterChip`, `SubfolderChip*`, `FeatureToggle`, `PlanBrowseCell` (legacy aliases retired in Stage 1-2 / 4a) |
+| `#DangerGhost` | `danger_ghost_button()` | — | — |
+| `#DangerPrimary` | factory | — | `DangerButton` (Stage 1) |
+| `#PillToggle` | `pill_toggle()` | `:checked` | — |
+| `#ThemeToggle` | `ThemeToggle` | — | — |
+| `#TileMore` / `#DialogClose` / `#MediaNavArrow` / `#CarouselArrow` / `#DayPillNav` / `#CutRowKebab` / `#PoolStepperBtn` | various | shape-specific | (kept as named primitives; the §2.1 `IconButton[shape]` collapse is deferred to a later sweep) |
+
+### A.2 Inputs (`QLineEdit` / `QComboBox` / `QSpinBox` / `QPlainTextEdit`)
+
+| Canonical role | Primitive | Variants | Retires |
+|---|---|---|---|
+| `#DesignInput` | `line_input()` | — | `SliderValueField`, `AdjustmentValue` (legacy) |
+| `#DesignSelect` | `select()` | — | `ProcessStyleCombo`, `ProcessFilterCombo`, `ProcessAspectCombo`, `VideoExtraCombo` (legacy) |
+| `#DesignSpin` | factory | — | (chrome unified onto the shared input look in Stage 1-2 — `::up-button`/`::down-button` styled inside the role) |
+| `#DesignText` | factory | — | — |
+| `#SearchField` | `search_field()` | — | — |
+| `#DaysCellInput` / `#DaysCellSelect` | factory | — | (Surface 04 inline-cell variants; `[context="cell"]` collapse is the §2.2 future state) |
+
+**Every input lives inside a `#FormFieldGroup`** per §2.3.1 (Event Header still pending — spec/92 Stage 2b).
+
+### A.3 Containers (`QFrame` / `QGroupBox`)
+
+| Canonical role | Variants | Retires (collapsed in this program) |
+|---|---|---|
+| `#Card` (level-1 primary surface) | — | — |
+| `#Card[level="2"]` | `level="2"` | `Card2` ([9f49dbf]) |
+| `#Tile` | `[tone="stat\|cover"]` | `StatTile` → `[tone="stat"]`, `TileCard` → `[tone="cover"]` ([9f49dbf]) |
+| `#StateBorder` (the §5a photo-state ring) | `[state="picked\|skipped\|compare\|mixed\|neutral"]` | `StatePicked` / `StateSkipped` / `StateCompare` / `StateMixed` / `StateNeutral` ([8eb665a]) |
+| `#SectionBox` (dialog section family) | semantic identity on the `section` Qt property | `NameBox` / `ScopeBox` / `SourceSection` / `FiltersSection` / `RulesSectionCard` / `OtherwiseSectionCard` / `RuntimeSectionCard` / `MetricsSectionCard` / `WhichItemsBand` / `WhatToDoBand` / `RecipeToolbar` / `SectionCard` ([de2a556]) |
+| `#FormFieldGroup` (`QGroupBox`) — the canonical titled input wrapper | `[required="true"]` (future) | (the input-presentation primitive; legacy `FormFieldGroup` in dark/light.qss is shadowed by the redesign rule) |
+| `#FilterRailGroup` (`QGroupBox`) | — | (compact-padding variant of FormFieldGroup) |
+| `#IconTile` (small rounded glyph holder) | `[tone="accent"]`, `[bordered="true"]` | category tiles, cross-event glyph, share globe (unified in Stage 1) |
+| `#ShareListRow` / `#ShareTabPane` / `#CrossEventBand` | — | (kept as distinctive Share-surface roles per §2.3 deliberate-exception clause) |
+| `#PreviewPane` | — | hardcoded preview-pane inline styles (Stage 1) |
+| `#TzSuggestionBanner` | — | hardcoded amber-banner inline styles (Stage 1) |
+| `#PoolChipHost` / `#PoolChipName` / `#PoolChipCount` | — | (recipe-dialog pool chip surface) |
+| `#CutHeaderTile` / `#DialogDivider` | — | (dialog scaffolding) |
+
+### A.4 Type scale (`QLabel`)
+
+| Canonical role | Size / weight | Job |
+|---|---|---|
+| `#PageTitle` | 30 / 800 | page H1 |
+| `#EventTitle` | 24 / 800 | event/section H1 |
+| `#CardTitle` | 18 / 700 | card/panel heading |
+| `#Sub` / `#Label` | 13 | secondary line / captions |
+| `#Micro` | 11 / 700 caps | eyebrow / micro-heading |
+| `#Faint` | inherit | hints, empty states |
+| `#SectionEyebrow` | 10 / 800 caps + rule | dialog section header (Stage 1) |
+| `#StepLabel` | `[status="done\|now"]` | ProgressDialog stepper (Stage 1) |
+| `#Pct[Collect\|Pick\|Edit\|Export\|Zero]` | phase token | pipeline percentages |
+
+### A.5 Chips / tags / badges
+
+| Canonical role | Variants | Retires |
+|---|---|---|
+| `#Chip` | `[tone="open\|closed\|done\|prog\|idle"]` | `ChipOpen` / `ChipClosed` / `ChipDone` / `ChipProg` / `ChipIdle` ([95d0b11]) |
+| `#Tag` | — | — |
+| `#OverlayChip` / `#ExportedBadge` | — | — |
+| `#SurfaceHeaderBadge` | `[phase="collect\|pick\|edit\|export\|share"]` | (per-phase identity badge) |
+
+### A.6 Progress, tables, headers
+
+| Canonical role | Variants | Notes |
+|---|---|---|
+| `#StageBar` (`QProgressBar`) | `[state="done\|prog\|skip"]` | (`StageProgress` primitive) |
+| `#EventDaysTable` (`QTableWidget`) | — | Surface 04 themed chrome — generalises into spec/92 §2.6 `DataTable` |
+| `#PastPhotosTable` | — | Stage 1 token-driven gridline; folds into `DataTable` next |
+| `#DaysTableCheck` (`QCheckBox`) | — | generalises into `DesignCheck` |
+| `#SurfaceHeaderRail` (`QFrame`) | `[phase="collect\|pick\|edit\|export\|share"]` | spec/71 phase rail |
+| `#SurfaceHeaderPurpose` / `#SurfaceHeaderReminder` (`QLabel`) | — | spec/71 |
+| `#TitleBar` (`QWidget`) + `#TitleMenuBar` (`QMenuBar`) + `#Wordmark` | — | shell chrome |
+| `#ShareTabs` (`QTabWidget`) | — | borderless documentMode + accent underline |
+
+### A.7 Painted (no QSS — read `PALETTE` in `paintEvent`)
+
+`Donut`, `StageProgress` (paint), `Thumb`, `MiraMark`, brand swatches.
+These are NOT `setStyleSheet` and are the correct pattern for canvas-drawn
+elements (spec/92 §6 documented exception).
+
+### A.8 Tokens (the only colours allowed) — `palette.py`
+
+`bg card card2 ink ink_soft ink_faint line card_border accent accent_soft
+green amber red pink blue track bg_glow picked skipped compare mixed` ·
+radius `sm=8 md=11 lg=14 xl=18` · `shadow_alpha`. The handful of
+`rgba(...)` literals in chip tints and translucent overlays are the only
+sanctioned non-token colours.
+
+### A.9 Legacy roles still pending migration (Stage 4b/c/d)
+
+Stage 4a removed the 73 truly-dead legacy roles from `dark.qss` /
+`light.qss`. The 100 still-referenced legacy roles below remain there
+until Stage 4b/c/d migrates them into `redesign.qss` with single-brace
+token substitution. (Live = at least one `setObjectName("Role")` in
+`mira/`, `core/`, `tests/`, or `scripts/`.)
+
+`AdjustmentLabel` · `AdjustmentReset` · `AdjustmentSlider` ·
+`AdjustmentValue` · `BatchOpButton` · `BatchProgressLabel` ·
+`BatchProgressLine` · `BatchProgressQueued` · `BodyText` ·
+`ClassificationTagSuggestion` · `CountryPickerChip` · `CutBudgetBar` ·
+`CutBudgetLabel` · `CutBudgetLine` · `CutSessionDayRow` ·
+`CutSingleFrame` · `CutSingleImage` · `DangerButtonText` ·
+`DayGridHeader` · `EventCard` · `EventCardClosed`, `EventCardClosedBody*`
+(4 sub-roles) · `EventCardDate` · `EventCardDaysBadge` · `EventCardEmpty`
+· `EventCardFromTo` · `EventCardLeftZone` · `EventCardPhaseLabel` ·
+`EventCardRightZone` · `EventCardStatusBadge` · `EventCardSubtype` ·
+`EventCardTagChip`, `EventCardTagChipOverflow` · `EventCardTitle` ·
+`EventCardTopZone` · `EventCardTypeBadge` · `EventCardTz`, …
+(full list: `python scripts/qss_guard.py`-style audit produced 100
+entries — the next migration slice picks them up by surface family).
+
+The migration target QSS rules are tokenised (`{line}`, `{card2}`,
+`{accent}`, etc.) so they can be lifted into `redesign.qss` essentially
+verbatim — the only change is `{{` / `}}` → single `{` / `}` for the
+literal CSS braces (legacy uses Python `.format_map` escapes; redesign
+uses plain `str.replace`).
 
 ---
 

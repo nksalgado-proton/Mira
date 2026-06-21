@@ -92,9 +92,12 @@ class CutDetailPage(QWidget):
         self._cache = photo_cache()
         self._cache.scaled_pixmap_ready.connect(self._on_thumb_ready)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        # spec/94 Phase 3 — Back lives in the shared title bar.
+        self.uses_titlebar_back = True
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         # Flush full-width pink rail (Share state) at the very top, like the
         # other surfaces. Back lives in the shared title bar — routed here by
@@ -103,11 +106,25 @@ class CutDetailPage(QWidget):
         self._rail.setObjectName("SurfaceHeaderRail")
         self._rail.setProperty("phase", "share")
         self._rail.setFixedHeight(2)
-        outer.addWidget(self._rail)
+        root.addWidget(self._rail)
 
-        # ── Top bar (Adjust row) ─────────────────────────────────────
+        # ── Content host (standard margins/spacing — spec/94 Phase 3) ─
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(28, 18, 28, 22)
+        outer.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # ── Top band: Adjust row + grid chrome row in one SurfaceBand ─
+        top_band = QFrame()
+        top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(top_band)
+        top_l.setContentsMargins(16, 12, 16, 12)
+        top_l.setSpacing(10)
+
         head = QHBoxLayout()
-        head.setContentsMargins(12, 8, 12, 4)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(10)
         self._tag_lbl = QLabel("")
         self._tag_lbl.setObjectName("PoolCountLabel")
         head.addWidget(self._tag_lbl)
@@ -122,11 +139,10 @@ class CutDetailPage(QWidget):
             lambda: self._cut_id and self.adjust_requested.emit(self._cut_id))
         head.addWidget(adjust)
         # Help is in the shared title bar now (routed to show_help / F1).
-        outer.addLayout(head)
+        top_l.addLayout(head)
 
-        # ── Grid chrome (Back + header + Play/Export) ────────────────
         chrome = QHBoxLayout()
-        chrome.setContentsMargins(12, 4, 12, 8)
+        chrome.setContentsMargins(0, 0, 0, 0)
         chrome.setSpacing(12)
         # Back is in the shared title bar now (routed via
         # ShareCutsPage.on_titlebar_back). The grid's own back_requested
@@ -154,9 +170,17 @@ class CutDetailPage(QWidget):
             lambda: self._cut_id and self.export_requested.emit(self._cut_id))
         self._export_btn.setVisible(bool(show_export))
         chrome.addWidget(self._export_btn)
-        outer.addLayout(chrome)
+        top_l.addLayout(chrome)
 
-        # ── Stack: grid ↔ single view ────────────────────────────────
+        outer.addWidget(top_band)
+
+        # ── Grid band: the flat show-order grid ↔ single view ────────
+        grid_band = QFrame()
+        grid_band.setObjectName("SurfaceBand")
+        grid_l = QVBoxLayout(grid_band)
+        grid_l.setContentsMargins(16, 12, 16, 14)
+        grid_l.setSpacing(10)
+
         self._stack = QStackedWidget()
         # spec/61 §5.1 — Cuts are post-pick, so the grid carries no
         # decision-state border. The blurred-fill canvas + hairline
@@ -170,7 +194,8 @@ class CutDetailPage(QWidget):
         self._single.back_requested.connect(self._back_to_grid)
         self._single.fullscreen_requested.connect(self._toggle_fullscreen)
         self._stack.addWidget(self._single)
-        outer.addWidget(self._stack, stretch=1)
+        grid_l.addWidget(self._stack, stretch=1)
+        outer.addWidget(grid_band, 1)
         QShortcut(QKeySequence("F1"), self, activated=self._show_shortcuts)
 
     # ── content ──────────────────────────────────────────────────────
@@ -322,6 +347,18 @@ class CutDetailPage(QWidget):
     def show_help(self) -> None:
         """Title-bar Help / F1 hook (routed via ShareCutsPage.show_help)."""
         self._show_shortcuts()
+
+    def on_titlebar_back(self) -> None:
+        """spec/94 Phase 3 — shared title-bar Back dispatch.
+
+        At the flat grid (the landing state) Back leaves the Cut detail
+        via ``back_requested``; the single view falls back to the grid
+        one level at a time.
+        """
+        if self._stack.currentIndex() == 1:
+            self._back_to_grid()
+        else:
+            self.back_requested.emit()
 
     def _show_shortcuts(self) -> None:
         show_shortcuts(self, tr("Cut detail"), [

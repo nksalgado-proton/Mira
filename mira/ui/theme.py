@@ -293,6 +293,15 @@ def apply_theme(
         Path(__file__).resolve().parents[2] / "assets" / "icons" / "check.svg"
     )
     resolved["check_icon_url"] = icon_path.as_posix()
+    # spec/92 Stage 4: redesign.qss now shares the legacy template's full
+    # token vocabulary so migrated legacy rules substitute with the same
+    # ``resolve_theme_colors()`` shim the legacy templates use. Pre-populate
+    # ``chevron_down_icon_url`` here too so build_redesign_qss does not need
+    # to re-derive it.
+    resolved["chevron_down_icon_url"] = (
+        Path(__file__).resolve().parents[2]
+        / "assets" / "icons" / "glyphs" / "chevron_down.svg"
+    ).as_posix()
 
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(build_qpalette(resolved))
@@ -312,9 +321,12 @@ def apply_theme(
         legacy_qss = ""
         log.warning("No legacy QSS template found for mode=%r", mode)
 
-    # Design-system template — single-brace substitution via palette helper
+    # Design-system template — single-brace substitution via palette helper.
+    # Pass the full resolved-token dict (canonical + legacy aliases +
+    # computed hover/pressed variants + asset URLs) so the redesign template
+    # can carry rules migrated out of the legacy QSS verbatim.
     try:
-        redesign_qss = build_redesign_qss(mode)
+        redesign_qss = build_redesign_qss(mode, tokens=resolved)
     except FileNotFoundError:
         log.warning(
             "assets/themes/redesign.qss missing; new design-system roles will "

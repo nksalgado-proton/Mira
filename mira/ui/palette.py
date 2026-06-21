@@ -91,28 +91,48 @@ def _glyph_url(name: str) -> str:
     ).as_posix()
 
 
-def build_redesign_qss(theme: str = "dark") -> str:
+def build_redesign_qss(
+    theme: str = "dark",
+    *,
+    tokens: dict[str, str] | None = None,
+) -> str:
     """Substitute design-system tokens into the redesign QSS template.
 
     Single-brace substitution: every ``{key}`` in the template is replaced by
-    the matching value from ``PALETTE[theme]`` or ``RADIUS``. Unlike the
-    legacy templates, this is NOT a Python format string — literal CSS braces
-    are not escaped.
+    the matching value from ``tokens`` (defaulting to ``PALETTE[theme]``) or
+    ``RADIUS``. Unlike the legacy templates, this is NOT a Python format
+    string — literal CSS braces are not escaped.
+
+    Args:
+        theme: which palette to use as the default token source AND for
+            the ``RADIUS`` lookup (radius keys are theme-independent but the
+            arg is retained so the no-tokens path stays backwards-compatible).
+        tokens: optional override. When the caller passes the full
+            resolved-color dict from ``theme.py::resolve_theme_colors`` (the
+            ~60-key vocabulary covering canonical tokens + legacy aliases +
+            computed hover/pressed/disabled variants), every legacy alias
+            used by a migrated rule resolves correctly. The default
+            (``PALETTE[theme]`` alone) only substitutes the canonical tokens
+            — sufficient for the pre-Stage-4 redesign.qss state.
 
     Asset paths exposed: ``{chevron_down_icon_url}`` resolves to the absolute
     POSIX path of ``assets/icons/glyphs/chevron_down.svg`` so the QSS rules
     that draw QComboBox's dropdown chevron find the file from any working
     directory (it ships next to the bundled binaries in the Nuitka onefile).
+    The caller may pre-populate this key in ``tokens``; otherwise it is
+    substituted as the last step.
 
     Raises ``FileNotFoundError`` if ``assets/themes/redesign.qss`` is missing
     (the foundation install must have run).
     """
-    tokens = PALETTE[theme]
+    if tokens is None:
+        tokens = PALETTE[theme]
     qss = _redesign_qss_path().read_text(encoding="utf-8")
     for key, value in tokens.items():
         qss = qss.replace("{" + key + "}", value)
     for key, value in RADIUS.items():
         qss = qss.replace("{radius_" + key + "}", str(value))
-    qss = qss.replace(
-        "{chevron_down_icon_url}", _glyph_url("chevron_down.svg"))
+    if "chevron_down_icon_url" not in tokens:
+        qss = qss.replace(
+            "{chevron_down_icon_url}", _glyph_url("chevron_down.svg"))
     return qss

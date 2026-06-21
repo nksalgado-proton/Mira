@@ -1173,10 +1173,21 @@ class PhotoViewport(QWidget):
         if (item is not None and item.path is not None
                 and Path(item.path) == self._video_armed):
             self._video_live = True
+            # Adopt this first live frame as the poster / backdrop source, so
+            # the QLabel behind the widget AND the blurred letterbox bars show
+            # the VIDEO — not the previous photo that was held as a fallback
+            # poster when the clip had no cached thumb (Nelson 2026-06-20
+            # "previous photo stays in the background" on photo→video).
+            try:
+                img = frame.toImage()
+                if img is not None and not img.isNull():
+                    self._display(QPixmap.fromImage(img))
+            except Exception:                                      # noqa: BLE001
+                pass
             # Size + show + raise. The widget sits ON TOP of the
-            # QLabel (which still paints the poster centered with
-            # the same aspect — so the seam is invisible) and the
-            # blurred backdrop shows in the bars around it.
+            # QLabel (which now paints the video's own first frame
+            # centered with the same aspect — so the seam is invisible)
+            # and the blurred backdrop shows in the bars around it.
             self._sync_video_widget_geometry()
             self._video_widget.show()
             self._video_widget.raise_()
@@ -1316,6 +1327,14 @@ class PhotoViewport(QWidget):
         if self._video_widget is None:
             return
         if visible:
+            # Never resurrect the overlay when no clip is armed. The Editor's
+            # dev-mode exit calls this during video→photo teardown (after the
+            # viewport already disarmed), and a plain show() here would re-raise
+            # the opaque widget — then the photo's _display re-pins it right
+            # over the photo (Nelson 2026-06-20 "photos covered by the black
+            # thing" flashing after the first video).
+            if self._video_armed is None:
+                return
             self._video_widget.show()
             self._video_widget.raise_()
         else:

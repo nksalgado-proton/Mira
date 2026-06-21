@@ -1,10 +1,12 @@
 """Card surfaces — Card / Card2 / StatTile.
 
 Every panel, list row, dialog section, stat tile in the redesign sits on a
-card. QSS handles bg / border / radius via setObjectName("Card") /
-setObjectName("Card2") / setObjectName("StatTile") (rules in
-``assets/themes/redesign.qss``). The drop-shadow lives here because QSS has
-no box-shadow equivalent in Qt — the design system specifies
+card. QSS handles bg / border / radius via:
+  * Card  → setObjectName("Card")                    (default level-1 surface)
+  * Card2 → setObjectName("Card") + level="2"        (#Card[level="2"], spec/92)
+  * StatTile → setObjectName("Tile") + tone="stat"   (#Tile[tone], spec/92)
+(rules in ``assets/themes/redesign.qss``). The drop-shadow lives here because
+QSS has no box-shadow equivalent in Qt — the design system specifies
 ``QGraphicsDropShadowEffect(blurRadius=30, yOffset=10, color=rgba(0,0,0,110|28))``
 on each Card; alpha is theme-dependent so Card reads ``QApplication.property("theme")``.
 """
@@ -62,12 +64,14 @@ class Card(QFrame):
 
 
 class Card2(QFrame):
-    """Nested-surface card (#Card2) — lighter than Card, used for inputs,
-    stat tiles, sub-sections inside a hero Card."""
+    """Nested-surface card (#Card[level="2"]) — lighter than Card, used for
+    inputs, stat tiles, sub-sections inside a hero Card. spec/92 §2.3
+    collapsed the legacy #Card2 role onto #Card + level="2"."""
 
     def __init__(self, parent=None, *, padded: bool = True) -> None:
         super().__init__(parent)
-        self.setObjectName("Card2")
+        self.setObjectName("Card")
+        self.setProperty("level", "2")
         if padded:
             v = QVBoxLayout(self)
             v.setContentsMargins(14, 12, 14, 12)
@@ -94,7 +98,10 @@ class StatTile(QFrame):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setObjectName("StatTile")
+        # spec/92 §2.3 → #Tile[tone="stat"] (collapsed from the legacy
+        # #StatTile role). Same visual treatment, one base role.
+        self.setObjectName("Tile")
+        self.setProperty("tone", "stat")
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(4)

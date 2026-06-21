@@ -28,16 +28,26 @@ QFrame#ShareListRow { background: transparent; border: none;
                       border-radius: 0px; }
 QFrame#ShareTabPane { background: transparent; border: 1px solid {line};
                       border-radius: {radius_lg}px; }
-/* Event tiles — spec/77 §7.2. QSS owns the rounded background fill;
- * the border is painted by ``EventTile.paintEvent`` (copying the
- * days-grid Thumb's pattern in ``mira/ui/design/thumbs.py``: 2px
- * QPen + RoundJoin + ``setClipping(False)`` + antialiased
- * ``drawRoundedRect``) so the corner stroke is smooth in both
- * themes. The tile reserves a 2px contents-margin so children
- * never overlap the border. */
-QFrame#TileCard    { background: {card}; border: none; border-radius: 0px; }
-QFrame#Card2,
-QFrame#StatTile    { background: {card2}; border: 1px solid {line}; border-radius: {radius_lg}px; }
+/* Card[level="2"] (spec/92 §2.3 → Card[level]). Nested-surface variant
+ * of #Card — lighter than the primary card, used for inputs, stat
+ * tiles, toolbars, sub-sections. The base #Card rule above carries
+ * level-1 (primary surface panel; xl radius); level="2" picks the
+ * lighter card2 surface + lg radius. Collapsed from the legacy #Card2
+ * role. */
+QFrame#Card[level="2"]     { background: {card2}; border: 1px solid {line};
+                             border-radius: {radius_lg}px; }
+
+/* Tile[tone] (spec/92 §2.3 → Tile[tone]). Two tile flavours:
+ *  - stat: dashboard stat tile (card2 fill, line border, lg radius —
+ *    collapsed from #StatTile).
+ *  - cover: event tile cover (card fill, no border, square corners —
+ *    collapsed from #TileCard; EventTile.paintEvent draws the rounded
+ *    border manually per spec/77 §7.2, QSS owns the fill and paint
+ *    owns the stroke). */
+QFrame#Tile[tone="stat"]   { background: {card2}; border: 1px solid {line};
+                             border-radius: {radius_lg}px; }
+QFrame#Tile[tone="cover"]  { background: {card};  border: none;
+                             border-radius: 0px; }
 
 /* ---- Text labels are transparent by default ----
  * Plain QLabels (field labels, counts, %s, Picked/Skipped, subtitles) must
@@ -239,13 +249,14 @@ QToolButton#CutRowKebab::menu-indicator { image: none; width: 0; }
 
 /* ---- Share tabs (Cuts / Dynamic Collections) ----
  * QTabWidget#ShareTabs styles the tab BAR only; each tab's content host
- * is a #Card2 QFrame so the "tab encloses this content" relationship is
- * carried by a regular QFrame rendering — not Qt's ::pane subcontrol,
- * which is unreliable in documentMode (Nelson 2026-06-20 eyeball: pane
- * border invisible in both themes).
+ * is a #Card[level="2"] QFrame so the "tab encloses this content"
+ * relationship is carried by a regular QFrame rendering — not Qt's
+ * ::pane subcontrol, which is unreliable in documentMode (Nelson
+ * 2026-06-20 eyeball: pane border invisible in both themes).
  *
  * Tab bar: borderless documentMode default + an accent underline on the
- * selected tab so the active tab visually "owns" the Card2 below it. */
+ * selected tab so the active tab visually "owns" the level-2 card
+ * below it. */
 QTabWidget#ShareTabs::pane          { border: none; background: transparent; }
 QTabWidget#ShareTabs::tab-bar       { left: 12px; }
 QTabWidget#ShareTabs QTabBar::tab           { background: transparent;

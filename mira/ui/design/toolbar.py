@@ -16,13 +16,15 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QWidget
 def toolbar_row(parent: QWidget | None = None) -> tuple[QFrame, QHBoxLayout]:
     """Return ``(container_frame, layout)`` for the standard sticky toolbar.
 
-    Container is a #Card2-styled frame so it sits on the page like a pill;
-    layout is an HBox with 10px spacing and 8px vertical padding. Caller
-    addWidget()s in order: left-cluster controls, then ``layout.addStretch()``,
-    then right-cluster controls.
+    Container is a #Card[level="2"]-styled frame so it sits on the page like a
+    pill (spec/92 §2.3 — collapsed from the legacy #Card2 role); layout is an
+    HBox with 10px spacing and 8px vertical padding. Caller addWidget()s in
+    order: left-cluster controls, then ``layout.addStretch()``, then
+    right-cluster controls.
     """
     frame = QFrame(parent)
-    frame.setObjectName("Card2")
+    frame.setObjectName("Card")
+    frame.setProperty("level", "2")
     h = QHBoxLayout(frame)
     h.setContentsMargins(10, 8, 10, 8)
     h.setSpacing(10)

@@ -261,7 +261,7 @@ class GridItem:
 
 
 class _DayNavigatorPill(QFrame):
-    """Card2-styled pill ‹ Day N · title · date · N items ›.
+    """#Card[level="2"]-styled pill ‹ Day N · title · date · N items ›.
 
     Mutable: ``set_day(...)`` updates the label in place so the page
     can refresh without rebuilding the widget (rebuild + deleteLater
@@ -272,7 +272,9 @@ class _DayNavigatorPill(QFrame):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setObjectName("Card2")
+        # spec/92 §2.3 → #Card[level="2"] (collapsed from #Card2).
+        self.setObjectName("Card")
+        self.setProperty("level", "2")
         h = QHBoxLayout(self)
         h.setContentsMargins(10, 6, 10, 6)
         h.setSpacing(10)

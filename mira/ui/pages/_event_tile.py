@@ -427,13 +427,15 @@ class EventTile(Card):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent, padded=False)
-        # spec/77 §7.2 — QSS draws the rounded fill (``#TileCard``
-        # role + ``WA_StyledBackground`` so the rule actually paints);
-        # the BORDER is painted by ``paintEvent`` (see below) using the
-        # same recipe as the days-grid Thumb so the corner stroke is
+        # spec/77 §7.2 — QSS draws the rounded fill (#Tile[tone="cover"]
+        # role, collapsed from #TileCard per spec/92 §2.3, plus
+        # ``WA_StyledBackground`` so the rule actually paints); the
+        # BORDER is painted by ``paintEvent`` (see below) using the same
+        # recipe as the days-grid Thumb so the corner stroke is
         # antialiased and smooth. The 2-px contents-margin reserves
         # space for the stroke so children never sit over it.
-        self.setObjectName("TileCard")
+        self.setObjectName("Tile")
+        self.setProperty("tone", "cover")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._data = data
         self._sample_pixmaps = list(sample_pixmaps or [])

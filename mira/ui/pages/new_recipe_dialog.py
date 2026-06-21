@@ -3689,8 +3689,40 @@ class NewRecipeDialog(QDialog):
             draft = recipe_to_cross_event_cut_draft(recipe)
         else:
             draft = recipe_to_cut_draft(recipe)
+            # spec/94 Phase 3 — seed the Cut session's initial verdicts from
+            # the recipe resolver's verdict map. Cheap because the probe
+            # already runs at every composition change; one extra call at
+            # Start time is the canonical snapshot. Failure (probe absent,
+            # missing operand, etc.) just leaves the draft's seed empty and
+            # the session falls back to the pin_mode default.
+            seed = self._compute_start_seed(composition)
+            if seed:
+                from dataclasses import replace as _replace
+                draft = _replace(draft, seed=seed)
         self.start_requested.emit(draft)
         self.accept()
+
+    def _compute_start_seed(
+        self,
+        composition: dict,
+    ) -> Tuple[Tuple[str, bool], ...]:
+        """Snapshot the recipe resolver's seed verdict map at Start time
+        and shape it for :class:`CutDraft`.
+
+        Returns a tuple of ``(export_relpath, picked)`` pairs so the
+        draft stays frozen-friendly. An empty tuple signals "no seed"
+        — the session then uses the legacy pin_mode default. We never
+        let a resolver failure block Start; the probe path already
+        surfaces missing-operand errors to the user."""
+        probe = self._recipe_probe
+        if probe is None:
+            return ()
+        try:
+            resolution = probe(composition)
+        except Exception:                                   # noqa: BLE001
+            return ()
+        seed = getattr(resolution, "seed", None) or {}
+        return tuple(sorted(seed.items()))
 
     # ------------------------------------------------------------------ #
     # Name preview

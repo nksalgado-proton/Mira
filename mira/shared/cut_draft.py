@@ -89,6 +89,15 @@ class CutDraft:
     #: derive from pin_mode). The adapter sets this explicitly on every
     #: round-trip so the picker never has to.
     otherwise: str = ""
+    #: spec/94 Phase 3 — initial Pick/Skip verdicts per resolved member,
+    #: computed by the dialog's :func:`core.recipe_resolver.resolve_recipe`
+    #: call at Start time. Tuple of ``(export_relpath, picked)`` pairs so
+    #: the dataclass stays frozen-friendly. Empty = no seed; the session
+    #: falls back to the :attr:`pin_mode` default. Not part of the saved
+    #: Recipe's identity — the round-trip
+    #: :func:`mira.shared.recipe_draft_adapter.cut_draft_to_recipe_composition`
+    #: drops it.
+    seed: Tuple[Tuple[str, bool], ...] = ()
 
     @property
     def filters(self) -> dict:

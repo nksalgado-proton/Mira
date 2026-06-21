@@ -30,7 +30,12 @@ from dataclasses import dataclass, field
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from core import cut_budget
-from mira.shared.cut_draft import PIN_KEEP_ALL, PIN_PICK_IN, PIN_WEED_OUT
+from mira.shared.cut_draft import (
+    PIN_KEEP_ALL,
+    PIN_PICK_IN,
+    PIN_RULE_BASED,
+    PIN_WEED_OUT,
+)
 
 #: A DC expression: ordered ``(op, operand)`` pairs (spec/81 §2).
 Expr = Tuple[Tuple[str, Any], ...]
@@ -135,6 +140,13 @@ class CutSession:
     overlay_mode: Optional[str] = None
     card_style: str = "black"               # 'black' | 'single' | 'multi'
     cut_id: Optional[str] = None
+    #: spec/94 Phase 3 — Rules/Otherwise seed verdicts (export_relpath →
+    #: picked) computed by the dialog's :class:`recipe_resolver` call. When
+    #: non-empty it overlays the :attr:`pin_mode` default in
+    #: :meth:`__post_init__`, so a rule-based Recipe opens the session with
+    #: pick/skip already partitioned. Files NOT in the seed fall back to the
+    #: pin_mode default.
+    seed: Mapping[str, bool] = field(default_factory=dict)
     _picked: dict = field(default_factory=dict, repr=False)
     _undo: list = field(default_factory=list, repr=False)
 
@@ -147,6 +159,16 @@ class CutSession:
             # keep-all + weed-out start all-in; pick-in starts all-out.
             start = self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
             self._picked = {f.export_relpath: start for f in self.files}
+            # spec/94 Phase 3 — the Recipe's Rules/Otherwise verdicts overlay
+            # the pin_mode default: a rule-based draft seeds each member
+            # individually so the picker opens pre-curated. Files outside the
+            # seed (or with seed=None) keep the pin_mode default. The map is
+            # a plain dict, not a defaultdict — missing keys are not picked
+            # at random.
+            if self.seed:
+                for relpath, picked in self.seed.items():
+                    if relpath in self._picked:
+                        self._picked[relpath] = bool(picked)
 
     # ── the ledger ───────────────────────────────────────────────────
 
@@ -284,10 +306,21 @@ class CutSession:
         """A fresh pin session from the New Cut dialog's draft. Sources its
         candidate set from the draft's DC (saved ``source_dc_id`` resolution OR
         the inline ad-hoc formula). ``separators_on`` defaults to the draft's
-        own ``separators`` flag (spec/61 §4 default ON)."""
+        own ``separators`` flag (spec/61 §4 default ON).
+
+        spec/94 Phase 3 — when the draft carries a ``seed`` (the dialog's
+        Recipe Rules/Otherwise verdicts), the session opens with each
+        member's initial Pick/Skip already set. When the draft is rule-
+        based but lacks an explicit seed (defensive — the dialog
+        should always populate it), we derive the seed by calling the
+        gateway's :meth:`resolve_recipe` so the legacy
+        ``CutSession.from_draft(...)`` callers without a seed still
+        light up correctly for rule-based Recipes.
+        """
         expr, filters = cls._draft_expr_filters(gateway, draft)
         files = session_files(gateway, expr, filters=filters)
         seps = draft.separators if separators_on is None else separators_on
+        seed = cls._resolve_draft_seed(gateway, draft, expr, filters)
         return cls(
             name=draft.name,
             expr=tuple(tuple(t) for t in expr),
@@ -302,7 +335,60 @@ class CutSession:
             overlay_fields=tuple(getattr(draft, "overlay_fields", ()) or ()),
             overlay_mode=getattr(draft, "overlay_mode", None),
             card_style=getattr(draft, "card_style", "black"),
+            seed=seed,
         )
+
+    @classmethod
+    def _resolve_draft_seed(
+        cls, gateway, draft, expr, filters,
+    ) -> Mapping[str, bool]:
+        """Decide the per-member seed for a draft.
+
+        Order:
+
+        1. **Explicit seed on the draft.** The dialog computed it from
+           :class:`recipe_resolver.RecipeResolution.seed` at Start time;
+           the adapter ships it on :attr:`CutDraft.seed`.
+        2. **Rule-based with no explicit seed.** Reconstruct a Recipe
+           composition from the draft's rules + otherwise + source/
+           filters and call :meth:`gateway.resolve_recipe` so the
+           verdicts still land. A defensive path: in production the
+           dialog supplies the seed, but legacy / test callers that
+           skip it shouldn't silently fall through to the pin_mode
+           default for rule-based drafts.
+        3. **Legacy modes.** Return an empty mapping — the session's
+           :meth:`__post_init__` keeps the pin_mode default.
+        """
+        existing = getattr(draft, "seed", ()) or ()
+        if existing:
+            # ``CutDraft.seed`` is a tuple of (relpath, picked) for
+            # frozen-dataclass friendliness; CutSession holds a dict.
+            return dict(existing)
+        pin_mode = getattr(draft, "pin_mode", PIN_WEED_OUT)
+        rules = getattr(draft, "rules", ()) or ()
+        if pin_mode != PIN_RULE_BASED or not rules:
+            return {}
+        composition = {
+            "source": [list(t) for t in expr],
+            "filters": dict(filters),
+            "rules": [
+                {"predicate": [list(t) for t in r.predicate],
+                 "verdict": r.verdict}
+                for r in rules
+            ],
+            "otherwise": (
+                getattr(draft, "otherwise", "")
+                or ("pick" if pin_mode == PIN_WEED_OUT else "skip")
+            ),
+        }
+        try:
+            resolution = gateway.resolve_recipe(composition)
+        except Exception:                                   # noqa: BLE001
+            # Resolver failure is non-fatal here — the session opens with
+            # the pin_mode default and the user can still curate. The
+            # dialog's own probe surfaces the error to the user.
+            return {}
+        return dict(resolution.seed or {})
 
     @staticmethod
     def _draft_expr_filters(gateway, draft):

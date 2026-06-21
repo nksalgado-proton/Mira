@@ -402,10 +402,11 @@ class EventsPage(QWidget):
         New Cut dialog → commits via :class:`CrossEventCutSession`."""
         if self.gateway is None:
             return
-        from mira.gateway.library_gateway import LibraryGateway
         from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
 
-        lg = LibraryGateway(self.gateway.user_store)
+        # spec/94 Phase 1b — route through the Gateway's factory so the
+        # JSON tree is the single live source for DC CRUD.
+        lg = self.gateway.library_gateway()
         dialog = CrossEventDcsDialog(
             lg, umbrella_gateway=self.gateway, parent=self)
         dialog.pin_requested.connect(

@@ -83,10 +83,16 @@ class RecipeStore:
         *,
         now: Callable[[], str] = _utc_now_iso,
         new_id: Callable[[], str] = _new_uuid,
+        recipes_library: Any = None,
     ) -> None:
         self.user_store = user_store
         self._now = now
         self._new_id = new_id
+        # spec/94 Phase 1b — when wired, every Recipe read/write goes
+        # through the JSON tree (the single live source). When None
+        # (unit-test path), the legacy ``mira.db.recipe`` SQL surface
+        # stays in place.
+        self._recipes_library = recipes_library
 
     # ----- helpers --------------------------------------------------------- #
 
@@ -133,8 +139,11 @@ class RecipeStore:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("recipe name must be a non-empty string")
         self._check_flavour(flavour)
-        self._check_unique(flavour, name)
 
+        if self._recipes_library is not None:
+            return self._json_create(name, flavour, composition)
+
+        self._check_unique(flavour, name)
         now = self._now()
         recipe = um.Recipe(
             id=self._new_id(),
@@ -154,6 +163,124 @@ class RecipeStore:
             raise RecipeNameTakenError(flavour, name) from exc
         return recipe
 
+    # ── Phase 1b: JSON-tree-backed paths ──────────────────────────
+
+    def _json_create(
+        self,
+        name: str,
+        flavour: str,
+        composition: Mapping[str, Any],
+    ) -> um.Recipe:
+        """JSON-tree creation. Uniqueness check folds (flavour, name) by
+        walking the library; on collision raises the typed error so the
+        dialog can pattern-match."""
+        for df in self._recipes_library.all_definitions():
+            if (df.name == name
+                    and (df.payload or {}).get("flavour") == flavour):
+                raise RecipeNameTakenError(flavour, name)
+        from core.definition_files import DefinitionFile, KIND_RECIPE
+        now = self._now()
+        payload = dict(composition or {})
+        payload["flavour"] = flavour
+        payload["created_at"] = now
+        payload["updated_at"] = now
+        df = DefinitionFile(
+            id=self._new_id(),
+            name=name,
+            kind=KIND_RECIPE,
+            payload=payload,
+        )
+        self._recipes_library.save(df)
+        return self._df_to_recipe(df)
+
+    @staticmethod
+    def _df_to_recipe(df: Any) -> um.Recipe:
+        """Project a :class:`DefinitionFile` (JSON-backed) onto a
+        :class:`Recipe` so existing callers see the same row shape."""
+        payload = dict(df.payload or {})
+        flavour = payload.pop("flavour", FLAVOUR_CUT)
+        created_at = payload.pop("created_at", "")
+        updated_at = payload.pop("updated_at", created_at)
+        composition_json = json.dumps(payload)
+        return um.Recipe(
+            id=df.id,
+            name=df.name,
+            flavour=flavour,
+            composition_json=composition_json,
+            created_at=created_at or _utc_now_iso(),
+            updated_at=updated_at or created_at or _utc_now_iso(),
+        )
+
+    def _json_update(
+        self,
+        recipe_id: str,
+        *,
+        name: Optional[str],
+        composition: Optional[Mapping[str, Any]],
+        existing: um.Recipe,
+    ) -> um.Recipe:
+        """JSON-tree update. Rename + composition swap in one atomic
+        write."""
+        df = self._recipes_library.by_id(recipe_id)
+        if df is None:
+            raise KeyError(recipe_id)
+        new_name = existing.name
+        if name is not None:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("recipe name must be a non-empty string")
+            if name != existing.name:
+                for other in self._recipes_library.all_definitions():
+                    if (other.id != recipe_id
+                            and other.name == name
+                            and (other.payload or {}).get("flavour")
+                                == existing.flavour):
+                        raise RecipeNameTakenError(existing.flavour, name)
+                new_name = name
+        payload = dict(df.payload or {})
+        if composition is not None:
+            comp = dict(composition)
+            comp["flavour"] = existing.flavour
+            # Preserve created_at; refresh updated_at.
+            comp["created_at"] = payload.get(
+                "created_at") or existing.created_at
+            comp["updated_at"] = self._now()
+            payload = comp
+        else:
+            payload["updated_at"] = self._now()
+        if new_name != df.name:
+            self._recipes_library.rename(recipe_id, new_name)
+            df = self._recipes_library.by_id(recipe_id)
+            assert df is not None
+        df.payload = payload
+        from core.definition_files import write_definition
+        write_definition(df)
+        self._recipes_library.refresh()
+        return self._df_to_recipe(df)
+
+    def _json_list(
+        self,
+        *,
+        flavour: Optional[str],
+        include_other: bool,
+    ) -> List[um.Recipe]:
+        """JSON-tree list. Sorts so the requested flavour comes first
+        (matching the SQL ORDER BY CASE behaviour)."""
+        all_defs = self._recipes_library.all_definitions()
+        recipes = [self._df_to_recipe(df) for df in all_defs]
+        if flavour is None:
+            recipes.sort(key=lambda r: (r.flavour, r.name.lower(), r.id))
+            return recipes
+        if include_other:
+            recipes.sort(
+                key=lambda r: (
+                    0 if r.flavour == flavour else 1,
+                    r.name.lower(),
+                    r.id,
+                )
+            )
+            return recipes
+        return [r for r in recipes if r.flavour == flavour]
+
     def update(
         self,
         id: str,
@@ -172,6 +299,12 @@ class RecipeStore:
         recipe = self.get(id)
         if recipe is None:
             raise KeyError(id)
+
+        if self._recipes_library is not None:
+            return self._json_update(
+                id, name=name, composition=composition,
+                existing=recipe,
+            )
 
         sets: dict[str, Any] = {}
         if name is not None:
@@ -204,6 +337,9 @@ class RecipeStore:
     def delete(self, id: str) -> None:
         """Drop a Recipe by id. No-ops if the row is already gone — the
         delete is idempotent."""
+        if self._recipes_library is not None:
+            self._recipes_library.delete(id)
+            return
         with self.user_store.transaction() as conn:
             conn.execute("DELETE FROM recipe WHERE id = ?", (id,))
 
@@ -211,12 +347,21 @@ class RecipeStore:
 
     def get(self, id: str) -> Optional[um.Recipe]:
         """Fetch one Recipe by id."""
+        if self._recipes_library is not None:
+            df = self._recipes_library.by_id(id)
+            return self._df_to_recipe(df) if df is not None else None
         return self.user_store.get(um.Recipe, id)
 
     def by_name(self, flavour: str, name: str) -> Optional[um.Recipe]:
         """Look up a Recipe by ``(flavour, name)`` — the UNIQUE business
         key. Returns ``None`` when no row matches."""
         self._check_flavour(flavour)
+        if self._recipes_library is not None:
+            for df in self._recipes_library.all_definitions():
+                if (df.name == name
+                        and (df.payload or {}).get("flavour") == flavour):
+                    return self._df_to_recipe(df)
+            return None
         rows = self.user_store.query_by(
             um.Recipe, flavour=flavour, name=name)
         return rows[0] if rows else None
@@ -239,6 +384,9 @@ class RecipeStore:
         Tests in :mod:`tests.test_recipe_store` pin this contract."""
         if flavour is not None:
             self._check_flavour(flavour)
+
+        if self._recipes_library is not None:
+            return self._json_list(flavour=flavour, include_other=include_other)
 
         if flavour is None:
             # No filter — sort by (flavour, name) so Cut Recipes group

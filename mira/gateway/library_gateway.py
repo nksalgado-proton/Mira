@@ -65,6 +65,25 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _file_mtime_iso(path: Any) -> str:
+    """Format a JSON file's filesystem mtime as an ISO-8601 UTC string.
+
+    Used as a fallback for ``created_at`` / ``updated_at`` when the
+    file's JSON payload doesn't carry them — a hand-authored file may
+    not, but the SavedFilter dataclass demands them, so we synthesise
+    a stable value from the filesystem.
+    """
+    if path is None:
+        return _utc_now_iso()
+    try:
+        import os
+        return datetime.fromtimestamp(
+            os.path.getmtime(str(path)), tz=timezone.utc,
+        ).isoformat()
+    except (OSError, ValueError):
+        return _utc_now_iso()
+
+
 def _new_uuid() -> str:
     return uuid.uuid4().hex
 
@@ -81,10 +100,19 @@ class LibraryGateway:
         *,
         now: Callable[[], str] = _utc_now_iso,
         new_id: Callable[[], str] = _new_uuid,
+        collections_library: Any = None,
     ) -> None:
         self.user_store = user_store
         self._now = now
         self._new_id = new_id
+        # spec/94 Phase 1b — when wired, every DC read/write goes
+        # through the JSON tree (the single live source). When
+        # ``None`` (e.g. a unit test constructing LibraryGateway
+        # directly), the legacy ``saved_filter`` SQL path stays in
+        # place so the gateway's unit tests keep exercising the same
+        # surface they always did. The live app wires it via
+        # :meth:`mira.gateway.gateway.Gateway.library_gateway`.
+        self._collections_library = collections_library
 
     def __enter__(self) -> "LibraryGateway":
         return self
@@ -99,18 +127,66 @@ class LibraryGateway:
 
     def dynamic_collections(self) -> List[um.SavedFilter]:
         """All cross-event DCs, oldest first. Mirrors
-        :meth:`EventGateway.dynamic_collections`; readers don't care that the
-        rows come from ``saved_filter`` rather than ``dynamic_collection``."""
+        :meth:`EventGateway.dynamic_collections`; readers don't care
+        about the underlying storage shape.
+
+        Phase 1b (spec/94): when the file-based library is wired
+        (:attr:`_collections_library`), this enumerates the JSON tree
+        and projects each :class:`DefinitionFile` to a
+        :class:`SavedFilter` dataclass so callers see the same row
+        shape. Falls back to the legacy SQL path when the library is
+        absent (unit tests construct LibraryGateway directly)."""
+        if self._collections_library is not None:
+            rows = [
+                self._df_to_saved_filter(df)
+                for df in self._collections_library.all_definitions()
+            ]
+            rows.sort(key=lambda sf: (sf.created_at or "", sf.id))
+            return rows
         return self.user_store.query_raw(
             um.SavedFilter,
             "SELECT * FROM saved_filter ORDER BY created_at, id")
 
     def dynamic_collection(self, dc_id: str) -> Optional[um.SavedFilter]:
+        if self._collections_library is not None:
+            df = self._collections_library.by_id(dc_id)
+            return self._df_to_saved_filter(df) if df is not None else None
         return self.user_store.get(um.SavedFilter, dc_id)
 
     def dc_by_tag(self, tag: str) -> Optional[um.SavedFilter]:
+        if self._collections_library is not None:
+            df = self._collections_library.by_name(tag)
+            return self._df_to_saved_filter(df) if df is not None else None
         rows = self.user_store.query_by(um.SavedFilter, tag=tag)
         return rows[0] if rows else None
+
+    # ── DefinitionFile ↔ SavedFilter projection (Phase 1b) ────────
+
+    @staticmethod
+    def _df_to_saved_filter(df: Any) -> um.SavedFilter:
+        """Project a :class:`DefinitionFile` (JSON-backed) onto the
+        :class:`SavedFilter` dataclass callers expect.
+
+        The JSON payload carries ``expr`` + ``filters`` + an optional
+        ``description``. ``created_at`` / ``updated_at`` are stored in
+        the JSON top-level when present (the migration writes them) and
+        fall back to the file's filesystem mtime when not (a hand-
+        authored file)."""
+        payload = df.payload or {}
+        expr = payload.get("expr") or []
+        filters = payload.get("filters") or {}
+        description = payload.get("description")
+        created_at = payload.get("created_at") or _file_mtime_iso(df.path)
+        updated_at = payload.get("updated_at") or created_at
+        return um.SavedFilter(
+            id=df.id,
+            tag=df.name,
+            description=description,
+            created_at=created_at,
+            updated_at=updated_at,
+            expr_json=json.dumps(list(expr)),
+            filters_json=json.dumps(dict(filters)),
+        )
 
     @staticmethod
     def dc_expr(dc: um.SavedFilter) -> List[list]:
@@ -167,6 +243,27 @@ class LibraryGateway:
         expr_list = [list(t) for t in expr]
         self._check_dc_cycle(dc_id, expr_list)
         now = self._now()
+        if self._collections_library is not None:
+            # spec/94 Phase 1b — single live source. Write the JSON file
+            # and project back to SavedFilter for the caller.
+            from core.definition_files import (
+                DefinitionFile,
+                KIND_COLLECTION,
+            )
+            df = DefinitionFile(
+                id=dc_id,
+                name=slug,
+                kind=KIND_COLLECTION,
+                payload={
+                    "expr": expr_list,
+                    "filters": dict(filters or {}),
+                    "created_at": now,
+                    "updated_at": now,
+                    **({"description": description} if description else {}),
+                },
+            )
+            self._collections_library.save(df)
+            return self._df_to_saved_filter(df)
         sf = um.SavedFilter(
             id=dc_id, tag=slug,
             description=description,
@@ -194,10 +291,30 @@ class LibraryGateway:
         dc = self.dynamic_collection(dc_id)
         if dc is None:
             raise KeyError(dc_id)
+        if expr is not None:
+            self._check_dc_cycle(dc_id, [list(t) for t in expr])
+
+        if self._collections_library is not None:
+            df = self._collections_library.by_id(dc_id)
+            if df is None:
+                raise KeyError(dc_id)
+            payload = dict(df.payload or {})
+            if expr is not None:
+                payload["expr"] = [list(t) for t in expr]
+            if filters is not None:
+                payload["filters"] = dict(filters)
+            if description is not None:
+                payload["description"] = description
+            payload["updated_at"] = self._now()
+            df.payload = payload
+            from core.definition_files import write_definition
+            write_definition(df)
+            self._collections_library.refresh()
+            return
+
         sets: Dict[str, str] = {}
         if expr is not None:
             expr_list = [list(t) for t in expr]
-            self._check_dc_cycle(dc_id, expr_list)
             sets["expr_json"] = json.dumps(expr_list)
         if filters is not None:
             sets["filters_json"] = json.dumps(dict(filters))
@@ -223,6 +340,17 @@ class LibraryGateway:
             slug, [d.tag for d in self.dynamic_collections() if d.id != dc_id])
         if err:
             raise ValueError(err)
+        if self._collections_library is not None:
+            df = self._collections_library.rename(dc_id, slug)
+            # The rename helper rewrites the in-file ``name`` hint;
+            # also bump ``updated_at`` to match the SQL behavior.
+            payload = dict(df.payload or {})
+            payload["updated_at"] = self._now()
+            df.payload = payload
+            from core.definition_files import write_definition
+            write_definition(df)
+            self._collections_library.refresh()
+            return self._df_to_saved_filter(df)
         with self.user_store.transaction() as conn:
             conn.execute(
                 "UPDATE saved_filter SET tag = ?, updated_at = ? WHERE id = ?",
@@ -234,6 +362,9 @@ class LibraryGateway:
         survive via the same opaque-id discipline event-scope already uses
         (the FK is dropped per the Phase-2 handover recommendation; freeze
         invariant — spec/81 §5)."""
+        if self._collections_library is not None:
+            self._collections_library.delete(dc_id)
+            return
         with self.user_store.transaction() as conn:
             conn.execute("DELETE FROM saved_filter WHERE id = ?", (dc_id,))
 

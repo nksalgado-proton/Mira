@@ -252,13 +252,13 @@ def test_sweep_dc_refs_skips_unopenable_events(tmp_path):
 
 
 def test_delete_cross_event_dc_combines_both(tmp_path):
-    """``Gateway.delete_cross_event_dc`` deletes the saved_filter AND
+    """``Gateway.delete_cross_event_dc`` deletes the cross-event DC AND
     NULLs every cross-event Cut's source_dc_id that pointed at it."""
-    from mira.gateway.library_gateway import LibraryGateway
     from mira.user_store import models as um
     gw, photos_base = _make_umbrella(tmp_path)
-    # Create the saved_filter.
-    lg = LibraryGateway(gw.user_store, now=lambda: NOW)
+    # spec/94 Phase 1b — DC writes go through the JSON tree via the
+    # Gateway's wired factory.
+    lg = gw.library_gateway()
     sf = lg.create_dc("doomed", expr=[["+", "exported"]])
     # Create a cross-event Cut pointing at it.
     r = _seed_event(photos_base, "anchor", "Anchor", cut_members=[
@@ -270,7 +270,9 @@ def test_delete_cross_event_dc_combines_both(tmp_path):
     # Delete via the umbrella's combined method.
     summary = gw.delete_cross_event_dc(sf.id)
     assert summary["nulled"] == 1
-    # Saved_filter gone.
+    # JSON tree no longer holds it.
+    assert lg.dynamic_collection(sf.id) is None
+    # SQL was never written (the JSON tree is the single live source).
     assert gw.user_store.get(um.SavedFilter, sf.id) is None
     # Cut survived, source_dc_id NULLed.
     store = EventStore.open(r / "event.db")

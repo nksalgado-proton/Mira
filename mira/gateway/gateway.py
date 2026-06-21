@@ -26,7 +26,7 @@ from mira.gateway.originals_health import (
     OriginalsHealth,
     classify as _classify_originals,
 )
-from mira.paths import user_data_dir
+from mira.paths import library_root as _library_root_from_paths, user_data_dir
 from mira.settings.repo import SettingsRepo
 from mira.store import json_dump, models as m
 from mira.store.repo import EventStore
@@ -196,6 +196,19 @@ class Gateway:
         # store was never opened" so the close-if-dirty path
         # short-circuits without a snapshot.
         self._user_store_changes_at_open: int = -1
+        # spec/94 Phase 1b — file-based Collection / Recipe libraries.
+        # Lazy-opened on first access so a Gateway construction at
+        # bare-import time doesn't pay the disk hit. ``None`` flags
+        # "not yet built"; values are :class:`DefinitionLibrary` /
+        # :class:`DefinitionsGateway` instances rooted under
+        # ``<library_root>/Collections/`` and ``/Recipes/``.
+        self._collections_library = None
+        self._recipes_library = None
+        self._collections_gateway = None
+        self._recipes_gateway = None
+        # Marker bit so ``collections_library`` / ``recipes_library``
+        # don't try to re-run the dual-home migration on every access.
+        self._dual_home_migration_done = False
 
     # ----- the user-level data store (spec/53) -------------------------- #
 
@@ -273,6 +286,252 @@ class Gateway:
         if self._user_store is not None:
             self._user_store.close()
             self._user_store = None
+
+    # ----- spec/93 §4 file-based definition libraries ---------------------- #
+
+    def _resolve_definition_library_root(self) -> Path:
+        """Where ``<library_root>/Collections/`` and ``/Recipes/`` live.
+
+        Resolution order matches the spec/76 §B.4 contract:
+
+          1. The bootstrap-pointer-driven library root (the primary path
+             on every normal launch).
+          2. The user-data dir (i.e. ``<env>/MIRA_DATA_DIR`` or the
+             legacy AppData fallback) when no pointer has been written
+             yet. The library subtrees land under that folder and are
+             relocated by the next pointer write — invariant #2 holds
+             (no hardcoded user paths).
+        """
+        root = _library_root_from_paths()
+        if root is not None:
+            return root
+        # No pointer yet — fall back to user_data_dir. Tests with
+        # ``MIRA_DATA_DIR`` set land here; the library subfolders sit
+        # next to mira.db in that case.
+        return user_data_dir()
+
+    @property
+    def collections_library(self):
+        """The file-based Collection library (spec/93 §4), lazy-built.
+
+        Built on first access; runs the spec/94 1b dual-home migration
+        once both libraries exist so the JSON tree is the single live
+        source. Subsequent accesses return the cached instance.
+        """
+        if self._collections_library is None:
+            self._build_definition_libraries()
+        return self._collections_library
+
+    @property
+    def recipes_library(self):
+        """The file-based Recipe library (spec/93 §4), lazy-built.
+
+        Same lifecycle as :attr:`collections_library` — first touch on
+        either property builds both and runs the dual-home migration.
+        """
+        if self._recipes_library is None:
+            self._build_definition_libraries()
+        return self._recipes_library
+
+    @property
+    def collections_gateway(self):
+        """The :class:`DefinitionsGateway` facade that unions the
+        Collections library with each event's BOUND-to-E rows
+        (event.db.dynamic_collection — spec/93 §6 load-set)."""
+        if self._collections_gateway is None:
+            self._build_definition_libraries()
+        return self._collections_gateway
+
+    @property
+    def recipes_gateway(self):
+        """The :class:`DefinitionsGateway` facade for Recipes —
+        unions the Recipes library with event.db.recipe rows
+        (the v13 table holding BOUND recipes)."""
+        if self._recipes_gateway is None:
+            self._build_definition_libraries()
+        return self._recipes_gateway
+
+    def _build_definition_libraries(self) -> None:
+        """One-shot constructor for the four lazy attributes. Called by
+        each of the four properties on first access; safe to call again
+        (idempotent). Includes the dual-home migration the first time
+        through."""
+        from core.definition_files import KIND_COLLECTION, KIND_RECIPE
+        from mira.gateway.definitions import (
+            BoundDefinitionRow,
+            DefinitionsGateway,
+        )
+        from mira.shared.definition_library import DefinitionLibrary
+
+        if self._collections_library is None:
+            root = self._resolve_definition_library_root()
+            self._collections_library = DefinitionLibrary(
+                root / "Collections", KIND_COLLECTION)
+            self._recipes_library = DefinitionLibrary(
+                root / "Recipes", KIND_RECIPE)
+
+            # spec/93 §6 — the facade returns GLOBAL ∪ BOUND-to-E.
+            # The BOUND rows come from per-event reads on demand; the
+            # facade only needs a callable, not a live EventGateway.
+            #
+            # Collections: each event.db.dynamic_collection row is a
+            # bound DC for that event. Today the per-event store
+            # exposes them via :meth:`EventGateway.dynamic_collections`;
+            # the facade wraps that into BoundDefinitionRow shape.
+            def _collections_event_rows(event_id: str):
+                eg = self._safe_open_event(event_id)
+                if eg is None:
+                    return ()
+                rows = []
+                for dc in eg.dynamic_collections():
+                    rows.append(BoundDefinitionRow(
+                        id=dc.id,
+                        name=dc.tag,
+                        kind=KIND_COLLECTION,
+                        composition={
+                            "expr": eg.dc_expr(dc),
+                            "filters": eg.dc_filters(dc),
+                        },
+                    ))
+                return rows
+
+            # Recipes: event.db.recipe — the v13 table holds BOUND
+            # recipes. Empty on every event until the dialog routes
+            # the first bound save here.
+            def _recipes_event_rows(event_id: str):
+                eg = self._safe_open_event(event_id)
+                if eg is None:
+                    return ()
+                rows = []
+                try:
+                    bound_recipes = eg.bound_recipes()
+                except AttributeError:
+                    return ()
+                for br in bound_recipes:
+                    rows.append(BoundDefinitionRow(
+                        id=br["id"],
+                        name=br["name"],
+                        kind=KIND_RECIPE,
+                        composition=br.get("composition") or {},
+                    ))
+                return rows
+
+            self._collections_gateway = DefinitionsGateway(
+                KIND_COLLECTION,
+                library=self._collections_library,
+                event_db_rows=_collections_event_rows,
+            )
+            self._recipes_gateway = DefinitionsGateway(
+                KIND_RECIPE,
+                library=self._recipes_library,
+                event_db_rows=_recipes_event_rows,
+            )
+
+        # First-touch only: run the dual-home migration.
+        if not self._dual_home_migration_done:
+            self._run_dual_home_migration()
+            self._dual_home_migration_done = True
+
+    def library_gateway(self):
+        """Construct a :class:`LibraryGateway` wired to the file-based
+        Collections library (spec/94 Phase 1b).
+
+        The returned facade routes every DC read + write through the
+        JSON tree — the single live source. Existing UI sites that
+        construct ``LibraryGateway(gateway.user_store)`` should migrate
+        to this factory so they pick up the JSON-tree behaviour.
+        """
+        from mira.gateway.library_gateway import LibraryGateway
+        return LibraryGateway(
+            self.user_store, now=self._now,
+            collections_library=self.collections_library,
+        )
+
+    def recipe_store(self):
+        """Construct a :class:`RecipeStore` wired to the file-based
+        Recipes library (spec/94 Phase 1b).
+
+        Routes every Recipe read + write through the JSON tree. UI
+        sites that previously constructed ``RecipeStore(user_store)``
+        directly should migrate to this factory."""
+        from mira.shared.recipe_store import RecipeStore
+        return RecipeStore(
+            self.user_store, now=self._now,
+            recipes_library=self.recipes_library,
+        )
+
+    def _safe_open_event(self, event_id: str):
+        """Helper for the facade's per-event row callbacks: opens an
+        :class:`EventGateway` for ``event_id`` or returns ``None`` if
+        the event isn't reachable. Errors are logged, not raised — the
+        load-set should degrade gracefully when an event is offline."""
+        try:
+            return self.event(event_id)
+        except Exception as exc:                            # noqa: BLE001
+            log.debug(
+                "definitions_gateway: event %s unavailable: %s",
+                event_id, exc,
+            )
+            return None
+
+    def _run_dual_home_migration(self) -> None:
+        """Spec/94 1b — move existing mira.db.saved_filter + recipe
+        rows into the JSON tree (one-shot, idempotent). Errors are
+        logged but never raised: a migration miss leaves the data in
+        SQL where the legacy read paths could still find it, so a
+        retry is always possible."""
+        from core.dual_home_migrate import migrate_dual_homes
+        from mira.user_store import models as um
+        try:
+            saved_filters = self.user_store.query_raw(
+                um.SavedFilter,
+                "SELECT * FROM saved_filter ORDER BY created_at, id",
+            )
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("dual_home migrate: saved_filter read failed: %s", exc)
+            return
+        try:
+            recipes = self.user_store.query_raw(
+                um.Recipe,
+                "SELECT * FROM recipe ORDER BY created_at, id",
+            )
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("dual_home migrate: recipe read failed: %s", exc)
+            recipes = []
+
+        def _delete_saved_filter(sf_id: str) -> None:
+            with self.user_store.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM saved_filter WHERE id = ?", (sf_id,))
+
+        def _delete_recipe(r_id: str) -> None:
+            with self.user_store.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM recipe WHERE id = ?", (r_id,))
+
+        # The migration writes the marker under
+        # ``<library_root>/.mira/`` — which IS the user_data_dir today
+        # when the pointer resolves there. _resolve_definition_library_root
+        # is the library_root (the PARENT of .mira/), so the helper
+        # places the marker correctly.
+        library_root = self._resolve_definition_library_root()
+        # Ensure the .mira/ subfolder exists (a fresh-install test may
+        # not have a pointer set, in which case user_data_dir IS the
+        # machinery folder and .mira/ doesn't exist beneath it).
+        (library_root / ".mira").mkdir(parents=True, exist_ok=True)
+
+        try:
+            migrate_dual_homes(
+                library_root,
+                saved_filter_rows=saved_filters,
+                recipe_rows=recipes,
+                collections_library=self._collections_library,
+                recipes_library=self._recipes_library,
+                delete_saved_filter=_delete_saved_filter,
+                delete_recipe=_delete_recipe,
+            )
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("dual_home migrate: %s", exc)
 
     # ----- the base anchor ----------------------------------------------- #
 
@@ -859,7 +1118,7 @@ class Gateway:
                 ev = eg.event()
             except Exception:                              # noqa: BLE001
                 return                                     # malformed event row
-            lg = LibraryGateway(self.user_store, now=self._now)
+            lg = self.library_gateway()
             lg.sync_event(
                 event_store=eg.store,
                 event_uuid=ev.uuid,
@@ -929,7 +1188,7 @@ class Gateway:
         Returns the sweep summary so the UI can surface what happened."""
         from mira.gateway.library_gateway import LibraryGateway
         from mira.shared.cross_event_sweeps import sweep_dc_references
-        lg = LibraryGateway(self.user_store, now=self._now)
+        lg = self.library_gateway()
         lg.delete_dc(dc_id)
         return sweep_dc_references(self, dc_id)
 
@@ -986,7 +1245,7 @@ class Gateway:
             except Exception:                              # noqa: BLE001
                 return None
 
-        lg = LibraryGateway(self.user_store, now=self._now)
+        lg = self.library_gateway()
         return lg.reconcile_all(
             open_event_store=_open,
             known_events=known,

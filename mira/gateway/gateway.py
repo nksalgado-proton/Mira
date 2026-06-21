@@ -1105,7 +1105,35 @@ class Gateway:
             backups_dir=self.event_backups_dir(event_id),
             app_version=_live_app_version(),
             on_close=self._make_sync_hook(event_id),
+            collections_library_factory=self._make_collections_library_factory(),
         )
+
+    def _make_collections_library_factory(self):
+        """Snapshot factory the per-event :class:`EventGateway` caches so
+        the resolver can fall through to GLOBAL Collections (spec/93 §6
+        load set). Returns a callable that builds ``(by_id, by_name)``
+        dicts of operand payloads; the EventGateway invokes it lazily
+        and caches the result for the lifetime of one ``open_event()``
+        (spec/94 Phase 2)."""
+        library = self.collections_library
+        if library is None:
+            return None
+
+        def _factory():
+            by_id: Dict[str, dict] = {}
+            by_name: Dict[str, dict] = {}
+            for df in library.all_definitions():
+                payload = {
+                    "expr": (df.payload or {}).get("expr") or [],
+                    "filters": (df.payload or {}).get("filters") or {},
+                }
+                by_id[df.id] = payload
+                # Hand-authored files can collide on display name; first
+                # one wins so the by_name lookup stays deterministic.
+                by_name.setdefault(df.name, payload)
+            return by_id, by_name
+
+        return _factory
 
     def _make_sync_hook(self, event_id: str) -> Callable[[EventGateway], None]:
         """Build the close-time sync callable for ``open_event``. Captures

@@ -88,11 +88,24 @@ class EventGateway:
         backups_dir: Optional[Path] = None,
         app_version: str = "",
         on_close: Optional[Callable[["EventGateway"], None]] = None,
+        collections_library_factory: Optional[Callable[
+            [], Tuple[Dict[str, dict], Dict[str, dict]]]] = None,
     ) -> None:
         self.store = store
         self.event_root = event_root
         self._now = now
         self._new_id = new_id
+        # spec/94 Phase 2 — the file-based Collection library (spec/93 §4).
+        # The factory builds ``(by_id, by_name)`` dicts of operand payloads
+        # ``{"expr": [...], "filters": {...}}``. Called LAZILY on the first
+        # operand lookup that misses the event.db DC table; the result is
+        # CACHED on the EventGateway instance so a single ``open_event()``
+        # lifetime touches the library tree once, not once per nested
+        # operand. ``None`` falls through to event.db-only behaviour
+        # (existing tests + ad-hoc opens without an umbrella gateway).
+        self._collections_library_factory = collections_library_factory
+        self._collections_library_cache: Optional[
+            Tuple[Dict[str, dict], Dict[str, dict]]] = None
         # spec/79 §7.2 — close-if-dirty snapshot context. ``backups_dir``
         # is None for ad-hoc opens (tests, direct EventStore.open); the
         # real run gets one from Gateway.open_event.
@@ -130,6 +143,8 @@ class EventGateway:
         backups_dir: Optional[Path] = None,
         app_version: str = "",
         on_close: Optional[Callable[["EventGateway"], None]] = None,
+        collections_library_factory: Optional[Callable[
+            [], Tuple[Dict[str, dict], Dict[str, dict]]]] = None,
     ) -> "EventGateway":
         return cls(
             EventStore.open(db_path),
@@ -137,6 +152,7 @@ class EventGateway:
             db_path=Path(db_path), backups_dir=backups_dir,
             app_version=app_version,
             on_close=on_close,
+            collections_library_factory=collections_library_factory,
         )
 
     def close(self) -> None:
@@ -1285,16 +1301,79 @@ class EventGateway:
 
     def _operand_dc(self, ref) -> Optional["collection_resolver.DCExpr"]:
         """Resolve a ``{"kind":"dc","id"|"tag":…}`` operand to a
-        :class:`~core.collection_resolver.DCExpr`, or None when it is gone."""
+        :class:`~core.collection_resolver.DCExpr`, or None when it is gone.
+
+        Resolution order (spec/93 §6 GLOBAL ∪ BOUND-to-E):
+
+        1. ``event.db.dynamic_collection`` — bound-to-this-event Collections.
+        2. The file-based library (spec/93 §4) via
+           :meth:`_resolve_library_collection` when wired by the umbrella
+           Gateway. The library tree is scanned at most once per
+           ``open_event()`` lifetime — see
+           :meth:`_collections_library_snapshot`.
+        """
         dc = None
         if ref.get("id"):
             dc = self.dynamic_collection(ref["id"])
         if dc is None and ref.get("tag"):
             dc = self.dc_by_tag(ref["tag"])
-        if dc is None:
+        if dc is not None:
+            return collection_resolver.DCExpr(
+                id=dc.id, expr=self.dc_expr(dc), filters=self.dc_filters(dc))
+        return self._resolve_library_collection(ref)
+
+    def _collections_library_snapshot(
+        self,
+    ) -> Optional[Tuple[Dict[str, dict], Dict[str, dict]]]:
+        """Cached ``(by_id, by_name)`` snapshot of the file-based Collection
+        library. spec/94 Phase 2 — built once per ``open_event()`` lifetime
+        so a single resolution pass (which may walk many nested operands)
+        scans the JSON tree only once.
+
+        Returns ``None`` when no factory was wired (legacy callers, ad-hoc
+        :func:`EventGateway.open` from tests). The DefinitionLibrary's
+        own reconcile-on-scan keeps the snapshot reasonably fresh per
+        session; an event re-open rebuilds the cache.
+        """
+        if self._collections_library_factory is None:
             return None
+        if self._collections_library_cache is None:
+            self._collections_library_cache = (
+                self._collections_library_factory())
+        return self._collections_library_cache
+
+    def _resolve_library_collection(
+        self, ref: Mapping,
+    ) -> Optional["collection_resolver.DCExpr"]:
+        """Lookup a Collection operand against the file-based library.
+
+        References are ``{id, name|tag}`` per spec/93 §4 — id first, name
+        fallback (handles hand-authored files where the saver didn't write
+        the id). The library snapshot is the cache built by
+        :meth:`_collections_library_snapshot`.
+        """
+        snapshot = self._collections_library_snapshot()
+        if snapshot is None:
+            return None
+        by_id, by_name = snapshot
+        payload: Optional[dict] = None
+        ref_id = ref.get("id") or ""
+        ref_name = ref.get("tag") or ref.get("name") or ""
+        if ref_id:
+            payload = by_id.get(ref_id)
+        if payload is None and ref_name:
+            payload = by_name.get(ref_name)
+        if payload is None:
+            return None
+        # Carry the file's id forward as the DCExpr id so the resolver's
+        # memoisation key is stable. Hand-authored files without an id are
+        # resolved by name; we fabricate a "library:<name>" stub so the
+        # memo dict doesn't collide with other anonymous operands.
         return collection_resolver.DCExpr(
-            id=dc.id, expr=self.dc_expr(dc), filters=self.dc_filters(dc))
+            id=ref_id or f"library:{ref_name}",
+            expr=list(payload.get("expr") or []),
+            filters=dict(payload.get("filters") or {}),
+        )
 
     def _operand_cut_members(self, ref) -> set:
         """The frozen member set of a ``{"kind":"cut",…}`` operand (terminal —
@@ -1403,7 +1482,10 @@ class EventGateway:
         ``event_collection`` operands — those are scope-level, only meaningful
         on the cross-event face; for an event-Cut Recipe they shouldn't
         appear, but if they do we let them pass (the LibraryGateway face
-        does the real check)."""
+        does the real check).
+
+        DC operands resolve against event.db FIRST, then the file-based
+        library (spec/93 §6 GLOBAL ∪ BOUND-to-E)."""
         kind = operand.get("kind")
         if kind == "dc":
             dc = None
@@ -1411,7 +1493,7 @@ class EventGateway:
                 dc = self.dynamic_collection(operand["id"])
             if dc is None and operand.get("tag"):
                 dc = self.dc_by_tag(operand["tag"])
-            if dc is None:
+            if dc is None and self._resolve_library_collection(operand) is None:
                 raise recipe_resolver.RecipeResolutionError(
                     operand.get("tag") or operand.get("id") or "",
                     kind="dc",
@@ -1440,15 +1522,23 @@ class EventGateway:
         """Live DC expression lookup for the strict walk's transitive
         recursion. Returns ``None`` when the DC is gone (the operand
         validator already raised on it; this returning ``None`` just
-        stops the walk for that branch)."""
+        stops the walk for that branch).
+
+        Phase 2 spec/94 — falls through to the file-based library when
+        event.db doesn't carry the id/tag (spec/93 §6 load set)."""
         dc = None
         if operand.get("id"):
             dc = self.dynamic_collection(operand["id"])
         if dc is None and operand.get("tag"):
             dc = self.dc_by_tag(operand["tag"])
-        if dc is None:
+        if dc is not None:
+            return self.dc_expr(dc)
+        # File-library fallback. The DCExpr's ``expr`` is exactly the
+        # formula stored in the JSON payload.
+        library_dc = self._resolve_library_collection(operand)
+        if library_dc is None:
             return None
-        return self.dc_expr(dc)
+        return list(library_dc.expr)
 
     def _operand_person_for_predicate(
         self, operand: Mapping,

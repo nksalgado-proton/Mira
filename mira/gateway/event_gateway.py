@@ -2673,10 +2673,28 @@ class EventGateway:
         previews the transform live, but the gateway is the enforcement point:
         the name is slugified here and re-validated against the Cut namespace —
         raises ``ValueError`` carrying the :func:`core.cut_names.check_tag` code
-        ('empty' / 'reserved' / 'taken'). ``source_dc_id`` is the DC pinned from
-        (None = ad-hoc); ``source_dc_kind`` is the discriminator added in
-        schema v8 (spec/81 Phase 2): 'event' for an event.db DC, 'user' for
-        a cross-event ``saved_filter`` DC, ``None`` for legacy / unset.
+        ('empty' / 'reserved' / 'taken'). ``source_dc_id`` is the source
+        Collection's id (None = ad-hoc); ``source_dc_kind`` is the discriminator
+        added in schema v8 (spec/81 Phase 2):
+
+        * ``'event'`` — the source Collection lives in this event's
+          ``event.db.dynamic_collection`` (bound DC, spec/93 §3 last paragraph).
+        * ``'user'`` — the source Collection lives in the user-level recipe
+          library. Pre-spec/94 Phase 1b this meant the legacy
+          ``mira.db.saved_filter`` table; the dual-home migration emptied
+          that table and moved every cross-event Collection into
+          ``<library_root>/Collections/`` as a JSON file (spec/93 §4), so the
+          value's live meaning is now **"the source is a file-library
+          Collection"**. No DDL change — the CHECK still allows ``'event' |
+          'user' | NULL``; only the semantic of ``'user'`` shifted.
+        * ``None`` — legacy / unset.
+
+        When ``source_dc_id`` is set and ``source_dc_kind`` is left ``None``,
+        the gateway auto-infers the kind: id present in event.db → ``'event'``;
+        id present in the file library → ``'user'``; neither → ``None``. This
+        lets ``CutSession.commit()`` stay agnostic about where the source DC
+        lives while still landing the right discriminator on the Cut row.
+
         ``expr_snapshot`` is the formula frozen at pin (style + media filters
         live on the DC, not the Cut). Membership is written separately via
         :meth:`set_cut_members`."""
@@ -2685,6 +2703,11 @@ class EventGateway:
         if err:
             raise ValueError(err)
         now = self._now()
+        # spec/94 Phase 2 — auto-infer source_dc_kind so callers (the
+        # pin session) don't have to know whether the source DC lives
+        # in event.db or in the file library.
+        if source_dc_id and source_dc_kind is None:
+            source_dc_kind = self._infer_source_dc_kind(source_dc_id)
         cut = m.Cut(
             id=self._new_id(), tag=slug, created_at=now, updated_at=now,
             source_dc_id=source_dc_id,
@@ -2702,6 +2725,24 @@ class EventGateway:
             self.store.upsert(cut)
             self._touch()
         return cut
+
+    def _infer_source_dc_kind(self, dc_id: str) -> Optional[str]:
+        """Discriminate where a Collection with id ``dc_id`` lives —
+        ``'event'`` for an event.db DC, ``'user'`` for a file-library
+        Collection, ``None`` when neither holds it.
+
+        Used by :meth:`create_cut` when the caller didn't pass an
+        explicit ``source_dc_kind`` (spec/94 Phase 2 — the pin session
+        stays agnostic about storage; the gateway lands the right
+        value)."""
+        if not dc_id:
+            return None
+        if self.dynamic_collection(dc_id) is not None:
+            return "event"
+        snapshot = self._collections_library_snapshot()
+        if snapshot is not None and dc_id in snapshot[0]:
+            return "user"
+        return None
 
     def rename_cut(self, cut_id: str, new_name: str) -> m.Cut:
         """Rename = update one cell (spec/61 §1.4). Same transform +

@@ -309,7 +309,15 @@ class CutSession:
         """Resolve a draft to the (expr, filters) the session resolves from:
         an inline formula on the draft wins; otherwise the saved DC's stored
         formula. A saved DC with no inline override still keeps its own
-        filters."""
+        filters.
+
+        spec/94 Phase 2 — when the draft's ``source_dc_id`` doesn't
+        resolve in event.db, fall through to the file-based Collection
+        library (spec/93 §6 GLOBAL ∪ BOUND-to-E). The EventGateway's
+        cached library snapshot handles the lookup; if no library is
+        wired (legacy / unit-test path) the fallback is a no-op and the
+        draft's inline ``expr`` carries the load.
+        """
         expr = tuple(tuple(t) for t in (getattr(draft, "expr", ()) or ()))
         filters = dict(getattr(draft, "filters", {}) or {})
         dc_id = getattr(draft, "source_dc_id", None)
@@ -319,6 +327,18 @@ class CutSession:
                 expr = tuple(tuple(t) for t in gateway.dc_expr(dc))
                 if not filters:
                     filters = gateway.dc_filters(dc)
+            else:
+                # File-library fallback (spec/94 Phase 2). The resolver
+                # accessor returns a ``DCExpr`` carrying the file's
+                # ``expr`` and ``filters``; reuse the same lookup so the
+                # name-fallback contract (spec/93 §4) holds here too.
+                library_dc = gateway._resolve_library_collection({
+                    "kind": "dc", "id": dc_id,
+                })
+                if library_dc is not None:
+                    expr = tuple(tuple(t) for t in library_dc.expr)
+                    if not filters:
+                        filters = dict(library_dc.filters)
         return expr, filters
 
     @classmethod

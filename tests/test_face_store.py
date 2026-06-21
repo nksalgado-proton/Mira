@@ -194,6 +194,10 @@ def test_migrate_v11_to_v12_adds_face_table(tmp_path):
     conn.execute("DROP INDEX IF EXISTS ix_face_person")
     conn.execute("DROP INDEX IF EXISTS ix_face_item")
     conn.execute("DROP TABLE face")
+    # spec/94 Phase 1 added v12→v13; drop the recipe table the up-migration
+    # will recreate so the test's path from v11 doesn't collide on the way
+    # back up to SCHEMA_VERSION.
+    conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("UPDATE schema_info SET schema_version = 11 WHERE id = 1")
 
     schema.migrate(conn)

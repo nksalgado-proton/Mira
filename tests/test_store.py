@@ -510,8 +510,10 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     # Strip the v12 face table so the v11→v12 CREATE TABLE doesn't
-    # collide on the way back up (spec/90 Phase 1).
+    # collide on the way back up (spec/90 Phase 1). Also drop the v13
+    # recipe table for the same reason (spec/94 Phase 1).
     conn.execute("DROP TABLE face")
+    conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
 
     schema.migrate(conn)
@@ -540,10 +542,12 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     ``face`` table (spec/90 v11→v12) already exists. Strip them so the
     post-v6 ADD COLUMN / CREATE TABLE migrations on the way back up
     don't collide (spec/89 v9→v10 added ``provenance``; v10→v11 added
-    ``intent_state``; spec/90 v11→v12 created ``face``)."""
+    ``intent_state``; spec/90 v11→v12 created ``face``; spec/94 v12→v13
+    created ``recipe``)."""
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("DROP TABLE face")
+    conn.execute("DROP TABLE IF EXISTS recipe")
 
 
 def _rebuild_v6_cut_tables(conn) -> None:

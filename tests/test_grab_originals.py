@@ -140,8 +140,10 @@ CREATE TABLE cut_member (
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     # Strip the v12 face table so the v11→v12 CREATE TABLE doesn't
-    # collide on the way back up (spec/90 Phase 1).
+    # collide on the way back up (spec/90 Phase 1). Also drop the v13
+    # recipe table for the same reason (spec/94 Phase 1).
     conn.execute("DROP TABLE face")
+    conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("UPDATE schema_info SET schema_version = 8 WHERE id = 1")
     conn.execute(
         "INSERT INTO cut (id, tag, created_at, updated_at) "

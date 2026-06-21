@@ -469,7 +469,6 @@ class EventHeaderDialog(QDialog):
         # FlowLayout wraps when the row outgrows the dialog width.
         # Each subject pill carries its category-icon SVG; 'None' has no
         # icon (it's the exclusive 'not a photo event' answer).
-        v.addWidget(_micro("Creative Focus"))
         cf_host = QWidget()
         cf_flow = FlowLayout(cf_host, spacing=6)
         cf_flow.setContentsMargins(0, 0, 0, 0)
@@ -485,10 +484,9 @@ class EventHeaderDialog(QDialog):
             )
             self._creative_chips[option] = chip
             cf_flow.addWidget(chip)
-        v.addWidget(cf_host)
+        v.addWidget(_field("Creative Focus", cf_host))
 
         # 8. Participants — multi-select pill toggles, FlowLayout wraps.
-        v.addWidget(_micro("Participants"))
         p_host = QWidget()
         p_flow = FlowLayout(p_host, spacing=6)
         p_flow.setContentsMargins(0, 0, 0, 0)
@@ -496,7 +494,7 @@ class EventHeaderDialog(QDialog):
             chip = pill_toggle(tr(option))
             self._participant_chips[option] = chip
             p_flow.addWidget(chip)
-        v.addWidget(p_host)
+        v.addWidget(_field("Participants", p_host))
 
         v.addStretch()
         scroll.setWidget(inner)

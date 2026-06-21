@@ -288,3 +288,164 @@ def test_corrupt_file_is_skipped(lib, collections_root):
     tree = lib.list_tree()
     assert any(l.name == "Good" for l in tree.leaves)
     assert all(l.name != "broken" for l in tree.leaves)
+
+
+# ── spec/94 Phase 1b: slug-collision disambiguation ──────────────
+
+
+def test_two_definitions_with_same_name_get_distinct_files(lib):
+    """Two distinct definitions with the SAME display name don't
+    overwrite each other on disk — the second gets a short
+    id-fragment suffix appended to its filename."""
+    a = DefinitionFile(
+        id="aaaaaa-rest-of-uuid-a", name="Best Wildlife",
+        kind=KIND_COLLECTION,
+        payload={"expr": [["+", "exported"]]},
+    )
+    b = DefinitionFile(
+        id="bbbbbb-rest-of-uuid-b", name="Best Wildlife",
+        kind=KIND_COLLECTION,
+        payload={"expr": [["+", "exported"]]},
+    )
+    saved_a = lib.save(a)
+    saved_b = lib.save(b)
+    assert saved_a.path != saved_b.path
+    assert saved_a.path.exists()
+    assert saved_b.path.exists()
+    # Both round-trip by id (the load-bearing key).
+    assert lib.by_id("aaaaaa-rest-of-uuid-a") is not None
+    assert lib.by_id("bbbbbb-rest-of-uuid-b") is not None
+
+
+def test_collision_suffix_uses_short_id_fragment(lib):
+    """The suffix on the colliding file reads as a short id fragment
+    in parentheses — keeps the slug human-readable and unmistakable."""
+    a = DefinitionFile(
+        id="0123456789abcdef" * 2, name="Best Wildlife",
+        kind=KIND_COLLECTION, payload={},
+    )
+    b = DefinitionFile(
+        id="fedcba9876543210" * 2, name="Best Wildlife",
+        kind=KIND_COLLECTION, payload={},
+    )
+    lib.save(a)
+    saved_b = lib.save(b)
+    # The second file's stem contains the saving id's first 6 chars
+    # parenthesised.
+    assert "(fedcba)" in saved_b.path.stem
+
+
+def test_case_only_collision_disambiguated(lib, collections_root):
+    """``Best Wildlife.json`` and ``best wildlife.json`` collide on
+    NTFS / APFS-default; the disambiguator catches it case-folded."""
+    a = DefinitionFile(
+        id="case-a-id-aaaaaaaa", name="Best Wildlife",
+        kind=KIND_COLLECTION, payload={},
+    )
+    b = DefinitionFile(
+        id="case-b-id-bbbbbbbb", name="best wildlife",
+        kind=KIND_COLLECTION, payload={},
+    )
+    saved_a = lib.save(a)
+    saved_b = lib.save(b)
+    # The two stems must differ (regardless of case sensitivity of the
+    # filesystem).
+    assert saved_a.path.name.lower() != saved_b.path.name.lower()
+
+
+def test_resave_owner_keeps_existing_path(lib, collections_root):
+    """A re-save of the SAME definition uses the existing file's path
+    (no spurious suffix), even when the in-memory ``df.path`` was
+    cleared. This is how the dialog's Save-again flow works without
+    creating ghost duplicates."""
+    df_id = new_definition_id()
+    first = DefinitionFile(
+        id=df_id, name="Best Wildlife", kind=KIND_COLLECTION,
+        payload={"expr": [["+", "exported"]]},
+    )
+    saved_first = lib.save(first)
+
+    # Simulate a re-save: same id, same name, but fresh in-memory
+    # object with path=None (the dialog rebuilds the DefinitionFile).
+    second = DefinitionFile(
+        id=df_id, name="Best Wildlife", kind=KIND_COLLECTION,
+        payload={"expr": [["+", "exported"], ["-", "blurry"]]},
+    )
+    saved_second = lib.save(second)
+    assert saved_second.path == saved_first.path
+    # And only one file on disk.
+    matching = list(collections_root.glob("Best Wildlife*.json"))
+    assert len(matching) == 1
+
+
+def test_rename_disambiguates_against_existing_target(
+        lib, collections_root):
+    """Renaming definition A to a name already owned by B → A's new
+    file gets the id-fragment suffix; B's bare filename is preserved.
+    """
+    a_id = "renaming-id-aaaaaa"
+    b_id = "stationary-id-bbb"
+    a = DefinitionFile(
+        id=a_id, name="Original A", kind=KIND_COLLECTION, payload={},
+    )
+    b = DefinitionFile(
+        id=b_id, name="Target B", kind=KIND_COLLECTION, payload={},
+    )
+    lib.save(a)
+    lib.save(b)
+    # A renames to B's name.
+    renamed_a = lib.rename(a_id, "Target B")
+    assert renamed_a.id == a_id
+    # B keeps its bare slug.
+    b_after = lib.by_id(b_id)
+    assert b_after is not None
+    assert b_after.path.name == "Target B.json"
+    # A's new file carries the suffix.
+    assert "(" in renamed_a.path.stem
+
+
+# ── spec/94 Phase 1b: reconcile-on-scan ─────────────────────────
+
+
+def test_os_rename_picked_up_on_next_read(lib, collections_root):
+    """After ``list_tree`` populates the cache, an out-of-band OS
+    rename is picked up on the NEXT public read — no explicit
+    ``refresh()`` call required."""
+    given_id = new_definition_id()
+    p = _make_file(collections_root, "Before", id_=given_id)
+    # First read caches the tree.
+    lib.list_tree()
+    assert lib.by_id(given_id).name == "Before"
+
+    # User renames the file in their file manager (between reads).
+    new_p = collections_root / "After.json"
+    os.replace(str(p), str(new_p))
+
+    # The very next public read auto-reconciles — no manual refresh.
+    df = lib.by_id(given_id)
+    assert df is not None
+    assert df.name == "After"
+    assert df.path == new_p
+
+
+def test_new_file_dropped_in_picked_up_on_next_read(lib, collections_root):
+    """A hand-authored JSON file dropped into the folder between
+    reads is picked up automatically."""
+    _make_file(collections_root, "Existing")
+    lib.list_tree()
+    # User drops a new file in.
+    _make_file(collections_root, "Hand-Authored")
+    tree = lib.list_tree()
+    names = {l.name for l in tree.leaves}
+    assert {"Existing", "Hand-Authored"} <= names
+
+
+def test_no_changes_skips_refresh(lib, collections_root):
+    """When the folder signature is unchanged between reads, the
+    cached tree is reused (we don't re-walk for free reads)."""
+    _make_file(collections_root, "Stable")
+    first_tree = lib.list_tree()
+    # The second read should be the SAME object instance — no
+    # re-scan happened.
+    second_tree = lib.list_tree()
+    assert first_tree is second_tree

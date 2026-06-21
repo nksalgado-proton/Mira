@@ -38,7 +38,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from core.definition_files import (
     DefinitionFile,
@@ -88,6 +88,11 @@ class DefinitionLibrary:
         self._kind = kind
         self._tree: Optional[TreeNode] = None
         self._by_id: Dict[str, DefinitionFile] = {}
+        # spec/94 Phase 1b — reconcile-on-scan. Stash a content hash
+        # of the tree the LAST time we refreshed; the next public read
+        # auto-refreshes if a file's been touched out-of-band (rename
+        # / move / hand-edit in the OS file manager).
+        self._scan_signature: Optional[int] = None
 
     # ── public state ──────────────────────────────────────────────
 
@@ -115,6 +120,10 @@ class DefinitionLibrary:
         Parse errors on individual files are logged + skipped; the
         rest of the tree still loads. The first run on an empty tree
         is a no-op.
+
+        Updates the scan signature so subsequent reads can short-
+        circuit when nothing on disk has changed (spec/94 Phase 1b
+        reconcile-on-scan).
         """
         self._by_id.clear()
         loaded: Dict[Path, DefinitionFile] = {}
@@ -152,40 +161,37 @@ class DefinitionLibrary:
             self._by_id[df.id] = df
             loaded[path] = df
         self._tree = self._build_tree(loaded)
+        self._scan_signature = self._current_scan_signature()
 
     def list_tree(self) -> TreeNode:
         """The folder tree, with leaves rendered as
-        :class:`DefinitionRef`. Refreshes from disk on first call;
-        the wirer can call :meth:`refresh` to force a re-scan after
-        an external file edit."""
-        if self._tree is None:
-            self.refresh()
-        # ``refresh`` always rebuilds the tree, so ``_tree`` is set
-        # after the call. ``assert`` keeps the type checkers happy.
+        :class:`DefinitionRef`. Refreshes from disk on first call AND
+        whenever the on-disk tree's signature has changed since the
+        last scan (spec/94 Phase 1b reconcile-on-scan: an OS rename or
+        a hand-edit between reads is picked up automatically). The
+        wirer can also call :meth:`refresh` explicitly."""
+        self._maybe_reconcile()
         assert self._tree is not None
         return self._tree
 
     def all_definitions(self) -> List[DefinitionFile]:
         """Every loaded definition, in arbitrary order. Useful for
         the classifier and the duplicate-name probe."""
-        if self._tree is None:
-            self.refresh()
+        self._maybe_reconcile()
         return list(self._by_id.values())
 
     # ── id / name lookup ──────────────────────────────────────────
 
     def by_id(self, definition_id: str) -> Optional[DefinitionFile]:
         """Lookup by stable id. ``None`` if the id is unknown."""
-        if self._tree is None:
-            self.refresh()
+        self._maybe_reconcile()
         return self._by_id.get(definition_id)
 
     def by_name(self, display_name: str) -> Optional[DefinitionFile]:
         """Lookup by display name (filename). Returns the first match
         when duplicates exist; the soft-uniqueness warning surfaces
         via :meth:`duplicate_display_names`."""
-        if self._tree is None:
-            self.refresh()
+        self._maybe_reconcile()
         for df in self._by_id.values():
             if df.name == display_name:
                 return df
@@ -215,8 +221,7 @@ class DefinitionLibrary:
         than one file. Drives the soft uniqueness warning (§4 / §8
         ``soft scan-on-save``). An empty dict means the namespace
         is clean."""
-        if self._tree is None:
-            self.refresh()
+        self._maybe_reconcile()
         counts: Dict[str, int] = {}
         for df in self._by_id.values():
             counts[df.name] = counts.get(df.name, 0) + 1
@@ -250,7 +255,8 @@ class DefinitionLibrary:
             df.id = new_definition_id()
         if df.path is None:
             folder = (self._root / subfolder).resolve()
-            df.path = file_path_for(folder, df.name)
+            candidate = file_path_for(folder, df.name)
+            df.path = self._disambiguate_path(candidate, owner_id=df.id)
         write_definition(df)
         self.refresh()
         return df
@@ -267,7 +273,8 @@ class DefinitionLibrary:
         if df is None:
             raise KeyError(definition_id)
         assert df.path is not None  # always set after a scan
-        new_path = file_path_for(df.path.parent, new_display_name)
+        candidate = file_path_for(df.path.parent, new_display_name)
+        new_path = self._disambiguate_path(candidate, owner_id=df.id)
         if new_path != df.path:
             # ``os.replace`` is atomic on the same volume and silently
             # overwrites — that mirrors the file-manager rename the
@@ -348,6 +355,125 @@ class DefinitionLibrary:
 
         _sort(root_node)
         return root_node
+
+    # ── reconcile-on-scan (spec/94 Phase 1b) ──────────────────────
+
+    def _current_scan_signature(self) -> int:
+        """A cheap hash of the tree's state on disk — derived from the
+        sorted (path, size, mtime_ns) triples of every ``.json`` file
+        under the root.
+
+        Catches every out-of-band change a normal file operation can
+        produce: an OS rename (path changes), a delete (file
+        disappears), an add (new path appears), a hand-edit (size +
+        mtime move).
+
+        Doesn't catch a hand-edit that perfectly preserves size + mtime
+        — vanishingly rare, and the caller can always call
+        :meth:`refresh` explicitly for those.
+
+        We hash the triples rather than storing them so the cached
+        state stays a single int (cheap to compare on every read).
+        """
+        if not self._root.exists():
+            return 0
+        try:
+            entries = []
+            for path in sorted(self._root.rglob("*.json")):
+                if not path.is_file():
+                    continue
+                st = path.stat()
+                entries.append((str(path), st.st_size, st.st_mtime_ns))
+        except OSError:
+            return 0
+        return hash(tuple(entries))
+
+    def _maybe_reconcile(self) -> None:
+        """Refresh from disk when the cached signature is stale.
+
+        Called by every public read path. First call refreshes
+        unconditionally (``_scan_signature`` is None); subsequent
+        calls only refresh when the on-disk signature has moved.
+        """
+        if self._scan_signature is None:
+            self.refresh()
+            return
+        if self._current_scan_signature() != self._scan_signature:
+            self.refresh()
+
+    # ── slug-collision disambiguation (spec/94 Phase 1b) ─────────
+
+    def _disambiguate_path(self, candidate: Path, *, owner_id: str) -> Path:
+        """If ``candidate`` is already in use by a DIFFERENT id (or
+        a name that case-folds to the same string on a Windows-style
+        filesystem), append a short id-fragment suffix so the two
+        definitions live as distinct files.
+
+        The check folds case so NTFS / APFS-default don't silently
+        overwrite (``Best Wildlife.json`` vs ``best wildlife.json``
+        are the same file on those filesystems). The id is the
+        load-bearing key — the displayed name + the disambiguating
+        suffix stay readable, no UUID hex strings in the visible
+        slug.
+        """
+        folder = candidate.parent
+        if not folder.exists():
+            return candidate
+
+        target_stem = candidate.stem
+        target_stem_fold = target_stem.lower()
+
+        # If a file with the same case-folded stem exists, decide
+        # whether it's the owner's existing file (re-save) or a
+        # genuine collision with a different id.
+        collision: Optional[Path] = None
+        for path in folder.iterdir():
+            if not path.is_file() or path.suffix != candidate.suffix:
+                continue
+            if path.stem.lower() != target_stem_fold:
+                continue
+            # Found a same-stem neighbour. Check the id.
+            try:
+                existing = read_definition(path)
+            except DefinitionParseError:
+                # Corrupt file at the target — treat as a collision
+                # so we don't overwrite it on save.
+                collision = path
+                break
+            if existing.id == owner_id:
+                # Same definition (rename target back, or repeated
+                # save) — keep using the existing path verbatim so
+                # case-only renames work out of the box.
+                return path
+            collision = path
+            break
+
+        if collision is None:
+            return candidate
+
+        # Genuine collision: another definition owns this slug.
+        # Suffix with a short id-fragment of the SAVING definition
+        # so the existing file keeps its bare slug.
+        suffix_stem = f"{target_stem} ({owner_id[:6]})"
+        new_path = folder / f"{suffix_stem}{candidate.suffix}"
+        # Defensive: if even the suffixed slug collides (two
+        # definitions whose ids share a 6-char prefix), grow to
+        # 12 chars.
+        if new_path.exists() and not _is_owner(new_path, owner_id):
+            suffix_stem = f"{target_stem} ({owner_id[:12]})"
+            new_path = folder / f"{suffix_stem}{candidate.suffix}"
+        return new_path
+
+
+def _is_owner(path: Path, owner_id: str) -> bool:
+    """``True`` when ``path`` already holds a definition with id
+    ``owner_id`` — used by the disambiguation helper to detect a
+    re-save of an existing file."""
+    try:
+        df = read_definition(path)
+    except DefinitionParseError:
+        return False
+    return df.id == owner_id
 
 
 __all__ = [

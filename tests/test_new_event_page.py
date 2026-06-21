@@ -32,6 +32,16 @@ def test_create_materialises_a_plan_only_event(qapp, tmp_path):
     gw = _gateway(tmp_path, base)
     page = NewEventPage(gw)
     page.set_form_values("2026 - Pantanal", date(2026, 7, 1))
+    # spec/BUGS B-012 (Nelson 2026-06-21): the dialog never asked the user
+    # for From / To dates; ``_on_create`` derives ``event.start_date`` /
+    # ``end_date`` from the trip_days table via ``recompute_event_date_range``
+    # so a no-plan create lands a NULL start_date. The "plan-only" name
+    # means "a plan with no items yet" — give the test one trip day at
+    # the form's date so the recompute has something to derive from.
+    page._pending_trip_days = [
+        LegacyTripDay(day_number=1, date=date(2026, 7, 1),
+                      description="", tz_offset=None, location=None),
+    ]
 
     created: list[str] = []
     page.event_created.connect(created.append)

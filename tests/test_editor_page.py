@@ -173,12 +173,24 @@ def test_open_to_item_then_close_releases_gateway(qapp, app_gateway):
     assert page._eg is None
 
 
-def test_open_to_cluster_builds_real_bucket(qapp, app_gateway, event_dir):
+def test_open_to_cluster_builds_real_bucket(
+        qapp, app_gateway, store_and_gateway, event_dir):
     """open_to_cluster: synthesises a CullCluster (here two members for a
     plausible cluster shape) and hands the page the real cluster bucket
-    so the bucket-shaped load path lights up."""
+    so the bucket-shaped load path lights up.
+
+    spec/66 §1.1 keepers filter (Nelson 2026-06-21): the Editor's pool is
+    "all picked keepers" — cluster members not marked picked in
+    pick-phase state get stripped. The test stamps e1+e2 picked first so
+    the cluster survives the filter (skipping this step is what the
+    pre-2026-06-21 version of the test did, which made it fail silently
+    after the spec/66 filter landed)."""
     from mira.picked import CullCluster, CullItem
-    from mira.picked.status import CellColor
+    from mira.picked.status import CellColor, STATE_PICKED
+    _, source_eg = store_and_gateway
+    # Pre-stamp the cluster members as picked so the spec/66 keepers
+    # filter admits them.
+    source_eg.set_items_phase_state(["e1", "e2"], "pick", STATE_PICKED)
     page = EditorPage(app_gateway)
     members = (
         CullItem(
@@ -215,10 +227,14 @@ def test_prev_next_navigation_stamps_visited_on_each_landing(
     """spec/32 §2.10 — every nav landing stamps the visited tick, not just
     the entry point. Regression for the bug where prev/next-ing through a
     day in Edit only left an eye on the first photo when the user returned
-    to the Days Grid."""
+    to the Days Grid. spec/66 §1.1 keepers filter (Nelson 2026-06-21):
+    every cluster member must be picked in pick-phase state to survive
+    the Editor's keepers filter; pre-stamp them so the cluster opens."""
     from mira.picked import CullCluster, CullItem
-    from mira.picked.status import CellColor
+    from mira.picked.status import CellColor, STATE_PICKED
     _, source_eg = store_and_gateway
+    source_eg.set_items_phase_state(
+        [f"e{i}" for i in range(1, N_PHOTOS + 1)], "pick", STATE_PICKED)
     page = EditorPage(app_gateway)
     members = tuple(
         CullItem(

@@ -271,37 +271,24 @@ def build_qpalette(resolved: dict[str, str]) -> QPalette:
     return p
 
 
-def _themes_dir() -> Path:
-    """Locate the shared ``assets/themes/`` (project root) from this package's depth."""
-    return Path(__file__).resolve().parents[2] / "assets" / "themes"
-
-
-def _load_qss_template(mode: Mode) -> str:
-    """Load the legacy ``{light,dark}.qss`` template — the rich role catalog
-    every existing surface still relies on. Falls back silently if missing."""
-    themes = _themes_dir()
-    candidate = themes / f"{mode}.qss"
-    if not candidate.exists():
-        candidate = themes / "light.qss"
-    if not candidate.exists():
-        return ""
-    try:
-        return candidate.read_text(encoding="utf-8")
-    except OSError as exc:
-        log.warning("Failed to read QSS template %s: %s", candidate, exc)
-        return ""
-
-
 def apply_theme(
     app: QApplication, mode: Mode = "dark", *, palette_name: str = "Mira"
 ) -> None:
     """Apply a theme end-to-end. Idempotent.
 
     Sequence: clickable-cursor filter → resolve tokens → Fusion + ``QPalette`` →
-    legacy QSS (``.format_map``'d) + design-system QSS (single-brace
-    substituted), concatenated and set as the app stylesheet.
+    the single design-system QSS template (``assets/themes/redesign.qss``,
+    single-brace substituted via :func:`mira.ui.palette.build_redesign_qss`)
+    set as the app stylesheet.
 
-    Default mode is now ``"dark"`` (was ``"light"`` under the Gulf livery) —
+    Spec/92 §4 Stage 4d (commit pending): the legacy ``dark.qss`` / ``light.qss``
+    templates and their ``str.format_map`` substitution branch have been
+    retired; every role-bearing rule now lives in ``redesign.qss``. The
+    ``resolve_theme_colors()`` legacy-aliases shim stays as the compatibility
+    layer so callers (and the migrated rules themselves) can keep using
+    ``{window}`` / ``{text}`` / ``{primary_hover}`` etc.
+
+    Default mode is ``"dark"`` (was ``"light"`` under the Gulf livery) —
     the design system's primary identity. ``palette_name`` is accepted but
     ignored; see :func:`resolve_theme_colors`.
     """
@@ -332,11 +319,11 @@ def apply_theme(
         Path(__file__).resolve().parents[2] / "assets" / "icons" / "check.svg"
     )
     resolved["check_icon_url"] = icon_path.as_posix()
-    # spec/92 Stage 4: redesign.qss now shares the legacy template's full
-    # token vocabulary so migrated legacy rules substitute with the same
-    # ``resolve_theme_colors()`` shim the legacy templates use. Pre-populate
-    # ``chevron_down_icon_url`` here too so build_redesign_qss does not need
-    # to re-derive it.
+    # build_redesign_qss substitutes whatever's in ``resolved`` (the
+    # full resolve_theme_colors() shim — canonical tokens + legacy aliases
+    # + computed hover/pressed/disabled variants), so pre-populate the
+    # chevron URL on the resolved dict alongside check_icon_url instead of
+    # re-deriving it inside palette.py.
     resolved["chevron_down_icon_url"] = (
         Path(__file__).resolve().parents[2]
         / "assets" / "icons" / "glyphs" / "chevron_down.svg"
@@ -345,30 +332,16 @@ def apply_theme(
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(build_qpalette(resolved))
 
-    # Legacy template — Python format string with `{{ }}` escapes
-    legacy_template = _load_qss_template(mode)
-    if legacy_template:
-        try:
-            legacy_qss = legacy_template.format_map(resolved)
-        except KeyError as exc:
-            log.error(
-                "Legacy QSS template references missing key %s in mode=%r; "
-                "falling back to unformatted template", exc, mode
-            )
-            legacy_qss = ""
-    else:
-        legacy_qss = ""
-        log.warning("No legacy QSS template found for mode=%r", mode)
-
-    # Design-system template — single-brace substitution via palette helper.
-    # Pass the full resolved-token dict (canonical + legacy aliases +
-    # computed hover/pressed variants + asset URLs) so the redesign template
-    # can carry rules migrated out of the legacy QSS verbatim.
+    # Single design-system template (spec/92 §4 Stage 4d — legacy
+    # dark.qss / light.qss retired; every rule now lives here). The
+    # `resolved` dict carries the full token vocabulary so any rule
+    # migrated out of the legacy templates substitutes with the same
+    # values.
     try:
         redesign_qss = build_redesign_qss(mode, tokens=resolved)
     except FileNotFoundError:
         log.warning(
-            "assets/themes/redesign.qss missing; new design-system roles will "
+            "assets/themes/redesign.qss missing; design-system roles will "
             "fall through to Qt defaults"
         )
         redesign_qss = ""
@@ -376,11 +349,7 @@ def apply_theme(
         log.error("Failed to build redesign QSS: %s", exc)
         redesign_qss = ""
 
-    app.setStyleSheet(
-        legacy_qss
-        + "\n\n/* ===== Mira design-system roles (redesign.qss) ===== */\n\n"
-        + redesign_qss
-    )
+    app.setStyleSheet(redesign_qss)
 
     # QSS-styled widgets restyle automatically on setStyleSheet, but custom
     # paintEvent widgets do not — nudge every widget to repaint so painted

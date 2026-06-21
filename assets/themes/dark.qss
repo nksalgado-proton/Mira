@@ -1,7 +1,0 @@
-/* spec/92 §4 Stage 4c — every role-bearing rule formerly here has
- * been migrated into the single token-substituted
- * ``assets/themes/redesign.qss``. This file is empty and will be
- * deleted in Stage 4d together with the ``.format_map()`` branch
- * in ``mira/ui/theme.py::apply_theme``. The legacy aliases stay in
- * ``theme.py::resolve_theme_colors`` as the compatibility shim
- * (spec/92 §3). */

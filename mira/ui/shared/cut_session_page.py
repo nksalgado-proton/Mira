@@ -384,11 +384,24 @@ class _SingleView(QWidget):
 
 
 class CutSessionPage(QWidget):
-    """Hosts the session: top bar (tag · budget line · Create Cut /
-    Cancel) over a days-panel → day-grid → single-view stack."""
+    """Hosts the session: top SurfaceBand (title · budget line · Create
+    Cut) over a days-panel → day-grid → single-view stack inside a grid
+    SurfaceBand.
+
+    spec/94 Phase 3 — chrome matches the redesign standard
+    (DaysGridPage / CutDetailPage). Flush full-width
+    ``#SurfaceHeaderRail[phase="share"]`` at the top; content in
+    ``#SurfaceBand`` boxes; Back lives in the shared title bar and
+    dispatches per stack state through :meth:`on_titlebar_back`. Help
+    rides the title-bar / F1 routing via :meth:`show_help`."""
 
     finished = pyqtSignal(object)       # the committed cut row
     cancelled = pyqtSignal()
+    #: spec/94 Phase 3 — dispatcher contract. The shared title-bar Back
+    #: emits this when the session is at the days-panel level; the
+    #: inner grid + single states swallow the gesture and step back one
+    #: level via :meth:`on_titlebar_back`.
+    back_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -423,17 +436,45 @@ class CutSessionPage(QWidget):
         self._cache.set_event_context(self._root, {})
         self._cache.scaled_pixmap_ready.connect(self._on_thumb_ready)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        # spec/94 Phase 3 — Back lives in the shared title bar (the
+        # ShareCutsPage dispatcher reads ``back_requested`` and routes
+        # the gesture through :meth:`on_titlebar_back`).
+        self.uses_titlebar_back = True
 
-        top = QHBoxLayout()
-        top.setContentsMargins(12, 8, 12, 8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Flush rail (Share state — pink) ──────────────────────────
+        # spec/71 / spec/61 — Share is a closed-event state, not a
+        # phase, so the rail uses ``phase="share"`` (pink).
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "share")
+        self._rail.setFixedHeight(2)
+        root.addWidget(self._rail)
+
+        # ── Content host (standard margins/spacing) ──────────────────
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(28, 18, 28, 22)
+        outer.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # ── Top band: title + Create button + budget strip ───────────
+        top_band = QFrame()
+        top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(top_band)
+        top_l.setContentsMargins(16, 12, 16, 12)
+        top_l.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
         title = QLabel("#" + session.name if session.cut_id else
                        tr("New Cut: {name}").replace("{name}", session.name))
-        title.setObjectName("PageHeading")
-        top.addWidget(title)
-        top.addStretch(1)
+        title.setObjectName("CardTitle")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
         self._create_btn = QPushButton(
             tr("Save Cut") if session.cut_id else tr("Create Cut"))
         self._create_btn.setObjectName("Primary")
@@ -442,22 +483,22 @@ class CutSessionPage(QWidget):
             "Commit the picked files as this Cut. Until now nothing is "
             "saved — walking away costs nothing."))
         self._create_btn.clicked.connect(self._on_create)
-        top.addWidget(self._create_btn)
-        # The session's leave button. Plain Back (Nelson 2026-06-12 sweep
-        # — quit-and-return is always "Back", the tooltip explains the
-        # side effect). The confirm-on-unsaved-decisions dialog rides
-        # in _on_cancel.
-        cancel = back_button()
-        cancel.setToolTip(tr("Leave without saving anything."))
-        cancel.clicked.connect(self._on_cancel)
-        top.addWidget(cancel)
-        # Help is in the shared title bar now (routed to show_help / F1).
-        outer.addLayout(top)
+        title_row.addWidget(self._create_btn)
+        top_l.addLayout(title_row)
 
-        # The budget strip — its own full-width row above the picker
-        # stack (grid AND picture view both live under it).
+        # The budget strip — its own full-width row inside the top band
+        # so the dense-tier cap reads as one block.
         self._budget = CutBudgetLine()
-        outer.addWidget(self._budget)
+        top_l.addWidget(self._budget)
+
+        outer.addWidget(top_band)
+
+        # ── Grid band: days panel ↔ day grid ↔ single view ──────────
+        grid_band = QFrame()
+        grid_band.setObjectName("SurfaceBand")
+        grid_l = QVBoxLayout(grid_band)
+        grid_l.setContentsMargins(16, 12, 16, 14)
+        grid_l.setSpacing(10)
 
         self._stack = QStackedWidget()
         self._days = _DaysPanel()
@@ -473,13 +514,8 @@ class CutSessionPage(QWidget):
         grid_host_v.setContentsMargins(0, 0, 0, 0)
         grid_host_v.setSpacing(6)
         grid_chrome = QHBoxLayout()
-        grid_chrome.setContentsMargins(12, 8, 12, 0)
+        grid_chrome.setContentsMargins(0, 0, 0, 0)
         grid_chrome.setSpacing(12)
-        self._grid_back_btn = back_button()
-        self._grid_back_btn.setToolTip(tr(
-            "Back to the days list. (Esc)"))
-        self._grid_back_btn.clicked.connect(self._back_to_days)
-        grid_chrome.addWidget(self._grid_back_btn)
         self._grid_header = QLabel("")
         self._grid_header.setObjectName("DayGridHeader")
         grid_chrome.addWidget(self._grid_header, stretch=1)
@@ -488,6 +524,9 @@ class CutSessionPage(QWidget):
             cell_size=_CELL_SIZE, two_zone_clicks=True)
         self._grid.cell_activated.connect(self._open_single)
         self._grid.cell_border_clicked.connect(self._toggle_cell)
+        # spec/94 Phase 3 — the grid's edge/Esc back gesture goes back to
+        # the days panel; the shared title-bar Back follows the same
+        # path via :meth:`on_titlebar_back`.
         self._grid.back_requested.connect(self._back_to_days)
         grid_host_v.addWidget(self._grid, stretch=1)
         self._stack.addWidget(grid_host)                       # 1
@@ -497,11 +536,16 @@ class CutSessionPage(QWidget):
         self._single.current_changed.connect(self._on_single_stepped)
         self._single.fullscreen_requested.connect(self._toggle_fullscreen)
         self._stack.addWidget(self._single)                   # 2
-        outer.addWidget(self._stack, stretch=1)
+        grid_l.addWidget(self._stack, stretch=1)
+        outer.addWidget(grid_band, 1)
 
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo)
         QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
         QShortcut(QKeySequence("F1"), self, activated=self._show_shortcuts)
+
+        # spec/94 Phase 3 — title-bar Back at the top level routes to the
+        # cancel flow (with the unsaved-decisions confirm dialog).
+        self.back_requested.connect(self._on_cancel)
 
         self._refresh_days()
         self._budget.refresh(session)
@@ -753,6 +797,25 @@ class CutSessionPage(QWidget):
     def show_help(self) -> None:
         """Title-bar Help / F1 hook (routed via ShareCutsPage.show_help)."""
         self._show_shortcuts()
+
+    def on_titlebar_back(self) -> None:
+        """spec/94 Phase 3 — shared title-bar Back dispatch.
+
+        The session's drill-down has three levels (days panel → day grid
+        → single view); title-bar Back steps back one level rather than
+        leaving the session outright. Only at the top level (days panel)
+        does Back fire the page-leave gesture via ``back_requested``,
+        which :class:`ShareCutsPage` routes to the cancel-with-confirm
+        flow.
+        """
+        idx = self._stack.currentIndex()
+        if idx == 2:
+            self._back_to_grid()
+        elif idx == 1:
+            self._back_to_days()
+        else:
+            # At the days panel — leave the session.
+            self.back_requested.emit()
 
     def _show_shortcuts(self) -> None:
         show_shortcuts(self, tr("Cut session"), [

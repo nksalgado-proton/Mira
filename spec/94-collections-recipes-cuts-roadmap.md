@@ -91,7 +91,8 @@ the library → `'user'` (the value's semantic shifted in Phase 1b — no DDL
 change). Freeze invariant holds across edit/rename/delete of the source
 file; the Cut's `expr_snapshot_json` + members are the authoritative record.
 
-## Phase 3 — The Cut construction session (replace the legacy back half)  *(L)*
+## Phase 3 — The Cut construction session (replace the legacy back half)
+*(**complete** 2026-06-21, 3 commits on `main`, `verify.bat` green)*
 
 - The proper **Picker-session-on-a-Cut** (spec/61 + spec/90 Rules / Otherwise):
   the rule list seeds initial pick / skip verdicts, the user hand-refines, with
@@ -101,6 +102,22 @@ file; the Cut's `expr_snapshot_json` + members are the authoritative record.
 
 **Exit:** a Recipe produces a hand-finishable Cut you can play (rehearsal) and
 export per event.
+
+**Landed:** `CutDraft.seed` carries `(export_relpath, picked)` pairs computed
+by `recipe_resolver` at Start time; `CutSession.__post_init__` overlays them
+on top of the `pin_mode` default so a rule-based Recipe opens the picker
+pre-curated. `CutSession.from_draft` derives a seed for rule-based drafts
+that arrive without one (defensive backstop). `cut_draft_to_recipe_composition`
+drops the seed — it's a runtime artefact, not part of the saved Recipe.
+`CutSessionPage` rebuilt to the redesign standard — flush
+`#SurfaceHeaderRail[phase="share"]`, content in two `#SurfaceBand` boxes,
+the standard 28/18/28/22 margins; the page-level Back retired in favour of
+the shared title bar (`uses_titlebar_back = True`, `back_requested` signal,
+three-level `on_titlebar_back` dispatcher: single → grid → days → leave).
+`CutDetailPage` finished the SurfaceBand wrap + the dispatcher contract on
+the same shape. Play (`CutPlayerDialog`) + Export (`cut_export.py`) reused
+intact per the brief. 27 new tests; 17 quarantined-or-rebuilt existing
+suites still green; no inline QSS introduced; render smoke in both themes.
 
 ## Phase 4 — Cross-event: scope, resolution, Cuts, Home/Library surface  *(L, multi-session)*
 

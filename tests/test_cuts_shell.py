@@ -552,15 +552,14 @@ def test_save_dc_composed_of_other_dcs_resolves_end_to_end(qapp, gw, tmp_path):
 
 
 def test_back_button_works_after_creating_cut(qapp, gw, tmp_path):
-    """Regression (Nelson 2026-06-16): after a session commit returns to
-    the Cuts list, the header Back button must still fire ``closed``. The
-    QTabWidget I added in C.2 must not displace / hide / steal the button.
-
-    KI-1 fix (Nelson 2026-06-16): ``_return_to_list`` now switches the
-    stack to ``list_page`` and hands focus to its back button BEFORE
-    tearing the session page down — Qt's input subsystem ends up with a
-    live focus target instead of a button inside a queued-for-deletion
-    widget, so the next mouse click on the back button actually lands."""
+    """Regression (Nelson 2026-06-16, updated 2026-06-21): after a
+    session commit returns to the Cuts list, the title-bar Back must
+    still fire ``closed``. Back moved out of the list-page header and
+    into the shared title bar (Nelson 2026-06-21 surface
+    standardisation); the chassis routes the title-bar click via
+    ``on_titlebar_back`` which emits the current sub-page's
+    ``back_requested`` (the list page wires that to ``_on_back`` ->
+    ``closed``)."""
     shell = _shell(gw)
     closed = []
     shell.closed.connect(lambda: closed.append(True))
@@ -570,22 +569,21 @@ def test_back_button_works_after_creating_cut(qapp, gw, tmp_path):
     shell._session_page._session.set_state("Exported Media/e2.jpg", True)
     shell._session_page._on_create()
     assert shell._stack.currentWidget() is shell.list_page
-    back = shell.list_page._back                        # noqa: SLF001
-    # The back button is alive and clickable. ``isVisible`` would always
-    # be False in pytest (no top-level show()), so test ``isEnabled``
-    # instead — the proxy for "user can interact with this".
-    assert back.isEnabled()
     # The session page is fully released — re-entering New Cut on a
     # stale handle would crash.
     assert shell._session_page is None                  # noqa: SLF001
-    # Click the header Back button — same path the user would take.
-    back.click()
+    # The shell opted in to the title-bar Back (uses_titlebar_back) and
+    # the chassis exposes ``on_titlebar_back`` as the routing seam.
+    assert getattr(shell, "uses_titlebar_back", False) is True
+    # Drive the title-bar Back path — same path MainWindow takes on a
+    # user click of the shared back button.
+    shell.on_titlebar_back()
     assert closed == [True]
 
 
 def test_back_button_works_after_cancelled_session(qapp, gw, tmp_path):
     """Same invariant as the create flow, but via the cancel exit
-    (KI-1, Nelson 2026-06-16)."""
+    (KI-1, Nelson 2026-06-16; title-bar route per 2026-06-21)."""
     shell = _shell(gw)
     closed = []
     shell.closed.connect(lambda: closed.append(True))
@@ -595,10 +593,8 @@ def test_back_button_works_after_cancelled_session(qapp, gw, tmp_path):
     # session-page back button triggers.
     shell._session_page.cancelled.emit()
     assert shell._stack.currentWidget() is shell.list_page
-    back = shell.list_page._back                        # noqa: SLF001
-    assert back.isEnabled()
     assert shell._session_page is None                  # noqa: SLF001
-    back.click()
+    shell.on_titlebar_back()
     assert closed == [True]
 
 

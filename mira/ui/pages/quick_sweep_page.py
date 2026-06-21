@@ -304,14 +304,7 @@ class QuickSweepPage(QWidget):
         ))
         self._export_btn.clicked.connect(self._on_save)
         surface.top_bar.layout().addWidget(self._export_btn)
-
-        self._help_btn = ghost_button(tr("?"))
-        # Canonical role expected by the Help sweep — every photo/video
-        # surface's "?" carries the #HelpButton role.
-        self._help_btn.setObjectName("HelpButton")
-        self._help_btn.setToolTip(tr("Keyboard shortcuts  (F1)"))
-        self._help_btn.clicked.connect(self._show_shortcuts)
-        surface.top_bar.layout().addWidget(self._help_btn)
+        # Help is in the shared title bar now (routed to show_help / F1).
 
         # ── STATE_BAR — hidden. State lives on the MediaHost border;
         # Space / C / border-click cycle.
@@ -682,6 +675,10 @@ class QuickSweepPage(QWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def show_help(self) -> None:
+        """Title-bar Help / F1 hook (this is a page-stack surface)."""
+        self._show_shortcuts()
 
     def _show_shortcuts(self) -> None:
         from mira.ui.base.shortcuts import show_shortcuts

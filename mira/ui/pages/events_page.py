@@ -59,7 +59,7 @@ from mira.ui.design import (
 )
 from mira.ui.pages._cross_event_band import CrossEventCutsBand
 from mira.ui.pages._event_card_data import card_data as _card_data
-from mira.ui.pages._event_tile import EventTile
+from mira.ui.pages._event_tile import EventTile, TILE_WIDTH
 
 log = logging.getLogger(__name__)
 
@@ -110,9 +110,35 @@ class EventsPage(QWidget):
         """Surface 01 chrome (spec/75 §2): cross-event search first,
         then a one-line toolbar (title · stat chips · filter search ·
         Filters popover · + New event), then the uniform tile grid."""
-        outer = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Minimum width = just enough for 3 event tiles across (Nelson 2026).
+        # Floor = 3 tiles + 2 grid gaps + vertical scrollbar + band side padding
+        # + band border + page side margins, with a small safety buffer so the
+        # third tile never clips. The toolbar fits inside this and absorbs any
+        # extra width through the filter search field + the gap to its left.
+        _GRID_GAP, _SCROLLBAR, _SAFETY = 14, 17, 8
+        self.setMinimumWidth(
+            3 * TILE_WIDTH + 2 * _GRID_GAP + _SCROLLBAR + 32 + 2 + 64 + _SAFETY
+        )
+
+        # 0. Full-width surface identity rail — the colored top line the
+        # decision surfaces already carry (spec/71), so the chrome reads the
+        # same at the top of every surface (Nelson 2026). `home` tints it the
+        # brand accent since the events screen isn't a phase.
+        rail = QFrame()
+        rail.setObjectName("SurfaceHeaderRail")
+        rail.setProperty("phase", "home")
+        rail.setFixedHeight(2)
+        root.addWidget(rail)
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
         outer.setContentsMargins(32, 18, 32, 18)
         outer.setSpacing(12)
+        root.addWidget(content, 1)
 
         # 1. Cross-Event Cuts band — the very first element on the screen
         # (Nelson 2026-06-16 / spec/75 §2). Reads as the app-level
@@ -126,11 +152,25 @@ class EventsPage(QWidget):
         self._cross_band.new_dc_requested.connect(self._open_new_cross_event_dc)
         outer.addWidget(self._cross_band)
 
+        # A little breathing room so the two top-level bands don't touch
+        # (Nelson 2026). Tune to taste.
+        outer.addSpacing(8)
+
+        # 2-4. The Events band — an unnamed bordered band (same #CrossEventBand
+        # treatment) wrapping the toolbar, empty state, and the scrolling tile
+        # grid so the whole events area reads as one enclosed section, exactly
+        # like the Cross-Event Cuts band above (Nelson 2026).
+        events_band = QFrame()
+        events_band.setObjectName("EventsBand")
+        band = QVBoxLayout(events_band)
+        band.setContentsMargins(16, 14, 16, 14)
+        band.setSpacing(12)
+
         # 2. One-line toolbar — title, three compact stat chips, the
         # per-list search field, the Filters popover button, and the
         # primary "+ New event". Replaces the tall PageHeader + the
         # always-visible 4-combo filter row from the prior layout.
-        outer.addWidget(self._build_toolbar())
+        band.addWidget(self._build_toolbar())
 
         # 3. Empty state — hidden when the grid has any tiles.
         self._empty = QLabel(
@@ -139,7 +179,7 @@ class EventsPage(QWidget):
         self._empty.setObjectName("Faint")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
-        outer.addWidget(self._empty)
+        band.addWidget(self._empty)
 
         # 4. Scrolling uniform tile grid (spec/75 §4). FlowLayout reflows
         # by width: tiles keep an identical fixed size and wrap into as
@@ -158,7 +198,9 @@ class EventsPage(QWidget):
         self._scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        outer.addWidget(self._scroll, 1)
+        band.addWidget(self._scroll, 1)
+
+        outer.addWidget(events_band, 1)
 
     # ── toolbar / filters ──────────────────────────────────────────────
 
@@ -196,7 +238,15 @@ class EventsPage(QWidget):
         # above it. Kept inline (rather than tucked into the popover) so
         # the most-frequent filter — type-to-find — stays one click away.
         self._filter_search = search_field("Filter events…")
-        self._filter_search.setMaximumWidth(220)
+        # The search field is the toolbar's flexible element — it grows and
+        # shrinks with the window (along with the gap to its left), so the fixed
+        # controls stay put and the 3-tile grid alone sets the floor (Nelson
+        # 2026). min/max keep it usable but bounded; tune to taste.
+        self._filter_search.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self._filter_search.setMinimumWidth(160)
+        self._filter_search.setMaximumWidth(360)
         self._filter_search.input.textChanged.connect(self._apply_filter)
         h.addWidget(self._filter_search)
 

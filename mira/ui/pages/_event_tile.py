@@ -70,7 +70,10 @@ from mira.ui.design import (
 from mira.ui.palette import PALETTE, RADIUS
 
 
-TILE_RADIUS = 0.0    # Nelson 2026-06-16: square tiles + square photos
+TILE_RADIUS = 18.0   # match the Card xl radius. Rounding works now that the
+#                      tile paints its OWN card surface (the content widgets are
+#                      transparent #TilePane, so they no longer cover the corners
+#                      with grey) and the cover photo rounds its bottom to match.
 
 
 _CATEGORY_ICONS_DIR = (
@@ -203,6 +206,7 @@ class _PhaseDonut(QWidget):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("TilePane")  # transparent — show the tile's card fill
         self._phase = phase
         self._percent = max(0, min(100, int(percent)))
         self._slices = list(slices)
@@ -460,6 +464,7 @@ class EventTile(Card):
 
     def _build_title_row(self) -> QWidget:
         host = QWidget()
+        host.setObjectName("TilePane")  # transparent — show the tile's card fill
         host.setFixedHeight(TITLE_ROW_HEIGHT)
         h = QHBoxLayout(host)
         h.setContentsMargins(12, 8, 8, 8)
@@ -641,6 +646,7 @@ class EventTile(Card):
 
     def _build_open_content(self) -> QWidget:
         host = QWidget()
+        host.setObjectName("TilePane")  # transparent — show the tile's card fill
         grid = QGridLayout(host)
         # spec/77 §10.7 #2 — bigger bottom margin so the bottom-row
         # donut `%` labels never collide with the painted tile border
@@ -704,12 +710,23 @@ class EventTile(Card):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setClipping(False)
+        # Paint the card surface explicitly. A styled QSS background isn't
+        # reliable under a custom paintEvent, and a painted fill is also the
+        # only way to get *antialiased* rounded corners (Nelson 2026). Rounded
+        # white fill, then a rounded border on top — both at TILE_RADIUS so the
+        # tile matches the phase cards + the cover photo's own bottom rounding.
+        # The corners outside the rounded rect stay unpainted (transparent) so
+        # the band shows through; the transparent #TilePane content can't cover
+        # them with grey.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(_palette_color("card")))
+        painter.drawRoundedRect(QRectF(self.rect()), TILE_RADIUS, TILE_RADIUS)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         border_pen = QPen(QColor(_palette_color("card_border")), 2.0)
-        border_pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        border_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(border_pen)
-        # Square tiles (Nelson 2026-06-16) — a plain rect, no rounding.
-        painter.drawRect(
-            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        painter.drawRoundedRect(
+            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0),
+            max(0.0, TILE_RADIUS - 1.0), max(0.0, TILE_RADIUS - 1.0),
         )
         painter.end()

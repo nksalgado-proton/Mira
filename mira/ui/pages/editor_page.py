@@ -73,6 +73,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -93,9 +94,8 @@ from mira.picked.status import (
 )
 from mira.store import models as m
 from mira.ui.design import (
-    SurfaceIdentityHeader,
+    apply_density,
     ghost_button,
-    nav_arrow,
 )
 from mira.ui.edited.adjustment_surface import (
     AdjustmentSurface,
@@ -266,65 +266,73 @@ class EditorPage(QWidget):
     # ── UI assembly ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        self._outer = QVBoxLayout(self)
-        self._outer.setContentsMargins(20, 16, 20, 16)
-        self._outer.setSpacing(10)
+        # Rail flush to the very top + full width, exactly like the other
+        # surfaces. The root takes NO margins (so the rail isn't inset); the
+        # content widget below carries the page margins (Nelson 2026-06-20).
+        self.uses_titlebar_back = True
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # spec/71 identity header — Edit phase chrome (amber rail + EDIT
-        # badge). NO state legend: P/X are inert on a creative-only
-        # surface (spec/66 §1.1). The reminder names the two truth-keys
-        # the user actually presses here.
-        self._identity = SurfaceIdentityHeader(
-            phase="edit",
-            name=tr("Edit"),
-            purpose=tr("Develop your picked keepers"),
-            reminder=tr(
-                "\\ compare before/after · F10 full-res preview."),
-        )
-        self._outer.addWidget(self._identity)
+        # ── Full-width Edit rail (amber) — replaces the SurfaceIdentityHeader
+        # badge/purpose block; the host phase reads through the rail accent,
+        # matching Events / Phases / Days List / Days Grid. Back is in the
+        # shared title bar.
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "edit")
+        self._rail.setFixedHeight(2)
+        root.addWidget(self._rail)
 
-        # ── Toolbar — Back · counter ──
-        self._toolbar_widget = QWidget()
-        toolbar = QHBoxLayout(self._toolbar_widget)
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(10)
-        self._back_btn = ghost_button(tr("‹ Back"))
-        self._back_btn.setToolTip(tr("Return to the day grid  (Esc)"))
-        self._back_btn.clicked.connect(self._on_back)
-        toolbar.addWidget(self._back_btn)
-        self._counter = QLabel("0 / 0")
-        self._counter.setObjectName("Sub")
-        self._counter.setToolTip(tr(
-            "Position in the current day — item index of total."))
-        toolbar.addWidget(self._counter)
-        toolbar.addStretch(1)
-        self._outer.addWidget(self._toolbar_widget)
+        content = QWidget()
+        self._outer = QVBoxLayout(content)
+        self._outer.setContentsMargins(20, 10, 20, 6)
+        self._outer.setSpacing(8)
+        root.addWidget(content, 1)
 
-        # ── Tools area — the AdjustmentSurface tools widget. The spec/59
-        # §2 top grid IS the redesigned controls panel; reparenting it
-        # keeps engine + UI in lockstep (no double source of truth).
-        # Compare / Toggle Crop / Reset all live in its action row.
+        # ── Top band — the tone tools inside one #SurfaceBand. (The position
+        # counter moved to the footer; it no longer costs a line here.)
+        self._top_band = QFrame()
+        self._top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(self._top_band)
+        top_l.setContentsMargins(12, 10, 12, 10)
+        top_l.setSpacing(6)
+        # The AdjustmentSurface tools widget (spec/59 §2 grid) — reparented so
+        # engine + UI stay in lockstep. Toggle Adjustments / Toggle Crop /
+        # Reset all now ride the Crop line inside it.
         self._tools = self._surface.tools_widget()
-        self._tools.setParent(self)
-        self._outer.addWidget(self._tools)
+        self._tools.setParent(self._top_band)
+        top_l.addWidget(self._tools)
+        self._outer.addWidget(self._top_band)
 
         # ── Stage — the PhotoViewport (the one display engine). The
         # CropOverlay parents to its photo_area_widget() inside
         # AdjustmentSurface; drag handles + aspect-lock + standard
         # correction baseline come for free.
-        self._viewport.setParent(self)
+        # Parent directly to `content` (one reparent, not page→content twice)
+        # — the embedded QVideoWidget is a Windows native HWND and an extra
+        # reparent can leave its opaque black painting over the photo
+        # (Nelson 2026-06-20 black-canvas report).
+        self._viewport.setParent(content)
         self._viewport.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._outer.addWidget(self._viewport, 1)
 
-        # ── Workshop reveal host — fixed reserved height (spec/56 §1).
-        # The host stays visible on photos AND videos so the canvas
-        # geometry above is invariant under photo↔video sweeps (the
-        # no-canvas-jump rule, lifted from PickerPage's compact_row Fix
-        # A 2026-06-15). On photos the inner workshop is hidden; on
-        # videos it appears in place. The viewport's video machinery
-        # (arm-on-landing, position/duration/playing signals) handles
-        # the in-place player swap above this row.
+        # ── Bottom band — the video workshop + the per-item footer inside one
+        # #SurfaceBand (the group box around the bottom controls). On a PHOTO
+        # the workshop is hidden but the host keeps its reserved height (so the
+        # canvas never jumps); the band drops its border in that state (the
+        # `hollow` property) so a photo never shows an empty box. The border is
+        # restored when a video reveals the workshop.
+        self._bottom_band = QFrame()
+        self._bottom_band.setObjectName("SurfaceBand")
+        bb_l = QVBoxLayout(self._bottom_band)
+        bb_l.setContentsMargins(12, 8, 12, 8)
+        bb_l.setSpacing(6)
+
+        # Workshop reveal host — fixed reserved height (spec/56 §1). The host
+        # stays present on photos AND videos so the canvas geometry above is
+        # invariant under photo↔video sweeps (the no-canvas-jump rule).
         self._workshop_host = QWidget()
         self._workshop_host.setObjectName("EditorWorkshopHost")
         self._workshop_host.setFixedHeight(WORKSHOP_REVEAL_HEIGHT)
@@ -335,19 +343,17 @@ class EditorPage(QWidget):
         wh_layout.addWidget(self._workshop_bar)
         self._workshop_bar.setVisible(False)
         self._wire_workshop_signals()
-        self._outer.addWidget(self._workshop_host)
+        bb_l.addWidget(self._workshop_host)
 
-        # ── Bottom bar — ◀ prev · spacer · Full Resolution F10 · Full
-        # Screen F11 · spacer · ▶ next. The bucket-level filmstrip
-        # belongs to the Days Grid (the upstream overview); this row
-        # keeps the per-bucket arrows handy so the user has a click
-        # path that matches ← / → and a single hand always knows where
-        # the chrome lives.
+        # Footer row — ‹ prev · Full Resolution F10 · counter · Full Screen
+        # F11 · next ›. The position counter rides between the two centre
+        # buttons (Nelson 2026-06-20) instead of costing a line at the top.
         self._bottom_widget = QWidget()
         bottom = QHBoxLayout(self._bottom_widget)
         bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(10)
-        self._prev_btn = nav_arrow("left")
+        # Flat chevron ghosts — NOT the floating circular #MediaNavArrow.
+        self._prev_btn = ghost_button("‹")
         self._prev_btn.setToolTip(tr("Previous photo  (←)"))
         self._prev_btn.clicked.connect(self._on_prev)
         bottom.addWidget(self._prev_btn)
@@ -358,6 +364,12 @@ class EditorPage(QWidget):
             "exactly what Export produces  (F10)"))
         self._fullres_btn.clicked.connect(self._open_processed_lens)
         bottom.addWidget(self._fullres_btn)
+        self._counter = QLabel("0 / 0")
+        self._counter.setObjectName("Sub")
+        self._counter.setToolTip(tr(
+            "Position in the current day — item index of total."))
+        self._counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bottom.addWidget(self._counter)
         self._fullscreen_btn = ghost_button(tr("Full Screen  F11"))
         self._fullscreen_btn.setCheckable(True)
         self._fullscreen_btn.setToolTip(tr(
@@ -365,11 +377,41 @@ class EditorPage(QWidget):
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         bottom.addWidget(self._fullscreen_btn)
         bottom.addStretch(1)
-        self._next_btn = nav_arrow("right")
+        self._next_btn = ghost_button("›")
         self._next_btn.setToolTip(tr("Next photo  (→)"))
         self._next_btn.clicked.connect(self._on_next)
         bottom.addWidget(self._next_btn)
-        self._outer.addWidget(self._bottom_widget)
+        bb_l.addWidget(self._bottom_widget)
+
+        self._outer.addWidget(self._bottom_band)
+
+        # spec/92 dense tier — slim the editor's chrome (ghost buttons,
+        # combos, the workshop's transport) so the media keeps the vertical
+        # room. Applied after the subtree exists, including the reparented
+        # AdjustmentSurface tools. Reused by the other three media surfaces.
+        apply_density(self._tools)
+        apply_density(self._workshop_bar)
+        apply_density(self._bottom_widget)
+
+        # Re-reserve the workshop host to the DENSE bar's real height, so no
+        # blank strip sits between the bar and the footer.
+        self._workshop_bar.ensurePolished()
+        self._workshop_host.setFixedHeight(
+            max(88, self._workshop_bar.sizeHint().height()))
+        # Photo is the default landing — start the bottom band hollow (no
+        # border) until a video reveals the workshop.
+        self._set_bottom_band_hollow(True)
+
+    def _set_bottom_band_hollow(self, hollow: bool) -> None:
+        """Drop (hollow) or restore the bottom band's border. Borderless on
+        photos — the workshop is hidden there, so a bordered empty box would
+        read as clutter; bordered on videos where the workshop fills it."""
+        band = getattr(self, "_bottom_band", None)
+        if band is None:
+            return
+        band.setProperty("hollow", bool(hollow))
+        band.style().unpolish(band)
+        band.style().polish(band)
 
     # ── Focus discipline ───────────────────────────────────────────────
 
@@ -1614,13 +1656,13 @@ class EditorPage(QWidget):
         self._fullscreen = not self._fullscreen
         self._fullscreen_btn.setChecked(self._fullscreen)
         chrome_visible = not self._fullscreen
-        for w in (self._toolbar_widget, self._tools, self._bottom_widget):
+        for w in (self._rail, self._top_band, self._bottom_band):
             w.setVisible(chrome_visible)
         if self._fullscreen:
             self._outer.setContentsMargins(0, 0, 0, 0)
             win.showFullScreen()
         else:
-            self._outer.setContentsMargins(20, 16, 20, 16)
+            self._outer.setContentsMargins(20, 10, 20, 6)
             win.showNormal()
         self.fullscreen_changed.emit(self._fullscreen)
         self._viewport.setFocus()
@@ -1632,6 +1674,13 @@ class EditorPage(QWidget):
         return False
 
     # ── Back / Esc ─────────────────────────────────────────────────────
+
+    def on_titlebar_back(self) -> None:
+        """Shared title-bar Back hook (MainWindow._on_titlebar_back prefers
+        this over a raw signal). Routes to the same handler the in-page Back
+        used to fire; if fullscreen, step out of fullscreen first."""
+        if not self._exit_fullscreen():
+            self._on_back()
 
     def _on_esc(self) -> None:
         """Esc — one level at a time: fullscreen → windowed → out."""
@@ -1809,6 +1858,8 @@ class EditorPage(QWidget):
         # Show the workshop in place; the canvas above keeps geometry
         # by virtue of the host's fixed height.
         self._workshop_bar.setVisible(True)
+        # Video → the workshop fills the bottom band, so give it its border.
+        self._set_bottom_band_hollow(False)
         # The cursor lands at position 0 — select the segment that
         # contains it (the segment that starts at the first marker).
         # ``_select_segment_for_position`` calls ``_bind_panel_to_selection``
@@ -1837,6 +1888,9 @@ class EditorPage(QWidget):
         # branch's own display semantics take over.
         self._exit_dev_mode()
         self._workshop_bar.setVisible(False)
+        # Photo → the workshop is hidden; drop the band border so it isn't an
+        # empty box.
+        self._set_bottom_band_hollow(True)
         self._video_id = None
         self._video_source_path = None
         self._video_duration_ms = 0

@@ -28,6 +28,7 @@ from mira.ui.design.buttons import (
     primary_button,
 )
 from mira.ui.design.cards import Card, Card2, StatTile
+from mira.ui.design.density import apply_density
 from mira.ui.design.carousel import Carousel
 from mira.ui.design.dialogs import (
     MessageDialog,
@@ -97,6 +98,7 @@ __all__ = [
     "Card2",
     "Carousel",
     "Donut",
+    "apply_density",
     "DonutSlice",
     "Filmstrip",
     "GLYPHS_DIR",

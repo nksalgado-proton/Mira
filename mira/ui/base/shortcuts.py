@@ -84,4 +84,37 @@ def show_shortcuts(parent: QWidget, title: str,
     dlg.exec()
 
 
-__all__ = ["ShortcutRow", "show_shortcuts"]
+def show_global_shortcuts(parent: QWidget) -> None:
+    """The default Help dialog — the locked keymap (spec/63 §4). Shown by the
+    shared title-bar Help button + F1 on any surface that doesn't provide its
+    own ``show_help()``. One canonical place for the universal keys; rows are
+    built here (not at import) so ``tr()`` runs with the translator live."""
+    rows: Tuple[ShortcutRow, ...] = (
+        ("", tr("Decide  (Pick / Skip surfaces)")),
+        ("P", tr("Pick")),
+        ("X", tr("Skip")),
+        ("Space", tr("Toggle Pick / Skip")),
+        ("C", tr("Cycle Skip → Pick → Compare")),
+        ("", tr("Move")),
+        ("← → ↑ ↓", tr("Previous / next item")),
+        ("Home / End", tr("First / last item")),
+        ("Esc", tr("Back one level")),
+        ("", tr("Play & view")),
+        ("Tab", tr("Play / pause a clip")),
+        ("Enter", tr("Play the cluster as a sweep")),
+        ("F10", tr("Full resolution — the real pixels / developed preview")),
+        ("F · F11", tr("Full screen")),
+        ("", tr("Edit")),
+        ("L · ⇧L", tr("Next / previous Look")),
+        ("G", tr("Look grid (all four side by side)")),
+        ("[ · ]", tr("Rotate the crop box 90°")),
+        ("\\", tr("Compare before / after")),
+        ("R", tr("Reset this item")),
+        ("Ctrl+Z", tr("Undo")),
+        ("", tr("Help")),
+        ("F1", tr("This shortcuts list")),
+    )
+    show_shortcuts(parent, tr("Mira — keyboard shortcuts"), rows)
+
+
+__all__ = ["ShortcutRow", "show_shortcuts", "show_global_shortcuts"]

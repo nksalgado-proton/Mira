@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -39,7 +40,6 @@ from PyQt6.QtWidgets import (
 from core import cut_budget, cut_names
 from mira.shared.cut_session import SessionFile, show_entries
 from mira.ui.base.shortcuts import show_shortcuts
-from mira.ui.base.surface import back_button, help_button
 from mira.ui.design import ThumbGrid, ThumbGridItem
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import ViewportItem
@@ -96,6 +96,15 @@ class CutDetailPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # Flush full-width pink rail (Share state) at the very top, like the
+        # other surfaces. Back lives in the shared title bar — routed here by
+        # ShareCutsPage.on_titlebar_back (Nelson 2026-06-21).
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "share")
+        self._rail.setFixedHeight(2)
+        outer.addWidget(self._rail)
+
         # ── Top bar (Adjust row) ─────────────────────────────────────
         head = QHBoxLayout()
         head.setContentsMargins(12, 8, 12, 4)
@@ -112,21 +121,16 @@ class CutDetailPage(QWidget):
         adjust.clicked.connect(
             lambda: self._cut_id and self.adjust_requested.emit(self._cut_id))
         head.addWidget(adjust)
-        # The shared Help control (Nelson 2026-06-12 UI round).
-        self._help_btn = help_button()
-        self._help_btn.setToolTip(tr("Keyboard shortcuts  (F1)"))
-        self._help_btn.clicked.connect(self._show_shortcuts)
-        head.addWidget(self._help_btn)
+        # Help is in the shared title bar now (routed to show_help / F1).
         outer.addLayout(head)
 
         # ── Grid chrome (Back + header + Play/Export) ────────────────
         chrome = QHBoxLayout()
         chrome.setContentsMargins(12, 4, 12, 8)
         chrome.setSpacing(12)
-        self._back_btn = back_button()
-        self._back_btn.setToolTip(tr("Back to the Cuts list. (Esc)"))
-        self._back_btn.clicked.connect(self.back_requested.emit)
-        chrome.addWidget(self._back_btn)
+        # Back is in the shared title bar now (routed via
+        # ShareCutsPage.on_titlebar_back). The grid's own back_requested
+        # (Esc / edge) still fires the same signal.
         self._header_lbl = QLabel("")
         self._header_lbl.setObjectName("DayGridHeader")
         chrome.addWidget(self._header_lbl, stretch=1)
@@ -314,6 +318,10 @@ class CutDetailPage(QWidget):
             win.showNormal()
         else:
             win.showFullScreen()
+
+    def show_help(self) -> None:
+        """Title-bar Help / F1 hook (routed via ShareCutsPage.show_help)."""
+        self._show_shortcuts()
 
     def _show_shortcuts(self) -> None:
         show_shortcuts(self, tr("Cut detail"), [

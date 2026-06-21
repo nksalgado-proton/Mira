@@ -118,7 +118,17 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.gateway = gateway or Gateway()
         self.setWindowTitle(tr("Mira"))
-        self.resize(1180, 760)
+        # Open tall enough for 3 full rows of event tiles (~3×240 + gaps +
+        # chrome ≈ 1040) on roomy displays, but CLAMP to the actual available
+        # screen so the window never opens off-screen on a shorter laptop
+        # (Nelson 2026; was a flat 760 that only showed ~2 rows). Qt's resize()
+        # doesn't clamp on its own, so we do it here; the user can still resize.
+        from PyQt6.QtWidgets import QApplication as _QApp
+        _screen = _QApp.primaryScreen()
+        _avail = _screen.availableGeometry() if _screen is not None else None
+        _w = min(1180, _avail.width() - 24) if _avail is not None else 1180
+        _h = min(1040, _avail.height() - 48) if _avail is not None else 1040
+        self.resize(_w, _h)
 
         central = QWidget()
         # Styled root — carries the redesign's radial background glow
@@ -807,6 +817,59 @@ class MainWindow(QMainWindow):
         self._title_bar = TitleBar(menu_bar)
         self.setMenuWidget(self._title_bar)
         self._title_bar.theme_toggle.themeChanged.connect(self._on_theme_toggled)
+        # Back lives in the title bar (next to the theme toggle) so it sits in
+        # the same place on every surface (Nelson 2026). It re-emits the current
+        # page's `back_requested`, reusing each page's existing back wiring, and
+        # is shown only for pages that opt in via `uses_titlebar_back`.
+        self._title_bar.back_button.clicked.connect(self._on_titlebar_back)
+        self.page_stack.currentChanged.connect(self._sync_titlebar_back)
+        self._sync_titlebar_back()
+        # Shared Help — the ONE help entry point, on every surface (Nelson
+        # 2026-06-21). Button click + the F1 shortcut both route to the current
+        # surface's help, falling back to the global locked-keymap reference.
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        self._title_bar.help_button.clicked.connect(self._on_titlebar_help)
+        help_sc = QShortcut(QKeySequence("F1"), self)
+        help_sc.setContext(_Qt.ShortcutContext.ApplicationShortcut)
+        help_sc.activated.connect(self._on_titlebar_help)
+        self._help_shortcut = help_sc
+
+    def _on_titlebar_back(self) -> None:
+        """Route the shared title-bar Back to the current page's back action —
+        a custom ``on_titlebar_back()`` if the page defines one (e.g. Days Grid
+        closes an open cluster first), otherwise its ``back_requested`` signal."""
+        page = self.page_stack.currentWidget()
+        handler = getattr(page, "on_titlebar_back", None)
+        if callable(handler):
+            handler()
+            return
+        sig = getattr(page, "back_requested", None)
+        if sig is not None:
+            sig.emit()
+
+    def _sync_titlebar_back(self, *_args) -> None:
+        """Show the title-bar Back only for pages that opt in."""
+        page = self.page_stack.currentWidget()
+        self._title_bar.back_button.setVisible(
+            bool(getattr(page, "uses_titlebar_back", False))
+        )
+
+    def _on_titlebar_help(self) -> None:
+        """Shared title-bar Help (and F1) → the current surface's help if it
+        provides ``show_help()`` (chassis pages route to their sub-page),
+        otherwise the global locked-keymap reference."""
+        from mira.ui.base.shortcuts import show_global_shortcuts
+        page = self.page_stack.currentWidget()
+        handler = getattr(page, "show_help", None)
+        if callable(handler):
+            try:
+                handler()
+                return
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "show_help failed for %s", type(page).__name__)
+        show_global_shortcuts(self)
 
     def _on_theme_toggled(self, mode: str) -> None:
         """TitleBar ThemeToggle → apply the theme live + best-effort persist
@@ -5786,10 +5849,15 @@ class MainWindow(QMainWindow):
                         if d.date == target and d.day_number is not None
                     ]
                     root = eg.event_root
+                    # Skip items with no origin_relpath — e.g. externally
+                    # merged masters / pending rows — so ``root / None`` can't
+                    # blow up the whole browse. Photos only: the DayBrowseDialog
+                    # can't play videos, so they're left out (Nelson 2026-06-21).
                     paths = [
                         root / it.origin_relpath
                         for n in day_numbers
                         for it in eg.items(day=n)
+                        if it.origin_relpath and it.kind != "video"
                     ]
                 finally:
                     eg.close()

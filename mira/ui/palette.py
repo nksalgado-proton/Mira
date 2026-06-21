@@ -55,9 +55,14 @@ PALETTE: dict[str, dict[str, str]] = {
         "shadow_alpha": "110",
     },
     "light": {
-        "bg": "#eef1f6", "card": "#ffffff", "card2": "#f5f7fb",
+        "bg": "#eef1f6", "card": "#ffffff", "card2": "#e9edf4",
         "ink": "#1a1f2b", "ink_soft": "#5e6679", "ink_faint": "#9aa1b1",
-        "line": "#e6e9f0", "card_border": "#a8aebf",
+        # `line` darkened from #e6e9f0 → #d3d9e3 so hairline borders register
+        # against white cards + the grey page in light mode (the old value sat
+        # ~1.2:1 on white — invisible). `card2` darkened #f5f7fb → #e9edf4 so
+        # input wells + nested tiles separate from white cards instead of
+        # blending in (Nelson 2026, light-surface contrast pass).
+        "line": "#d3d9e3", "card_border": "#a8aebf",
         "accent": "#6a5cff", "accent_soft": "#eceaff",
         "green": "#16a34a", "amber": "#d97706", "red": "#dc2626",
         # Light-theme companion to dark's #22d3ee — darker so the

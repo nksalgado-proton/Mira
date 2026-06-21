@@ -272,38 +272,33 @@ class AdjustmentSurface(QWidget):
         v = QVBoxLayout(host)
         v.setContentsMargins(10, 6, 10, 6)
         v.setSpacing(6)
-        # The top reorganization (Nelson 2026-06-11 — Edit Surface
-        # design): TWO lines over three aligned columns, then the
-        # untouched action row. Line 1 = ONE outer named box holding
-        # Look (always the widest) · Style · Filter. Line 2 = Crop
-        # under Look (same width), and the video-only Audio /
-        # Vibrations slots under Style / Filter (hosts fill them via
-        # :meth:`set_video_extra_boxes`; empty slots still claim their
-        # column width so Crop stays Look-sized for photos). Mixed-case
-        # titles, always (the UPPERCASE experiment is reverted).
-        outer, outer_col = self._group(tr("Style, Look & Filter"))
+        # Top reorganization (Nelson 2026-06-11; revised 2026-06-20). TWO
+        # lines. Line 1 = the three SELF-TITLED boxes Look · Style · Filter
+        # (the redundant outer "Style, Look & Filter" wrapper was dropped —
+        # the boxes already name themselves). Line 2 = Crop on the left + the
+        # view-control buttons (Toggle Adjustments / Toggle Crop / Reset all)
+        # folded onto the SAME line on the right, reclaiming a whole row. The
+        # video-only Audio / Vibrations slots ride between them (hosts fill
+        # them via :meth:`set_video_extra_boxes`; empty otherwise).
         line1 = QHBoxLayout()
         line1.setSpacing(10)
         line1.addWidget(self._build_look_group(), stretch=3)
         line1.addWidget(self._build_style_group(), stretch=1)
         line1.addWidget(self._build_filter_group(), stretch=1)
-        outer_col.addLayout(line1)
-        v.addWidget(outer)
+        v.addLayout(line1)
 
         line2 = QHBoxLayout()
         line2.setSpacing(10)
-        # Compensate the outer box's internal margins so line 2's
-        # columns line up under line 1's.
-        line2.setContentsMargins(10, 0, 10, 0)
-        line2.addWidget(self._build_crop_group(), stretch=3)
+        line2.addWidget(self._build_crop_group())
         self._audio_slot = QVBoxLayout()
         self._audio_slot.setContentsMargins(0, 0, 0, 0)
         self._vibrations_slot = QVBoxLayout()
         self._vibrations_slot.setContentsMargins(0, 0, 0, 0)
-        line2.addLayout(self._audio_slot, stretch=1)
-        line2.addLayout(self._vibrations_slot, stretch=1)
+        line2.addLayout(self._audio_slot)
+        line2.addLayout(self._vibrations_slot)
+        line2.addStretch(1)
+        self._add_action_buttons(line2)
         v.addLayout(line2)
-        v.addLayout(self._build_action_row())
         return host
 
     def set_video_extra_boxes(
@@ -519,22 +514,17 @@ class AdjustmentSurface(QWidget):
         box.setMinimumHeight(box.minimumSizeHint().height())
         return box
 
-    def _build_action_row(self):
-        """View controls (Compare / Preview / Reset) on the right. NO
-        Export and NO navigation — those belong to the host (docs/26
-        §4). Copy/Paste retired with the sliders (spec/54 §7 #2 — a
-        look is two clicks anywhere)."""
-        row = QHBoxLayout()
-        row.setSpacing(10)
-
-        row.addStretch(1)
-
+    def _add_action_buttons(self, into) -> None:
+        """Create the view-control buttons (Toggle Adjustments / Toggle Crop /
+        Reset all) and append them to ``into`` — folded onto the Crop line
+        (Nelson 2026-06-20) so they no longer cost a separate row. NO Export
+        and NO navigation — those belong to the host (docs/26 §4)."""
         self._compare_toggle = self._toggle(tr("Toggle Adjustments"))
         self._compare_toggle.setToolTip(tr(
             "ON = the original (before any tone / Vibrance change). OFF = "
             "your adjusted version. ( \\ )"))
         self._compare_toggle.toggled.connect(self._on_compare_toggled)
-        row.addWidget(self._compare_toggle)
+        into.addWidget(self._compare_toggle)
 
         self._preview_toggle = self._toggle(tr("Toggle Crop"))
         self._preview_toggle.setToolTip(tr(
@@ -543,14 +533,13 @@ class AdjustmentSurface(QWidget):
             "the crop box overlaid. For the full-resolution view, use "
             "Full Resolution (F10)."))
         self._preview_toggle.toggled.connect(self._on_preview_toggled)
-        row.addWidget(self._preview_toggle)
+        into.addWidget(self._preview_toggle)
 
         self._reset_btn = self._btn(tr("Reset all"))
         self._reset_btn.setToolTip(tr(
             "Reset this image's adjustments + crop + rotation ( R )."))
         self._reset_btn.clicked.connect(self._on_reset_all)
-        row.addWidget(self._reset_btn)
-        return row
+        into.addWidget(self._reset_btn)
 
     # ── Small widget helpers ─────────────────────────────────────────
 

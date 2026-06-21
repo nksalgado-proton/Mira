@@ -215,8 +215,9 @@ class _DonutLegend(QWidget):
         row.addWidget(swatch)
         name = QLabel(s.label)
         name.setObjectName("Sub")
+        name.setMinimumWidth(86)  # fixed name column so the %s align in a column
         row.addWidget(name)
-        row.addStretch()
+        row.addSpacing(12)        # small fixed gap before the % (not a wide stretch)
         pct = QLabel(f"{int(round(s.value / total * 100))}%")
         # The legend percentage reads from the live palette so light-theme
         # renders use the dark ink colour (#1a1f2b) instead of dark's
@@ -245,7 +246,11 @@ class PhaseCard(Card):
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
-        self.setMinimumHeight(280)
+        # Heavier 2px card_border edge to match the event tiles (Nelson 2026).
+        self.setProperty("strongBorder", True)
+        # Compacter cards so the 2x2 sits comfortably inside the bottom
+        # #SurfaceBand instead of stretching to fill the page (Nelson 2026).
+        self.setMinimumHeight(210)
         self.layout().setSpacing(10)
 
         # Top row: step badge + phase label + status chip. The chip is the
@@ -261,10 +266,6 @@ class PhaseCard(Card):
         title.setObjectName("CardTitle")
         head.addWidget(title)
         head.addStretch()
-        head.addWidget(
-            _phase_status_chip(snapshot.status, snapshot.key),
-            0, Qt.AlignmentFlag.AlignVCenter,
-        )
         self.layout().addLayout(head)
 
         # Body: donut (+ legend for multi-slice phases like Collect)
@@ -276,22 +277,29 @@ class PhaseCard(Card):
             # Empty state — small hollow ring (120px), no slices, no legend.
             # Distinct from active phase donuts which dominate the card body.
             donut.setEmptyState(snapshot.state_word)
-            donut.setFixedSize(140, 140)
+            # Same size as the active donuts so "Not started" tiles match the
+            # height of the populated ones — even 2x2 rows (Nelson 2026).
+            donut.setFixedSize(132, 132)
             body.addStretch()
             body.addWidget(donut, 0, Qt.AlignmentFlag.AlignCenter)
             body.addStretch()
         else:
             donut.setSlices(snapshot.slices)
             donut.setCenterText(snapshot.center_text, snapshot.center_sub)
-            donut.setFixedSize(160, 160)
+            donut.setFixedSize(132, 132)
             # Multi-slice phases (Collect: per-camera) get a legend right
             # of the donut so the slice colors are legible. Single-fill
             # phases (Pick/Edit/Share: numerator vs track) skip the legend
             # and center the donut — the center "62% · 412/1084" already
             # speaks the metric, so empty space looks better symmetric.
             if self._wants_legend(snapshot):
+                # Center the donut + compact legend as a group so the donut
+                # isn't pushed to the left edge (Nelson 2026). The legend takes
+                # its natural width instead of stretching the % to the far edge.
+                body.addStretch()
                 body.addWidget(donut, 0, Qt.AlignmentFlag.AlignCenter)
-                body.addWidget(_DonutLegend(snapshot.slices), 1)
+                body.addWidget(_DonutLegend(snapshot.slices))
+                body.addStretch()
             else:
                 body.addStretch()
                 body.addWidget(donut, 0, Qt.AlignmentFlag.AlignCenter)
@@ -386,26 +394,42 @@ class PhasesPage(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 24, 32, 24)
-        outer.setSpacing(14)
+        # Back lives in the shared title bar, not in this page (Nelson 2026).
+        self.uses_titlebar_back = True
 
-        # ── Header row: Back · Tile · Title · stretch · StatusPill ──
-        # Per the surface-03 mockup .head row, the title stays alone on
-        # this line; the meta breadcrumb sits on a second line below,
-        # indented to align under the title (NOT under the Back button).
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Full-width surface identity rail — same top chrome as every main
+        # surface (Nelson 2026); `home` tints it the brand accent (Phases is
+        # an overview surface, not a phase).
+        rail = QFrame()
+        rail.setObjectName("SurfaceHeaderRail")
+        rail.setProperty("phase", "home")
+        rail.setFixedHeight(2)
+        root.addWidget(rail)
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(32, 18, 32, 24)
+        outer.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # ── TOP content band: event header + meta + summary ──
+        # The shared #SurfaceBand look so nothing floats loose on the page.
+        top_band = QFrame()
+        top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(top_band)
+        top_l.setContentsMargins(16, 14, 16, 14)
+        top_l.setSpacing(10)
+
+        # Header row: Tile · Title · stretch · StatusPill. Back now lives in the
+        # shared title bar (uses_titlebar_back), not in the page.
         head_row = QHBoxLayout()
         head_row.setSpacing(14)
-        self._back = ghost_button("‹ Back")
-        self._back.clicked.connect(self.back_requested.emit)
-        head_row.addWidget(self._back)
         self._tile_slot = QHBoxLayout()
         head_row.addLayout(self._tile_slot)
-        # Mockup `.head h1{font-size:24px;letter-spacing:-.5px}` — the
-        # event title is the hero identity, not a card title. CardTitle
-        # (18/700) reads as a quiet section header; bumping to 24/800
-        # with the same letter-spacing the page-header h1 uses on Surface
-        # 01 gives it the per-event presence the design carries.
         self._title = QLabel("—")
         self._title.setObjectName("EventTitle")
         title_font = QFont(self._title.font())
@@ -416,31 +440,24 @@ class PhasesPage(QWidget):
         self._title.setFont(title_font)
         head_row.addWidget(self._title)
         head_row.addStretch()
-        self._status_slot = QHBoxLayout()
-        head_row.addLayout(self._status_slot)
-        outer.addLayout(head_row)
+        top_l.addLayout(head_row)
 
         # ── Meta line (second row, indented under title) ──
         meta_row = QHBoxLayout()
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(0)
-        # Indent: Back button(~76px) + spacing(14) + Tile(46) + spacing(14)
-        #       ≈ 150px so the meta starts roughly under the title text.
-        # _meta_indent is reused by _render when the tile/back widths shift.
-        self._meta_indent = 150
+        # Indent the meta line under the title (tile width + spacing). Back is
+        # gone from the header now, so this is smaller than before.
+        self._meta_indent = 58
         meta_row.addSpacing(self._meta_indent)
         self._meta_line = QLabel("")
         self._meta_line.setObjectName("Sub")
         self._meta_line.setTextFormat(Qt.TextFormat.RichText)
         meta_row.addWidget(self._meta_line, 1)
-        outer.addLayout(meta_row)
+        top_l.addLayout(meta_row)
 
-        # ── Hero summary metric banner (above the 2x2). Synthesises the
-        # four phase totals into one analytic line — the dashboard ask
-        # spec/65 §3.3 calls out ("Picked 412/1084 · Edited 180/412 ·
-        # Exported 0 · 7 of 10 days reviewed"). Card2 (no accent shadow)
-        # so it reads as page furniture, not a hero CTA. Hidden until
-        # the snapshots populate; redraw lives in _render.
+        # ── Hero summary metric banner — four phase totals on one analytic
+        # line. Hidden until the snapshots populate; redraw lives in _render.
         self._hero = Card2(padded=False)
         self._hero.setObjectName("PhasesHero")
         hero_l = QHBoxLayout(self._hero)
@@ -452,15 +469,28 @@ class PhasesPage(QWidget):
         self._hero_line.setWordWrap(True)
         hero_l.addWidget(self._hero_line, 1)
         self._hero.setVisible(False)
-        outer.addWidget(self._hero)
+        top_l.addWidget(self._hero)
 
-        # ── 2x2 phase grid ──
+        outer.addWidget(top_band)
+        outer.addSpacing(8)
+
+        # ── BOTTOM content band: the 2x2 phase grid ──
+        bottom_band = QFrame()
+        bottom_band.setObjectName("SurfaceBand")
+        bottom_l = QVBoxLayout(bottom_band)
+        bottom_l.setContentsMargins(16, 16, 16, 16)
+        bottom_l.setSpacing(0)
         self._grid_host = QWidget()
         self._grid = QGridLayout(self._grid_host)
-        self._grid.setContentsMargins(0, 4, 0, 0)
+        self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(18)
         self._grid.setVerticalSpacing(18)
-        outer.addWidget(self._grid_host, 1)
+        bottom_l.addWidget(self._grid_host)
+        outer.addWidget(bottom_band)
+
+        # The bands hug their content at the top; the phase cards stay compact
+        # rather than stretching to fill the page (Nelson 2026).
+        outer.addStretch(1)
 
     # ── data ────────────────────────────────────────────────────────────
 
@@ -669,15 +699,6 @@ class PhasesPage(QWidget):
             dim=self._meta.is_closed,
         )
         self._tile_slot.addWidget(tile)
-
-        # Status pill (right of header row)
-        while self._status_slot.count():
-            it = self._status_slot.takeAt(0)
-            w = it.widget() if it else None
-            if w is not None:
-                w.deleteLater()
-        pill = chip_closed("Closed") if self._meta.is_closed else chip_open("Open")
-        self._status_slot.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # 2x2 phase grid
         while self._grid.count():

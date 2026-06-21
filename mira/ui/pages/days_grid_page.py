@@ -439,79 +439,51 @@ class DaysGridPage(QWidget):
     # ── UI assembly ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 22, 28, 22)
-        outer.setSpacing(14)
+        # Back lives in the shared title bar; the click is routed through
+        # this page's mode-aware handler via ``on_titlebar_back`` so an open
+        # cluster closes before the surface itself backs out.
+        self.uses_titlebar_back = True
 
-        # spec/71 identity header — the SHARED Days Grid inherits its
-        # host phase's colour. Rebuilt on every phase swap via
-        # _refresh_identity(); the existing legend strip below stays
-        # (it documents the badge/eye chrome unique to this grid).
-        self._identity_host = QWidget()
-        self._identity_host_layout = QVBoxLayout(self._identity_host)
-        self._identity_host_layout.setContentsMargins(0, 0, 0, 0)
-        self._identity_host_layout.setSpacing(0)
-        outer.addWidget(self._identity_host)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # spec/71 identity — the SHARED Days Grid inherits its host phase's
+        # colour as a full-width rail (matching Events / Phases / Days List).
+        # Recoloured on every phase swap via _refresh_identity(). The legend
+        # strip (the picked/skipped/compare chrome unique to this grid) now
+        # lives inside the grid band below, captioning the grid it describes.
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setFixedHeight(2)
+        root.addWidget(self._rail)
         self._refresh_identity()
 
-        # ── Sticky toolbar ──
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        self._back = ghost_button("‹ Back")
-        self._back.clicked.connect(self._on_back_clicked)
-        toolbar.addWidget(self._back)
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(28, 18, 28, 22)
+        outer.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # ── Top band — the header, broken into three logical lines ──
+        #   line 1: day navigator (where am I)   · review progress (how far)
+        #   line 2: bulk decide verbs (left)     · primary flow actions (right)
+        #   line 3: view density — the cell-size slider (right)
+        top_band = QFrame()
+        top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(top_band)
+        top_l.setContentsMargins(16, 12, 16, 12)
+        top_l.setSpacing(10)
+
+        # line 1 — day navigator (left) · review progress (right)
+        line1 = QHBoxLayout()
+        line1.setSpacing(10)
         self._day_pill = _DayNavigatorPill()
         self._day_pill.set_day(1, "", "", 0)
         self._day_pill.prev_clicked.connect(self.prev_day_requested.emit)
         self._day_pill.next_clicked.connect(self.next_day_requested.emit)
-        toolbar.addWidget(self._day_pill)
-        self._pick_all_btn = ghost_button("✓ Pick all")
-        self._pick_all_btn.clicked.connect(self._on_pick_all_clicked)
-        toolbar.addWidget(self._pick_all_btn)
-        self._skip_all_btn = danger_ghost_button("✗ Skip all")
-        self._skip_all_btn.clicked.connect(self._on_skip_all_clicked)
-        toolbar.addWidget(self._skip_all_btn)
-        self._new_pass_btn = primary_button("+ Start a new pass…")
-        self._new_pass_btn.clicked.connect(self.new_pass_requested.emit)
-        toolbar.addWidget(self._new_pass_btn)
-        # spec/68 §3 / spec/89 §5.1 D1.A — Export-mode primary trigger.
-        # Hidden outside Export mode; the per-day batch submitter wires
-        # below. Label is locked to "Export now" per spec/89 §5.1.
-        self._export_btn = primary_button("↑ Export now")
-        self._export_btn.clicked.connect(self._on_export_clicked)
-        toolbar.addWidget(self._export_btn)
-        # spec/89 §11.3 — Compare button for the versions cluster
-        # sub-grid. Visible only when ``_mode == "cluster"`` AND the
-        # open cluster's kind is "versions" (set in
-        # :meth:`_apply_phase_chrome`). Opens
-        # :class:`CompareVersionsDialog` side-by-side.
-        self._compare_btn = ghost_button("⇄ Compare versions")
-        self._compare_btn.setToolTip(
-            "Open every version side-by-side at full definition. "
-            "Click a tile's border to mark Will export / Set aside.")
-        self._compare_btn.clicked.connect(self._on_compare_versions)
-        self._compare_btn.setVisible(False)
-        toolbar.addWidget(self._compare_btn)
-        toolbar.addStretch()
-        # Cell-size slider (Nelson 2026-06-18). The slider value drives
-        # the grid's cell width in 10-px steps; height tracks via the
-        # cell's locked aspect ratio so a click still hits the right
-        # photo. Session-local — no settings persistence in this slice;
-        # add later if the user asks.
-        size_label = QLabel("Size")
-        size_label.setObjectName("Sub")
-        toolbar.addWidget(size_label)
-        self._size_slider = QSlider(Qt.Orientation.Horizontal)
-        self._size_slider.setMinimum(_TILE_SIZE_MIN.width())
-        self._size_slider.setMaximum(_TILE_SIZE_MAX.width())
-        self._size_slider.setSingleStep(10)
-        self._size_slider.setPageStep(20)
-        self._size_slider.setValue(_TILE_SIZE.width())
-        self._size_slider.setFixedWidth(120)
-        self._size_slider.setToolTip("Resize the grid cells")
-        self._size_slider.valueChanged.connect(self._on_size_slider_changed)
-        toolbar.addWidget(self._size_slider)
-        # Review progress on the right
+        line1.addWidget(self._day_pill)
+        line1.addStretch()
         progress_block = QVBoxLayout()
         progress_block.setSpacing(2)
         self._progress_label = QLabel("0 / 0 reviewed")
@@ -523,33 +495,95 @@ class DaysGridPage(QWidget):
         self._progress_bar = StageProgress()
         self._progress_bar.setMinimumWidth(180)
         progress_block.addWidget(self._progress_bar)
-        toolbar.addLayout(progress_block)
-        outer.addLayout(toolbar)
+        line1.addLayout(progress_block)
+        top_l.addLayout(line1)
+
+        # line 2 — bulk decide verbs (left) · view density (centre) ·
+        # primary flow actions (right). Folding the cell-size slider into the
+        # centre keeps the header to two lines (Nelson 2026-06-20).
+        line2 = QHBoxLayout()
+        line2.setSpacing(10)
+        self._pick_all_btn = ghost_button("✓ Pick all")
+        self._pick_all_btn.clicked.connect(self._on_pick_all_clicked)
+        line2.addWidget(self._pick_all_btn)
+        self._skip_all_btn = danger_ghost_button("✗ Skip all")
+        self._skip_all_btn.clicked.connect(self._on_skip_all_clicked)
+        line2.addWidget(self._skip_all_btn)
+        # spec/89 §11.3 — Compare button for the versions cluster sub-grid.
+        # Visible only when ``_mode == "cluster"`` AND the open cluster's
+        # kind is "versions" (set in :meth:`_apply_phase_chrome`). Opens
+        # :class:`CompareVersionsDialog` side-by-side.
+        self._compare_btn = ghost_button("⇄ Compare versions")
+        self._compare_btn.setToolTip(
+            "Open every version side-by-side at full definition. "
+            "Click a tile's border to mark Will export / Set aside.")
+        self._compare_btn.clicked.connect(self._on_compare_versions)
+        self._compare_btn.setVisible(False)
+        line2.addWidget(self._compare_btn)
+        # view density — the cell-size slider, centred between the verb group
+        # and the flow actions. Nelson 2026-06-18: the slider value drives the
+        # grid's cell width in 10-px steps; height tracks via the cell's
+        # locked aspect ratio. Session-local — no persistence.
+        line2.addStretch()
+        size_label = QLabel("Size")
+        size_label.setObjectName("Sub")
+        line2.addWidget(size_label)
+        self._size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._size_slider.setObjectName("GridSizeSlider")
+        self._size_slider.setMinimum(_TILE_SIZE_MIN.width())
+        self._size_slider.setMaximum(_TILE_SIZE_MAX.width())
+        self._size_slider.setSingleStep(10)
+        self._size_slider.setPageStep(20)
+        self._size_slider.setValue(_TILE_SIZE.width())
+        self._size_slider.setFixedWidth(120)
+        self._size_slider.setToolTip("Resize the grid cells")
+        self._size_slider.valueChanged.connect(self._on_size_slider_changed)
+        line2.addWidget(self._size_slider)
+        line2.addStretch()
+        self._new_pass_btn = primary_button("+ Start a new pass…")
+        self._new_pass_btn.clicked.connect(self.new_pass_requested.emit)
+        line2.addWidget(self._new_pass_btn)
+        # spec/68 §3 / spec/89 §5.1 D1.A — Export-mode primary trigger.
+        # Hidden outside Export mode; the per-day batch submitter wires
+        # below. Label is locked to "Export now" per spec/89 §5.1.
+        self._export_btn = primary_button("↑ Export now")
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        line2.addWidget(self._export_btn)
+        top_l.addLayout(line2)
+
+        outer.addWidget(top_band)
+        outer.addSpacing(8)
+
+        # ── Grid band — the box around the grid content INCLUDES the legend ──
+        # Per Nelson 2026-06-20: the state legend now caps the grid it
+        # describes, inside the same border.
+        grid_band = QFrame()
+        grid_band.setObjectName("SurfaceBand")
+        grid_l = QVBoxLayout(grid_band)
+        grid_l.setContentsMargins(16, 12, 16, 14)
+        grid_l.setSpacing(10)
 
         # ── Legend strip ──
         # Wrapped in a QWidget so the Edit phase (creative-only, spec/66
         # §1.1 — no picked/skipped/compare decision) can hide it as a
         # whole (BUGS.md B-010, Nelson 2026-06-17). The content is
         # phase-driven: Pick has the four picked/skipped/compare/mixed
-        # swatches, Export swaps to the spec/89 §4.2 (Block 4)
-        # vocabulary — "Will export · Dropped · Undecided" — with a
-        # different reminder + keymap hint. Rebuilt in
-        # :meth:`_rebuild_legend_strip` so a phase swap can swap labels
-        # without leaking orphan widgets.
+        # swatches, Export swaps to the spec/89 §4.2 (Block 4) vocabulary —
+        # "Will export · Dropped · Undecided". Rebuilt in
+        # :meth:`_rebuild_legend_strip` so a phase swap swaps labels cleanly.
         self._legend_host = QWidget()
         self._legend_layout = QHBoxLayout(self._legend_host)
         self._legend_layout.setContentsMargins(0, 0, 0, 0)
         self._legend_layout.setSpacing(18)
-        outer.addWidget(self._legend_host)
+        grid_l.addWidget(self._legend_host)
         self._rebuild_legend_strip()
-        # spec/89 §2.2 — the external-edits scan chip, visible only
-        # under the Export identity. ``set_scan_status`` updates the
-        # wording from the scanner report; default is "up to date".
+        # spec/89 §2.2 — the external-edits scan chip, visible only under the
+        # Export identity. ``set_scan_status`` updates the wording.
         self._scan_chip = QLabel("External edits: up to date")
         self._scan_chip.setObjectName("Faint")
         self._scan_chip.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._scan_chip.setVisible(False)
-        outer.addWidget(self._scan_chip)
+        grid_l.addWidget(self._scan_chip)
 
         # ── Scrolling grid ──
         # Built on the shared :class:`ThumbGrid` so the locked §5a 3px
@@ -568,7 +602,9 @@ class DaysGridPage(QWidget):
         self._grid.cell_activated.connect(self._on_grid_cell_activated)
         self._grid.cell_border_clicked.connect(
             self._on_grid_cell_border_clicked)
-        outer.addWidget(self._grid, 1)
+        grid_l.addWidget(self._grid, 1)
+
+        outer.addWidget(grid_band, 1)
 
     # ── Public API (gateway path) ──────────────────────────────────────
 
@@ -852,23 +888,19 @@ class DaysGridPage(QWidget):
     }
 
     def _refresh_identity(self) -> None:
-        """(Re)build the SurfaceIdentityHeader for the current host phase.
+        """Recolour the full-width identity rail for the current host phase.
 
-        Replacing the widget rather than mutating in place is simpler than
-        chasing repolish() across the rail + badge property selectors and
-        is cheap (one paint, no decode)."""
-        if self._identity is not None:
-            self._identity_host_layout.removeWidget(self._identity)
-            self._identity.deleteLater()
-            self._identity = None
-        name, purpose = self._IDENTITY_SPEC.get(
-            self._identity_phase, self._IDENTITY_SPEC["pick"])
-        self._identity = SurfaceIdentityHeader(
-            phase=self._identity_phase,
-            name=tr(name),
-            purpose=tr(purpose),
-        )
-        self._identity_host_layout.addWidget(self._identity)
+        The Days Grid no longer carries a SurfaceIdentityHeader badge/purpose
+        block (spec/92 design pass — nothing floating); the host phase now
+        reads only through the rail accent, matching Events / Phases /
+        Days List. The phase-specific name/purpose live in ``_IDENTITY_SPEC``
+        and still drive the legend + bulk-verb wording elsewhere."""
+        rail = getattr(self, "_rail", None)
+        if rail is None:
+            return
+        rail.setProperty("phase", self._identity_phase)
+        rail.style().unpolish(rail)
+        rail.style().polish(rail)
 
     def set_phase_identity(self, phase: str) -> None:
         """Override the identity-header phase (used by Quick Sweep hosts
@@ -1906,9 +1938,9 @@ class DaysGridPage(QWidget):
             self._day_date, self._total,
         )
 
-        # The "Back" label flips to "Close cluster" while drilled in
-        # so the user understands where Back goes.
-        self._back.setText("‹ Close cluster" if self._mode == "cluster" else "‹ Back")
+        # Back now lives in the shared title bar (generic "‹ Back"); while a
+        # cluster is open the title-bar Back closes it first, routed through
+        # ``on_titlebar_back`` → ``_on_back_clicked``.
 
         # Review progress
         pct = (
@@ -2558,6 +2590,12 @@ class DaysGridPage(QWidget):
             self._close_cluster()
             return
         self.back_requested.emit()
+
+    def on_titlebar_back(self) -> None:
+        """Shared title-bar Back hook (MainWindow._on_titlebar_back prefers
+        this over the raw ``back_requested`` signal). Mode-aware: closes an
+        open cluster sub-grid before backing out of the surface."""
+        self._on_back_clicked()
 
     # ── Locked keymap (spec/63 §4) ────────────────────────────────────
 

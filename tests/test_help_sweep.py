@@ -1,15 +1,24 @@
-"""The 2026-06-12 Help sweep (Nelson): every photo/video surface
-carries a top-right "?" button that opens its keyboard-shortcuts
-table — uniform shared dialog (``ShortcutsDialog`` role) across the
-app, F1/? key binding alongside the click target.
+"""The 2026-06-21 Help consolidation (Nelson): the per-surface "?" help
+buttons were retired in favour of ONE shared Help button on the title
+bar, in the same spot on every surface. F1 and the title-bar click both
+route through MainWindow's ``_on_titlebar_help`` to the current
+surface's ``show_help()`` callable (chassis pages forward to their
+sub-page), falling back to the global locked-keymap reference.
 
-This file pins the contract per surface. The shared dialog itself is
-tested in test_shortcuts_dialog.
+This file pins the new contract:
+
+* The :class:`TitleBar` carries the canonical ``help_button`` (object
+  name ``"HelpButton"``) — one entry point, app-wide.
+* Surfaces that used to host their own ``_help_btn`` (QuickSweepPage,
+  CutSessionPage, CutDetailPage) no longer do — the regression-check
+  asserts the attribute is gone so a future round can't silently
+  reintroduce a per-surface helper.
+* The raw-``QPushButton(tr("?"))`` regression guard stays — the legacy
+  pattern must never re-appear.
 """
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import QPushButton, QWidget
 
 
@@ -18,21 +27,36 @@ def _help_buttons(w: QWidget) -> list[QPushButton]:
             if b.objectName() == "HelpButton"]
 
 
-def test_quick_sweep_page_has_help_button_in_viewer_top_bar(qapp):
-    """Quick Sweep's viewer chrome gains a "?" — F1 and ? keys also
-    open the dialog (covered by the keyPressEvent below)."""
+def test_title_bar_carries_canonical_help_button(qapp):
+    """The TitleBar widget hosts the ONE help button used app-wide
+    (Nelson 2026-06-21). Exposed as the ``help_button`` attribute so
+    MainWindow wires its click + F1 to ``_on_titlebar_help``; styled
+    via the shared ghost_button factory (role ``Ghost``)."""
+    from PyQt6.QtWidgets import QPushButton
+    from mira.ui.design.title_bar import TitleBar
+    bar = TitleBar()
+    assert isinstance(bar.help_button, QPushButton)
+    # The label carries the "?" glyph + the F1 shortcut hint.
+    assert "?" in bar.help_button.text()
+    assert "F1" in bar.help_button.text()
+
+
+def test_quick_sweep_page_has_no_per_surface_help_button(qapp):
+    """spec/63 §4 / Nelson 2026-06-21 — Quick Sweep's viewer chrome no
+    longer hosts its own "?" button; Help is in the title bar. Regression
+    guard: any future reintroduction of a per-surface help button on this
+    page trips this check."""
     from mira.ui.pages.quick_sweep_page import QuickSweepPage
     page = QuickSweepPage()
-    btns = _help_buttons(page)
-    # Two could exist if other helpers live somewhere; assert ≥1 so a
-    # future addition doesn't break this loose pin.
-    assert len(btns) >= 1
-    assert page._help_btn.objectName() == "HelpButton"
+    assert _help_buttons(page) == []
+    assert not hasattr(page, "_help_btn")
 
 
-def test_cut_session_page_has_help_button(qapp, tmp_path):
-    """Cut session's top bar carries the "?" next to Save/Back. The
-    fixture infrastructure is shared with test_cut_session_page."""
+def test_cut_session_page_has_no_per_surface_help_button(qapp, tmp_path):
+    """Cut session's chrome doesn't carry a "?" anymore (Nelson
+    2026-06-21). The chassis exposes ``show_help`` so the title-bar
+    Help routes here, but the click target itself lives on the title
+    bar, not the page."""
     import itertools
     from mira.gateway.event_gateway import EventGateway
     from mira.shared.cut_session import CutSession
@@ -49,15 +73,19 @@ def test_cut_session_page_has_help_button(qapp, tmp_path):
     try:
         session = CutSession.from_draft(gw, _draft())
         page = CutSessionPage(gw, session, event_root=tmp_path)
-        assert page._help_btn.objectName() == "HelpButton"
+        assert _help_buttons(page) == []
+        assert not hasattr(page, "_help_btn")
     finally:
         gw.close()
 
 
-def test_cut_detail_page_has_help_button(qapp):
+def test_cut_detail_page_has_no_per_surface_help_button(qapp):
+    """Same as the session page: Help moved to the title bar; the cut
+    detail page no longer carries its own button."""
     from mira.ui.shared.cut_detail_page import CutDetailPage
     page = CutDetailPage()
-    assert page._help_btn.objectName() == "HelpButton"
+    assert _help_buttons(page) == []
+    assert not hasattr(page, "_help_btn")
 
 
 def test_every_known_help_button_is_the_canonical_role(qapp):

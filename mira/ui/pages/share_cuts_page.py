@@ -738,32 +738,35 @@ class _CutsListView(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 24, 32, 24)
-        outer.setSpacing(18)
+        # Flush full-width rail at the very top + content below, exactly like
+        # the other surfaces (Days Grid / Editor / Picker). Share reads as a
+        # closed-event STATE, not a phase, so the rail is PINK (phase="share").
+        # Back moved to the shared title bar; the old badge/purpose identity
+        # block is dropped for consistency (Nelson 2026-06-21).
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # spec/71 — Share identity header (closed-card treatment, NOT a
-        # phase colour). The Back ghost button lives inside the title
-        # row of the header so the strip reads as one composition.
-        self._back = ghost_button("‹ Back")
-        self._back.clicked.connect(self.back_requested.emit)
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "share")
+        self._rail.setFixedHeight(2)
+        root.addWidget(self._rail)
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(32, 18, 32, 24)
+        outer.setSpacing(18)
+        root.addWidget(content, 1)
+
+        # Header row — the primary action only (Back is in the title bar now).
         new_btn = primary_button("+ New Cut")
         new_btn.clicked.connect(self.new_cut_requested.emit)
-
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(12)
-        header_row.addWidget(self._back, 0, Qt.AlignmentFlag.AlignTop)
-        identity = _ShareIdentityHeader(
-            name=tr("Share"),
-            purpose=tr(
-                "Assemble Cuts from the exported finals for hand-off."),
-            reminder=tr(
-                "Closed event · Cuts are built from the #exported pool."
-            ),
-        )
-        header_row.addWidget(identity, 1)
-        header_row.addWidget(new_btn, 0, Qt.AlignmentFlag.AlignTop)
+        header_row.addStretch(1)
+        header_row.addWidget(new_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addLayout(header_row)
 
         # Pool card slot (the #exported card is the universe for BOTH
@@ -969,6 +972,9 @@ class ShareCutsPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ShareCutsPage")
+        # Back lives in the shared title bar; on_titlebar_back routes it to the
+        # current sub-page (list → close event, detail/pool → back to list).
+        self.uses_titlebar_back = True
         self.gateway = gateway
         self._eg = None
         self._event_id: Optional[str] = None
@@ -1045,6 +1051,27 @@ class ShareCutsPage(QWidget):
             except Exception:  # noqa: BLE001
                 pass
             self._eg = None
+
+    def on_titlebar_back(self) -> None:
+        """Shared title-bar Back → the CURRENT sub-page's back action: the
+        list closes the event (``_on_back``), detail / pool return to the list
+        (``_on_detail_back`` / ``_on_pool_back``). Mirrors Days Grid's
+        cluster-aware title-bar Back."""
+        cur = self._stack.currentWidget()
+        sig = getattr(cur, "back_requested", None)
+        if sig is not None:
+            sig.emit()
+
+    def show_help(self) -> None:
+        """Shared title-bar Help / F1 → the current sub-page's help if it has
+        one (the Cut detail / session grids), else the global shortcuts list."""
+        cur = self._stack.currentWidget()
+        fn = getattr(cur, "show_help", None)
+        if callable(fn):
+            fn()
+            return
+        from mira.ui.base.shortcuts import show_global_shortcuts
+        show_global_shortcuts(self)
 
     def _on_back(self) -> None:
         self._close_gateway()

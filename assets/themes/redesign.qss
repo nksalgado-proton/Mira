@@ -1016,6 +1016,42 @@ QSlider#AdjustmentSlider:disabled::handle:horizontal {
     border-color: {disabled_text};
 }
 
+/* Days Grid cell-size slider — sits in the header band, so it needs a
+ * groove + handle that read clearly on the dark surface (Nelson 2026-06-20). */
+QSlider#GridSizeSlider::groove:horizontal {
+    height: 4px;
+    background: {border_strong};
+    border-radius: 2px;
+}
+
+QSlider#GridSizeSlider::sub-page:horizontal {
+    background: {primary};
+    border-radius: 2px;
+}
+
+QSlider#GridSizeSlider::add-page:horizontal {
+    background: {border_strong};
+    border-radius: 2px;
+}
+
+QSlider#GridSizeSlider::handle:horizontal {
+    background: {primary};
+    border: 1px solid {primary};
+    width: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+
+QSlider#GridSizeSlider::handle:horizontal:hover {
+    background: {primary_hover};
+    border-color: {primary_hover};
+}
+
+QSlider#GridSizeSlider::handle:horizontal:pressed {
+    background: {primary_hover};
+    border-color: {primary_hover};
+}
+
 QLabel#AdjustmentLabel {
     color: {text_secondary};
     font-size: 13px;
@@ -1675,6 +1711,10 @@ QWidget#RedesignRoot { background: qradialgradient(cx:0.8, cy:-0.1, radius:1.1, 
 
 /* ---- Cards / panels ---- */
 QFrame#Card        { background: {card}; border: 1px solid {line}; border-radius: {radius_xl}px; }
+/* Cards that want the heavier, crisper tile edge (matching the event tiles'
+ * painted 2px card_border) opt in via the `strongBorder` property — e.g. the
+ * phase tiles. Nelson 2026. */
+QFrame#Card[strongBorder="true"] { border: 2px solid {card_border}; }
 /* Share-list tile (Cut row + DC row) + tab-content wrapper. Calm
  * gray-hairline treatment (Nelson 2026-06-20 round 2): no fills, no
  * accent borders — same softness as the New Cut dialog so the whole
@@ -1702,10 +1742,21 @@ QFrame#Card[level="2"]     { background: {card2}; border: 1px solid {line};
  *    collapsed from #TileCard; EventTile.paintEvent draws the rounded
  *    border manually per spec/77 §7.2, QSS owns the fill and paint
  *    owns the stroke). */
+/* The cover tile (EventTile) paints its OWN rounded card surface in paintEvent,
+ * so its base #Tile fill is transparent: a painted fill is the only way to get
+ * antialiased rounded corners under a custom paintEvent, and a square QSS fill
+ * behind it would leave square corners poking past the rounding. The blanket
+ * QWidget grey is overridden here explicitly. Stat tiles (no custom paint) get
+ * their fill from the property rule below. (Nelson 2026.) */
+QFrame#Tile                { background: transparent; border: none;
+                             border-radius: 0px; }
 QFrame#Tile[tone="stat"]   { background: {card2}; border: 1px solid {line};
                              border-radius: {radius_lg}px; }
-QFrame#Tile[tone="cover"]  { background: {card};  border: none;
-                             border-radius: 0px; }
+/* Plain container widgets inside an event tile (title-row host, donut-grid
+ * host, donut cells) must be transparent so the tile's card surface shows
+ * through — otherwise the blanket `QWidget { background: window }` paints them
+ * grey on top of the fill (Nelson 2026, the "tiles won't go white" bug). */
+QWidget#TilePane           { background: transparent; }
 
 /* ---- Text labels are transparent by default ----
  * Plain QLabels (field labels, counts, %s, Picked/Skipped, subtitles) must
@@ -1743,11 +1794,55 @@ QPushButton#Ghost:pressed   { background: {card2}; }
 QPushButton#Ghost[active="true"]        { border-color: {accent}; color: {accent}; }
 QPushButton#Ghost[active="true"]:hover  { background: {accent_soft}; }
 QPushButton#Primary         { background: {accent}; color: #ffffff; border: none;
-                              border-radius: {radius_md}px; padding: 11px 18px; font-weight: 700; }
+                              border-radius: {radius_md}px; padding: 9px 18px; font-weight: 700; }
 QPushButton#Primary:hover   { background: {accent}; }
 QPushButton#DangerGhost           { background: transparent; color: {ink}; border: 1px solid {line};
                                     border-radius: {radius_md}px; padding: 8px 14px; font-weight: 600; }
 QPushButton#DangerGhost:hover     { border-color: {red}; color: {red}; }
+
+/* ── Dense control tier (mira.ui.design.density.apply_density) ──────────
+ * The four media surfaces (Picker / Editor × photo / video) opt their
+ * chrome into this compact tier so the media keeps the vertical room.
+ * id+attribute selectors so they beat the #Ghost / #Primary padding above.
+ * Height MUST live here, not in widget code (QStyleSheetStyle clobbers
+ * setMaximumHeight — see #PlanBrowseCell). */
+/* Generic floor — overrides the base `QPushButton { min-height: 22px }`
+ * (line ~193) that otherwise pins every dense button ~22 px tall no matter
+ * the padding. Reaches the no-id _btn() buttons + the FeatureToggle Look
+ * pills / toggles too (their id rules don't set padding/min-height). */
+QPushButton[dense="true"] {
+    min-height: 13px;
+    padding: 2px 9px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+/* id+attribute so they beat the #Ghost / #Primary padding (8-9 px) above. */
+QPushButton#Ghost[dense="true"],
+QPushButton#DangerGhost[dense="true"] {
+    padding: 2px 9px;
+}
+QPushButton#Primary[dense="true"] {
+    padding: 2px 11px;
+}
+/* id+attribute so they beat #VideoSpeed (min-height 28) and the
+ * #Process*Combo (min-height 22) id rules. */
+QComboBox[dense="true"],
+QComboBox#ProcessStyleCombo[dense="true"],
+QComboBox#ProcessFilterCombo[dense="true"],
+QComboBox#ProcessAspectCombo[dense="true"],
+QComboBox#VideoSpeed[dense="true"] {
+    padding: 1px 6px;
+    min-height: 15px;
+    font-size: 12px;
+}
+QCheckBox[dense="true"] {
+    font-size: 12px;
+    spacing: 4px;
+}
+QLabel#Sub[dense="true"] {
+    font-size: 11px;
+}
+
 /* The tile's ⋮ menu button — spec/77 §10.2 (revised 2026-06-16): the
  * boxed/bordered v1 read as a heavy box even when not interacted with.
  * Flat + borderless + hover-only background keeps the affordance
@@ -1847,10 +1942,38 @@ QProgressBar#StageBar[state="skip"]::chunk  { background: {red}; }
  * the New Cut dialog. Labels under the band still need an explicit
  * transparent background to override the legacy dark.qss
  * ``QWidget { background-color: window }`` rule. */
-QFrame#CrossEventBand    { background: transparent;
+/* The two top-level bands on Surface 01 — the Cross-Event Cuts band and the
+ * Events band wrapping the toolbar + tile grid — share ONE unnamed-band look:
+ * transparent fill, 1px hairline, xl radius. `#SurfaceBand` is the generic
+ * version — THE standard content-band role for every main surface so nothing
+ * floats loose on the page (Phases, and onward). */
+QFrame#CrossEventBand,
+QFrame#EventsBand,
+QFrame#SurfaceBand       { background: transparent;
                            border: 1px solid {line};
                            border-radius: {radius_xl}px; }
-QFrame#CrossEventBand QLabel              { background: transparent; }
+/* Hollow variant — reserved space with NO visible border (the Editor's
+   bottom band on a photo, where the workshop is hidden). id+attribute so it
+   beats the bordered rule above. */
+QFrame#SurfaceBand[hollow="true"] { border-color: transparent; }
+/* The Picker's nav region opts into the #SurfaceBand box look (the bottom
+   control band around Pick/Skip/Compare + Full Res/Full Screen + counter) via
+   the surfaceBand property — the scaffold region is borderless by default. */
+QWidget#SurfaceNav[surfaceBand="true"] { background: transparent;
+                           border: 1px solid {line};
+                           border-radius: {radius_xl}px; }
+QWidget#SurfaceNav[surfaceBand="true"] QLabel { background: transparent; }
+/* The Picker's video transport row (compact_row) is the bottom transport
+   band — boxed like the Editor's video bottom on a video, hollow (borderless
+   reserved space) on a photo. Two attributes beat the bordered rule. */
+QWidget#SurfaceCompactRow[surfaceBand="true"] { background: transparent;
+                           border: 1px solid {line};
+                           border-radius: {radius_xl}px; }
+QWidget#SurfaceCompactRow[surfaceBand="true"][hollow="true"] { border-color: transparent; }
+QWidget#SurfaceCompactRow[surfaceBand="true"] QLabel { background: transparent; }
+QFrame#CrossEventBand QLabel,
+QFrame#EventsBand QLabel,
+QFrame#SurfaceBand QLabel                 { background: transparent; }
 QFrame#CrossEventBand QLabel#Tag          { background: {accent_soft}; }
 
 /* ---- Title bar (Mira logo + embedded menu + theme toggle, host-installed via
@@ -1936,6 +2059,9 @@ QTabWidget#ShareTabs QTabBar::tab:selected  { color: {ink};
  * export=green) via the `phase` property selector so the shared Days List
  * / Days Grid colour follows the host. */
 QFrame#SurfaceHeaderRail                       { background: {line}; border: none; }
+/* `home` — the overview/home surfaces (Events, Phases) aren't a phase; the
+ * rail carries the brand accent so the top chrome reads the same everywhere. */
+QFrame#SurfaceHeaderRail[phase="home"]         { background: {accent}; }
 QFrame#SurfaceHeaderRail[phase="collect"]      { background: {blue}; }
 QFrame#SurfaceHeaderRail[phase="pick"]         { background: {accent}; }
 QFrame#SurfaceHeaderRail[phase="edit"]         { background: {amber}; }
@@ -2126,6 +2252,12 @@ QPushButton#PoolStepperBtn:hover  { border-color: {accent}; color: {accent}; }
  * inline setStyleSheet residue (charter §QSS + clickable affordances). */
 QLabel#CutHeaderTile             { background: {accent_soft}; color: {accent};
                                    border: none; border-radius: 9px; }
+/* Day-number badge (Days List rows) — accent-soft tile. Was an inline
+ * stylesheet that baked the palette at construction, so it kept the light
+ * accent_soft in dark mode (looked white); a role themes correctly. Nelson 2026. */
+QLabel#DayBadge                  { background: {accent_soft}; color: {accent};
+                                   border: none; border-radius: 12px;
+                                   font-size: 15px; font-weight: 800; }
 QPushButton#DialogClose          { background: transparent;
                                    border: 1px solid {line}; border-radius: 9px; }
 QPushButton#DialogClose:hover    { border-color: {accent}; }

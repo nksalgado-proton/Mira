@@ -57,6 +57,7 @@ from typing import Dict, List, Optional
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -66,7 +67,6 @@ from PyQt6.QtWidgets import (
 
 from core.video_discovery import VIDEO_EXTENSIONS
 from mira.store import models as m
-from mira.ui.base.surface import back_button
 from mira.ui.design import (
     ThumbGrid,
     ThumbGridItem,
@@ -136,6 +136,15 @@ class DCDetailPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # Flush full-width pink rail (Share state) at the very top, like the
+        # other surfaces. Back lives in the shared title bar — routed here by
+        # ShareCutsPage.on_titlebar_back (Nelson 2026-06-21).
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "share")
+        self._rail.setFixedHeight(2)
+        outer.addWidget(self._rail)
+
         head = QHBoxLayout()
         head.setContentsMargins(12, 8, 12, 4)
         self._tag_lbl = QLabel("#exported")
@@ -162,10 +171,9 @@ class DCDetailPage(QWidget):
         chrome = QHBoxLayout()
         chrome.setContentsMargins(12, 4, 12, 8)
         chrome.setSpacing(12)
-        self._back_btn = back_button()
-        self._back_btn.setToolTip(tr("Back to the Cuts list. (Esc)"))
-        self._back_btn.clicked.connect(self.back_requested.emit)
-        chrome.addWidget(self._back_btn)
+        # Back is in the shared title bar now (routed via
+        # ShareCutsPage.on_titlebar_back). The grid's own back_requested
+        # (Esc / edge) still fires the same signal.
         self._header_lbl = QLabel(tr("#exported — the base Dynamic Collection"))
         self._header_lbl.setObjectName("DayGridHeader")
         chrome.addWidget(self._header_lbl, stretch=1)

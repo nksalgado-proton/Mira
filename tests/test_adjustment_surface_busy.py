@@ -25,10 +25,14 @@ def _surface(qapp) -> AdjustmentSurface:
 
 
 def test_tone_choices_live_in_named_boxes(qapp):
-    """Nelson 2026-06-11 — the top grid: ONE outer named box
-    ("Style, Look & Filter") holds Look · Style · Filter; Crop has its
-    own box on line 2; titles are MIXED CASE, always (the UPPERCASE
-    experiment is reverted); no label-beside-input anywhere."""
+    """Nelson 2026-06-11 (updated 2026-06-21) — the top grid: each tone
+    choice lives in its own named box (Look · Style · Filter); Crop has
+    its own box on line 2; titles are MIXED CASE, always (the UPPERCASE
+    experiment is reverted); no label-beside-input anywhere. The
+    redundant outer "Style, Look & Filter" wrapper that previously
+    encircled Look + Style + Filter was dropped by the 2026-06-21
+    surface standardisation pass — the three inner boxes are siblings
+    now, no double-frame."""
     from PyQt6.QtWidgets import QFrame, QLabel
 
     s = _surface(qapp)
@@ -39,8 +43,7 @@ def test_tone_choices_live_in_named_boxes(qapp):
         for lbl in f.findChildren(QLabel)
         if lbl.objectName() == "ProcessGroupTitle"
     }
-    assert {"Style, Look & Filter", "Look", "Style", "Filter",
-            "Crop"} <= titles
+    assert {"Look", "Style", "Filter", "Crop"} <= titles
     # Mixed case, always — no ALL-CAPS box titles survive.
     assert not any(t.isupper() and len(t) > 1 for t in titles)
     # The old label-beside-input pattern is gone.

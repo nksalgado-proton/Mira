@@ -76,22 +76,29 @@ def test_compact_row_container_is_always_visible(page):
 
 
 def test_compact_row_reserved_height_is_constant_across_kinds(page, tmp_path):
-    """Nelson 2026-06-15 Fix A — "the slot reserves 64 px on photos and
-    videos so the canvas bottom edge is pixel-identical across the
-    boundary." Constructed as ``setFixedHeight(64)`` so min == max
-    regardless of which item kind is currently landed."""
+    """Nelson 2026-06-15 Fix A (updated 2026-06-21) — "the slot reserves
+    a constant pixel height on photos and videos so the canvas bottom
+    edge is pixel-identical across the boundary." The spec/92 dense
+    tier re-sizes the slot to the DENSE transport bar's measured
+    height (``sizeHint().height() + 14``) instead of the old static
+    64 px, so the test pins the invariant — fixed-size, identical
+    across photo / video / back-to-photo — without nailing a specific
+    pixel count that drifts when the dense bar's metrics change."""
     photo = _cull("p1", "photo", tmp_path / "p1.jpg")
     video = _cull("v1", "video", tmp_path / "v1.mp4")
     page.show()
     page._surface.adjustSize()
     cr = page._surface.compact_row
     _land(page, [photo, video], index=0)            # photo
-    h_photo_min, h_photo_max = cr.minimumHeight(), cr.maximumHeight()
-    assert h_photo_min == h_photo_max == 64
+    reserved = cr.minimumHeight()
+    assert reserved >= 48                            # comfortable floor
+    assert cr.maximumHeight() == reserved            # fixed-size policy
     page.viewport.show_index(1)                      # video
-    assert cr.minimumHeight() == cr.maximumHeight() == 64
+    assert cr.minimumHeight() == reserved
+    assert cr.maximumHeight() == reserved
     page.viewport.show_index(0)                      # back to photo
-    assert cr.minimumHeight() == cr.maximumHeight() == 64
+    assert cr.minimumHeight() == reserved
+    assert cr.maximumHeight() == reserved
 
 
 def test_transport_bar_is_planted_in_compact_row(page):

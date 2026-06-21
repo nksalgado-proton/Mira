@@ -375,13 +375,15 @@ def test_open_to_item_loads_whole_day_items_not_one(
 
 
 def test_chrome_widgets_are_no_focus_so_keys_keep_firing(qapp):
-    """Nelson 2026-06-14 eyeball — ghost_button has StrongFocus by
-    default, so clicking Back / nav arrows / Full Screen / Full
+    """Nelson 2026-06-14 eyeball (updated 2026-06-21) — ghost_button has
+    StrongFocus by default, so clicking nav arrows / Full Screen / Full
     Resolution would steal focus from the viewport and the locked-map
     keys go silent. ``_install_keyboard_focus`` must walk every chrome
-    widget and clamp it to NoFocus."""
+    widget and clamp it to NoFocus. Back moved out of the page chrome
+    into the shared title bar (Nelson 2026-06-21), so it's no longer
+    one of the buttons this test covers."""
     page = EditorPage()
-    for btn in (page._back_btn, page._prev_btn, page._next_btn,
+    for btn in (page._prev_btn, page._next_btn,
                 page._fullres_btn, page._fullscreen_btn):
         assert btn.focusPolicy() == Qt.FocusPolicy.NoFocus, (
             f"{btn.text()!r} keeps focus on click — keys will stop firing")
@@ -403,27 +405,30 @@ def test_bottom_bar_has_prev_and_next_arrows(qapp):
 
 
 def test_fullscreen_hides_chrome_and_keeps_viewport(qapp):
-    """Nelson 2026-06-14 eyeball #1 — F11 must put the PHOTO on the
-    full screen, not the app. Toggle hides toolbar + tools area +
-    bottom nav row and zeros the layout margins so the viewport fills
-    the screen; a second toggle restores everything."""
+    """Nelson 2026-06-14 eyeball #1 (updated 2026-06-21) — F11 must put
+    the PHOTO on the full screen, not the app. Toggle hides the top
+    band (tools) + the bottom band (workshop reserve + footer nav) and
+    zeros the layout margins so the viewport fills the screen; a second
+    toggle restores everything. The old ``_toolbar_widget`` was
+    consolidated into ``_top_band`` (a #SurfaceBand) by the Nelson
+    2026-06-21 surface standardisation pass."""
     page = EditorPage()
     # Show + size so showFullScreen() has a window.
     page.resize(800, 600)
     page.show()
-    assert page._toolbar_widget.isVisible()
+    assert page._top_band.isVisible()
     assert page._tools.isVisible()
     assert page._bottom_widget.isVisible()
     page._toggle_fullscreen()
     assert page._fullscreen
-    assert not page._toolbar_widget.isVisible()
+    assert not page._top_band.isVisible()
     assert not page._tools.isVisible()
     assert not page._bottom_widget.isVisible()
     assert page._viewport.isVisible()
     assert page._outer.contentsMargins().left() == 0
     page._toggle_fullscreen()
     assert not page._fullscreen
-    assert page._toolbar_widget.isVisible()
+    assert page._top_band.isVisible()
     assert page._tools.isVisible()
     assert page._bottom_widget.isVisible()
     assert page._outer.contentsMargins().left() == 20

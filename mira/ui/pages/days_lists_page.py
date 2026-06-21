@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
@@ -109,14 +109,9 @@ class _DayBadge(QLabel):
 
     def __init__(self, n: int) -> None:
         super().__init__(str(n))
+        self.setObjectName("DayBadge")  # styled by redesign.qss — themes correctly
         self.setFixedSize(40, 40)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        p = PALETTE[_palette_mode()]
-        self.setStyleSheet(  # pragma: no-qss — accent-soft day badge, token colours
-            f"background: {p['accent_soft']}; color: {p['accent']};"
-            " border: none; border-radius: 12px;"
-            " font-size: 15px; font-weight: 800;"
-        )
 
 
 class _CaptureSpark(QWidget):
@@ -131,11 +126,23 @@ class _CaptureSpark(QWidget):
     The widget paints from the active palette so theme toggles re-tint
     transparently."""
 
-    _BAR_W = 3
+    _BAR_W = 5
     _GAP = 1
-    _SIZE = (24 * 3 + 23, 28)
-    _GOLDEN_AM = range(5, 8)   # 5–7 AM
+    _ICON_H = 14   # top strip for the sun / golden-sun / moon condition icons
+    _LABEL_H = 12  # bottom strip for the 0h / 12h / 24h axis labels
+    _SIZE = (24 * (5 + 1), 76)
+    _GOLDEN_AM = range(5, 8)   # 5–7 AM (used for the tooltip golden total)
     _GOLDEN_PM = range(17, 20)  # 5–7 PM
+    # Fixed light-condition bands (hour ranges) — no timezone / season. The
+    # spark's BACKGROUND is tinted per band so night / golden / day read at a
+    # glance; the capture-density bars sit on top in a single colour.
+    _BANDS = (
+        (0, 5, "night"),
+        (5, 8, "golden"),
+        (8, 17, "day"),
+        (17, 20, "golden"),
+        (20, 24, "night"),
+    )
 
     def __init__(self, hours: list[int], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -157,27 +164,81 @@ class _CaptureSpark(QWidget):
 
     def paintEvent(self, _evt) -> None:  # noqa: N802 — Qt override
         p = PALETTE[_palette_mode()]
-        track = QColor(p["track"])
-        accent = QColor(p["accent"])
+        W, H = self.width(), self.height()
+        step = self._BAR_W + self._GAP
+        cw = 24 * step
+        box_bottom = H - self._LABEL_H   # the box wraps the icons + chart
+        chart_top = self._ICON_H         # bars start just below the icon strip
+        chart_bottom = box_bottom - 1    # just inside the bottom border
+        card = QColor(p["card"])
         amber = QColor(p.get("amber", "#fbbf24"))
-        peak = max(self._hours) or 1
+        ink_soft = QColor(p["ink_soft"])
+        ink_faint = QColor(p["ink_faint"])
+        line = QColor(p["line"])
+
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
-        x = 0
+
+        # Card fill so the widget is never the global window-grey and the moon
+        # crescent carves cleanly. No background tint — the icons name the zones
+        # and thin dividers separate them (Nelson 2026).
+        painter.setBrush(card)
+        painter.drawRect(0, 0, W, H)
+
+        # 1. Capture-density bars — one per hour, single colour, height
+        # normalized to the day's peak.
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        peak = max(self._hours) or 1
+        bar_c = QColor(p["accent"])
+        avail = chart_bottom - chart_top - 1
         for hour, n in enumerate(self._hours):
-            h_norm = max(2, int(round(n / peak * self.height())))
-            y = self.height() - h_norm
-            track_rect_h = self.height() - 2
-            # Track tick — a 2px floor at the bottom so empty hours still
-            # show the day's outline.
-            painter.setBrush(track)
-            painter.drawRect(x, self.height() - 2, self._BAR_W, 2)
-            if n > 0:
-                is_golden = hour in self._GOLDEN_AM or hour in self._GOLDEN_PM
-                painter.setBrush(amber if is_golden else accent)
-                painter.drawRect(x, y, self._BAR_W, h_norm)
-            x += self._BAR_W + self._GAP
+            if n <= 0:
+                continue
+            bh = max(2, int(round(n / peak * avail)))
+            painter.setBrush(bar_c)
+            painter.drawRect(hour * step, chart_bottom - bh, self._BAR_W, bh)
+
+        # 2. Zone dividers (full box height) + a border that wraps the icons
+        # AND the chart as one box (no line between the icons and the bars).
+        painter.setBrush(line)
+        for (h0, _h1, _k) in self._BANDS[1:]:
+            painter.drawRect(h0 * step, 0, 1, box_bottom)
+        painter.drawRect(0, 0, cw, 1)                  # top
+        painter.drawRect(0, box_bottom - 1, cw, 1)     # bottom
+        painter.drawRect(0, 0, 1, box_bottom)          # left
+        painter.drawRect(cw - 1, 0, 1, box_bottom)     # right
+
+        # 3. Condition icons in the top strip, centred over each zone.
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = 4.0
+        for (h0, h1, kind) in self._BANDS:
+            cx = ((h0 + h1) / 2.0) * step
+            cy = self._ICON_H / 2.0
+            if kind == "day":                       # full sun
+                painter.setBrush(amber)
+                painter.drawEllipse(QPointF(cx, cy), r, r)
+            elif kind == "golden":                  # half sun on the horizon
+                painter.setBrush(amber)
+                painter.drawChord(
+                    QRectF(cx - r, cy - r, 2 * r, 2 * r), 0, 180 * 16)
+            else:                                   # crescent moon
+                painter.setBrush(ink_soft)
+                painter.drawEllipse(QPointF(cx, cy), r, r)
+                painter.setBrush(card)
+                painter.drawEllipse(QPointF(cx + r * 0.55, cy - r * 0.25), r, r)
+
+        # 4. Hour-axis labels below the box: 0h · 12h · 24h.
+        painter.setPen(ink_faint)
+        f = QFont(self.font())
+        f.setPixelSize(8)
+        painter.setFont(f)
+        align_v = Qt.AlignmentFlag.AlignVCenter
+        painter.drawText(QRectF(0, box_bottom, 22, self._LABEL_H),
+                         int(Qt.AlignmentFlag.AlignLeft | align_v), "0h")
+        painter.drawText(QRectF(cw / 2 - 15, box_bottom, 30, self._LABEL_H),
+                         int(Qt.AlignmentFlag.AlignHCenter | align_v), "12h")
+        painter.drawText(QRectF(cw - 22, box_bottom, 22, self._LABEL_H),
+                         int(Qt.AlignmentFlag.AlignRight | align_v), "24h")
         painter.end()
 
 
@@ -247,8 +308,26 @@ class DayRow(Card):
         row = QHBoxLayout()
         row.setSpacing(14)
 
-        # Day badge (40x40, no border per mockup)
-        row.addWidget(_DayBadge(snapshot.day_number))
+        # Left column — day number badge with the day's cluster + item counts
+        # beneath it (Nelson 2026: moved here from the right meta so they read
+        # with the day identity, not the spark).
+        left = QVBoxLayout()
+        left.setSpacing(4)
+        left.setAlignment(Qt.AlignmentFlag.AlignTop)
+        left.addWidget(_DayBadge(snapshot.day_number))
+        _clusters = QLabel(f"Clusters · <b>{snapshot.buckets}</b>")
+        _clusters.setObjectName("Sub")
+        _clusters.setTextFormat(Qt.TextFormat.RichText)
+        left.addWidget(_clusters)
+        _items = QLabel(f"Items · <b>{snapshot.items}</b>")
+        _items.setObjectName("Sub")
+        _items.setTextFormat(Qt.TextFormat.RichText)
+        left.addWidget(_items)
+        left.addStretch()
+        _left_wrap = QWidget()
+        _left_wrap.setLayout(left)
+        _left_wrap.setFixedWidth(98)
+        row.addWidget(_left_wrap)
 
         # Center column: title + per-row actions + bars
         center = QVBoxLayout()
@@ -410,11 +489,8 @@ class DayRow(Card):
             center.addLayout(bar_row)
         row.addLayout(center, 1)
 
-        # Right meta column — vertical separator + Buckets / Items + spark.
-        # The mockup `.meta` is just two lines; the capture spark below
-        # is the "analytic touch" §3.5 asks for. Golden-hour bands tint
-        # amber so the user reads the day's golden-hour density at a
-        # glance.
+        # Right column — the (now larger) capture spark on its own. The
+        # Clusters / Items counts moved to the left column (Nelson 2026).
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         line_color = PALETTE[_palette_mode()]["line"]
@@ -426,29 +502,16 @@ class DayRow(Card):
 
         meta = QVBoxLayout()
         meta.setContentsMargins(0, 0, 0, 0)
-        meta.setSpacing(2)
-        meta.setAlignment(Qt.AlignmentFlag.AlignTop)
-        clusters_label = QLabel(
-            f"Clusters · <b>{snapshot.buckets}</b>"
-        )
-        clusters_label.setObjectName("Sub")
-        clusters_label.setTextFormat(Qt.TextFormat.RichText)
-        clusters_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        meta.addWidget(clusters_label)
-        items_label = QLabel(f"Items · <b>{snapshot.items}</b>")
-        items_label.setObjectName("Sub")
-        items_label.setTextFormat(Qt.TextFormat.RichText)
-        items_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        meta.addWidget(items_label)
+        meta.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         spark = _CaptureSpark(snapshot.capture_hours)
-        meta.addSpacing(4)
         spark_row = QHBoxLayout()
         spark_row.addStretch()
         spark_row.addWidget(spark)
+        spark_row.addStretch()
         meta.addLayout(spark_row)
         meta_wrap = QWidget()
         meta_wrap.setLayout(meta)
-        meta_wrap.setMinimumWidth(110)
+        meta_wrap.setFixedWidth(168)
         row.addWidget(meta_wrap)
 
         self.layout().addLayout(row)
@@ -502,29 +565,40 @@ class DaysListsPage(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 24, 32, 24)
-        outer.setSpacing(16)
+        self.uses_titlebar_back = True  # Back lives in the shared title bar
 
-        # spec/71 identity header — the SHARED Days Lists inherits its
-        # host phase's colour (accent under Pick, amber under Edit, blue
-        # under Quick Sweep). Rebuilt on each :meth:`set_phase_identity`.
-        self._identity_host = QWidget()
-        self._identity_host_layout = QVBoxLayout(self._identity_host)
-        self._identity_host_layout.setContentsMargins(0, 0, 0, 0)
-        self._identity_host_layout.setSpacing(0)
-        outer.addWidget(self._identity_host)
-        self._refresh_identity()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # spec/89 §2.2 — the external-edits scan chip mirrors the
-        # legend-row chip on the Days Grid. Slice 2 ships the skeleton
-        # with a static "up to date" reading; Slice 4 wires it to the
-        # real scanner output (per-source breakdown on change).
+        # Full-width surface identity rail — same top chrome as every main
+        # surface; phase-coloured via the host phase (accent under Pick, amber
+        # under Edit, blue under Quick Sweep, green under Export). Nelson 2026.
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setFixedHeight(2)
+        root.addWidget(self._rail)
+        self._refresh_identity()  # sets the rail's phase colour
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(32, 18, 32, 24)
+        outer.setSpacing(12)
+        root.addWidget(content, 1)
+
+        # ── TOP content band: scan chip + header (title + actions) ──
+        top_band = QFrame()
+        top_band.setObjectName("SurfaceBand")
+        top_l = QVBoxLayout(top_band)
+        top_l.setContentsMargins(16, 14, 16, 14)
+        top_l.setSpacing(10)
+
+        # External-edits scan chip (Export-only; toggled in _apply_phase_chrome).
         self._scan_chip = QLabel("External edits: up to date")
         self._scan_chip.setObjectName("Faint")
         self._scan_chip.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._scan_chip.setVisible(False)
-        outer.addWidget(self._scan_chip)
+        top_l.addWidget(self._scan_chip)
 
         # Header — mockup `.head` proportions: Back · title block · action
         # cluster. The title block follows `.ttl h1{font-size:22px;
@@ -535,9 +609,6 @@ class DaysListsPage(QWidget):
         # read as 3 hero CTAs side-by-side.
         head = QHBoxLayout()
         head.setSpacing(12)
-        self._back = ghost_button("‹ Back")
-        self._back.clicked.connect(self.back_requested.emit)
-        head.addWidget(self._back)
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
         self._title = QLabel("Pick where to start")
@@ -574,9 +645,17 @@ class DaysListsPage(QWidget):
         self._skip_all_days_btn.clicked.connect(self.skip_all_days_requested.emit)
         head.addWidget(self._skip_all_days_btn)
         self._apply_phase_chrome()
-        outer.addLayout(head)
+        top_l.addLayout(head)
+        outer.addWidget(top_band)
 
-        # Day rows scroll
+        outer.addSpacing(8)
+
+        # ── BOTTOM content band: the day-row list ──
+        bottom_band = QFrame()
+        bottom_band.setObjectName("SurfaceBand")
+        bottom_l = QVBoxLayout(bottom_band)
+        bottom_l.setContentsMargins(16, 16, 16, 16)
+        bottom_l.setSpacing(0)
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -592,7 +671,8 @@ class DaysListsPage(QWidget):
         self._scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        outer.addWidget(self._scroll, 1)
+        bottom_l.addWidget(self._scroll)
+        outer.addWidget(bottom_band, 1)
 
     # ── spec/71 identity header ────────────────────────────────────────
 
@@ -604,19 +684,16 @@ class DaysListsPage(QWidget):
     }
 
     def _refresh_identity(self) -> None:
-        """(Re)build the SurfaceIdentityHeader for the current host phase."""
-        if self._identity is not None:
-            self._identity_host_layout.removeWidget(self._identity)
-            self._identity.deleteLater()
-            self._identity = None
-        name, purpose = self._IDENTITY_SPEC.get(
-            self._identity_phase, self._IDENTITY_SPEC["pick"])
-        self._identity = SurfaceIdentityHeader(
-            phase=self._identity_phase,
-            name=tr(name),
-            purpose=tr(purpose),
-        )
-        self._identity_host_layout.addWidget(self._identity)
+        """Recolour the full-width rail for the current host phase. The spec/71
+        identity is now carried by the rail colour + the section title (the
+        badge/purpose/legend strip was dropped to match the other surfaces'
+        plain top rail — Nelson 2026)."""
+        rail = getattr(self, "_rail", None)
+        if rail is None:
+            return
+        rail.setProperty("phase", self._identity_phase)
+        rail.style().unpolish(rail)
+        rail.style().polish(rail)
 
     def set_scan_status(self, report) -> None:
         """spec/89 §2.2 — push the spec/57 §3 return-scan report to the

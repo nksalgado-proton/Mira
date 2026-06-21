@@ -47,7 +47,7 @@ from typing import Optional
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from mira.gateway import Gateway
 from mira.picked import CullBucket, CullCluster, CullItem
@@ -65,10 +65,9 @@ from mira.ui.base.surface import (
     transport_button,
 )
 from mira.ui.design import (
-    SurfaceIdentityHeader,
+    apply_density,
     danger_ghost_button,
     ghost_button,
-    nav_arrow,
 )
 from mira.ui.i18n import tr
 from mira.ui.media.photo_cache import photo_cache
@@ -164,34 +163,26 @@ class PickerPage(QWidget):
     # ── UI assembly ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
+        # Back lives in the shared title bar (mode-aware via on_titlebar_back).
+        self.uses_titlebar_back = True
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # spec/71 identity header — Pick phase chrome (accent rail + PICK
-        # badge). The §5a state colours stay on the media border below
-        # unchanged; the rail/badge carry the phase identity only.
-        self._identity = SurfaceIdentityHeader(
-            phase="pick",
-            name=tr("Pick"),
-            purpose=tr("Decide each shot — pick the keepers"),
-            legend=[
-                ("picked", tr("Picked")),
-                ("skipped", tr("Skipped")),
-                ("compare", tr("Compare")),
-                ("mixed", tr("Mixed cluster")),
-            ],
-            reminder=tr(
-                "Border = your pick · P pick · X skip · C compare."),
-        )
-        identity_host = QWidget()
-        ihl = QVBoxLayout(identity_host)
-        ihl.setContentsMargins(24, 14, 24, 6)
-        ihl.setSpacing(0)
-        ihl.addWidget(self._identity)
-        outer.addWidget(identity_host)
+        # spec/71 identity — Pick inherits its phase colour as a full-width
+        # rail flush at the top, matching Events / Phases / Days List / Days
+        # Grid / Editor. The §5a state colours stay on the media border below;
+        # the Pick / Skip / Compare toggles in the nav band carry the legend.
+        self._rail = QFrame()
+        self._rail.setObjectName("SurfaceHeaderRail")
+        self._rail.setProperty("phase", "pick")
+        self._rail.setFixedHeight(2)
+        outer.addWidget(self._rail)
 
-        # ── Surface scaffold — the state border lives on this host. ──
+        # ── Surface scaffold — the state border lives on this host. Media is
+        # kept full-width here (unlike the Editor's inset content) so the
+        # picking canvas gets every pixel. ──
         self._surface = BasePickSurface()
         outer.addWidget(self._surface)
 
@@ -218,17 +209,15 @@ class PickerPage(QWidget):
         # media area; follows the host's resizes itself.
         self._expo_overlay = PhotoExposureOverlay(self.viewport)
 
-        # ── TOP_BAR — ‹ Back · stretch · position chip ──
-        self._back_btn = ghost_button(tr("‹ Back"))
-        self._back_btn.setToolTip(tr("Return to the day grid  (Esc)"))
-        self._back_btn.clicked.connect(self._on_back)
-        self._surface.top_bar.layout().addWidget(self._back_btn)
-        self._surface.top_bar.layout().addStretch(1)
+        # ── TOP_BAR — hidden. Back moved to the shared title bar; the only
+        # other occupant (the position counter) rides into the nav band below,
+        # between Full Resolution and Full Screen (Nelson 2026-06-20). ──
+        self._surface.set_region_visible("top_bar", False)
         self._position_label = QLabel("")
         self._position_label.setObjectName("Sub")
+        self._position_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._position_label.setToolTip(tr(
             "Position in the current day — item index of total."))
-        self._surface.top_bar.layout().addWidget(self._position_label)
 
         # ── STATE_BAR — hidden. State lives on the MediaHost border. ──
         self._surface.set_region_visible("state_bar", False)
@@ -258,15 +247,15 @@ class PickerPage(QWidget):
             self._transport_bar.set_playing)
         self.viewport.video_error.connect(self._transport_bar.show_error)
         cr_layout = self._surface.compact_row.layout()
-        cr_layout.setContentsMargins(0, 0, 0, 0)
+        cr_layout.setContentsMargins(12, 6, 12, 8)
         cr_layout.addWidget(self._transport_bar)
-        # Pin the compact_row host at the transport bar's fixed height
-        # (Nelson 2026-06-15 Fix A — "the slot reserves 64 px on photos
-        # and videos so the canvas bottom edge is pixel-identical
-        # across the boundary"). BasePickSurface ships the region at
-        # min=48 / max=96 (_make_h_region); setFixedHeight overrides
-        # both so the slot can't collapse on a photo or grow on a video.
-        self._surface.compact_row.setFixedHeight(64)
+        # The compact_row is the bottom transport BAND (boxed like the
+        # Editor's video bottom). It reserves the SAME height on photos and
+        # videos so the canvas bottom edge is pixel-identical across the
+        # boundary (Nelson 2026-06-15 Fix A); the exact height is measured
+        # from the dense transport at the end of _build_ui, replacing the old
+        # hardcoded 64 px. Bordered on videos, hollow on photos.
+        self._surface.compact_row.setProperty("surfaceBand", True)
         # Seed the viewport with the transport bar's initial volume so
         # the first video respects the slider's default position. The
         # speed selector defaults to 1× which matches the viewport's
@@ -291,7 +280,7 @@ class PickerPage(QWidget):
         nav_layout = self._surface.nav.layout()
         # The redesign's floating ‹ / › nav arrows live inside the nav row
         # for now (until we add them as overlay children on the viewport).
-        self._prev_btn = nav_arrow("left")
+        self._prev_btn = ghost_button("‹")
         self._prev_btn.setToolTip(tr("Previous photo  (←)"))
         self._prev_btn.clicked.connect(lambda: self._go(self._index - 1))
         nav_layout.addWidget(self._prev_btn)
@@ -340,6 +329,9 @@ class PickerPage(QWidget):
             "zoom, AF point  (F10)"))
         self._fullres_btn.clicked.connect(self.viewport.truth_requested.emit)
         nav_layout.addWidget(self._fullres_btn)
+        # Position counter rides between the two centre buttons (Nelson
+        # 2026-06-20 — same spot as the Editor footer).
+        nav_layout.addWidget(self._position_label)
         self._fullscreen_btn = ghost_button(tr("Full Screen  F11"))
         self._fullscreen_btn.setCheckable(True)
         self._fullscreen_btn.setToolTip(tr(
@@ -348,7 +340,7 @@ class PickerPage(QWidget):
         nav_layout.addWidget(self._fullscreen_btn)
 
         nav_layout.addStretch(1)
-        self._next_btn = nav_arrow("right")
+        self._next_btn = ghost_button("›")
         self._next_btn.setToolTip(tr("Next photo  (→)"))
         self._next_btn.clicked.connect(lambda: self._go(self._index + 1))
         nav_layout.addWidget(self._next_btn)
@@ -360,7 +352,47 @@ class PickerPage(QWidget):
         # Canonical media-border click cycles state.
         self._surface.media_border_clicked.connect(self._cycle)
 
+        # ── The nav row IS the bottom control band (#SurfaceBand box around
+        # the Pick / Skip / Compare toggles + Full Res / Full Screen + the
+        # counter). The scaffold's nav region is borderless by default; the
+        # `surfaceBand` property opts it into the band border (Nelson
+        # 2026-06-20). ──
+        self._surface.nav.setProperty("surfaceBand", True)
+        self._surface.nav.style().unpolish(self._surface.nav)
+        self._surface.nav.style().polish(self._surface.nav)
+
+        # spec/92 dense tier — slim the nav chrome + the video transport so the
+        # picking canvas keeps the vertical room. Reused from the Editor.
+        apply_density(self._surface.nav)
+        apply_density(self._transport_bar)
+
+        # Pin the transport band to the DENSE bar's measured height (+ the
+        # compact_row's 6/8 margins) so photo (empty, hollow) and video
+        # (transport) reserve the exact same space — no canvas jump. Replaces
+        # the old hardcoded 64 px, which was sized for the full-height bar.
+        self._transport_bar.ensurePolished()
+        self._surface.compact_row.setFixedHeight(
+            self._transport_bar.sizeHint().height() + 14)
+        # Photo is the default landing — start the transport band hollow.
+        self._set_transport_band_hollow(True)
+
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def _set_transport_band_hollow(self, hollow: bool) -> None:
+        """Drop (hollow) or restore the transport band's border. Borderless on
+        photos (the transport is hidden — reserved space only); bordered on
+        videos where the transport fills it. Mirrors the Editor's bottom band."""
+        cr = self._surface.compact_row
+        cr.setProperty("hollow", bool(hollow))
+        cr.style().unpolish(cr)
+        cr.style().polish(cr)
+
+    def on_titlebar_back(self) -> None:
+        """Shared title-bar Back hook (MainWindow._on_titlebar_back prefers
+        this). Steps out of fullscreen first, else backs out of the surface —
+        the same one-level behaviour as Esc."""
+        if not self._exit_fullscreen():
+            self._on_back()
 
     # ── Public entry points (Days Grid bridge) ────────────────────────
 
@@ -867,6 +899,11 @@ class PickerPage(QWidget):
         if vp_item is None or vp_item.payload is None:
             return
         self._index = index
+        # Keep the day-position synced with the cursor on whole-day buckets
+        # (cluster buckets keep day_index fixed at the entry point) so the
+        # counter shows ONE figure, not two diverging ones (Nelson 2026-06-20).
+        if self._bucket is not None and self._bucket.kind == "day":
+            self._day_index = self._index + 1
         item = vp_item.payload
         kind = getattr(item, "kind", "photo")
         is_video = kind == "video"
@@ -911,8 +948,10 @@ class PickerPage(QWidget):
             self._transport_bar.set_position(0, self._video_duration_ms)
             self._transport_bar.set_playing(False)
             self._transport_bar.setVisible(True)
+            self._set_transport_band_hollow(False)   # video → boxed
         else:
             self._transport_bar.setVisible(False)
+            self._set_transport_band_hollow(True)    # photo → borderless
 
         # Sharpness (skips until sharp pixels land). Skip for videos —
         # the score is photo-only.
@@ -965,12 +1004,19 @@ class PickerPage(QWidget):
         self.viewport.video_set_playback_rate(rate)
 
     def _refresh_position_label(self) -> None:
-        if len(self._items) > 1:
-            in_n = self._index + 1
-            in_total = len(self._items)
+        if not self._items:
+            self._position_label.setText("")
+            return
+        in_n = self._index + 1
+        in_total = len(self._items)
+        # One figure when the day-position and the bucket-position agree (the
+        # whole-day case); the dual "day · cluster" only when a cluster
+        # sub-grid makes them genuinely differ (mirrors the Editor).
+        same = (in_n == self._day_index and in_total == self._day_total)
+        if not same and in_total > 1:
             txt = f"{self._day_index} / {self._day_total}  ·  {in_n} / {in_total}"
         else:
-            txt = f"{self._day_index} / {self._day_total}"
+            txt = f"{in_n} / {in_total}"
         self._position_label.setText(txt)
 
     def _sync_state_pill(self, state: str) -> None:

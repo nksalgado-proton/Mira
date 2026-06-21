@@ -238,7 +238,7 @@ class VideoWorkshopBar(QWidget):
         self.speed_combo = select(["0.25×", "0.5×", "1×", "1.5×", "2×"])
         self.speed_combo.setObjectName("VideoSpeed")
         self.speed_combo.setCurrentText("1×")
-        self.speed_combo.setFixedWidth(82)
+        self.speed_combo.setFixedWidth(58)
         self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed_combo.currentTextChanged.connect(self._on_speed_text)
         tr_layout.addWidget(self.speed_combo)

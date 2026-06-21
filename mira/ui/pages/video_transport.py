@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStyle,
     QStyleOptionSlider,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -149,16 +150,29 @@ class VideoTransportBar(QWidget):
         # WA_StyledBackground so the QSS card background paints on a
         # plain QWidget host.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(64)
-        h = QHBoxLayout(self)
-        h.setContentsMargins(18, 10, 18, 10)
-        h.setSpacing(12)
+        # Two rows, mirroring the Editor's video bottom (a full-width timeline
+        # strip on top, dense controls below) so the Picker's transport reads
+        # the same — with the leaner control set it needs (Nelson 2026-06-20).
+        # No fixed height: the bar sizes to its dense content and the Picker
+        # pins the reserved slot to that height (no canvas jump).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
 
-        # ◀| — jump to the first frame. Icon-only via tinted SVG (no
-        # text glyph). Reuses ``seek_requested`` so the host's existing
-        # wiring to ``viewport.video_seek`` covers it.
+        # ── Row 1: the timeline (full-width scrubber) ──
+        self.scrubber = _Scrubber()
+        self.scrubber.sliderMoved.connect(self._on_scrubber_moved)
+        self.scrubber.sliderReleased.connect(self._on_scrubber_released)
+        outer.addWidget(self.scrubber)
+
+        # ── Row 2: transport (left) · time · audio + speed (right) ──
+        h = QHBoxLayout()
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        # ◀| — jump to the first frame. Icon-only via tinted SVG.
         self.prev_frame = ghost_button("")
-        self.prev_frame.setFixedSize(36, 36)
+        self.prev_frame.setFixedSize(28, 28)
         self.prev_frame.setIconSize(QSize(_SIDE_ICON_PX, _SIDE_ICON_PX))
         self.prev_frame.setToolTip(tr("Jump to start"))
         self.prev_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -167,15 +181,13 @@ class VideoTransportBar(QWidget):
 
         self.play_btn = transport_button(
             tr("Play / pause the video  (Tab)"))
-        self.play_btn.setFixedHeight(36)
+        self.play_btn.setFixedHeight(28)
         self.play_btn.clicked.connect(self.play_pause_requested.emit)
         h.addWidget(self.play_btn)
 
-        # |▶ — jump to the last frame. Guarded against unknown
-        # duration in :meth:`_on_jump_to_end` (the player hasn't
-        # reported it yet); the click is a deliberate no-op then.
+        # |▶ — jump to the last frame (no-op until duration is known).
         self.next_frame = ghost_button("")
-        self.next_frame.setFixedSize(36, 36)
+        self.next_frame.setFixedSize(28, 28)
         self.next_frame.setIconSize(QSize(_SIDE_ICON_PX, _SIDE_ICON_PX))
         self.next_frame.setToolTip(tr("Jump to end"))
         self.next_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -184,22 +196,17 @@ class VideoTransportBar(QWidget):
 
         self.time_label = QLabel("0:00.000 / 0:00.000")
         self.time_label.setObjectName("VideoTime")
-        self.time_label.setMinimumWidth(170)
+        self.time_label.setMinimumWidth(150)
         h.addWidget(self.time_label)
 
-        self.scrubber = _Scrubber()
-        self.scrubber.sliderMoved.connect(self._on_scrubber_moved)
-        self.scrubber.sliderReleased.connect(self._on_scrubber_released)
-        h.addWidget(self.scrubber, 1)
+        h.addStretch(1)
 
-        # Mute toggle — a real QPushButton (not a label). Click flips
-        # between 0 and the last non-zero volume; the slider tracks the
-        # state so manually dragging to 0 reads as muted too. Icon
-        # swaps between GLYPH_VOLUME / GLYPH_VOLUME_MUTED via the line-
-        # icon family (no Segoe UI Emoji); colour follows the palette.
+        # Mute toggle — a real QPushButton. Click flips between 0 and the
+        # last non-zero volume; the slider tracks the state. Icon swaps via
+        # the line-icon family; colour follows the palette.
         self.mute_btn = QPushButton()
         self.mute_btn.setObjectName("VideoMuteToggle")
-        self.mute_btn.setFixedSize(34, 34)
+        self.mute_btn.setFixedSize(28, 28)
         self.mute_btn.setIconSize(QSize(_MUTE_ICON_PX, _MUTE_ICON_PX))
         self.mute_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -216,17 +223,18 @@ class VideoTransportBar(QWidget):
         self.volume.valueChanged.connect(self._on_volume_changed)
         h.addWidget(self.volume)
         # Remember the last non-zero volume so the mute toggle has
-        # somewhere to restore to. Seeded from the slider's initial
-        # value (80).
+        # somewhere to restore to. Seeded from the slider's initial value.
         self._last_volume = self.volume.value()
 
         self.speed = select(["0.25×", "0.5×", "1×", "1.5×", "2×"])
         self.speed.setObjectName("VideoSpeed")
         self.speed.setCurrentText("1×")
-        self.speed.setFixedWidth(86)
+        self.speed.setFixedWidth(64)
         self.speed.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed.currentTextChanged.connect(self.speed_changed.emit)
         h.addWidget(self.speed)
+
+        outer.addLayout(h)
 
         self._duration_ms = 0
         self._scrubbing = False

@@ -15,6 +15,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import QHBoxLayout, QMenuBar, QWidget
 
 from mira.ui.design.brand import MiraLogo
+from mira.ui.design.buttons import ghost_button
 from mira.ui.design.headers import ThemeToggle
 
 
@@ -41,6 +42,23 @@ class TitleBar(QWidget):
             h.addWidget(menu_bar)
 
         h.addStretch(1)
+
+        # Shared Back button — sits just left of the theme toggle so it's in
+        # the same place on every surface (Nelson 2026). Hidden by default;
+        # the host shows it only for pages that opt in (uses_titlebar_back) and
+        # routes its click to the current page's back action.
+        self.back_button = ghost_button("‹ Back")
+        self.back_button.setVisible(False)
+        h.addWidget(self.back_button)
+
+        # Shared Help button — the ONE help entry point, on every surface, in
+        # the same spot (Nelson 2026-06-21). The "?" glyph is the universal
+        # help icon; the label carries its F1 shortcut. The host routes its
+        # click (and F1) to the current surface's help, falling back to the
+        # global shortcuts list.
+        self.help_button = ghost_button("?  F1")
+        self.help_button.setToolTip("Help & keyboard shortcuts  (F1)")
+        h.addWidget(self.help_button)
 
         self.theme_toggle = ThemeToggle()
         h.addWidget(self.theme_toggle)

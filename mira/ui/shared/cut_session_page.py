@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 
 from mira.shared.cut_session import CutSession, SessionFile
 from mira.ui.base.shortcuts import show_shortcuts
-from mira.ui.base.surface import back_button, help_button
+from mira.ui.base.surface import back_button
 from mira.ui.design import ThumbGrid, ThumbGridItem, ghost_button
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
@@ -451,11 +451,7 @@ class CutSessionPage(QWidget):
         cancel.setToolTip(tr("Leave without saving anything."))
         cancel.clicked.connect(self._on_cancel)
         top.addWidget(cancel)
-        # The shared Help control (Nelson 2026-06-12 UI round).
-        self._help_btn = help_button()
-        self._help_btn.setToolTip(tr("Keyboard shortcuts  (F1)"))
-        self._help_btn.clicked.connect(self._show_shortcuts)
-        top.addWidget(self._help_btn)
+        # Help is in the shared title bar now (routed to show_help / F1).
         outer.addLayout(top)
 
         # The budget strip — its own full-width row above the picker
@@ -753,6 +749,10 @@ class CutSessionPage(QWidget):
             win.showNormal()
         else:
             win.showFullScreen()
+
+    def show_help(self) -> None:
+        """Title-bar Help / F1 hook (routed via ShareCutsPage.show_help)."""
+        self._show_shortcuts()
 
     def _show_shortcuts(self) -> None:
         show_shortcuts(self, tr("Cut session"), [

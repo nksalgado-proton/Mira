@@ -134,13 +134,20 @@ def _editor_on_video(app_gateway) -> EditorPage:
 
 def test_workshop_host_has_fixed_reserved_height(qapp, app_gateway):
     """The reveal host above the workshop is pinned to a fixed height
-    so the canvas geometry above is invariant under photo↔video sweeps."""
+    so the canvas geometry above is invariant under photo↔video sweeps.
+    Nelson 2026-06-21 — the spec/92 dense tier re-reserves the host to
+    the DENSE workshop bar's measured height (``max(88, sizeHint)``)
+    instead of the static ``WORKSHOP_REVEAL_HEIGHT`` constant, so the
+    canvas never shows a blank strip between the dense bar and the
+    footer. The invariant the test still pins is the fixed-size policy
+    (min == max), not the specific pixel value."""
     page = EditorPage(app_gateway)
-    h = page._workshop_host.height()
-    # The widget hasn't laid out yet; assert the fixed-size policy.
-    from mira.ui.edited.video_workshop_bar import WORKSHOP_REVEAL_HEIGHT
-    assert page._workshop_host.minimumHeight() == WORKSHOP_REVEAL_HEIGHT
-    assert page._workshop_host.maximumHeight() == WORKSHOP_REVEAL_HEIGHT
+    h_min = page._workshop_host.minimumHeight()
+    h_max = page._workshop_host.maximumHeight()
+    assert h_min == h_max, "workshop host must be fixed-size (no canvas jump)"
+    # Floor matches the post-dense-tier reservation; comfortable headroom
+    # for the workshop bar's transport row.
+    assert h_min >= 88
 
 
 def test_workshop_hidden_until_video_lands(qapp, app_gateway):

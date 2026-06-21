@@ -65,7 +65,12 @@ from mira.ui.base.country_picker import (
 )
 from mira.ui.base.tables import make_columns_resizable
 from mira.ui.base.tz_picker import TzPicker
-from mira.ui.design import GLYPH_CROSS, GLYPH_EVENT, tinted_svg_pixmap
+from mira.ui.design import (
+    GLYPH_CROSS,
+    GLYPH_EVENT,
+    GLYPH_EYE,
+    tinted_svg_pixmap,
+)
 from mira.ui.i18n import tr
 from mira.ui.palette import PALETTE
 
@@ -513,7 +518,11 @@ class EventDaysTableDialog(QDialog):
         )
         header = self._table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(COL_LOC, QHeaderView.ResizeMode.Stretch)
+        # Location stays Interactive (user-draggable) so the divider BETWEEN
+        # Location and Description can be moved — dragging it left grows the
+        # Description field. Only Description stretches to fill the remainder;
+        # two adjacent Stretch columns share a divider that can't be dragged
+        # (Nelson 2026-06-20). Location seeds at 220 px from make_columns_resizable.
         header.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_OVERRIDE, QHeaderView.ResizeMode.Fixed)
         self._table.setColumnWidth(COL_OVERRIDE, 56)
@@ -573,8 +582,16 @@ class EventDaysTableDialog(QDialog):
         lay = QHBoxLayout(cell)
         lay.setContentsMargins(4, 2, 4, 2)
         lay.setSpacing(0)
-        btn = QPushButton(tr("Browse…"))
+        # Eye icon instead of the "Browse…" label (Nelson 2026-06-20). The
+        # column header still reads "Browse"; the per-row control is just the
+        # glyph. Tinted per theme like the other dialog icons.
+        btn = QPushButton()
         btn.setObjectName("PlanBrowseCell")
+        p = PALETTE[_palette_mode()]
+        btn.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_EYE, 16, QColor(p["ink_soft"]))))
+        btn.setIconSize(QSize(16, 16))
+        btn.setToolTip(tr("Browse this day's photos and videos (read-only)."))
         if self._browse_handler is not None:
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.clicked.connect(

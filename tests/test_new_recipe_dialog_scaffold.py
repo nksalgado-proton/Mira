@@ -348,9 +348,10 @@ def test_footer_contains_only_cancel_and_start(qapp):
     assert "Cancel" in button_texts
     assert any("Start" in t for t in button_texts)
     assert not any("Save as Recipe" in t for t in button_texts)
-    assert not any("Save as DC" in t for t in button_texts)
+    # Vocabulary rename to "Collection" landed in spec/94 Phase 1.
+    assert not any("Save as Collection" in t for t in button_texts)
     assert not any("Load Recipe" in t for t in button_texts)
-    assert not any("Load DC" in t for t in button_texts)
+    assert not any("Load Collection" in t for t in button_texts)
 
 
 def test_recipe_toolbar_present_with_both_recipe_buttons(qapp):

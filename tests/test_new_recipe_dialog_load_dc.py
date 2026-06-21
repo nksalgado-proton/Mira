@@ -116,7 +116,8 @@ def test_picker_empty_renders_friendly_hint(qapp):
     from PyQt6.QtWidgets import QLabel
     picker = _LoadDcDialog([])
     labels = [lbl.text() for lbl in picker.findChildren(QLabel)]
-    assert any("No DCs" in l for l in labels)
+    # Vocabulary rename to "Collection" landed in spec/94 Phase 1.
+    assert any("No Collections" in l for l in labels)
 
 
 def test_picker_emits_chosen_signal_on_accept(qapp):

@@ -60,12 +60,18 @@ from PyQt6.QtWidgets import (
 )
 
 from core import recipe_resolver as _recipe_resolver
+from core.placement_classifier import (
+    PLACEMENT_GLOBAL,
+    BoundPlacement,
+    Placement,
+)
 from mira.shared.recipe_store import (
     FLAVOUR_COLLECTION as _STORE_FLAVOUR_COLLECTION,
     FLAVOUR_CUT as _STORE_FLAVOUR_CUT,
     RecipeNameTakenError,
     RecipeStore,
 )
+from mira.ui.base.binding_badge import BindingBadge
 from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
@@ -624,10 +630,10 @@ class _OperandPickerPopover(QFrame):
         # (Event Collection track).
         if self._target == PICKER_TARGET_RULE_PREDICATE:
             outer.addWidget(_divider())
-            self._save_btn = ghost_button(tr("Save as DC…"))
+            self._save_btn = ghost_button(tr("Save as Collection…"))
             self._save_btn.setObjectName("OperandPickerSaveAsDc")
             self._save_btn.setToolTip(tr(
-                "Save this predicate as a reusable DC."))
+                "Save this predicate as a reusable Collection."))
             self._save_btn.clicked.connect(self._on_save_as_dc)
             outer.addWidget(self._save_btn)
         else:
@@ -655,7 +661,7 @@ class _OperandPickerPopover(QFrame):
 
         order = [
             ("base", tr("Base universes")),
-            ("dc", tr("Dynamic Collections")),
+            ("dc", tr("Collections")),
             ("cut", tr("Cuts")),
         ]
         for kind, label in order:
@@ -1003,18 +1009,18 @@ class _SaveAsDcNameDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("SaveAsDcNameDialog")
-        self.setWindowTitle(tr("Save as DC"))
+        self.setWindowTitle(tr("Save as Collection"))
         self.setModal(True)
         self.setMinimumWidth(420)
 
         box = QVBoxLayout(self)
-        group = QGroupBox(tr("Dynamic Collection name"))
+        group = QGroupBox(tr("Collection name"))
         group.setObjectName("FormFieldGroup")
         gbox = QVBoxLayout(group)
         self._edit = QLineEdit(default)
         self._edit.setObjectName("SaveAsDcNameEdit")
         self._edit.setToolTip(tr(
-            "How this DC appears in operand pickers — # is added for you."))
+            "How this Collection appears in operand pickers — # is added for you."))
         self._edit.textChanged.connect(self._refresh)
         gbox.addWidget(self._edit)
         self._preview = QLabel("")
@@ -1034,10 +1040,10 @@ class _SaveAsDcNameDialog(QDialog):
         if self._ok is not None:
             self._ok.setObjectName("Primary")
             self._ok.setText(tr("Save"))
-            self._ok.setToolTip(tr("Save as a Dynamic Collection."))
+            self._ok.setToolTip(tr("Save as a Collection."))
         cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         if cancel is not None:
-            cancel.setToolTip(tr("Don't save a DC."))
+            cancel.setToolTip(tr("Don't save a Collection."))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         box.addWidget(buttons)
@@ -1088,7 +1094,7 @@ class _LoadDcDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("LoadDcDialog")
-        self.setWindowTitle(tr("Load DC"))
+        self.setWindowTitle(tr("Load Collection"))
         self.setModal(True)
         self.setMinimumWidth(420)
         self.setMinimumHeight(340)
@@ -1100,7 +1106,7 @@ class _LoadDcDialog(QDialog):
         outer.setSpacing(10)
 
         hint = QLabel(tr(
-            "Pick a DC to replace the Source + Filters with. Rules, "
+            "Pick a Collection to replace the Source + Filters with. Rules, "
             "Otherwise, and Runtime stay as they are."))
         hint.setObjectName("PageHint")
         hint.setWordWrap(True)
@@ -1119,8 +1125,8 @@ class _LoadDcDialog(QDialog):
         empty = (not self._dcs)
         if empty:
             empty_lbl = QLabel(tr(
-                "No DCs in this library yet. Compose a Source and click "
-                "Save as DC to make one."))
+                "No Collections in this library yet. Compose a Source and "
+                "click Save as Collection to make one."))
             empty_lbl.setObjectName("Faint")
             empty_lbl.setWordWrap(True)
             outer.addWidget(empty_lbl)
@@ -1133,7 +1139,7 @@ class _LoadDcDialog(QDialog):
             self._ok.setObjectName("Primary")
             self._ok.setText(tr("Load"))
             self._ok.setToolTip(tr(
-                "Load the selected DC into Source + Filters."))
+                "Load the selected Collection into Source + Filters."))
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
@@ -1578,6 +1584,8 @@ class NewRecipeDialog(QDialog):
             [str, list, dict], "OperandOption"]] = None,
         dc_loader: Optional[Callable[
             ["OperandOption"], Tuple[list, dict]]] = None,
+        classify_placement: Optional[Callable[[dict], Placement]] = None,
+        event_name_for_id: Optional[Callable[[str], str]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1600,6 +1608,17 @@ class NewRecipeDialog(QDialog):
         self._recipe_store = recipe_store
         self._dc_creator = dc_creator
         self._dc_loader = dc_loader
+        # spec/93 §5 — auto-placement classifier. The host wires this to a
+        # callback that uses :func:`core.placement_classifier.classify_placement`
+        # over the gateway's DC + Cut lookups; when unwired (early Phase 1
+        # rollout, tests) the binding badge defaults to "Global" silently.
+        self._classify_placement_callback: Optional[
+            Callable[[dict], Placement]] = classify_placement
+        self._event_name_for_id_callback: Optional[
+            Callable[[str], str]] = event_name_for_id
+        # Last classifier output — read by the badge widget + by the
+        # migration-note label that fires when the placement flips.
+        self._last_placement: Optional[Placement] = None
         # Tracks which picker is "active" for a save_as_dc click:
         # ("source", None) for the source picker, ("rule_predicate", row)
         # for a rule row's predicate picker. Read inside
@@ -1825,6 +1844,25 @@ class NewRecipeDialog(QDialog):
         label = QLabel(tr("Recipe").upper())
         label.setObjectName("RecipeToolbarLabel")
         h.addWidget(label)
+
+        # spec/93 §7 — read-only binding badge. Updated on every probe
+        # via :meth:`_refresh_binding_badge`. Sits next to the Recipe
+        # label so the user sees the placement context inline with the
+        # name. Defaults to "Global" until the classifier callback is
+        # wired by the host.
+        self._binding_badge = BindingBadge()
+        h.addWidget(self._binding_badge)
+
+        # spec/93 §7 — migration note. A quiet inline label that lights
+        # up for one beat when an edit flips the classification ("now
+        # specific to Event A — it'll only appear there"). Hidden until
+        # a flip is detected; cleared on the next refresh.
+        self._migration_note = QLabel("")
+        self._migration_note.setObjectName("MigrationNote")
+        self._migration_note.setWordWrap(False)
+        self._migration_note.setVisible(False)
+        h.addWidget(self._migration_note)
+
         h.addStretch()
 
         # Load Recipe…
@@ -1943,15 +1981,15 @@ class NewRecipeDialog(QDialog):
         """The "Which items?" group — Source + Filters wrapped as inner
         cards inside a secondary-tint container. Header carries Load
         DC… and Save as DC… buttons (spec/90 §5)."""
-        self._load_dc_btn = ghost_button(tr("Load DC…"))
+        self._load_dc_btn = ghost_button(tr("Load Collection…"))
         self._load_dc_btn.setObjectName("BandLoadDc")
         self._load_dc_btn.setToolTip(
-            tr("Replace Source + Filters with a saved DC.")
+            tr("Replace Source + Filters with a saved Collection.")
             if self._dc_loader is not None
-            else tr("No DC loader wired — Load DC disabled."))
+            else tr("No Collection loader wired — Load Collection disabled."))
         self._load_dc_btn.clicked.connect(self._on_load_dc_clicked)
 
-        self._save_dc_btn = ghost_button(tr("Save as DC…"))
+        self._save_dc_btn = ghost_button(tr("Save as Collection…"))
         self._save_dc_btn.setObjectName("BandSaveAsDc")
         self._save_dc_btn.setToolTip(tr(
             "Save the current source + filters as a reusable DC."))
@@ -2149,7 +2187,7 @@ class NewRecipeDialog(QDialog):
         btn.setObjectName("PoolStepperBtn")
         btn.setFixedSize(26, 26)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip(tr("Add an operand — DC, Cut, or base universe."))
+        btn.setToolTip(tr("Add an operand — Collection, Cut, or base universe."))
         btn.clicked.connect(lambda: self._open_source_picker(btn))
         return btn
 
@@ -2293,16 +2331,16 @@ class NewRecipeDialog(QDialog):
                         "This expression refers back to itself — pick a "
                         "different combination.")
                 else:
-                    msg = str(exc) or tr("Could not save the DC.")
+                    msg = str(exc) or tr("Could not save the Collection.")
                 dlg.show_error(msg)
                 continue
             except Exception as exc:                       # noqa: BLE001
                 log.exception("dc_creator raised — keeping the sub-dialog open")
-                dlg.show_error(str(exc) or tr("Could not save the DC."))
+                dlg.show_error(str(exc) or tr("Could not save the Collection."))
                 continue
             if operand is not None:
                 self._append_operand_to_inventory(operand)
-            self._toast(tr("DC '{name}' saved.").format(name=name))
+            self._toast(tr("Collection '{name}' saved.").format(name=name))
             return
 
     def _append_operand_to_inventory(self, operand: "OperandOption") -> None:
@@ -2940,6 +2978,80 @@ class NewRecipeDialog(QDialog):
         self._apply_rule_breakdown(resolution.rule_breakdown)
         self._clear_banner()
         self._refresh_start_enabled()
+        # spec/93 §7 — refresh the binding badge + the one-shot migration
+        # note. Done at the end so a probe failure earlier in the method
+        # leaves the badge in its last-good state (the placement doesn't
+        # depend on the probe; this is just where we already pay the cost
+        # of building the composition).
+        self._refresh_binding_badge(composition)
+
+    def _refresh_binding_badge(self, composition: dict) -> None:
+        """spec/93 §5 + §7 — classify the current composition and
+        update the binding badge / one-shot migration note.
+
+        Safe when the host hasn't wired the classifier callback: the
+        badge stays at its default ("Global"), no migration note ever
+        fires. Same when the callback raises — log + leave the last
+        state in place (the badge must never become a crash surface).
+        """
+        if self._classify_placement_callback is None:
+            return
+        try:
+            placement = self._classify_placement_callback(composition)
+        except Exception as exc:                            # noqa: BLE001
+            log.exception(
+                "classify_placement raised — keeping badge as-is: %s", exc)
+            return
+        # Resolve the event_id to a name when possible so the badge
+        # reads "Event: Costa Rica" instead of "Event: abcdef12".
+        event_name = ""
+        if isinstance(placement, BoundPlacement) and self._event_name_for_id_callback:
+            try:
+                event_name = self._event_name_for_id_callback(placement.event_id) or ""
+            except Exception as exc:                        # noqa: BLE001
+                log.warning(
+                    "event_name_for_id raised — using id stub: %s", exc)
+                event_name = ""
+        self._binding_badge.set_placement(placement, event_name=event_name)
+        self._maybe_show_migration_note(placement, event_name)
+        self._last_placement = placement
+
+    def _maybe_show_migration_note(
+        self,
+        placement: Placement,
+        event_name: str,
+    ) -> None:
+        """One-shot inline note when the classification flips between
+        saves of the same Recipe (spec/93 §7 "quiet migration note")."""
+        prev = self._last_placement
+        if prev is None or prev == placement:
+            self._migration_note.setText("")
+            self._migration_note.setVisible(False)
+            return
+        text = self._migration_note_text(placement, event_name)
+        if not text:
+            self._migration_note.setText("")
+            self._migration_note.setVisible(False)
+            return
+        self._migration_note.setText(text)
+        self._migration_note.setVisible(True)
+
+    @staticmethod
+    def _migration_note_text(
+        placement: Placement,
+        event_name: str,
+    ) -> str:
+        """The migration-note copy keyed off the new placement. Quiet
+        + factual, never a prompt."""
+        if placement == PLACEMENT_GLOBAL:
+            return tr("Now reusable in any event.")
+        if isinstance(placement, BoundPlacement):
+            if event_name:
+                return tr("Now specific to {event} — it'll only appear there.").replace(
+                    "{event}", event_name)
+            return tr("Now specific to one event — it'll only appear there.")
+        # Cross-event — appears in the events its pinned operands belong to.
+        return tr("Now spans several events — appears only in those.")
 
     def _refresh_metrics_from_state(self) -> None:
         """Re-render the metrics line using the last successful
@@ -3164,7 +3276,7 @@ class NewRecipeDialog(QDialog):
             expr, filters = self._dc_loader(dc_operand)
         except Exception as exc:                           # noqa: BLE001
             log.exception("dc_loader raised — keeping current items layer")
-            self._show_metrics_error(tr("Load DC failed: ") + str(exc))
+            self._show_metrics_error(tr("Load Collection failed: ") + str(exc))
             return
         self._apply_dc_to_items_layer(expr or [], filters or {})
 
@@ -3191,7 +3303,7 @@ class NewRecipeDialog(QDialog):
         layer. Returns True when the user picked Replace."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.NoIcon)
-        box.setWindowTitle(tr("Load DC"))
+        box.setWindowTitle(tr("Load Collection"))
         box.setText(tr(
             "This will replace your current Source and Filters with the "
             "loaded DC's. Continue?"))

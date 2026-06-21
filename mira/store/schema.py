@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -730,6 +730,30 @@ CREATE TABLE item_visit (
   PRIMARY KEY (item_id, phase)
 );
 CREATE INDEX ix_item_visit_phase_visited ON item_visit(phase, visited);
+
+-- ===== recipe (D) — spec/93 §5 BOUND recipes (spec/94 Phase 1) =============
+-- A definition whose operand closure pins exactly one event's Cut (or a DC
+-- already bound to that event) lives HERE rather than in the user's recipe
+-- library (spec/93 §3). The shape mirrors the library-level ``recipe`` in
+-- mira.db (spec/90 §5.1) MINUS the ``UNIQUE (flavour, name)`` — bound recipes
+-- only need to be unique within ONE event, and bound recipes are necessarily
+-- Cut-flavoured (a Collection is cross-event by intent and so can never be
+-- bound).
+--
+-- Empty on every fresh event; populated only when the user saves a Recipe
+-- whose composition references a single-event Cut from THIS event. If a later
+-- edit removes that operand the classifier flips it to GLOBAL and the row
+-- migrates out to ``<library_root>/Recipes/<name>.json`` atomically (spec/93
+-- §5 last paragraph).
+CREATE TABLE recipe (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  UNIQUE (name)
+);
 """
 
 # Names of the derived/cache tables — the backup layer (json_dump / repo) excludes
@@ -1230,6 +1254,27 @@ CREATE TABLE face (
         "WHERE person_id IS NOT NULL")
 
 
+def _migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """spec/94 Phase 1 — bound recipes live in event.db (spec/93 §3).
+
+    A definition whose operand closure pins exactly one event's Cut
+    lives in THAT event's ``event.db`` rather than in the library-level
+    ``Recipes/`` JSON tree. Mirrors the mira.db ``recipe`` shape
+    (spec/90 §5.1) minus the cross-flavour uniqueness — bound recipes
+    are necessarily Cut-flavoured. Empty after migration; populated only
+    when the classifier (spec/93 §5) routes a save here."""
+    conn.execute("""
+CREATE TABLE recipe (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  UNIQUE (name)
+)""")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1242,6 +1287,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v9_to_v10,
     _migrate_v10_to_v11,
     _migrate_v11_to_v12,
+    _migrate_v12_to_v13,
 ]
 
 

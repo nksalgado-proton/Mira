@@ -617,7 +617,7 @@ The canonical role per widget purpose, after Stages 3a–3d and Stage 4a. The
 the canonical role replaces (deleted from `redesign.qss` per the migration
 commits in the brackets). Roles defined only in legacy `dark.qss`/`light.qss`
 that survive the Stage 4a dead-role purge but have not yet migrated to
-`redesign.qss` are listed at the end (Stage 4b/c/d target).
+`redesign.qss` are listed at the end (legacy-migration history per §A.9).
 
 ### A.1 Buttons (`QPushButton`)
 
@@ -712,34 +712,39 @@ radius `sm=8 md=11 lg=14 xl=18` · `shadow_alpha`. The handful of
 `rgba(...)` literals in chip tints and translucent overlays are the only
 sanctioned non-token colours.
 
-### A.9 Legacy roles still pending migration (Stage 4b/c/d)
+### A.9 Legacy role migration — DONE (Stage 4b/c/d completed 2026-06-21)
 
-Stage 4a removed the 73 truly-dead legacy roles from `dark.qss` /
-`light.qss`. The 100 still-referenced legacy roles below remain there
-until Stage 4b/c/d migrates them into `redesign.qss` with single-brace
-token substitution. (Live = at least one `setObjectName("Role")` in
-`mira/`, `core/`, `tests/`, or `scripts/`.)
+Stage 4a removed the 73 truly-dead legacy roles. Stages 4b/c/d then
+folded the 100 still-referenced legacy roles into `redesign.qss`:
 
-`AdjustmentLabel` · `AdjustmentReset` · `AdjustmentSlider` ·
-`AdjustmentValue` · `BatchOpButton` · `BatchProgressLabel` ·
-`BatchProgressLine` · `BatchProgressQueued` · `BodyText` ·
-`ClassificationTagSuggestion` · `CountryPickerChip` · `CutBudgetBar` ·
-`CutBudgetLabel` · `CutBudgetLine` · `CutSessionDayRow` ·
-`CutSingleFrame` · `CutSingleImage` · `DangerButtonText` ·
-`DayGridHeader` · `EventCard` · `EventCardClosed`, `EventCardClosedBody*`
-(4 sub-roles) · `EventCardDate` · `EventCardDaysBadge` · `EventCardEmpty`
-· `EventCardFromTo` · `EventCardLeftZone` · `EventCardPhaseLabel` ·
-`EventCardRightZone` · `EventCardStatusBadge` · `EventCardSubtype` ·
-`EventCardTagChip`, `EventCardTagChipOverflow` · `EventCardTitle` ·
-`EventCardTopZone` · `EventCardTypeBadge` · `EventCardTz`, …
-(full list: `python scripts/qss_guard.py`-style audit produced 100
-entries — the next migration slice picks them up by surface family).
+- **Stage 4b** (commit `472d1b4`): extended
+  `palette.py::build_redesign_qss` to accept a tokens dict, and wired
+  `theme.py::apply_theme` to pass the full `resolve_theme_colors()`
+  output so the migrated rules could keep using legacy aliases
+  (`{window}`, `{text}`, `{primary_hover}`, …) without translation.
+- **Stage 4c slice 1** (commit `0edbb40`): mechanical migration of
+  233 rules whose bodies were identical between dark.qss / light.qss
+  (only the `{token}` substitution layer differed per theme). The
+  helper `scripts/_migrate_legacy_qss.py` walks both files in tandem
+  and migrates matching pairs verbatim (the only edit is unescaping
+  `{{` / `}}` → single `{` / `}`).
+- **Stage 4c slice 2** (commit `09c9071`): the 28 holdouts — 19
+  divergent-body rules + 4 dark-only + 5 light-only. The divergent
+  ones got per-theme aliases added to `resolve_theme_colors()`
+  (`primary_disabled_text`, `statusbreakdown_bg`, `status_open_*`,
+  `type_default_bg + type_{trip,session,occasion,project}`,
+  `info_{bucket,camera,day}{_hover}`); the single-theme ones moved
+  unconditionally. dark.qss + light.qss shrank to 7-line deprecation
+  stubs.
+- **Stage 4d** (commit `4f921af`): the irreversible step.
+  Deleted dark.qss + light.qss; retired the `_load_qss_template()`
+  helper and `.format_map()` branch in `theme.py::apply_theme`. The
+  `resolve_theme_colors()` legacy-aliases shim stays in place — any
+  caller (or any migrated rule) that still references
+  `{window}` / `{text}` / `{primary_hover}` resolves as before.
 
-The migration target QSS rules are tokenised (`{line}`, `{card2}`,
-`{accent}`, etc.) so they can be lifted into `redesign.qss` essentially
-verbatim — the only change is `{{` / `}}` → single `{` / `}` for the
-literal CSS braces (legacy uses Python `.format_map` escapes; redesign
-uses plain `str.replace`).
+`redesign.qss` is now the only role-bearing stylesheet
+(spec/92 §3 #1, §9 #1, §9 #6 all green).
 
 ---
 

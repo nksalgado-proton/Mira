@@ -176,12 +176,15 @@ Visual treatment lives in QSS, not in widget code. Never `setStyleSheet(...)`
 inline in widget modules (the `tests/test_no_inline_qss.py` guard fails the
 suite on any growth past `scripts/qss_guard_baseline.json`; a reviewed
 exception is marked with a trailing `# pragma: no-qss`). The canonical
-stylesheet is **`assets/themes/redesign.qss`** — one token-substituted
-template covering both themes (substitution happens in
-`mira/ui/palette.py::build_redesign_qss`). Legacy `assets/themes/dark.qss`
-and `light.qss` are being retired per **spec/92**; what remains is the
-residue of still-referenced legacy roles plus the global `QWidget` base
-rule, all concatenated AFTER redesign.qss by `theme.py::apply_theme()`.
+stylesheet is **`assets/themes/redesign.qss`** — the single
+role-bearing template, token-substituted per theme by
+`mira/ui/palette.py::build_redesign_qss` (the legacy `dark.qss` /
+`light.qss` templates and their `.format_map()` branch in `theme.py`
+were retired in spec/92 Stage 4d — every rule lives in `redesign.qss`).
+`theme.py::resolve_theme_colors` still exposes the legacy aliases
+(`window`/`text`/`primary_hover`/…) as a compatibility shim so the
+migrated rules — and any caller still referencing legacy token names —
+keep resolving cleanly.
 
 Widgets opt into roles via `setObjectName("<Role>")`. Variation rides on
 **Qt dynamic properties + `polish/unpolish`**, never on sibling roles —

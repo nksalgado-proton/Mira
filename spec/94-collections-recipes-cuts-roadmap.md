@@ -66,7 +66,8 @@ constructions); both `NewRecipeDialog` launch sites (Cut + Collection) pass
 `CascadingTreeMenu` against the gateway facade — `tree_for_event` returns
 GLOBAL ∪ BOUND-to-E per spec/93 §6.
 
-## Phase 2 — Resolve + pin (make definitions real, event-scope)  *(M–L)*
+## Phase 2 — Resolve + pin (make definitions real, event-scope)
+*(**complete** 2026-06-21, 5 commits on `main`, `verify.bat` green)*
 
 - Complete the live **set-algebra resolver** (spec/81 §2) over operands + the
   filters available today.
@@ -75,6 +76,20 @@ GLOBAL ∪ BOUND-to-E per spec/93 §6.
 
 **Exit:** define → resolve live → pin into a real event Cut end-to-end, with the
 existing session / play / export still doing the back half.
+
+**Landed:** `EventGateway` accepts a `collections_library_factory` (built by
+`Gateway.open_event` from the file-based Collection library). The factory is
+invoked LAZILY on first operand lookup that misses event.db; the snapshot is
+cached on the EventGateway for the lifetime of one `open_event()`. The
+resolver's `_operand_dc`, the Recipe strict-walk, the recursive
+`_recipe_dc_expr_by_ref`, and `dc_probe` all fall through to the library;
+`dc_operand_inventory` returns the spec/93 §6 load set (base + bound DCs +
+global Collections + Cuts) with bound winning on id collisions. The pin
+path threads the same fallback through `CutSession._draft_expr_filters` and
+`create_cut` auto-infers `source_dc_kind`: id in event.db → `'event'`; id in
+the library → `'user'` (the value's semantic shifted in Phase 1b — no DDL
+change). Freeze invariant holds across edit/rename/delete of the source
+file; the Cut's `expr_snapshot_json` + members are the authoritative record.
 
 ## Phase 3 — The Cut construction session (replace the legacy back half)  *(L)*
 

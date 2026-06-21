@@ -1114,12 +1114,19 @@ class Gateway:
         load set). Returns a callable that builds ``(by_id, by_name)``
         dicts of operand payloads; the EventGateway invokes it lazily
         and caches the result for the lifetime of one ``open_event()``
-        (spec/94 Phase 2)."""
-        library = self.collections_library
-        if library is None:
-            return None
+        (spec/94 Phase 2).
+
+        The factory itself defers the ``collections_library`` access
+        until first call so opening an event for a read-only surface
+        (e.g. the events-list card render) doesn't force the lazy
+        user_store + dual-home migration just to build a snapshot the
+        caller will never read."""
+        umbrella = self
 
         def _factory():
+            library = umbrella.collections_library
+            if library is None:
+                return {}, {}
             by_id: Dict[str, dict] = {}
             by_name: Dict[str, dict] = {}
             for df in library.all_definitions():

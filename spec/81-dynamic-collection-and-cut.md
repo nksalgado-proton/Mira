@@ -1,5 +1,21 @@
 # spec/81 — The Dynamic Collection / Cut model (two nouns, two verbs)
 
+> **Vocabulary (Nelson 2026-06-21):** the nouns are **Collection · Recipe · Cut**.
+> Where this doc says "Dynamic Collection" or "DC", read **Collection** — all new
+> code and every user-facing string use "Collection" only. (The existing
+> `DynamicCollection` model / `dynamic_collection` table keep their internal
+> names; no schema rename.)
+
+> **STORAGE / PLACEMENT REVISED 2026-06-21 by
+> [spec/93](93-recipe-collection-storage-and-placement.md).** §2's
+> "Scope-agnostic — event DCs live in `event.db`, cross-event DCs at the user
+> level" is refined: **definitions are global by default** (the library
+> `mira.db`); only a definition that pins a concrete single-event operand lives
+> in that `event.db`; and the choice is **computed automatically** from the
+> operand closure (spec/93 §4), never user-set. The two-nouns / two-verbs
+> engine here is unchanged — read spec/93 for *where* DCs / Recipes / Cuts live
+> and *how* it is decided.
+
 **Status:** design **agreed** with Nelson 2026-06-16 (design-mode session).
 This is the **canonical reference** for how selections are defined, frozen,
 played, and handed off. It **revises** the three specs that now disagree with

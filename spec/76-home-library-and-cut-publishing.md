@@ -140,6 +140,73 @@ destination (a NAS folder convention) + a small **manifest** (ordered file list,
 titles, day separators, durations) so a media layer can present the Cut as an
 ordered show. Mostly settings + convention over the existing export.
 
+### B.4 Library root — user-defined location, layout, first-run & recovery
+*(Design agreed Nelson 2026-06-21. Precipitated by spec/93's filesystem recipe
+trees, which need a known home alongside the database.)*
+
+**The root is user-defined.** Today `mira/paths.py::user_data_dir()` resolves a
+hidden base (`%LOCALAPPDATA%\Mira`) holding settings, the events index, and
+`mira.db`; per-event `event.db` lives elsewhere. v1 makes a single **library
+root** the base of *everything*, and lets the user choose where it sits (local
+disk or NAS) — the seam already exists (the `MIRA_DATA_DIR` override + invariant
+#2); this turns it into a first-class choice.
+
+**Layout — machinery hidden, user content visible:**
+
+```
+<library_root>/                 the user picks this
+  .mira/                        hidden machinery (dot-dir + Windows hidden+system attr)
+    mira.db                     the user store (moved out of AppData)
+    settings.json · events index
+    writer.lock                 the §A single-writer lock now lives HERE
+    logs/ · cross-event caches
+  Collections/                  spec/93 — DC JSON trees (user-facing)
+  Recipes/                      spec/93 — Recipe JSON trees (user-facing)
+  <event folders>/              each with its own event.db + media (user-facing)
+```
+
+The `.mira/` dot-folder follows the convention already used per-event
+(`.cache/`), so it is not a new idea to learn. Hidden ≠ excluded from a copy:
+`.mira/` is *inside* the root, so relocating or re-mounting the root moves the
+database, the recipes, and the events **as one unit** — the portability the NAS
+model needs. *(This refines §A.1: the lock file is `<library_root>/.mira/writer.lock`,
+not a root-level `.mira-writer.lock`.)*
+
+**The bootstrap pointer is the only thing outside the root.** "Where is the
+library?" cannot live inside the library (`mira.db` is in there). One tiny config
+stays in the OS location (`%LOCALAPPDATA%\Mira\config.json` / `~/.config/mira`)
+holding just `{ "library_root": "…" }`. Resolution order: `MIRA_DATA_DIR` env →
+the pointer → else first-run. Everything durable about the library — including
+*where its events are* — lives in `.mira/`, **not** in this disposable pointer.
+
+**First-run — two doors:**
+- **Create a new library** → pick an empty location; scaffold `.mira/` +
+  `Collections/` + `Recipes/`; write the pointer.
+- **Open an existing library** → browse to a root; if `<root>/.mira/mira.db`
+  exists, re-point to it and write the pointer.
+
+**Reinstall / OS-wipe recovery falls out of the second door.** A Windows reinstall
+(or a clean app reinstall) wipes only the bootstrap pointer; the library on D: or
+the NAS is intact, and `.mira/` still holds the DB, settings, and the events
+location. Recovery is: install Mira → **Open existing library** → browse to the
+root the user chose and remembers → everything reconnects in one step. The
+durable memory is always *inside the library*; the OS pointer is a convenience.
+
+**Events live under the root, with relative paths.** Storing event locations
+*relative to `library_root`* (in the events index) is what makes the library
+movable — a new drive letter (D: → E:) or a NAS re-mount just resolves. This also
+collapses recovery to a **single** question (the root) instead of two. The
+power-user option of events on a *separate* media drive is supported by recording
+that location **inside `.mira/`** (so the user never re-supplies it after a
+wipe); the only time a second prompt appears is the genuine edge case where the
+recorded media path no longer resolves — then "locate your events," verify,
+remember.
+
+**Migration.** Existing installs do a one-shot move of the current
+`%LOCALAPPDATA%\Mira` contents into the chosen root's `.mira/`, then write the
+pointer — the same shape as the existing `migrate_legacy_user_data()`, so there
+is a proven, idempotent, non-destructive pattern to follow.
+
 ---
 
 ## §C. Post-v1 (recorded, not built before freeze)

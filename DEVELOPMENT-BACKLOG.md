@@ -139,3 +139,53 @@ uniform across the events list. Smallest item on the list — good warm-up.
   the local/global line sit?
 - **Network exceptions:** B5 (maps) may want tile data — confirm whether any
   allow-listed network use is acceptable, or strictly offline assets only.
+
+---
+
+## Design-session notes (2026 light/layout pass — Nelson + Claude)
+
+Captured during the post-spec/92 design pass. Apply when the relevant surface is
+worked on.
+
+- **Light-theme contrast (done on Surface 01):** `line` #e6e9f0 → #d3d9e3 and
+  `card2` #f5f7fb → #e9edf4 in `palette.py` light. Verify the same applies cleanly
+  to every other light surface.
+- **No floating elements — group everything (THE STANDARD, S–M each):** every
+  main surface follows Surface 01's structure — a full-width `SurfaceHeaderRail`
+  (`[phase="home"]` accent on overview surfaces) under the title bar, then
+  content inside bordered bands using the generic **`#SurfaceBand`** role
+  (transparent fill, 1px `{line}`, xl radius; `#CrossEventBand`/`#EventsBand`
+  share it), nothing floating loose, with a little breathing room between bands.
+  DONE: Surface 01 (Events), Phases (top band = header/meta/summary, bottom band
+  = the 2x2 phase cards, cards tightened to minHeight 210 + smaller donuts),
+  Days List (rail + two bands; capture-spark redesign), Days Grid (rail + 3-line
+  header band [day-nav·progress / decide-verbs·flow-actions / size-slider] +
+  grid band with the state legend folded inside the same border).
+  TODO: Picker, Editor, Share/Cuts, dialogs. Eventually fold
+  `#CrossEventBand`/`#EventsBand` into `#SurfaceBand` (tidy-up).
+- **Back button in the shared title bar (THE STANDARD):** Back lives in the
+  `TitleBar` next to the theme toggle (`TitleBar.back_button`), same place on
+  every surface. The host (`MainWindow._sync_titlebar_back` /
+  `_on_titlebar_back`) shows it only for pages with `uses_titlebar_back = True`
+  and routes its click to that page's existing `back_requested`. Migrating a
+  surface = set `uses_titlebar_back = True` + delete its in-page Back button (+
+  re-check any meta/indent that assumed the back button's width). DONE: Phases,
+  Days List, Days Grid (Days Grid's Back is mode-aware — it closes an open
+  cluster first — so MainWindow._on_titlebar_back now prefers a page's optional
+  `on_titlebar_back()` handler over the raw `back_requested` signal).
+  TODO: Picker, Editor, Share/Cuts.
+- **Button-row height parity (DONE):** Primary vertical padding 11px → 9px so it
+  matches Ghost's effective height (8px + 1px border); mixed Primary/Ghost rows
+  now align and Primary is a touch shorter (vertical space is at a premium).
+  Colour hierarchy kept (filled = primary action, outlined = secondary).
+- **QSS tidy (host agent):** the Stage-4 merge left duplicate `#Primary` blocks +
+  a stray `#PrimaryAction` in redesign.qss — dedupe.
+- **LANDMINE — blanket `QWidget { background-color: {window} }` (redesign.qss
+  line ~28):** a legacy rule that paints EVERY plain container widget the window
+  grey, forcing per-widget transparent overrides all over (it's why event-tile
+  content had to be tagged `#TilePane`, and why labels needed the `QLabel`
+  transparent rule). The right fix is to scope the page background to
+  `#RedesignRoot` only and let plain containers be transparent by default, then
+  remove the blanket rule — but that touches every surface, so it needs a
+  dedicated render-verified pass. Do NOT fold into unrelated work. (Flagged
+  2026 during the event-tile rebuild.)

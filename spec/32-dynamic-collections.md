@@ -1,5 +1,19 @@
 # spec/32 — Dynamic Collections & Exploration App
 
+> **Vocabulary (Nelson 2026-06-21):** the nouns are **Collection · Recipe · Cut**.
+> Where this doc says "Dynamic Collection" or "DC", read **Collection** — all new
+> code and every user-facing string use "Collection" only. (The existing
+> `DynamicCollection` model / `dynamic_collection` table keep their internal
+> names; no schema rename.)
+
+> **STORAGE / PLACEMENT REVISED 2026-06-21 by
+> [spec/93](93-recipe-collection-storage-and-placement.md).** Where saved DCs
+> live (this doc's `saved_filter` / `global_items` user-level home) is now
+> governed by spec/93: definitions are **global by default** (library),
+> event-bound only when they pin a concrete single-event operand, and placement
+> is **computed automatically**, never user-chosen. The query dimensions in §2
+> are unchanged and still apply.
+
 > **REVISED 2026-06-16 by [spec/81](81-dynamic-collection-and-cut.md).** The
 > **Dynamic Collection (DC)** described here is now the **canonical live-query
 > noun** of the whole app — generalised by spec/81 to **set algebra over

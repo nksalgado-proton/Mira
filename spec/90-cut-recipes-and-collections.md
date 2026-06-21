@@ -1,5 +1,20 @@
 # spec/90 — Cut Recipes and cross-event Collections
 
+> **Vocabulary (Nelson 2026-06-21):** the nouns are **Collection · Recipe · Cut**.
+> Where this doc says "Dynamic Collection" or "DC", read **Collection** — all new
+> code and every user-facing string use "Collection" only. (The existing
+> `DynamicCollection` model / `dynamic_collection` table keep their internal
+> names; no schema rename.)
+
+> **STORAGE / PLACEMENT GOVERNED BY
+> [spec/93](93-recipe-collection-storage-and-placement.md) (2026-06-21).**
+> spec/90 says the Recipe is "persisted at the library level, applicable across
+> events"; spec/93 details exactly where every DC / Recipe / Cut lives and the
+> **automatic-placement** rule that decides it — global by default, bound only
+> when a concrete single-event operand is pinned, dishes living with their bytes
+> — plus the load contract (GLOBAL ∪ current-event). The dialog grammar and the
+> five-section model here are unchanged.
+
 **Status:** design **agreed** with Nelson 2026-06-20 (design-mode session). This
 doc consolidates the conversation that started from a small symptom — *"can I
 make a #short Cut from #long with #best_wildlife and #best_landscapes pre-picked?"*

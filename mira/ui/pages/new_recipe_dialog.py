@@ -1586,6 +1586,9 @@ class NewRecipeDialog(QDialog):
             ["OperandOption"], Tuple[list, dict]]] = None,
         classify_placement: Optional[Callable[[dict], Placement]] = None,
         event_name_for_id: Optional[Callable[[str], str]] = None,
+        recipes_tree_provider: Optional[Callable[[], Any]] = None,
+        recipe_resolver_by_ref: Optional[
+            Callable[[Any], Optional[Any]]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1619,6 +1622,13 @@ class NewRecipeDialog(QDialog):
         # Last classifier output — read by the badge widget + by the
         # migration-note label that fires when the placement flips.
         self._last_placement: Optional[Placement] = None
+        # spec/94 Phase 1b — cascading folder menu for Load Recipe.
+        # ``recipes_tree_provider`` returns a TreeNode mirroring the
+        # file tree; ``recipe_resolver_by_ref`` resolves a chosen
+        # DefinitionRef back to a um.Recipe-shaped object so the
+        # existing :meth:`_apply_recipe` path can replay it.
+        self._recipes_tree_provider = recipes_tree_provider
+        self._recipe_resolver_by_ref = recipe_resolver_by_ref
         # Tracks which picker is "active" for a save_as_dc click:
         # ("source", None) for the source picker, ("rule_predicate", row)
         # for a rule row's predicate picker. Read inside
@@ -3223,10 +3233,18 @@ class NewRecipeDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _on_load_recipe_clicked(self) -> None:
-        """Header Load Recipe… — opens the recipe picker over
-        :class:`RecipeStore`. The picker filters to this dialog's flavour
-        by default; a checkbox flips it to the cross-flavour view per
-        spec/90 §5.5."""
+        """Header Load Recipe… — opens the recipe picker.
+
+        When the host wires :attr:`_recipes_tree_provider` (spec/94
+        Phase 1b), the picker is the :class:`CascadingTreeMenu`
+        mirroring the user's ``<library_root>/Recipes/`` folder tree
+        — the surface spec/93 §4 / §9 prescribed. Otherwise falls
+        back to the flat list dialog (test harnesses + legacy
+        callers without a Gateway-provided tree)."""
+        if self._recipes_tree_provider is not None and \
+                self._recipe_resolver_by_ref is not None:
+            self._open_recipe_cascading_menu()
+            return
         if self._recipe_store is None:
             return
         store = self._recipe_store
@@ -3239,6 +3257,44 @@ class NewRecipeDialog(QDialog):
             recipes_for=recipes_for, flavour=flavour, parent=self)
         dlg.recipe_chosen.connect(self._apply_recipe)
         dlg.exec()
+
+    def _open_recipe_cascading_menu(self) -> None:
+        """Show the :class:`CascadingTreeMenu` rooted at the file
+        library's tree. The menu pops up under the Load Recipe button
+        so it reads as a continuation of the user's gesture."""
+        from mira.ui.base.cascading_tree_menu import CascadingTreeMenu
+        try:
+            tree = self._recipes_tree_provider()
+        except Exception as exc:                          # noqa: BLE001
+            log.warning("recipes_tree_provider raised: %s", exc)
+            return
+        if tree is None:
+            return
+        menu = CascadingTreeMenu(tree, title=tr("Load Recipe"), parent=self)
+        menu.definition_picked.connect(self._on_recipe_picked_from_tree)
+        # Pop under the Load Recipe button so the menu reads as a
+        # cascading continuation of the click; fall back to the cursor
+        # when the button reference isn't around (defensive).
+        anchor = getattr(self, "_load_btn", None)
+        if anchor is not None:
+            pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
+        else:
+            pos = self.mapToGlobal(self.rect().center())
+        menu.exec(pos)
+
+    def _on_recipe_picked_from_tree(self, ref) -> None:
+        """Resolve a :class:`DefinitionRef` chosen via the cascading
+        menu back to a Recipe-shaped object and apply it."""
+        if self._recipe_resolver_by_ref is None:
+            return
+        try:
+            recipe = self._recipe_resolver_by_ref(ref)
+        except Exception as exc:                          # noqa: BLE001
+            log.warning("recipe_resolver_by_ref raised: %s", exc)
+            return
+        if recipe is None:
+            return
+        self._apply_recipe(recipe)
 
     # ------------------------------------------------------------------ #
     # Load DC…  (spec/90 §5 — items-layer mirror of Load Recipe)

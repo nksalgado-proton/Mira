@@ -547,7 +547,12 @@ class EventsPage(QWidget):
             selected_source=pre_source,
         )
 
-        recipe_store = RecipeStore(library_gateway.user_store)
+        # spec/94 Phase 1b — wire RecipeStore through the Gateway
+        # factory so Save lands in the JSON tree.
+        if hasattr(self.gateway, "recipe_store"):
+            recipe_store = self.gateway.recipe_store()
+        else:
+            recipe_store = RecipeStore(library_gateway.user_store)
 
         def _dc_creator(name: str, expr: list, filters: dict) -> OperandOption:
             """spec/90 §5 — Save as DC for the cross-event Collection
@@ -589,6 +594,51 @@ class EventsPage(QWidget):
                 dict(library_gateway.dc_filters(sf)),
             )
 
+        # spec/94 Phase 1b — placement classifier + event-name lookup
+        # drive the binding badge live as the user edits.
+        def _dc_composition_by_ref(operand):
+            dc_id = operand.get("id") if isinstance(operand, dict) else None
+            tag = operand.get("tag") if isinstance(operand, dict) else None
+            sf = None
+            if dc_id:
+                sf = library_gateway.dynamic_collection(dc_id)
+            if sf is None and tag:
+                sf = library_gateway.dc_by_tag(tag)
+            if sf is None:
+                return None
+            return {
+                "source": library_gateway.dc_expr(sf),
+                "filters": library_gateway.dc_filters(sf),
+            }
+
+        def _cut_event_by_ref(_operand):
+            # The cross-event Collection dialog's operand pool today
+            # doesn't surface event-scope Cuts (those live in event.db,
+            # not in mira.db's cross-event inventory). Returning None
+            # means cross-event references stay non-binding for the
+            # classifier — matching spec/93 §5.
+            return None
+
+        def _classify(composition):
+            from core.placement_classifier import (
+                OperandClosureContext,
+                classify_placement,
+            )
+            return classify_placement(
+                composition,
+                OperandClosureContext(
+                    dc_composition_by_ref=_dc_composition_by_ref,
+                    cut_event_by_ref=_cut_event_by_ref,
+                ),
+            )
+
+        def _event_name_for_id(event_id):
+            try:
+                entry = self.gateway.index.get(event_id)
+            except Exception:                              # noqa: BLE001
+                return ""
+            return (entry or {}).get("name") or ""
+
         dlg = NewRecipeDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
@@ -600,6 +650,8 @@ class EventsPage(QWidget):
             recipe_store=recipe_store,
             dc_creator=_dc_creator,
             dc_loader=_dc_loader,
+            classify_placement=_classify,
+            event_name_for_id=_event_name_for_id,
             parent=self,
         )
 

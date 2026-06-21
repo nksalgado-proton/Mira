@@ -1345,8 +1345,23 @@ class ShareCutsPage(QWidget):
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or
         ``None`` when the host gateway carries no user store (smokes /
-        unit tests without persistence)."""
-        us = getattr(self.gateway, "user_store", None)
+        unit tests without persistence).
+
+        spec/94 Phase 1b — prefer the Gateway factory so the store is
+        wired to the JSON-tree library. Falls back to the bare-SQL
+        constructor when the umbrella gateway doesn't expose the
+        factory (older test harnesses)."""
+        gw = self.gateway
+        if gw is None:
+            return None
+        factory = getattr(gw, "recipe_store", None)
+        if callable(factory):
+            try:
+                return factory()
+            except Exception:                          # noqa: BLE001
+                log.exception("recipe_store factory failed")
+                return None
+        us = getattr(gw, "user_store", None)
         if us is None:
             return None
         try:
@@ -1383,6 +1398,10 @@ class ShareCutsPage(QWidget):
             recipe_store=self._recipe_store(),
             dc_creator=self._make_dc_creator(),
             dc_loader=self._make_dc_loader(),
+            classify_placement=self._make_placement_classifier(),
+            event_name_for_id=self._make_event_name_lookup(),
+            recipes_tree_provider=self._make_recipes_tree_provider(),
+            recipe_resolver_by_ref=self._make_recipe_resolver_by_ref(),
             parent=self,
         )
         if heading_text:
@@ -1447,6 +1466,153 @@ class ShareCutsPage(QWidget):
             )
 
         return dc_creator
+
+    # ── spec/94 Phase 1b — placement classifier + event-name lookup ──
+
+    def _make_placement_classifier(self):
+        """Build the closure NewRecipeDialog calls on every probe to
+        drive the binding badge + the spec/93 §5 placement rule.
+
+        Walks the composition's operand closure via the gateway:
+        :class:`EventGateway` resolves event-scope DC compositions for
+        nested recursion; the Cut store gives us each Cut's owning
+        event when it's single-event. Cross-event Cuts return ``None``
+        for ``cut_event_by_ref`` so they don't introduce a binding.
+        """
+        eg = self._eg
+        umbrella = self.gateway
+
+        def _dc_composition_by_ref(operand):
+            dc_id = operand.get("id") if isinstance(operand, dict) else None
+            tag = operand.get("tag") if isinstance(operand, dict) else None
+            # Event-scope DC (the one this dialog typically pins).
+            if eg is not None:
+                hit = (eg.dynamic_collection(dc_id) if dc_id else None) \
+                    or (eg.dc_by_tag(tag) if tag else None)
+                if hit is not None:
+                    return {
+                        "source": eg.dc_expr(hit),
+                        "filters": eg.dc_filters(hit),
+                    }
+            # Global / cross-event DC — resolved via the file-tree
+            # library_gateway when the umbrella exposes the factory.
+            if umbrella is not None and hasattr(umbrella, "library_gateway"):
+                try:
+                    lg = umbrella.library_gateway()
+                    sf = (lg.dynamic_collection(dc_id) if dc_id else None) \
+                        or (lg.dc_by_tag(tag) if tag else None)
+                    if sf is not None:
+                        return {
+                            "source": lg.dc_expr(sf),
+                            "filters": lg.dc_filters(sf),
+                        }
+                except Exception:                       # noqa: BLE001
+                    pass
+            return None
+
+        def _cut_event_by_ref(operand):
+            cut_id = operand.get("id") if isinstance(operand, dict) else None
+            tag = operand.get("tag") if isinstance(operand, dict) else None
+            if eg is None:
+                return None
+            try:
+                cut = (eg.cut(cut_id) if cut_id else None) \
+                    or (eg.cut_by_tag(tag) if tag else None)
+            except Exception:                           # noqa: BLE001
+                return None
+            if cut is None:
+                return None
+            # A cross-event Cut (no source_dc_kind / 'user' kind) doesn't
+            # introduce a single-event binding (spec/93 §5).
+            kind = getattr(cut, "source_dc_kind", None)
+            if kind == "user":
+                return None
+            return getattr(eg, "event_id", "") or ""
+
+        def _classify(composition):
+            from core.placement_classifier import (
+                OperandClosureContext,
+                classify_placement,
+            )
+            return classify_placement(
+                composition,
+                OperandClosureContext(
+                    dc_composition_by_ref=_dc_composition_by_ref,
+                    cut_event_by_ref=_cut_event_by_ref,
+                ),
+            )
+
+        return _classify
+
+    def _make_recipes_tree_provider(self):
+        """Return the callable that hands NewRecipeDialog the file
+        library's TreeNode (spec/93 §4 / §9). Mounting the
+        :class:`CascadingTreeMenu` against this provider replaces the
+        flat ``_LoadRecipeDialog`` for users with a Gateway-backed
+        library."""
+        umbrella = self.gateway
+        if umbrella is None or not hasattr(umbrella, "recipes_gateway"):
+            return None
+        eg = self._eg
+        event_id = getattr(eg, "event_id", "") if eg is not None else ""
+
+        def _provider():
+            try:
+                return umbrella.recipes_gateway.tree_for_event(event_id)
+            except Exception:                           # noqa: BLE001
+                return None
+
+        return _provider
+
+    def _make_recipe_resolver_by_ref(self):
+        """Resolve a :class:`DefinitionRef` chosen via the cascading
+        menu back to a Recipe-shaped object the dialog can apply."""
+        umbrella = self.gateway
+        if umbrella is None or not hasattr(umbrella, "recipes_gateway"):
+            return None
+        eg = self._eg
+        event_id = getattr(eg, "event_id", "") if eg is not None else ""
+
+        def _resolve(ref):
+            try:
+                resolution = umbrella.recipes_gateway.resolve(
+                    ref, event_id=event_id)
+            except Exception:                           # noqa: BLE001
+                return None
+            if resolution is None:
+                return None
+            # Project to a um.Recipe-shaped dataclass so the dialog's
+            # existing :meth:`_apply_recipe` flow takes it as-is.
+            from mira.shared.recipe_store import RecipeStore
+            from core.definition_files import DefinitionFile
+            df = DefinitionFile(
+                id=resolution.id,
+                name=resolution.name,
+                kind="recipe",
+                payload=dict(resolution.composition or {}),
+            )
+            return RecipeStore._df_to_recipe(df)
+
+        return _resolve
+
+    def _make_event_name_lookup(self):
+        """Resolve an ``event_id`` to its human-readable name via the
+        umbrella gateway's index. Returns ``""`` when the event isn't
+        in the index (the binding badge falls back to an id stub)."""
+        umbrella = self.gateway
+        if umbrella is None:
+            return None
+
+        def _lookup(event_id):
+            try:
+                entry = umbrella.index.get(event_id)
+            except Exception:                           # noqa: BLE001
+                return ""
+            if not entry:
+                return ""
+            return entry.get("name") or ""
+
+        return _lookup
 
     def _save_dc(self, name: str, info: dict) -> None:
         """Save the dialog's current source as a Dynamic Collection

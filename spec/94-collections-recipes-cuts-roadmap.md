@@ -188,15 +188,79 @@ The dialog's hardware / EXIF / face groups light up by flipping
 to the full `build_cross_event_catalogue` / `show_hardware=True`. No
 new dialog work; just the gate.
 
-## Phase 5 — Publishing + multi-device (spec/76 §A / §B)  *(M)*
+## Phase 5 — Publishing + multi-device (spec/76 §A / §B)  *(complete 2026-06-21, 4 commits on `main`, `verify.bat` green)*
 
 - Harden the **single-writer lock** + **read-only library mode** (§B.1) for the
   NAS / multi-PC model.
 - **Cut publish target + manifest** (§B.3) for the home-media-server / TV
   handoff; NAS validation (§B.2).
 
-**Exit:** the library lives on a NAS, one writer; Cuts publish as files a TV
-media server streams.
+**Exit met (code-side):** the writer lock survives mid-session takeover with a
+clean drop to read-only; the read-only defensive net spans both EventGateway
+and LibraryGateway; the first-run dialog probes the chosen root for SMB
+suitability; cross-event + event-scope Cuts publish to a stable slot under
+``<library_publish_root>/`` with a manifest a TV media server can read. The
+manual real-share DoD (Nelson runs the verified path against the actual NAS)
+remains his to sign off; the hooks are in place.
+
+**Landed:**
+
+- **(5a)** [`62cbee5`](https://github.com/nksalgado-proton/Mira/commit/62cbee5)
+  — `core.library_lock.acquire` post-acquire verify catches the SMB/NFS race
+  where two writers both pass the staleness check; the loser re-reads and
+  returns ``acquired=False`` with the winner's identity. `mira/ui/app`
+  heartbeat-loss handler — `_handle_lock_lost` flips the session to
+  read-only + refreshes banners + shows a "Editing taken over" modal when
+  `refresh()` fails (extracted from the closure for testability).
+  `LibraryGateway._guard_read_only` raises `ReadOnlyLibraryError` inside the
+  txn on every cross-event mutator (Collections CRUD, gear-profile toggles,
+  cross-event Cut CRUD + members + exported-stamp). `_skip_if_read_only` on
+  the maintenance methods (`sync_event`, `drop_event`, `reconcile_all`) so
+  startup + event-close don't crash in read-only sessions. New
+  `ReadOnlyBanner.refresh()` public method for the runtime banner flip.
+  Tests: post-acquire verify race detection, NAS-shaped two-writer
+  alternation, LibraryGateway mutators refuse under read-only, maintenance
+  methods skip, new `tests/test_lock_lost_handler.py` for the handler flow.
+- **(5b)** [`7850e6c`](https://github.com/nksalgado-proton/Mira/commit/7850e6c)
+  — `mira/ui/read_only.py` is the shared seam: `disable_if_read_only(target)`
+  greys QWidget OR QAction with `read_only_hint()` tooltip; the helper is the
+  one place every mutation control opts in from. Sweep over high-traffic
+  surfaces: NewRecipeDialog (Save as Collection / Save as Recipe in
+  `_refresh_save_button_state`), LibraryPage (`+ New Cut` header + per-row
+  Export + kebab Delete), EventHeaderDialog (Save event in
+  `_refresh_save_enabled`), DaysGridPage (`+ Start a new pass` + `↑ Export
+  now`), CutDetailPage (`📤 Export all`). Tests: helper across both target
+  types, hint fallback, bulk refresh, LibraryPage `+ New Cut` greyed at
+  construction.
+- **(5c)** [`8b53dd3`](https://github.com/nksalgado-proton/Mira/commit/8b53dd3)
+  — `core.library_root.validate_root(path)` probes reachability + writable +
+  atomic write-then-rename round-trip + read-back round-trip (catches
+  over-eager SMB caching) inside `<path>/.mira/`. Soft warnings for Windows
+  mapped network drives (`GetDriveTypeW`=DRIVE_REMOTE — works today but
+  breaks the multi-PC drive-letter story) and a positive UNC note. First-run
+  dialog (Create + Open doors) calls the helper BEFORE writing the bootstrap
+  pointer; fatal failures show a critical dialog, soft warnings prompt to
+  proceed, the empty `.mira/` left by the probe is cleaned up if the user
+  declines. Real-share manual pass is Nelson's DoD step; the hooks are in
+  place.
+- **(5d)** [`e339ca1`](https://github.com/nksalgado-proton/Mira/commit/e339ca1)
+  — `mira/shared/cut_publish.py` adds `publish_cut` (event-scope) +
+  `publish_cross_event_cut` (cross-event) wrappers over the existing
+  export pipelines. Publish slot is fixed (`<publish_root>/Events/<uuid>/<tag>/`
+  for event-scope; `<publish_root>/Cross-event/<tag>/` for cross-event) and
+  RE-PUBLISH OVERWRITES — the slot is the live TV handoff, not a snapshot
+  history. Manifest v1 sidecar (`manifest.json`) carries: schema_version,
+  kind, cut_id, tag, published_at, source.{event_id, library_root}, frames[
+  {seq, file, kind, title, day_number, media, duration_s}], audio[{seq,
+  file}]. Videos skip `duration_s` so the media server uses the file's
+  native runtime. New `Settings.library_publish_root` (user tier; empty →
+  `<library_root>/Published/`). UI: LibraryPage Cut-row kebab Publish action
+  + CutDetailPage `📡 Publish` button + ShareCutsPage `_on_publish_cut`
+  wiring. Tests pin publish_root resolution, manifest classification (opener
+  / day-separator / photo / video / audio / self-skip), publish-target
+  prepare semantics, end-to-end cross-event publish, re-publish overwrite.
+  Richer manifest fields (transition hints, music handoff) stay out per
+  §C.
 
 ---
 

@@ -634,14 +634,12 @@ class EventsPage(QWidget):
         dlg = NewRecipeDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
-            # spec/94 Phase 4a — the gear / EXIF / face filters are
-            # gated on the indexing track (spec/94 — Cross-cutting
-            # track). The Collection face renders Scope + Source +
-            # the today-only filters (Style, Media, Stars, ColorLabel,
-            # Flag, event-level qualifiers, Capture date, Country,
-            # City) + Rules + Otherwise. Flip back to True once the
-            # indexing track lands and the dimensions have a picker.
-            show_hardware=False,
+            # spec/94 Phase 4b (2026-06-21) — the gear / EXIF
+            # filters are now wired end-to-end. The Collection face
+            # renders Scope + Source + the full spec/32 §2 catalogue
+            # minus faces (spec/91 is its own track; ``show_faces``
+            # stays False until it lands).
+            show_hardware=True,
             inventory_scope=INVENTORY_LIBRARY,
             ctx=ctx,
             pool_probe=lambda expr: library_gateway.dc_probe(expr),

@@ -148,41 +148,37 @@ def test_build_catalogue_subset_skips_unknown_ids(qapp):
 # --------------------------------------------------------------------------- #
 
 
-def test_indexing_gated_dim_ids_match_gear_exif_groups(qapp):
-    """The Phase 4a gate is the union of Camera & lens + Settings dims
-    (Faces joins when the catalogue carries it). Keeping the constant
-    in lockstep with the group definitions prevents drift if a new
-    gear / EXIF dim lands."""
+def test_indexing_gated_dim_ids_is_empty_after_phase4b_lift(qapp):
+    """spec/94 Phase 4b lifted the gate (2026-06-21) — the projection
+    + resolver were already capable; the startup reconcile (4b-i)
+    closed the reliability gap. ``INDEXING_GATED_DIM_IDS`` survives
+    as an empty tuple, the stable seam where a future face dim
+    (spec/91) plugs back in."""
+    assert INDEXING_GATED_DIM_IDS == ()
+
+
+def test_phase4a_catalogue_now_includes_every_full_dim(qapp):
+    """Post-Phase-4b, the historical ``phase4a`` builder returns the
+    full catalogue (the gate is empty). The function name is kept as
+    a stable seam — re-introducing a face-only gate later is just a
+    matter of populating :data:`INDEXING_GATED_DIM_IDS`."""
     full = build_cross_event_catalogue(_StubHost())
-    expected = {
-        dim_id for dim_id, dim in full.items()
-        if dim.group in (GROUP_CAMERA_LENS, GROUP_SETTINGS)
-    }
-    assert set(INDEXING_GATED_DIM_IDS) == expected
-
-
-def test_phase4a_catalogue_excludes_every_indexing_gated_dim(qapp):
-    """The Phase 4a builder hides gear / EXIF dims; only Curatorial /
-    Event / When & where survive (the brief: "the cross-event filter UI
-    must not offer them yet")."""
     cat = build_cross_event_phase4a_catalogue(_StubHost())
-    for gated in INDEXING_GATED_DIM_IDS:
-        assert gated not in cat, \
-            f"{gated} leaked into the Phase 4a catalogue"
+    assert set(cat.keys()) == set(full.keys())
 
 
 def test_phase4a_catalogue_keeps_curatorial_event_and_when_where(qapp):
-    """The Phase 4a Collection face still gets Style, Media, Stars,
-    Color label, Flag, the spec/86 event-level qualifiers, Capture
-    date, Country, City — everything that doesn't require the indexing
-    track."""
+    """The Collection face's mandatory dims (Curatorial / Event /
+    When & where) still ship — defensive against a future gate
+    accidentally hiding them too."""
     cat = build_cross_event_phase4a_catalogue(_StubHost())
-    assert set(cat.keys()) == {
+    expected_always_on = {
         "styles", "media_type", "stars", "color_labels", "flag",
         "event_type", "event_subtype", "scope",
         "participants", "event_date",
         "capture_date", "country_codes", "cities",
     }
+    assert expected_always_on <= set(cat.keys())
 
 
 def test_phase4a_catalogue_preserves_display_order(qapp):

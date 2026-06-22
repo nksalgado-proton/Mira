@@ -394,21 +394,37 @@ def test_rule_predicate_picker_shows_faces_when_hardware_and_people(qapp):
 
 
 def test_dialog_opens_rule_predicate_picker_with_faces(qapp):
-    dlg = _collection_dialog(qapp)
+    """spec/94 Phase 4b (2026-06-21) decoupled ``show_faces`` from
+    ``show_hardware``. Faces light up only when the caller explicitly
+    opts in (a future spec/91 caller); the test demonstrates the
+    flag by passing ``show_faces=True``."""
+    dlg = _collection_dialog(qapp, show_faces=True)
     dlg._on_add_rule_clicked()
     row = dlg._rule_rows[0]
-    # The dialog routes through _open_rule_predicate_picker; smoke-test
-    # that the popover is created with the right inventory.
     from mira.ui.pages.new_recipe_dialog import _OperandPickerPopover as P
-    # Reach into the picker creation path: call directly.
     dlg._open_rule_predicate_picker(row, anchor=row)
     assert isinstance(dlg._picker_popover, P)
     headers = _section_headers(dlg._picker_popover)
     assert "faces" in headers
 
 
+def test_dialog_collection_face_omits_faces_by_default(qapp):
+    """spec/94 Phase 4b — the Collection face's EXIF/gear filters
+    are wired (``show_hardware=True`` in production), but the face
+    surface stays behind ``show_faces`` (default False) until spec/91
+    lands. So the Collection-face popover doesn't list faces unless
+    the caller opts in."""
+    dlg = _collection_dialog(qapp)  # show_faces defaults to False
+    dlg._on_add_rule_clicked()
+    row = dlg._rule_rows[0]
+    dlg._open_rule_predicate_picker(row, anchor=row)
+    headers = _section_headers(dlg._picker_popover)
+    assert "faces" not in headers
+
+
 def test_dialog_omits_faces_for_cut_face(qapp):
-    """Cut face hides hardware filters; Faces ride hardware."""
+    """Cut face hides hardware filters AND faces — both flags
+    default False on the event-scope Cut face."""
     dlg = _cut_dialog(qapp)
     dlg._on_add_rule_clicked()
     row = dlg._rule_rows[0]

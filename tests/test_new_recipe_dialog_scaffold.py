@@ -197,13 +197,18 @@ def test_metrics_section_renders(qapp):
     assert dlg.findChild(object, "MetricsSection") is not None
 
 
-def test_faces_placeholder_only_when_hardware_visible(qapp):
-    """Faces is a Phase 4c placeholder and rides under the hardware row.
-    A Cut face hides it (no hardware); a Collection face shows it."""
+def test_faces_placeholder_only_when_show_faces_is_true(qapp):
+    """spec/94 Phase 4b (2026-06-21) decoupled the Faces placeholder
+    from ``show_hardware``. A Cut face hides it (both flags False);
+    a Collection face hides it BY DEFAULT (``show_faces=False`` —
+    spec/91 deferred) and reveals it only when the caller explicitly
+    opts in (``show_faces=True`` — a future spec/91 caller)."""
     cut = _cut_dialog(qapp)
     assert not _find_placeholder(cut, "Faces:")
-    collection = _collection_dialog(qapp)
-    assert _find_placeholder(collection, "Faces:")
+    collection_default = _collection_dialog(qapp)
+    assert not _find_placeholder(collection_default, "Faces:")
+    collection_with_faces = _collection_dialog(qapp, show_faces=True)
+    assert _find_placeholder(collection_with_faces, "Faces:")
 
 
 # --------------------------------------------------------------------------- #

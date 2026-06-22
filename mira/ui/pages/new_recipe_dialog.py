@@ -1589,6 +1589,7 @@ class NewRecipeDialog(QDialog):
         recipes_tree_provider: Optional[Callable[[], Any]] = None,
         recipe_resolver_by_ref: Optional[
             Callable[[Any], Optional[Any]]] = None,
+        show_faces: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1603,6 +1604,12 @@ class NewRecipeDialog(QDialog):
         self._flavour = flavour
         self._show_scope = bool(show_scope)
         self._show_hardware = bool(show_hardware)
+        # spec/94 Phase 4b (2026-06-21) — ``show_faces`` decouples
+        # the face-recognition UI from ``show_hardware`` so the
+        # Camera + Lens rows can light up without dragging the
+        # spec/91-deferred face surface with them. Defaults to
+        # False; callers flip True only when the face track lands.
+        self._show_faces = bool(show_faces)
         self._inventory_scope = inventory_scope
         self._ctx = ctx
         self._pool_probe = pool_probe
@@ -2523,7 +2530,12 @@ class NewRecipeDialog(QDialog):
                 v.addLayout(self._build_camera_row())
             if len(self._ctx.available_lenses) >= 2:
                 v.addLayout(self._build_lens_row())
-            v.addWidget(_placeholder(tr("Faces: (Phase 4c)")))
+            # spec/94 Phase 4b — face surface stays behind its own
+            # flag (spec/91 deferred). Callers that flip
+            # ``show_hardware=True`` for the EXIF / gear lift no
+            # longer drag the Faces placeholder along.
+            if self._show_faces:
+                v.addWidget(_placeholder(tr("Faces: (Phase 4c)")))
         return host
 
     def _build_style_row(self) -> QHBoxLayout:
@@ -2717,7 +2729,7 @@ class NewRecipeDialog(QDialog):
             self._ctx.available_pools,
             target=PICKER_TARGET_RULE_PREDICATE,
             people=self._ctx.available_people,
-            show_faces=self._show_hardware,
+            show_faces=self._show_faces,
             parent=self,
         )
         popover.chosen.connect(

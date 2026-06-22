@@ -359,10 +359,12 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
 
     spec/90 Phase 4f swapped the legacy
     :class:`NewCrossEventCutDialog` for the new dialog; spec/94 Phase
-    4a then gated the gear / EXIF / face dimensions off until the
-    indexing track lands. This test pins the resulting Collection-
-    face configuration (show_scope=True, show_hardware=**False** —
-    spec/94 4a, inventory_scope="library")."""
+    4a gated the gear / EXIF / face dimensions off, and Phase 4b
+    (2026-06-21) lifted the EXIF / gear half once the projection
+    reconcile (slice 4b-i) closed the reliability gap. This test
+    pins the resulting Collection-face configuration
+    (show_scope=True, show_hardware=**True** — Phase 4b,
+    show_faces=False — spec/91 deferred, inventory_scope="library")."""
     from mira.gateway.library_gateway import LibraryGateway
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     from mira.ui.pages.events_page import EventsPage
@@ -392,11 +394,13 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     assert len(cut_dialogs) == 1
     dlg = cut_dialogs[0]
     # The dialog opens in the Collection face — Scope visible; spec/94
-    # Phase 4a gates the hardware (gear / EXIF / face) filters until
-    # the indexing track lands.
+    # Phase 4b (2026-06-21) lifted the gear / EXIF gate now that the
+    # projection reconcile is wired. Faces stay deferred (spec/91 is
+    # its own track) — ``show_faces`` defaults False.
     assert dlg._flavour == FLAVOUR_COLLECTION
     assert dlg._show_scope is True
-    assert dlg._show_hardware is False
+    assert dlg._show_hardware is True
+    assert dlg._show_faces is False
     assert dlg._inventory_scope == INVENTORY_LIBRARY
     # The clicked DC pre-seeded the Source.
     assert dlg._source_chips

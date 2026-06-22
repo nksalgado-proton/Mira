@@ -286,30 +286,23 @@ CROSS_EVENT_DIM_IDS: Tuple[str, ...] = (
 EVENT_SCOPE_DIM_IDS: Tuple[str, ...] = ("styles", "media_type")
 
 
-# spec/94 Phase 4a — the gear / EXIF / face dimensions are the
-# "indexing-gated" set: they depend on the cross-cutting metadata
-# indexing + face-recognition track (spec/94 — Cross-cutting track,
-# spec/91), which lands separately. The Phase 4a cross-event UI must
-# not offer them yet, even though the resolver's ``_filter_clauses``
-# is fully capable today — the data lives in the projection, but the
-# UX bet is that we surface it AFTER the index lands and the picker /
-# inventory story is properly designed.
-#
-# The set is defined as the union of the Camera & lens + Settings
-# groups (and Faces when it joins the catalogue). Group-level gating
-# is the cheapest stable seam: when the indexing track lands its UI
-# we flip the flag, not the dim list.
-INDEXING_GATED_DIM_IDS: Tuple[str, ...] = (
-    "camera_ids", "lens_models", "flash",
-    "iso", "aperture", "shutter", "focal",
-)
+# spec/94 Phase 4b lifted the gate (2026-06-21). The Phase 4a gate
+# hid Camera & lens + Settings dims until the indexing track lands;
+# the audit confirmed the resolver's ``_filter_clauses`` and the
+# ``global_items`` projection already speak every dim, and the
+# startup reconcile (slice 4b-i) now keeps the projection current.
+# The constant survives as an empty tuple — the stable seam where a
+# future face dim (spec/91) plugs in. When that dim joins
+# the catalogue, gate it via this tuple; no other call-site change
+# is needed.
+INDEXING_GATED_DIM_IDS: Tuple[str, ...] = ()
 
 
-# spec/94 Phase 4a — the cross-event "power face" until the indexing
-# track lands. Curatorial + Event + When/Where only: Style, Media
-# type, Stars, Color label, Portfolio flag, the spec/86 event-level
-# qualifiers, Capture date, Country, City. No camera, no lens, no
-# exposure triangle, no faces.
+# Historical name preserved for the Phase 4a → 4b transition. Now an
+# alias of the full catalogue's dim list (the gate is empty); kept
+# in the module so existing callers + tests don't break. Whichever
+# dim ids a future face track decides to gate will subtract from
+# this tuple in the same way.
 CROSS_EVENT_PHASE4A_DIM_IDS: Tuple[str, ...] = tuple(
     d for d in CROSS_EVENT_DIM_IDS if d not in INDEXING_GATED_DIM_IDS
 )
@@ -327,12 +320,16 @@ def build_event_scope_catalogue(host: Any) -> Dict[str, FilterDimension]:
 def build_cross_event_phase4a_catalogue(
     host: Any,
 ) -> Dict[str, FilterDimension]:
-    """The cross-event Collection catalogue with the indexing-gated
-    dimensions (gear / EXIF / faces) hidden (spec/94 Phase 4a).
+    """The cross-event Collection catalogue. The Phase 4a gate that
+    hid gear / EXIF dims was lifted in Phase 4b — the resolver's
+    ``_filter_clauses`` and the ``global_items`` projection handle
+    every dim today, and the startup reconcile (slice 4b-i) keeps
+    the projection current.
 
-    Same factory shape as :func:`build_cross_event_catalogue`; the
-    indexing track lifts the gate by flipping callers to the full
-    builder, no dialog change required."""
+    The function name + the ``CROSS_EVENT_PHASE4A_DIM_IDS`` constant
+    are kept as stable seams so existing callers + tests don't move
+    when a face dim (spec/91) eventually joins the catalogue and
+    re-introduces an indexing-gated subset."""
     full = build_cross_event_catalogue(host)
     return {dim_id: full[dim_id] for dim_id in CROSS_EVENT_PHASE4A_DIM_IDS}
 

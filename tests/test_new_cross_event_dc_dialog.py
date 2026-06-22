@@ -42,16 +42,12 @@ _INVENTORIES = CrossEventInventories.from_dict({
 
 def _make_dialog(qapp, *, existing=None, existing_tags=(), probe=None,
                  catalogue_builder=None):
-    """Default to the FULL catalogue so widget-capability tests exercise
-    every facet (camera / lens / iso / aperture / shutter / focal /
-    flash). The production dialog defaults to the Phase 4a gated
-    builder; the gating test below pins that.
-
-    spec/94 Phase 4a — :func:`build_cross_event_phase4a_catalogue` is
-    the production default (hides gear / EXIF / faces). These tests
-    pass ``build_cross_event_catalogue`` to keep the widget wiring
-    covered; the gate is a UI-presentation policy, not a missing
-    facet implementation."""
+    """spec/94 Phase 4b (2026-06-21) — the production
+    ``build_cross_event_phase4a_catalogue`` now returns the full
+    catalogue (the indexing gate is empty). The ``catalogue_builder``
+    override is kept for tests that need a different catalogue
+    shape (e.g. a future face-only gate) but the default path
+    exercises every facet the same way the production dialog does."""
     return NewCrossEventDcDialog(
         inventories=_INVENTORIES,
         dc_probe=probe or (lambda _e, _f: 42),
@@ -320,33 +316,37 @@ def test_color_label_facet(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# spec/94 Phase 4a — production default gates gear / EXIF / face filters
+# spec/94 Phase 4b — gate lifted; production default offers every dim
 # --------------------------------------------------------------------------- #
 
 
-def test_phase4a_default_hides_camera_lens_iso_dimensions(qapp):
-    """The production wiring (``catalogue_builder`` omitted) uses
-    :func:`build_cross_event_phase4a_catalogue`. The gated dims are
-    not in the menu — ``add_filter_dimension`` raises ``KeyError``."""
-    from mira.ui.pages._filter_family import INDEXING_GATED_DIM_IDS
+def test_phase4b_default_exposes_camera_lens_iso_dimensions(qapp):
+    """spec/94 Phase 4b (2026-06-21) — the production wiring
+    (``catalogue_builder`` omitted) now offers the EXIF / gear dims
+    the Phase 4a gate hid. ``INDEXING_GATED_DIM_IDS`` is the empty
+    tuple; ``add_filter_dimension`` works for every dim in the full
+    catalogue."""
     d = NewCrossEventDcDialog(
         inventories=_INVENTORIES,
         dc_probe=lambda _e, _f: 0,
     )
     try:
-        for gated in INDEXING_GATED_DIM_IDS:
-            assert gated not in d._dimensions, \
-                f"{gated} leaked into the production Collection dialog"
-            with pytest.raises(KeyError):
-                d.add_filter_dimension(gated)
+        for dim_id in (
+            "camera_ids", "lens_models", "flash",
+            "iso", "aperture", "shutter", "focal",
+        ):
+            assert dim_id in d._dimensions, \
+                f"{dim_id} missing from the post-4b Collection dialog"
+            # Should not raise — the dim is in the catalogue and the
+            # menu accepts it.
+            d.add_filter_dimension(dim_id)
     finally:
         d.deleteLater()
 
 
-def test_phase4a_default_keeps_curatorial_event_when_where(qapp):
-    """The Phase 4a default still wires Curatorial, Event-level, and
-    When/Where dims — the user composes a Collection over today's
-    filters end-to-end."""
+def test_phase4b_default_keeps_curatorial_event_when_where(qapp):
+    """The Curatorial, Event-level, and When/Where dims still wire
+    through — the lift adds EXIF/gear without changing the rest."""
     d = NewCrossEventDcDialog(
         inventories=_INVENTORIES,
         dc_probe=lambda _e, _f: 0,

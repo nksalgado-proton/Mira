@@ -72,6 +72,7 @@ from mira.ui.shell.sidebar import (
     ENTRY_DASHBOARD,
     ENTRY_FAST_CULLER_STANDALONE,
     ENTRY_HELPERS,
+    ENTRY_LIBRARY,
     ENTRY_NEW_EVENT,
     ENTRY_PHOTO_PROCESSOR,
     ENTRY_PLAN_TEMPLATE,
@@ -178,14 +179,21 @@ class MainWindow(QMainWindow):
         # registered but are intercepted in `_on_entry` and never actually displayed.
         self.events_page = EventsPage(self.gateway)
         self.new_event_page = NewEventPage(self.gateway)
+        # spec/94 Phase 4a-iii — the cross-event home (Cuts +
+        # Collections + Recipes). Replaces the events-page's cross-
+        # event band as the user-facing destination for cross-event
+        # work.
+        from mira.ui.pages.library_page import LibraryPage
+        self.library_page = LibraryPage(self.gateway)
         self.page_stack.add_page(ENTRY_DASHBOARD, self.events_page)
         self.page_stack.add_page(ENTRY_NEW_EVENT, self.new_event_page)
+        self.page_stack.add_page(ENTRY_LIBRARY, self.library_page)
         # Every other ENTRY_* key gets a PlaceholderPage on the stack so the
         # dispatcher's show_page() resolves to *something* for the deferred
         # surfaces. Modal openers (Wizard / Create-from-Photos / Quick Sweep /
         # Picker / Settings) intercept in _on_entry before the page swap.
         for key, label in self._navigation_entries():
-            if key in (ENTRY_DASHBOARD, ENTRY_NEW_EVENT):
+            if key in (ENTRY_DASHBOARD, ENTRY_NEW_EVENT, ENTRY_LIBRARY):
                 continue  # already registered with real pages
             self.page_stack.add_page(key, PlaceholderPage(label))
 
@@ -389,9 +397,15 @@ class MainWindow(QMainWindow):
         self.events_page.new_event_requested.connect(
             lambda: self._on_entry(ENTRY_NEW_EVENT)
         )
-        self.events_page.cross_event_query.connect(
-            lambda q: log.info("cross-event search (stub): %r", q)
-        )
+        # spec/94 Phase 4a-iii — Library page wiring. Back leaves the
+        # page (returns to the events list, the previous destination).
+        # + New Cut routes to the existing Collection-face dialog the
+        # events page already builds — the Library page itself stays
+        # page-shaped (no gateway-wiring inline).
+        self.library_page.back_requested.connect(
+            lambda: self._on_entry(ENTRY_DASHBOARD))
+        self.library_page.new_cut_requested.connect(
+            self._open_new_cross_event_cut_from_library)
         self.new_event_page.event_created.connect(self._on_new_event_created)
         self.new_event_page.cancelled.connect(self._on_new_event_cancelled)
         self.phases_page.back_requested.connect(self._on_event_back)
@@ -496,6 +510,11 @@ class MainWindow(QMainWindow):
             return
         if key == ENTRY_DASHBOARD:
             self.events_page.refresh()
+        if key == ENTRY_LIBRARY:
+            # spec/94 Phase 4a-iii — refresh on landing so newly-
+            # pinned cuts / created Collections appear without an
+            # extra tap.
+            self.library_page.refresh()
         self.page_stack.show_page(key)
 
     # ── Menu spec (Nelson 2026-06-09 design session — App/Event/phase model) ─
@@ -532,6 +551,7 @@ class MainWindow(QMainWindow):
         ENTRY keys that need a stack placeholder."""
         return [
             (ENTRY_DASHBOARD, tr("Library")),
+            (ENTRY_LIBRARY, tr("Cross-event Cuts")),
             (ENTRY_NEW_EVENT, tr("New event")),
             (ENTRY_CREATE_FROM_PAST, tr("New event from existing media")),
             (ENTRY_WIZARD, tr("Wizard")),
@@ -573,13 +593,23 @@ class MainWindow(QMainWindow):
         self._modification_actions: list = []
 
         # ── App ────────────────────────────────────────────────────────────
-        # Library (per-event only) · Wizard · Settings · Audit (per-event) · Quit.
+        # Library (per-event only) · Cross-event Cuts (always) · Wizard ·
+        # Settings · Audit (per-event) · Quit.
         app_menu = self.menuBar().addMenu(tr("&App"))
         self._menus["app"] = app_menu
         self._add_menu_action(
             app_menu, tr("&Library"), self._go_to_library,
             surface=self._SURFACE_PER_EVENT, shortcut="Ctrl+L",
             tooltip=tr("Return to the events list."))
+        # spec/94 Phase 4a-iii — Cross-event Cuts / Collections / Recipes
+        # is a top-level destination, visible from every surface (it
+        # spans events, not one).
+        self._add_menu_action(
+            app_menu, tr("&Cross-event Cuts…"),
+            lambda: self._on_entry(ENTRY_LIBRARY),
+            tooltip=tr(
+                "Open the Library — Cuts that span events, plus the "
+                "Collections + Recipes you saved."))
         app_menu.addSeparator()
         self._add_menu_action(
             app_menu, tr("&Wizard…"), self._open_wizard)
@@ -834,6 +864,18 @@ class MainWindow(QMainWindow):
         help_sc.setContext(_Qt.ShortcutContext.ApplicationShortcut)
         help_sc.activated.connect(self._on_titlebar_help)
         self._help_shortcut = help_sc
+
+    def _open_new_cross_event_cut_from_library(self) -> None:
+        """spec/94 Phase 4a-iii — the Library page's '+ New Cut' button.
+        Routes to the events page's existing Collection-list flow:
+        from there the user picks a Collection and clicks **Pin → Cut**,
+        which opens the Collection face of NewRecipeDialog. v1 keeps
+        the routing one-hop; a future slice may surface the Pin dialog
+        from the Library page directly."""
+        self.events_page._open_new_cross_event_dc()
+        # Refresh the Library page's cuts list when the user lands back
+        # — the new Cut they pinned should appear without an extra tap.
+        self.library_page.refresh()
 
     def _on_titlebar_back(self) -> None:
         """Route the shared title-bar Back to the current page's back action —

@@ -26,3 +26,7 @@ ENTRY_PHOTO_PROCESSOR = "photo_processor"
 ENTRY_AUDIO = "audio"
 ENTRY_HELPERS = "helpers"
 ENTRY_SETTINGS = "settings"
+# spec/94 Phase 4a-iii (spec/76 §B.4) — the cross-event home (Cuts +
+# Collections + Recipes). Top-level destination; the events-page
+# cross-event band retires when this lands.
+ENTRY_LIBRARY = "library"

@@ -242,8 +242,15 @@ class CutPlayerDialog(QDialog):
         provenance_resolver: Optional[
             Callable[[str], Optional[cut_overlay.FrameProvenance]]
         ] = None,
+        resolve_path: Optional[Callable[[object], Path]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
+        """spec/94 Phase 4a-iii — ``resolve_path``, when wired,
+        replaces ``event_root / payload.export_relpath`` for every
+        file-kind entry. Cross-event Play passes a callable that
+        resolves each member to its source event's bytes path; for
+        event-scope Play, leave it unset and the historical
+        ``event_root``-relative path stays in force."""
         super().__init__(parent)
         self.setObjectName("CutPlayerDialog")
         self.setWindowTitle(tr("Play — the rehearsal"))
@@ -257,6 +264,7 @@ class CutPlayerDialog(QDialog):
         # any theme.
         self._entries = list(entries)
         self._root = Path(event_root)
+        self._resolve_path = resolve_path
         self._photo_s = float(photo_s)
         self._photo_ms = max(200, int(photo_s * 1000))
         self._day_meta = day_meta
@@ -446,9 +454,9 @@ class CutPlayerDialog(QDialog):
             if not self._paused:
                 self._timer.start(self._photo_ms)
         elif getattr(payload, "kind", "photo") == "video":
-            self._show_video(self._root / payload.export_relpath)
+            self._show_video(self._resolve_payload_path(payload))
         else:
-            pm = load_pixmap(self._root / payload.export_relpath)
+            pm = load_pixmap(self._resolve_payload_path(payload))
             self._show_pixmap(pm)
             if not self._paused:
                 self._timer.start(self._photo_ms)
@@ -471,6 +479,15 @@ class CutPlayerDialog(QDialog):
             height=max(480, self.height() or 1080),
             card_style=self._card_style,
             seed_key=f"{self._seed_prefix}:{day}")
+
+    def _resolve_payload_path(self, payload) -> Path:
+        """Where the bytes live on disk. Cross-event Play wires
+        ``resolve_path`` so each member is found in its source event's
+        Exported Media/; event-scope Play (no override) keeps the
+        historical ``event_root / payload.export_relpath`` shape."""
+        if self._resolve_path is not None:
+            return self._resolve_path(payload)
+        return self._root / payload.export_relpath
 
     def _show_image(self, img: QImage) -> None:
         self._show_pixmap(QPixmap.fromImage(img))

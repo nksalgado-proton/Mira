@@ -1,4 +1,4 @@
-"""Surface 01 — Events list + Cross-Event Cuts entry (redesigned).
+"""Surface 01 — Events list (redesigned).
 
 Sibling to the legacy :class:`~mira.ui.pages.events_dashboard_page.DashboardPage`
 while the surface-by-surface migration is in flight. Built from the design-
@@ -6,14 +6,19 @@ system catalog (mira.ui.design); data layer is the unchanged ``Gateway`` —
 same ``list_events`` / ``events_index_filtered`` / per-event ``EventCardData``
 contract.
 
-Top-to-bottom composition (spec/75):
+Top-to-bottom composition (spec/75 + spec/94 Phase 4a-iii):
     TitleBar (host-owned)
-    CrossEventCutsBand   — leads the screen; the app-level search door
     Toolbar              — "Events" title + 3 stat chips + per-list
                            search + Filters popover + + New event
     Tile grid            — FlowLayout of uniform fixed-height EventTile
                            instances (open + closed), 3 columns × 3-4
                            rows visible at typical desktop width
+
+The Cross-Event Cuts band retired in spec/94 Phase 4a-iii — cross-event
+work (Cuts + Collections + Recipes) lives in the top-level
+:class:`mira.ui.pages.library_page.LibraryPage` reachable from the
+Share menu's "Cross-event Cuts and Collections…" entry. This page
+focuses on the per-event list.
 
 Signals preserve the legacy DashboardPage shape so MainWindow routing doesn't
 change:
@@ -21,10 +26,6 @@ change:
     event_info_requested(str)        title click -> Event Header dialog
     event_status_toggle_requested    chip click  -> open <-> closed flip
     new_event_requested              + New Event primary button
-    cross_event_query(str)           Cross-Event Cuts band submission
-
-Once Nelson eyeballs this and approves, MainWindow swaps from DashboardPage
-to EventsPage and the legacy DashboardPage retires.
 """
 from __future__ import annotations
 
@@ -57,7 +58,6 @@ from mira.ui.design import (
     search_field,
     select,
 )
-from mira.ui.pages._cross_event_band import CrossEventCutsBand
 from mira.ui.pages._event_card_data import card_data as _card_data
 from mira.ui.pages._event_tile import EventTile, TILE_WIDTH
 
@@ -86,7 +86,6 @@ class EventsPage(QWidget):
     # and starts emitting this signal.
     classify_all_requested = pyqtSignal()
     new_event_requested = pyqtSignal()
-    cross_event_query = pyqtSignal(str)
 
     def __init__(
         self, gateway: Gateway, parent: Optional[QWidget] = None
@@ -140,21 +139,14 @@ class EventsPage(QWidget):
         outer.setSpacing(12)
         root.addWidget(content, 1)
 
-        # 1. Cross-Event Cuts band — the very first element on the screen
-        # (Nelson 2026-06-16 / spec/75 §2). Reads as the app-level
-        # entry point; per-events search/filter sit BELOW it.
-        self._cross_band = CrossEventCutsBand()
-        self._cross_band.submitted.connect(self.cross_event_query.emit)
-        # spec/81 Phase 2 Item 5 — the band's + Collection button opens the
-        # cross-event DC dialog. The dialog reads inventories from the
-        # LibraryGateway (wrapped around the umbrella gateway's user_store)
-        # and writes new DCs via create_dc.
-        self._cross_band.new_dc_requested.connect(self._open_new_cross_event_dc)
-        outer.addWidget(self._cross_band)
-
-        # A little breathing room so the two top-level bands don't touch
-        # (Nelson 2026). Tune to taste.
-        outer.addSpacing(8)
+        # spec/94 Phase 4a-iii — the Cross-Event Cuts band retired
+        # here. Cross-event work (Cuts, Collections, Recipes) moved
+        # to the top-level :class:`LibraryPage` reachable via the
+        # Share menu's "Cross-event Cuts and Collections…" entry. The
+        # events page focuses on its one job: the per-event list. The
+        # ``_open_new_cross_event_dc`` method below stays as the host
+        # hook the LibraryPage's "+ New Cut" button routes through —
+        # one source of truth for the Collection-list dialog.
 
         # 2-4. The Events band — an unnamed bordered band (same #CrossEventBand
         # treatment) wrapping the toolbar, empty state, and the scrolling tile

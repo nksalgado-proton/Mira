@@ -1,0 +1,565 @@
+"""Library page — the cross-event home (spec/76 §B.4 / spec/93 §9 /
+spec/94 Phase 4a-iii).
+
+This page replaces the events-page cross-event band as the user-facing
+entry to cross-event work. Three SurfaceBand sections:
+
+* **Cross-event Cuts** — the list of Cuts that span events. Per-row
+  Play (full-screen rehearsal pulling bytes from each source event),
+  Export (the existing :func:`export_cross_event_cut` pipeline), Open
+  (the detail viewer). Header button **+ New Cut** opens the Collection
+  face of :class:`NewRecipeDialog`.
+* **Collections** — count + **Manage Collections…** which opens the
+  existing :class:`CrossEventDcsDialog` (renamed user-facing to
+  "Collections" per spec/93 vocab).
+* **Recipes** — count + a hint about the on-disk tree (spec/93 §4:
+  the OS file manager is the management surface).
+
+Chrome follows the spec/94 Phase 3 standard: flush
+``#SurfaceHeaderRail[phase="share"]`` (Cuts are the Share-state
+output), content with the standard 28/18/28/22 margins, no inline QSS.
+Back lives in the shared title bar via the
+:attr:`uses_titlebar_back` / :meth:`on_titlebar_back` contract.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Callable, List, Optional
+
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCursor
+from PyQt6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core import cut_names
+from mira.ui.design import ghost_button, primary_button
+from mira.ui.i18n import tr
+
+
+log = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# One row per cross-event Cut
+# --------------------------------------------------------------------------- #
+
+
+class _CutRow(QFrame):
+    """One cut row inside the Cross-event Cuts band.
+
+    Layout: tag + meta on the left; Play · Export · Open · ⋯ (Delete)
+    on the right. spec/05 — every clickable carries a tooltip; pointing-
+    hand cursor is applied via the app-level filter.
+
+    Signals carry the ``cut_id`` so the host's dispatch table is dim
+    (the row doesn't know its parents)."""
+
+    play_requested = pyqtSignal(str)
+    export_requested = pyqtSignal(str)
+    open_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
+
+    def __init__(self, *, cut_id: str, tag: str,
+                 anchor_event_name: str,
+                 member_count: int,
+                 last_exported_at: Optional[str],
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._cut_id = cut_id
+        self.setObjectName("LibraryCutRow")
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(12, 10, 12, 10)
+        outer.setSpacing(12)
+
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        tag_lbl = QLabel(cut_names.display_tag(tag))
+        tag_lbl.setObjectName("LibraryCutTag")
+        f = tag_lbl.font()
+        f.setBold(True)
+        tag_lbl.setFont(f)
+        left.addWidget(tag_lbl)
+        meta_text = tr("from {anchor} · {n} members").replace(
+            "{anchor}", anchor_event_name or "—"
+        ).replace("{n}", str(member_count))
+        meta_lbl = QLabel(meta_text)
+        meta_lbl.setObjectName("LibraryCutMeta")
+        left.addWidget(meta_lbl)
+        if last_exported_at:
+            stamp = QLabel(tr("last exported: {ts}").replace(
+                "{ts}", last_exported_at))
+        else:
+            stamp = QLabel(tr("not yet exported"))
+        stamp.setObjectName("LibraryCutStamp")
+        left.addWidget(stamp)
+        outer.addLayout(left, 1)
+
+        right = QHBoxLayout()
+        right.setSpacing(6)
+        play_btn = ghost_button(tr("▶ Play"))
+        play_btn.setToolTip(tr(
+            "Full-screen rehearsal — timed photos, real clip lengths, "
+            "separators, music."))
+        play_btn.clicked.connect(
+            lambda: self.play_requested.emit(self._cut_id))
+        right.addWidget(play_btn)
+        export_btn = primary_button(tr("📤 Export"))
+        export_btn.setToolTip(tr(
+            "Materialise this Cut as a folder of links / copies — the "
+            "hand-off to PTE."))
+        export_btn.clicked.connect(
+            lambda: self.export_requested.emit(self._cut_id))
+        right.addWidget(export_btn)
+        open_btn = ghost_button(tr("Open…"))
+        open_btn.setToolTip(tr("Open the Cut's per-event member list."))
+        open_btn.clicked.connect(
+            lambda: self.open_requested.emit(self._cut_id))
+        right.addWidget(open_btn)
+        kebab = QToolButton()
+        kebab.setObjectName("IconButton")
+        kebab.setProperty("shape", "kebab")
+        kebab.setText("⋯")
+        kebab.setToolTip(tr("More actions"))
+        kebab.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        kebab.clicked.connect(self._show_kebab)
+        self._kebab = kebab
+        right.addWidget(kebab)
+        outer.addLayout(right)
+
+    def _show_kebab(self) -> None:
+        menu = QMenu(self)
+        del_action = menu.addAction(tr("Delete"))
+        del_action.triggered.connect(
+            lambda: self.delete_requested.emit(self._cut_id))
+        menu.exec(self._kebab.mapToGlobal(
+            self._kebab.rect().bottomLeft()))
+
+
+# --------------------------------------------------------------------------- #
+# The page itself
+# --------------------------------------------------------------------------- #
+
+
+class LibraryPage(QWidget):
+    """The cross-event Cuts / Collections / Recipes hub.
+
+    Constructed once at app startup; pulls fresh state from the
+    umbrella :class:`Gateway` on :meth:`refresh`. The host wires this
+    into the page stack under a new ``ENTRY_LIBRARY`` key (see
+    :mod:`mira.ui.shell.main_window`).
+    """
+
+    #: Emitted when the user clicks Back in the shared title bar; the
+    #: host routes it back to the events page (the previous
+    #: destination, by default).
+    back_requested = pyqtSignal()
+    #: Emitted when the user clicks **+ New Cut** in the Cuts band.
+    #: The host (MainWindow) drives the actual NewRecipeDialog
+    #: Collection face — the dialog construction needs the same
+    #: classify-placement + recipe_store + dc_creator wiring the
+    #: events page already builds, so the LibraryPage stays page-
+    #: shaped (no dialog construction inline).
+    new_cut_requested = pyqtSignal()
+
+    def __init__(self, gateway, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._gateway = gateway
+        self.setObjectName("LibraryPage")
+        # spec/94 Phase 3 contract — Back lives in the shared title bar.
+        self.uses_titlebar_back = True
+        self._cuts_rows_layout: Optional[QVBoxLayout] = None
+        self._cuts_empty_label: Optional[QLabel] = None
+        self._collections_count_label: Optional[QLabel] = None
+        self._recipes_count_label: Optional[QLabel] = None
+        self._build_layout()
+
+    # ------------------------------------------------------------------ #
+    # Title-bar Back dispatcher (spec/94 Phase 3 standard)
+    # ------------------------------------------------------------------ #
+
+    def on_titlebar_back(self) -> None:
+        """Single-level Back — the page has no internal drill-down
+        today; modal dialogs (Detail, Player) own their own Back. So
+        clicking Back here just leaves the page."""
+        self.back_requested.emit()
+
+    # ------------------------------------------------------------------ #
+    # Layout
+    # ------------------------------------------------------------------ #
+
+    def _build_layout(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Flush full-width Share-state pink rail at the very top.
+        rail = QFrame()
+        rail.setObjectName("SurfaceHeaderRail")
+        rail.setProperty("phase", "share")
+        rail.setFixedHeight(2)
+        root.addWidget(rail)
+
+        # Scrollable content host (the bands can grow tall).
+        scroll = QScrollArea()
+        scroll.setObjectName("LibraryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        host = QWidget()
+        outer = QVBoxLayout(host)
+        outer.setContentsMargins(28, 18, 28, 22)
+        outer.setSpacing(12)
+
+        # Page title row — quick orientation (no inline QSS; reuses
+        # the standard PageTitle role).
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title = QLabel(tr("Library"))
+        title.setObjectName("PageTitle")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
+
+        outer.addWidget(self._build_cuts_band())
+        outer.addWidget(self._build_collections_band())
+        outer.addWidget(self._build_recipes_band())
+        outer.addStretch(1)
+
+        scroll.setWidget(host)
+        root.addWidget(scroll, 1)
+
+    def _build_cuts_band(self) -> QWidget:
+        band = QFrame()
+        band.setObjectName("SurfaceBand")
+        band.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(band)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        title = QLabel(tr("Cross-event Cuts"))
+        title.setObjectName("CardTitle")
+        header.addWidget(title)
+        sub = QLabel(tr(
+            "Cuts that span events — pin a Collection to materialise one."))
+        sub.setObjectName("Sub")
+        sub.setWordWrap(True)
+        header.addWidget(sub, 1)
+        new_btn = primary_button(tr("+ New Cut"))
+        new_btn.setToolTip(tr(
+            "Compose a new cross-event Cut from a Collection — opens "
+            "the Collection face of the New Cut dialog."))
+        new_btn.clicked.connect(self._on_new_cut)
+        header.addWidget(new_btn)
+        layout.addLayout(header)
+
+        rows_host = QWidget()
+        self._cuts_rows_layout = QVBoxLayout(rows_host)
+        self._cuts_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._cuts_rows_layout.setSpacing(8)
+        self._cuts_empty_label = QLabel(tr(
+            "No cross-event Cuts yet. Build a Collection and pin it "
+            "into a Cut — every Cut you make lands here."))
+        self._cuts_empty_label.setObjectName("PageHint")
+        self._cuts_empty_label.setWordWrap(True)
+        self._cuts_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cuts_rows_layout.addWidget(self._cuts_empty_label)
+        layout.addWidget(rows_host)
+
+        return band
+
+    def _build_collections_band(self) -> QWidget:
+        band = QFrame()
+        band.setObjectName("SurfaceBand")
+        layout = QHBoxLayout(band)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel(tr("Collections"))
+        title.setObjectName("CardTitle")
+        col.addWidget(title)
+        self._collections_count_label = QLabel("")
+        self._collections_count_label.setObjectName("Sub")
+        col.addWidget(self._collections_count_label)
+        layout.addLayout(col, 1)
+        manage = ghost_button(tr("Manage Collections…"))
+        manage.setToolTip(tr(
+            "Browse, rename, or delete your Collections — the saved "
+            "queries Cuts pin from."))
+        manage.clicked.connect(self._on_manage_collections)
+        layout.addWidget(manage)
+        return band
+
+    def _build_recipes_band(self) -> QWidget:
+        band = QFrame()
+        band.setObjectName("SurfaceBand")
+        layout = QHBoxLayout(band)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        title = QLabel(tr("Recipes"))
+        title.setObjectName("CardTitle")
+        col.addWidget(title)
+        self._recipes_count_label = QLabel("")
+        self._recipes_count_label.setObjectName("Sub")
+        col.addWidget(self._recipes_count_label)
+        layout.addLayout(col, 1)
+        # spec/93 §4 + §9: the OS file manager IS the management surface
+        # for Recipes (a folder tree under <library_root>/Recipes/). v1
+        # of the Library page just surfaces the count; the cascading-menu
+        # browser is the natural follow-up.
+        hint = QLabel(tr(
+            "Manage in your file manager under "
+            "<library_root>/Recipes/."))
+        hint.setObjectName("Faint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return band
+
+    # ------------------------------------------------------------------ #
+    # State
+    # ------------------------------------------------------------------ #
+
+    def refresh(self) -> None:
+        """Re-pull cross-event Cuts + counts from the gateway and
+        rebuild the cuts list. Called on show + after every modal
+        that mutates state (new cut, delete, edit collection)."""
+        if self._cuts_rows_layout is None:
+            return
+        # Remove existing _CutRow widgets (the empty label sticks
+        # around — its visibility flips on the count).
+        for i in reversed(range(self._cuts_rows_layout.count())):
+            item = self._cuts_rows_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, _CutRow):
+                w.setParent(None)
+                w.deleteLater()
+        cuts = self._safe_cross_event_cuts()
+        if not cuts:
+            if self._cuts_empty_label is not None:
+                self._cuts_empty_label.setVisible(True)
+        else:
+            if self._cuts_empty_label is not None:
+                self._cuts_empty_label.setVisible(False)
+            for row in cuts:
+                widget = _CutRow(
+                    cut_id=row.cut_id, tag=row.tag,
+                    anchor_event_name=row.anchor_event_name,
+                    member_count=row.member_count,
+                    last_exported_at=row.last_exported_at,
+                    parent=self)
+                widget.play_requested.connect(self._on_play_cut)
+                widget.export_requested.connect(self._on_export_cut)
+                widget.open_requested.connect(self._on_open_cut)
+                widget.delete_requested.connect(self._on_delete_cut)
+                # Insert above the empty label.
+                self._cuts_rows_layout.insertWidget(0, widget)
+        self._refresh_counts()
+
+    def _refresh_counts(self) -> None:
+        lg = self._library_gateway()
+        n_coll = len(lg.dynamic_collections()) if lg is not None else 0
+        if self._collections_count_label is not None:
+            self._collections_count_label.setText(tr(
+                "{n} saved").replace("{n}", str(n_coll)))
+        # Recipes — counted via the recipes_library tree if wired.
+        n_rec = self._count_recipes()
+        if self._recipes_count_label is not None:
+            self._recipes_count_label.setText(tr(
+                "{n} saved").replace("{n}", str(n_rec)))
+
+    def _count_recipes(self) -> int:
+        """Best-effort: count Recipe rows via RecipeStore if the
+        umbrella exposes one. Falls back to 0 silently."""
+        try:
+            rs = self._gateway.recipe_store()
+        except Exception:                                      # noqa: BLE001
+            return 0
+        try:
+            return len(rs.list())
+        except Exception:                                      # noqa: BLE001
+            return 0
+
+    # ------------------------------------------------------------------ #
+    # Gateway helpers
+    # ------------------------------------------------------------------ #
+
+    def _library_gateway(self):
+        """Resolve the library gateway through the umbrella. Returns
+        ``None`` if anything fails so the page degrades cleanly in
+        tests / smoke construction."""
+        try:
+            return self._gateway.library_gateway()
+        except Exception as exc:                              # noqa: BLE001
+            log.debug("LibraryPage: library_gateway unavailable: %s", exc)
+            return None
+
+    def _safe_cross_event_cuts(self) -> list:
+        try:
+            return list(self._gateway.cross_event_cuts())
+        except Exception as exc:                              # noqa: BLE001
+            log.warning("LibraryPage: cross_event_cuts failed: %s", exc)
+            return []
+
+    # ------------------------------------------------------------------ #
+    # Actions
+    # ------------------------------------------------------------------ #
+
+    def _on_new_cut(self) -> None:
+        """+ New Cut — opens the Collection face of NewRecipeDialog
+        via the host. The dialog construction needs the gateway-side
+        wiring the events page already builds (classify_placement,
+        recipe_store, dc_creator, …) — so we emit a signal and let
+        the host drive it. Tests connect to the signal; absent a
+        connection, the click is a quiet no-op."""
+        self.new_cut_requested.emit()
+
+    def _on_manage_collections(self) -> None:
+        """Open the Collections list dialog (spec/93 §9 — the file
+        manager is the management surface; this dialog is the in-app
+        view of the same tree)."""
+        from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
+        lg = self._library_gateway()
+        if lg is None:
+            QMessageBox.warning(self, tr("Collections"),
+                                tr("The library gateway is unavailable."))
+            return
+        dlg = CrossEventDcsDialog(
+            lg, umbrella_gateway=self._gateway, parent=self)
+        dlg.exec()
+        self.refresh()
+
+    def _on_play_cut(self, cut_id: str) -> None:
+        """Open the cross-event player. spec/94 Phase 4a-iii — the
+        player resolves each member's bytes via the umbrella
+        gateway's index."""
+        from mira.shared.cross_event_cut_play import (
+            build_cross_event_entries,
+            make_resolve_path,
+        )
+        from mira.ui.shared.cut_play import CutPlayerDialog
+        lg = self._library_gateway()
+        if lg is None:
+            return
+        cut = lg.cross_event_cut(cut_id)
+        if cut is None:
+            return
+        entries, day_meta = build_cross_event_entries(
+            library_gateway=lg, cut_id=cut_id,
+            separators_on=bool(cut.separators))
+        if not entries:
+            QMessageBox.information(
+                self, tr("Play"),
+                tr("This Cut has no playable members yet."))
+            return
+        dlg = CutPlayerDialog(
+            entries,
+            event_root=Path(""),   # unused — resolve_path supplies the path
+            photo_s=cut.photo_s,
+            day_meta=day_meta,
+            resolve_path=make_resolve_path(gateway=self._gateway),
+            parent=self,
+        )
+        dlg.setWindowTitle(
+            cut_names.display_tag(cut.tag) + " — " + tr("rehearsal"))
+        dlg.start()
+        dlg.exec()
+
+    def _on_export_cut(self, cut_id: str) -> None:
+        """Pick a target folder, then materialise the Cut via the
+        existing :func:`export_cross_event_cut` pipeline (now reading
+        from mira.db, spec/94 Phase 4a-ii)."""
+        from PyQt6.QtWidgets import QFileDialog
+        target = QFileDialog.getExistingDirectory(
+            self, tr("Export cross-event Cut to…"))
+        if not target:
+            return
+        from mira.shared.cross_event_cut_export import (
+            CrossEventExportError,
+            export_cross_event_cut,
+        )
+        try:
+            summary = export_cross_event_cut(
+                self._gateway, "", cut_id, target=Path(target))
+        except CrossEventExportError as exc:
+            QMessageBox.warning(
+                self, tr("Export failed"), str(exc))
+            return
+        QMessageBox.information(
+            self, tr("Export complete"),
+            tr("{n} member(s) materialised ({linked} linked, {copied} "
+               "copied, {missing} missing).").replace(
+                "{n}", str(summary["member_count"])).replace(
+                "{linked}", str(summary["linked"])).replace(
+                "{copied}", str(summary["copied"])).replace(
+                "{missing}", str(summary["missing"])))
+        self.refresh()
+
+    def _on_open_cut(self, cut_id: str) -> None:
+        """Open the detail viewer (per-event grouping of members)."""
+        from mira.ui.pages.cross_event_cut_detail_dialog import (
+            CrossEventCutDetailDialog,
+        )
+        # Build a CrossEventCutRow-shaped object for the dialog —
+        # it expects the umbrella's list row, not the gateway model.
+        from mira.gateway.gateway import CrossEventCutRow
+        for row in self._safe_cross_event_cuts():
+            if row.cut_id == cut_id:
+                dlg = CrossEventCutDetailDialog(
+                    self._gateway, row, parent=self)
+                dlg.exec()
+                return
+
+    def _on_delete_cut(self, cut_id: str) -> None:
+        # Resolve the row for the confirm-dialog tag.
+        tag = cut_id
+        for row in self._safe_cross_event_cuts():
+            if row.cut_id == cut_id:
+                tag = row.tag
+                break
+        ok = QMessageBox.question(
+            self, tr("Delete Cut"),
+            tr("Delete {tag}? Members + the Cut row are removed; "
+               "already-exported folders on disk stay where they are."
+               ).replace("{tag}", cut_names.display_tag(tag)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            # The umbrella's signature keeps anchor_event_id for back-
+            # compat but ignores it — the cut lives in mira.db now
+            # (spec/94 Phase 4a-ii).
+            self._gateway.delete_cross_event_cut("", cut_id)
+        except Exception as exc:                              # noqa: BLE001
+            QMessageBox.warning(
+                self, tr("Delete failed"), str(exc))
+            return
+        self.refresh()
+
+    # ------------------------------------------------------------------ #
+    # Show hook — refresh on first paint
+    # ------------------------------------------------------------------ #
+
+    def showEvent(self, ev) -> None:                          # noqa: N802 — Qt
+        super().showEvent(ev)
+        self.refresh()
+
+
+__all__ = ["LibraryPage"]

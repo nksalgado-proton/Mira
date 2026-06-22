@@ -209,15 +209,12 @@ class EventGateway:
         # BEFORE store.close() so the hook sees a live connection.
         # Failure is logged but never blocks close.
         #
-        # Caveat (spec/81 Phase 2 + v3→v4 schema migration): the
-        # ``export_relpath`` column lands NULL after migration and
-        # only gets populated by a sync. With this gate, a freshly
-        # migrated event stays NULL until the user edits it; the
-        # cross-event commit path falls back to a per-event fanout
-        # for un-synced rows so correctness holds — only performance
-        # degrades until edits naturally re-sync, or until
-        # :meth:`Gateway.reconcile_global_items` is wired into the
-        # startup catchup.
+        # Catchup for un-mutated events (spec/94 Phase 4b): app
+        # startup now calls :meth:`Gateway.reconcile_global_items`
+        # which forces a sync_event for every known event regardless
+        # of whether it was opened-and-edited this session, so the
+        # post-migration "freshly-migrated event stays NULL until the
+        # user edits it" gap no longer applies.
         if dirty and self._on_close is not None:
             try:
                 self._on_close(self)

@@ -340,6 +340,42 @@ def _refresh_read_only_banners() -> None:
             banner.refresh()
 
 
+def _startup_reconcile_global_items(gateway) -> dict:
+    """Drive :meth:`Gateway.reconcile_global_items` at app startup
+    (spec/94 Phase 4b). Catches up events that landed (or migrated
+    through a schema bump) while another process was the writer;
+    without this, freshly-migrated events keep stale or absent
+    ``global_items`` rows until the user opens-and-edits them, and
+    the cross-event resolver returns empty / partial results for
+    EXIF / gear / location filters.
+
+    Read-only sessions skip via LibraryGateway's
+    ``_skip_if_read_only`` (slice 5a), so this is safe in both modes.
+    Returns the reconcile summary on success or an empty dict when
+    the call raised (the failure is logged but never blocks launch —
+    the cross-event surface still works against whatever projection
+    rows already exist).
+
+    Extracted so the wiring is unit-testable without driving
+    :func:`main` end-to-end.
+    """
+    log = logging.getLogger("mira")
+    try:
+        summary = gateway.reconcile_global_items()
+    except Exception:                                              # noqa: BLE001
+        log.exception("startup reconcile_global_items failed")
+        return {}
+    if summary.get("synced") or summary.get("dropped"):
+        skipped = summary.get("skipped", [])
+        log.info(
+            "global_items reconcile: synced=%d dropped=%d skipped=%d",
+            summary.get("synced", 0),
+            summary.get("dropped", 0),
+            len(skipped) if isinstance(skipped, (list, tuple)) else int(skipped or 0),
+        )
+    return summary
+
+
 def _handle_lock_lost(library_root, *, show_modal: bool = True) -> bool:
     """Heartbeat-loss path (spec/76 §A — Nelson 2026-06-21).
 
@@ -644,6 +680,14 @@ def main(argv: list[str] | None = None) -> int:
     from mira.ui.shell.main_window import MainWindow
 
     window = MainWindow()
+
+    # spec/94 Phase 4b — synchronous startup reconcile of the
+    # cross-event projection. Per-event SQLite reads + one
+    # user_store txn per event are sub-second for normal libraries;
+    # move to a background thread only when measured slow on a real
+    # one. See :func:`_startup_reconcile_global_items` for the why.
+    _startup_reconcile_global_items(window.gateway)
+
     window.show()
 
     # First-run wizard auto-show. Without it, every photo classifies as

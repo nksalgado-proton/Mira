@@ -506,33 +506,105 @@ class LibraryPage(QWidget):
         dlg.exec()
 
     def _on_export_cut(self, cut_id: str) -> None:
-        """Pick a target folder, then materialise the Cut via the
-        existing :func:`export_cross_event_cut` pipeline (now reading
-        from mira.db, spec/94 Phase 4a-ii)."""
-        from PyQt6.QtWidgets import QFileDialog
-        target = QFileDialog.getExistingDirectory(
-            self, tr("Export cross-event Cut to…"))
-        if not target:
-            return
+        """Pick a target folder + options, then materialise the
+        cross-event Cut via :func:`export_cross_event_cut` (mira.db
+        backed, spec/94 Phase 4a-ii). spec/105 §2 picks a sensible
+        default home (``<library_root>/Cuts/Cross-event/<cut>/``,
+        or under ``cuts_export_root`` when set); §6 surfaces the
+        originals / copy-mode flags and a cross-volume notice."""
         from mira.shared.cross_event_cut_export import (
             CrossEventExportError,
             export_cross_event_cut,
         )
+        from mira.shared.cut_export import resolve_cross_event_cut_target
+        from mira.paths import library_root as _library_root_from_paths
+        # Look up the Cut so the dialog header carries its tag.
+        cut_row = None
+        for row in self._safe_cross_event_cuts():
+            if row.cut_id == cut_id:
+                cut_row = row
+                break
+        if cut_row is None:
+            return
+        library_root = _library_root_from_paths()
+        if library_root is None:
+            QMessageBox.warning(
+                self, tr("Export failed"),
+                tr("Mira couldn't resolve the library root — "
+                   "cross-event exports need one."))
+            return
+        try:
+            settings = self._gateway.settings.load()
+            cuts_export_root = (
+                getattr(settings, "cuts_export_root", "") or "")
+        except Exception:                                          # noqa: BLE001
+            cuts_export_root = ""
+        default_target = resolve_cross_event_cut_target(
+            cut_tag=cut_row.tag,
+            library_root=library_root,
+            cuts_export_root=cuts_export_root or None,
+        )
+        # Use the shared _ExportTargetDialog so the cross-event flow
+        # gets the same checkboxes + summary shape as the per-event
+        # flow. ``event_root=None`` suppresses the cross-volume notice
+        # — cross-event members span volumes by nature; per-member
+        # link/copy fallback handles each independently.
+        from mira.ui.pages.share_cuts_page import (
+            ExportChoices,
+            _ExportTargetDialog,
+        )
+        from core import cut_names
+        dlg = _ExportTargetDialog(
+            default_path=default_target,
+            tag_display=cut_names.display_tag(cut_row.tag),
+            event_root=None,
+            parent=self,
+        )
+        from PyQt6.QtWidgets import QDialog
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        choices = ExportChoices(
+            target=dlg.target(),
+            include_originals=dlg.include_originals(),
+            copy_mode=dlg.copy_mode(),
+        )
         try:
             summary = export_cross_event_cut(
-                self._gateway, "", cut_id, target=Path(target))
+                self._gateway, "", cut_id,
+                target=choices.target,
+                include_originals=choices.include_originals,
+                copy_mode=choices.copy_mode,
+            )
         except CrossEventExportError as exc:
             QMessageBox.warning(
                 self, tr("Export failed"), str(exc))
             return
+        # spec/105 §6 summary — same shape as the per-event dialog.
+        line_one = tr(
+            "{n} member(s) materialised ({linked} linked, {copied} "
+            "copied, {missing} missing)."
+        ).replace("{n}", str(summary["member_count"])
+        ).replace("{linked}", str(summary["linked"])
+        ).replace("{copied}", str(summary["copied"])
+        ).replace("{missing}", str(summary["missing"]))
+        extra_lines = []
+        originals_total = (
+            summary.get("originals_linked", 0)
+            + summary.get("originals_copied", 0))
+        if originals_total:
+            extra_lines.append(tr(
+                "{n} original(s) placed ({linked} linked, {copied} "
+                "copied)."
+            ).replace("{n}", str(originals_total)
+            ).replace("{linked}", str(summary.get("originals_linked", 0))
+            ).replace("{copied}", str(summary.get("originals_copied", 0))))
+        if summary.get("missing_originals"):
+            extra_lines.append(tr(
+                "{n} original(s) could not be resolved and were skipped."
+            ).replace("{n}", str(len(summary["missing_originals"]))))
         QMessageBox.information(
             self, tr("Export complete"),
-            tr("{n} member(s) materialised ({linked} linked, {copied} "
-               "copied, {missing} missing).").replace(
-                "{n}", str(summary["member_count"])).replace(
-                "{linked}", str(summary["linked"])).replace(
-                "{copied}", str(summary["copied"])).replace(
-                "{missing}", str(summary["missing"])))
+            "\n".join([line_one] + extra_lines))
         self.refresh()
 
     def _on_open_cut(self, cut_id: str) -> None:

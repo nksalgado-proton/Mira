@@ -1,5 +1,23 @@
 # 105 — Cuts export facility: roots model, volume-aware layout, originals, link-vs-copy
 
+**Status: §1-§5 + §6 + §7 SHIPPED (Nelson 2026-06-22). The data-layer
+facility — volume-aware target, originals subdir, link/copy switch —
+landed first, then the dialog + caller wiring, then the cross-volume
+event health helper. §10 open questions resolved: `Original Media/`
+naming kept (matches the captured tree); show files stay flat (no
+`Show/` subdir; the slideshow-tool contract is unchanged); first-run
+defaults `photos_base_path = library_root` (one root by default; the
+catalog/media split is separable only via the advanced Settings
+field). Two follow-ups carried in tickets:** (a) the cross-volume
+events tile / dashboard surface — the `event_is_off_library_volume`
+helper is shipped but no UI consumer wired yet; (b) cross-event Cut
+originals: the per-source-event lineage→origin index works for
+**export-kind** members; **grab-kind** members are correctly skipped
+(their source IS already an original by definition, the flat output
+is their original, no `Original Media/` duplicate).
+
+**Original (proposed) status follows for the record:**
+
 **Status: PROPOSED (Nelson 2026-06-22, design discussion folded in).
 Extends the Cut export (`mira/shared/cut_export.py::export_cut` +
 `mira/shared/cross_event_cut_export.py` + the share/library export dialogs)

@@ -30,6 +30,7 @@ from typing import List, Optional
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -253,6 +254,18 @@ class _RenameCutDialog(QDialog):
 # ── export-target dialog (spec/81 §5 — "defaulted, not frozen") ─────
 
 
+@dataclass(frozen=True)
+class ExportChoices:
+    """spec/105 §6 — the user's choices captured by
+    :class:`_ExportTargetDialog`: the target folder + the two flags
+    routed into :func:`mira.shared.cut_export.export_cut`. Held as
+    a small frozen record so tests can stub :meth:`_exec_target_dialog`
+    cleanly (mirroring the Optional[Path] seam it replaces)."""
+    target: Path
+    include_originals: bool = False
+    copy_mode: bool = False
+
+
 class _ExportTargetDialog(QDialog):
     """Pick where this Cut's folder gets written.
 
@@ -267,6 +280,7 @@ class _ExportTargetDialog(QDialog):
         *,
         default_path: Path,
         tag_display: str,
+        event_root: Optional[Path] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -274,6 +288,12 @@ class _ExportTargetDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(520)
         self._default_path = Path(default_path)
+        # spec/105 §6 — the cross-volume notice compares the typed target
+        # to the event's media volume. ``None`` (cross-event export with
+        # no single event root) suppresses the notice; the cross-event
+        # export already explains its multi-source nature in the
+        # summary.
+        self._event_root = Path(event_root) if event_root else None
 
         box = QVBoxLayout(self)
         # Heading + hint line — same form-grammar as _RenameCutDialog.
@@ -308,7 +328,34 @@ class _ExportTargetDialog(QDialog):
         self._status = QLabel("")
         self._status.setObjectName("PageHint")
         gbox.addWidget(self._status)
+        # spec/105 §6 — cross-volume notice. Hidden until the target
+        # crosses to a different volume than the event's media (or a
+        # cross-event Cut, where members span volumes by nature).
+        self._volume_notice = QLabel("")
+        self._volume_notice.setObjectName("PageHint")
+        self._volume_notice.setWordWrap(True)
+        self._volume_notice.setVisible(False)
+        gbox.addWidget(self._volume_notice)
         box.addWidget(group)
+
+        # spec/105 §3+§5 — the two export options.
+        options = QGroupBox(tr("Options"))
+        options.setObjectName("FormFieldGroup")
+        obox = QVBoxLayout(options)
+        self._originals_chk = QCheckBox(
+            tr("Also export the original files"))
+        self._originals_chk.setToolTip(tr(
+            "Place each member's source original under a "
+            "'Original Media/' subfolder inside the Cut folder."))
+        obox.addWidget(self._originals_chk)
+        self._copy_mode_chk = QCheckBox(
+            tr("Make independent copies instead of links"))
+        self._copy_mode_chk.setToolTip(tr(
+            "By default each show file is a hardlink to the event's "
+            "bytes (instant, zero disk). Tick this to write fresh "
+            "copies you can move or archive without the event."))
+        obox.addWidget(self._copy_mode_chk)
+        box.addWidget(options)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel
@@ -361,11 +408,38 @@ class _ExportTargetDialog(QDialog):
                 self._status.setText(tr(
                     "no part of {path} exists yet").replace("{path}", text))
                 ok = False
+        # spec/105 §6 — cross-volume notice. Compare the typed target
+        # against the event's media volume; show the "will be copied"
+        # warning when they differ so the user isn't surprised by a
+        # slow/space-heavy export.
+        if ok and self._event_root is not None and text:
+            from mira.shared.cut_export import _same_volume
+            if not _same_volume(Path(text), self._event_root):
+                self._volume_notice.setText(tr(
+                    "These will be copied, not linked, because the "
+                    "target is on a different drive than this event's "
+                    "media."))
+                self._volume_notice.setVisible(True)
+            else:
+                self._volume_notice.setVisible(False)
+        else:
+            self._volume_notice.setVisible(False)
         if self._ok is not None:
             self._ok.setEnabled(ok)
 
     def target(self) -> Path:
         return Path(self._edit.text().strip())
+
+    def include_originals(self) -> bool:
+        """spec/105 §3 — whether to copy each member's source
+        original into ``<dest>/Original Media/``."""
+        return self._originals_chk.isChecked()
+
+    def copy_mode(self) -> bool:
+        """spec/105 §5 — whether to force independent copies for
+        media, originals AND audio (default = hardlink with cross-
+        volume copy fallback)."""
+        return self._copy_mode_chk.isChecked()
 
 
 # ── share-state identity header (spec/71) ────────────────────────────
@@ -1913,33 +1987,63 @@ class ShareCutsPage(QWidget):
         dlg.start()
         dlg.exec()
 
-    def _pick_export_target(self, cut) -> Optional[Path]:
-        """Spec/81 §5 seam — prompt for the export target.
+    def _pick_export_target(self, cut):
+        """Spec/81 §5 + spec/105 §2 — prompt for the export target +
+        options. Returns an :class:`ExportChoices` on Accept; ``None``
+        on Cancel — caller bails. A test seam
+        (:meth:`_exec_target_dialog`) lets tests stub the dialog
+        without exec()-ing the real one.
 
-        Defaulted to ``<event_root>/Cuts/<tag>/`` (the same shape
-        :func:`cut_export.default_target` produces, but we recompute here
-        so the picker can show it even when the export module hasn't been
-        imported yet at the call-site). Returns the picked path on Accept;
-        ``None`` on Cancel — caller bails. A test seam (``_exec_target_dialog``)
-        lets tests stub the dialog without exec()-ing the real one."""
-        from mira.shared.cut_export import default_target
+        The default target is the volume-aware
+        :func:`resolve_event_cut_target` value: when the event is on
+        the same volume as ``library_root``, the Cut home is
+        ``<library_root>/Cuts/<event>/<cut>/`` (one discoverable
+        location, links work); when the event lives on a different
+        volume (the ``event_root_abs`` escape hatch), the home is
+        ``<event_root>/Cuts/<cut>/`` (the event's own volume, links
+        still work). A non-blank ``cuts_export_root`` setting
+        overrides both."""
+        from mira.shared.cut_export import resolve_event_cut_target
+        from mira.paths import library_root as _library_root_from_paths
         eg = self._eg
         if eg is None:
             return None
-        default = default_target(Path(eg.event_root), cut.tag)
+        try:
+            event_name = eg.event().name or ""
+        except Exception:                                          # noqa: BLE001
+            event_name = ""
+        s = self._settings()
+        library_root = _library_root_from_paths()
+        cuts_export_root = (
+            getattr(s, "cuts_export_root", "") or "") if s else ""
+        default = resolve_event_cut_target(
+            event_root=Path(eg.event_root),
+            event_name=event_name,
+            cut_tag=cut.tag,
+            library_root=library_root,
+            cuts_export_root=cuts_export_root or None,
+        )
         return self._exec_target_dialog(default, cut)
 
-    def _exec_target_dialog(self, default: Path, cut) -> Optional[Path]:
+    def _exec_target_dialog(self, default: Path, cut):
         """The modal seam (mirrors ``_exec_edit_dialog``). Tests stub
-        this; the app runs the real dialog."""
+        this; the app runs the real dialog. Returns an
+        :class:`ExportChoices` on Accept, ``None`` on Cancel."""
+        eg = self._eg
+        event_root = Path(eg.event_root) if eg is not None else None
         dlg = _ExportTargetDialog(
             default_path=default,
             tag_display=cut_names.display_tag(cut.tag),
+            event_root=event_root,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        return dlg.target()
+        return ExportChoices(
+            target=dlg.target(),
+            include_originals=dlg.include_originals(),
+            copy_mode=dlg.copy_mode(),
+        )
 
     def _separator_writer(self, cut):
         """The export's separator renderer — the UI layer owns pixels
@@ -2018,9 +2122,10 @@ class ShareCutsPage(QWidget):
             return
         from PyQt6.QtGui import QGuiApplication
         from mira.shared.cut_export import default_target, export_cut
-        target = self._pick_export_target(cut)
-        if target is None:
+        choices = self._pick_export_target(cut)
+        if choices is None:
             return
+        target = choices.target
         seps = self._separators_on()
         opener_writer = None
         if seps:
@@ -2060,6 +2165,8 @@ class ShareCutsPage(QWidget):
                 audio_root=getattr(
                     self._settings(), "audio_library_path", "") or None,
                 provenance_resolver=provenance_resolver,
+                include_originals=choices.include_originals,
+                copy_mode=choices.copy_mode,
             )
         except Exception:  # noqa: BLE001 — disk-level surprises surface honestly
             log.exception("export failed for cut %s", cut_id)
@@ -2083,11 +2190,24 @@ class ShareCutsPage(QWidget):
                 "{n}", str(result.separators)))
         if result.audio_files:
             bits.append(tr("{n} songs").replace("{n}", str(result.audio_files)))
+        # spec/105 §6 — originals counts when the user opted in.
+        if result.originals_linked or result.originals_copied:
+            bits.append(tr(
+                "{n} originals ({linked} linked, {copied} copied)"
+            ).replace("{n}", str(
+                result.originals_linked + result.originals_copied))
+                .replace("{linked}", str(result.originals_linked))
+                .replace("{copied}", str(result.originals_copied)))
         lines.append(" · ".join(bits))
         if result.missing:
             lines.append(tr(
                 "{n} member file(s) were missing on disk and were "
                 "skipped.").replace("{n}", str(len(result.missing))))
+        if result.missing_originals:
+            lines.append(tr(
+                "{n} original file(s) could not be exported "
+                "(missing on disk or no source)."
+            ).replace("{n}", str(len(result.missing_originals))))
         if result.audio_short:
             lines.append(tr(
                 "The '{cat}' music folder is shorter than the show — add "

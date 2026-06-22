@@ -678,12 +678,18 @@ def test_on_export_cut_skips_when_target_dialog_cancelled(qapp, gw, tmp_path):
 
 def test_on_export_cut_uses_picked_target(qapp, gw, tmp_path):
     """When the user picks a target (or accepts the default), the
-    export writes there. The folder shows up after the call."""
+    export writes there. The folder shows up after the call.
+
+    spec/105 §6 — the seam now returns an :class:`ExportChoices`
+    (target + options) instead of a bare ``Path``; the test mirrors
+    the new contract."""
     from pathlib import Path
+    from mira.ui.pages.share_cuts_page import ExportChoices
     shell = _shell(gw)
     cut = next(iter(gw.cuts()))
     custom = tmp_path / "Elsewhere" / "my_export"
-    shell._exec_target_dialog = lambda default, c: custom  # noqa: SLF001
+    shell._exec_target_dialog = lambda default, c: ExportChoices(  # noqa: SLF001
+        target=custom)
     # Stub the QMessageBox so the summary popup doesn't park on the desktop.
     from PyQt6.QtWidgets import QMessageBox
     QMessageBox.exec = lambda self: None

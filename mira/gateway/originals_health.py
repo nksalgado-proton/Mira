@@ -167,3 +167,37 @@ def classify(
         base_path=base_path,
         originals_dir=originals_dir,
     )
+
+
+def event_is_off_library_volume(
+    *,
+    event_root: Optional[Path],
+    library_root: Optional[Path],
+) -> bool:
+    """spec/105 §7 — flag an event whose resolved root is on a
+    different volume than ``library_root``. Visibility aid only
+    (``event_root_abs`` stays a supported choice — the catalog/media
+    split is a legitimate power-user layout); the call site is
+    expected to surface it as a non-blocking notice on the events
+    list / health dashboard so a user who *wants* one-drive can
+    find and fix the stragglers.
+
+    Falls back to ``False`` (assume same volume) when either path is
+    missing or the volume probe raises — refuses to false-positive
+    on the offline path (the existing :data:`STORAGE_OFFLINE` signal
+    already covers that)."""
+    if event_root is None or library_root is None:
+        return False
+    try:
+        event_root = Path(event_root)
+        library_root = Path(library_root)
+    except (TypeError, ValueError):
+        return False
+    # Reuse cut_export._same_volume — it walks to the deepest
+    # existing ancestor before comparing st_dev / drive letter, so a
+    # not-yet-created path still classifies correctly.
+    from mira.shared.cut_export import _same_volume
+    try:
+        return not _same_volume(event_root, library_root)
+    except OSError:
+        return False

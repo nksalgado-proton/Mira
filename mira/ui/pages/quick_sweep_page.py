@@ -318,6 +318,16 @@ class QuickSweepPage(QWidget):
 
         # ── MEDIA — PhotoViewport (the shared engine).
         self._viewport = PhotoViewport()
+        # spec/99 §A+§B — Quick-Sweep cold-path decode profile. The
+        # pre-ingest sweep can't reach the post-ingest thumb/proxy
+        # caches, so cap the windowed-browse ceiling to 2048 (a
+        # ~1/4-class DCT decode off a 24 MP JPEG, 3–4× faster than the
+        # full target) and deepen the forward prefetch since the sweep
+        # is strictly linear. F10 (full-resolution lens) and F11
+        # (fullscreen, which calls ``set_ceiling_suspended`` below)
+        # both stay first-class — see :meth:`_toggle_fullscreen`.
+        self._viewport.set_sweep_ceiling(2048)
+        self._viewport.set_prefetch_plan((1, 2, 3, 4, -1))
         self._expo_overlay = PhotoExposureOverlay(self._viewport)
         vp = self._viewport
         vp.current_changed.connect(self._on_viewport_current_changed)
@@ -678,6 +688,14 @@ class QuickSweepPage(QWidget):
             win.showFullScreen()
             self._fullscreen = True
             self._fullscreen_btn.setChecked(True)
+        # spec/99 §A fullscreen lift — leaving the sweep ceiling
+        # engaged in fullscreen would show an upscaled 2048-px frame
+        # on a 4K panel. Suspend the cap while fullscreen and
+        # re-request the current frame at the display ceiling (a
+        # settle-class upgrade, naturally dropped by navigation per
+        # spec/63 §3.1).
+        self._viewport.set_ceiling_suspended(self._fullscreen)
+        self._viewport.refresh_current()
         self.fullscreen_changed.emit(self._fullscreen)
 
     def _exit_fullscreen(self) -> None:

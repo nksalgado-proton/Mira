@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QPainter, QPalette, QPen, QPixmap
@@ -842,6 +842,20 @@ class PhotoViewport(QWidget):
         self._settle.timeout.connect(self._on_settle)
 
         self._wheel_units = 0
+        # spec/99 §A — opt-in Quick-Sweep windowed-browse ceiling. When
+        # set, ``_active_ceiling`` clamps the long edge to the lower of
+        # this and the display-quality ceiling so the cold pre-ingest
+        # sweep decodes substantially faster. ``None`` (the default) keeps
+        # today's spec/95 behaviour exactly for every other surface.
+        self._sweep_ceiling: Optional[int] = None
+        # spec/99 §A fullscreen lift — set True while the host is
+        # fullscreen so the sweep ceiling is ignored and the browse tier
+        # decodes back at the display ceiling (sharp on a 4K panel).
+        self._ceiling_suspended: bool = False
+        # spec/99 §B — per-instance prefetch plan. Defaults to the
+        # Picker's proven set; Quick Sweep installs a forward-biased
+        # deeper plan since the cold sweep is strictly linear.
+        self._prefetch_plan: Tuple[int, ...] = _PREFETCH_OFFSETS
         self._truth_window = None
         self._truth_internal = True       # surfaces (Edit) may override F10
         # Host-rendered display override (spec/63 §6.1 — Edit's
@@ -908,6 +922,49 @@ class PhotoViewport(QWidget):
         Cull surfaces (Picker, Quick Sweep) keep it; Edit and the Cut
         views open the lens clean (Nelson 2026-06-12 standardisation)."""
         self._lens_tools = bool(on)
+
+    # ── spec/99 §A — Quick-Sweep windowed-browse ceiling ──────────
+
+    def set_sweep_ceiling(self, ceiling: Optional[int]) -> None:
+        """Quick Sweep opt-in: clamp the windowed-browse decode target's
+        long edge to ``ceiling`` px (spec/99 §A). ``None`` restores the
+        default spec/95 behaviour (display-quality ceiling only). F10
+        (the truth key) is untouched — it always decodes the real
+        original. Fullscreen lifts the cap automatically via
+        :meth:`set_ceiling_suspended`."""
+        self._sweep_ceiling = (
+            int(ceiling) if ceiling is not None and ceiling > 0 else None
+        )
+
+    def set_ceiling_suspended(self, on: bool) -> None:
+        """Suspend the sweep ceiling (spec/99 §A fullscreen lift): while
+        ``True``, :meth:`_active_ceiling` ignores ``sweep_ceiling`` and
+        the browse tier decodes at the full display ceiling — so F11
+        fullscreen on a 4K panel shows a sharp frame instead of an
+        upscaled sweep-tier one. Callers pair with
+        :meth:`refresh_current` to re-request the current frame."""
+        self._ceiling_suspended = bool(on)
+
+    def _active_ceiling(self) -> int:
+        """The long-edge ceiling that applies to :meth:`_target_size`.
+
+        Normally the machine-local display-quality ceiling (spec/95 §C).
+        When a sweep ceiling is set AND we are NOT fullscreen-suspended,
+        clamp to the lower of the two so a tiny display can't
+        accidentally exceed its own quality cap via the sweep tier."""
+        display = _display_quality_ceiling()
+        if self._sweep_ceiling is None or self._ceiling_suspended:
+            return display
+        return min(self._sweep_ceiling, display)
+
+    # ── spec/99 §B — per-instance prefetch plan ───────────────────
+
+    def set_prefetch_plan(self, offsets: Sequence[int]) -> None:
+        """Override the settle-time prefetch offsets (spec/99 §B). Quick
+        Sweep uses a forward-biased deeper plan since the cold sweep is
+        strictly linear; every other surface inherits the Picker's
+        proven ``(1, 2, -1)`` set."""
+        self._prefetch_plan = tuple(int(off) for off in offsets)
 
     # ── host-display contract (spec/63 §6.1 — the Edit migration) ─
 
@@ -1144,7 +1201,7 @@ class PhotoViewport(QWidget):
         # original decodes for fly-by items. The settle upgrade
         # raises only the LANDED item to the full settle target.
         target = self._nav_target_size()
-        for offset in _PREFETCH_OFFSETS:
+        for offset in self._prefetch_plan:
             idx = self._index + offset
             if 0 <= idx < len(self._items):
                 neighbour = self._items[idx]
@@ -1867,8 +1924,10 @@ class PhotoViewport(QWidget):
         ph = int(round(h * dpr))
         # Display-quality ceiling — applies BEFORE quantisation so the
         # quantised cache key tracks the ceiling, not the next-step-up
-        # past it. Long edge bounds the short edge in lockstep.
-        ceiling = _display_quality_ceiling()
+        # past it. Long edge bounds the short edge in lockstep. Quick
+        # Sweep lowers this further via ``_active_ceiling`` (spec/99 §A);
+        # fullscreen lifts the clamp back to the display ceiling.
+        ceiling = self._active_ceiling()
         long_edge = max(pw, ph)
         if long_edge > ceiling and long_edge > 0:
             scale = ceiling / long_edge

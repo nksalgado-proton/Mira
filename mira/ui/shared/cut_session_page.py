@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
 from mira.shared.cut_session import CutSession, SessionFile
 from mira.ui.base.shortcuts import show_shortcuts
 from mira.ui.base.surface import back_button
-from mira.ui.design import ThumbGrid, ThumbGridItem, ghost_button
+from mira.ui.design import ThumbGrid, ThumbGridItem, confirm, ghost_button
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
 
@@ -516,6 +516,13 @@ class CutSessionPage(QWidget):
         grid_chrome = QHBoxLayout()
         grid_chrome.setContentsMargins(0, 0, 0, 0)
         grid_chrome.setSpacing(12)
+        # spec/98 — visible back-to-days control (Esc / title-bar Back
+        # still work; the button just makes the days panel reachable
+        # without knowing those shortcuts).
+        self._back_to_days_btn = ghost_button(tr("‹ Back"))
+        self._back_to_days_btn.setToolTip(tr("Back to the day list  (Esc)"))
+        self._back_to_days_btn.clicked.connect(self._back_to_days)
+        grid_chrome.addWidget(self._back_to_days_btn)
         self._grid_header = QLabel("")
         self._grid_header.setObjectName("DayGridHeader")
         grid_chrome.addWidget(self._grid_header, stretch=1)
@@ -549,10 +556,14 @@ class CutSessionPage(QWidget):
 
         self._refresh_days()
         self._budget.refresh(session)
-        # Nelson eyeball 2026-06-12: Start must land ON PHOTOS — open the
-        # first day's grid immediately; the days panel is one Back away.
-        if self._groups:
+        # spec/98 (2026-06-22, revising the 2026-06-12 land-on-photos
+        # default): match the other phase surfaces — open on the day
+        # list so every day is visible. Exception: a single-day Cut
+        # has no list worth showing, so skip straight to its grid.
+        if len(self._groups) == 1:
             self._open_day(0)
+        else:
+            self._stack.setCurrentIndex(0)
 
     # ── data helpers ─────────────────────────────────────────────────
 
@@ -837,10 +848,38 @@ class CutSessionPage(QWidget):
         try:
             cut = self._session.commit(self._gw)
         except ValueError as exc:
+            code = str(exc)
+            if code == "taken":
+                # spec/98 — offer Replace; adopt the existing cut's id
+                # onto the session and re-commit, which then takes the
+                # update branch (update_cut_settings + member replace).
+                from core import cut_names as _names
+                slug = _names.slugify(self._session.name)
+                existing = self._gw.cut_by_tag(slug)
+                if existing is not None and confirm(
+                    self,
+                    tr("Replace existing?"),
+                    tr("A Cut named '{name}' already exists. Replace it?")
+                    .format(name=self._session.name),
+                    primary_text=tr("Replace"),
+                ):
+                    prior_id = self._session.cut_id
+                    self._session.cut_id = existing.id
+                    try:
+                        cut = self._session.commit(self._gw)
+                    except (ValueError, KeyError) as exc2:
+                        # The slug freed up between create and update (or
+                        # the row vanished); restore the fresh-create
+                        # path and fall through to the legacy message.
+                        self._session.cut_id = prior_id
+                        code = str(exc2) if isinstance(
+                            exc2, ValueError) else "taken"
+                    else:
+                        self.finished.emit(cut)
+                        return
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.NoIcon)
             box.setWindowTitle(tr("Cut name problem"))
-            code = str(exc)
             text = {
                 "taken": tr("Another Cut took this name meanwhile — "
                             "rename and try again."),

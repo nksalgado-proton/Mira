@@ -570,6 +570,38 @@ class EventsPage(QWidget):
                 id=sf.id,
             )
 
+        def _dc_replacer(name: str, expr: list, filters: dict) -> OperandOption:
+            """spec/98 — overwrite an existing Collection with the same
+            slugified name. The dialog calls this only after the user
+            confirmed Replace in the "taken" branch. Lookup miss (None)
+            falls back to ``create_dc`` (the slug got freed between the
+            create attempt and the confirm — extremely unlikely but
+            harmless to handle)."""
+            from core import cut_names
+            slug = cut_names.slugify(name)
+            sf = library_gateway.dc_by_tag(slug)
+            if sf is None:
+                sf = library_gateway.create_dc(
+                    name, expr=expr, filters=dict(filters or {}))
+            else:
+                library_gateway.update_dc(
+                    sf.id, expr=expr, filters=dict(filters or {}))
+                sf = library_gateway.dynamic_collection(sf.id) or sf
+            try:
+                live = library_gateway.dc_probe(
+                    library_gateway.dc_expr(sf),
+                    library_gateway.dc_filters(sf),
+                )
+            except Exception:                              # noqa: BLE001
+                live = 0
+            return OperandOption(
+                name=f"#{sf.tag}",
+                count=int(live or 0),
+                kind="dc",
+                tag=sf.tag,
+                id=sf.id,
+            )
+
         def _dc_loader(operand: OperandOption) -> tuple[list, dict]:
             """spec/90 §5 — Load DC for the cross-event Collection
             dialog. Resolves a saved DC operand to its (expr, filters)
@@ -646,6 +678,7 @@ class EventsPage(QWidget):
             recipe_probe=library_gateway.resolve_recipe,
             recipe_store=recipe_store,
             dc_creator=_dc_creator,
+            dc_replacer=_dc_replacer,
             dc_loader=_dc_loader,
             classify_placement=_classify,
             event_name_for_id=_event_name_for_id,
@@ -701,8 +734,39 @@ class EventsPage(QWidget):
         spec/94 Phase 4a-ii: cross-event Cuts now live in mira.db
         (spec/93 §3) — no anchor event.db is opened. The library
         gateway's lifecycle is owned by the umbrella Gateway / events
-        page; we just hand it off."""
-        session.commit(library_gateway)
+        page; we just hand it off.
+
+        spec/98 — on a name collision ("taken"), offer **Replace**:
+        adopt the existing cross-event cut's id onto the session and
+        re-commit, which then takes the update branch. Cancel re-
+        raises so the CrossEventPickerDialog's existing warning shows
+        and the user can rename."""
+        try:
+            session.commit(library_gateway)
+        except ValueError as exc:
+            if str(exc) != "taken":
+                raise
+            from core import cut_names as _names
+            from mira.ui.design import confirm
+            slug = _names.slugify(session.name)
+            existing = library_gateway.cross_event_cut_by_tag(slug)
+            if existing is None:
+                raise
+            if not confirm(
+                self,
+                tr("Replace existing?"),
+                tr("A Cut named '{name}' already exists. Replace it?")
+                .format(name=session.name),
+                primary_text=tr("Replace"),
+            ):
+                raise
+            prior_id = session.cut_id
+            session.cut_id = existing.id
+            try:
+                session.commit(library_gateway)
+            except Exception:                                # noqa: BLE001
+                session.cut_id = prior_id
+                raise
 
     # ── data ────────────────────────────────────────────────────────────
 

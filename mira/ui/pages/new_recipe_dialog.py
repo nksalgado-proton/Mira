@@ -76,6 +76,7 @@ from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
     GLYPH_CUT,
+    confirm,
     ghost_button,
     line_input,
     pill_toggle,
@@ -1582,6 +1583,8 @@ class NewRecipeDialog(QDialog):
         recipe_store: Optional[RecipeStore] = None,
         dc_creator: Optional[Callable[
             [str, list, dict], "OperandOption"]] = None,
+        dc_replacer: Optional[Callable[
+            [str, list, dict], "OperandOption"]] = None,
         dc_loader: Optional[Callable[
             ["OperandOption"], Tuple[list, dict]]] = None,
         classify_placement: Optional[Callable[[dict], Placement]] = None,
@@ -1617,6 +1620,10 @@ class NewRecipeDialog(QDialog):
         self._recipe_probe = recipe_probe
         self._recipe_store = recipe_store
         self._dc_creator = dc_creator
+        # spec/98 — Replace-existing host hook for the dc_creator's
+        # "taken" branch. Optional: when unwired, the "Pick another"
+        # fallback path is the only response to a name collision.
+        self._dc_replacer = dc_replacer
         self._dc_loader = dc_loader
         # spec/93 §5 — auto-placement classifier. The host wires this to a
         # callback that uses :func:`core.placement_classifier.classify_placement`
@@ -2333,6 +2340,32 @@ class NewRecipeDialog(QDialog):
             except ValueError as exc:
                 code = str(exc)
                 if code == "taken":
+                    # spec/98 — offer Replace; Cancel falls back to the
+                    # legacy "pick another" inline message so the user
+                    # can still rename.
+                    if self._dc_replacer is not None and confirm(
+                        dlg,
+                        tr("Replace existing?"),
+                        tr("A Collection named '{name}' already exists. "
+                           "Replace it?").format(name=name),
+                        primary_text=tr("Replace"),
+                    ):
+                        try:
+                            operand = self._dc_replacer(
+                                name, expr, filters)
+                        except Exception as exc2:               # noqa: BLE001
+                            log.exception(
+                                "dc_replacer raised — keeping the "
+                                "sub-dialog open")
+                            dlg.show_error(str(exc2) or tr(
+                                "Could not replace the Collection."))
+                            continue
+                        if operand is not None:
+                            self._append_operand_to_inventory(operand)
+                        self._toast(tr(
+                            "Collection '{name}' updated."
+                        ).format(name=name))
+                        return
                     msg = tr(
                         "A Collection named '{name}' already exists. "
                         "Pick another.").format(name=name)
@@ -3215,13 +3248,39 @@ class NewRecipeDialog(QDialog):
                     composition=self.composition(),
                 )
             except RecipeNameTakenError:
+                # spec/98 — offer Replace; Cancel keeps the legacy "pick
+                # another" inline path so the user can still rename.
                 kind = (tr("Collection") if self._flavour == FLAVOUR_COLLECTION
                         else tr("Cut"))
-                dlg.show_error(tr(
-                    "A {kind} Recipe named '{name}' already exists. "
-                    "Pick another."
-                ).format(kind=kind, name=name))
-                continue
+                existing = self._recipe_store.by_name(self._flavour, name)
+                if existing is None:
+                    dlg.show_error(tr(
+                        "A {kind} Recipe named '{name}' already exists. "
+                        "Pick another."
+                    ).format(kind=kind, name=name))
+                    continue
+                if not confirm(
+                    dlg,
+                    tr("Replace existing?"),
+                    tr("A {kind} Recipe named '{name}' already exists. "
+                       "Replace it?").format(kind=kind, name=name),
+                    primary_text=tr("Replace"),
+                ):
+                    dlg.show_error(tr(
+                        "A {kind} Recipe named '{name}' already exists. "
+                        "Pick another."
+                    ).format(kind=kind, name=name))
+                    continue
+                try:
+                    recipe = self._recipe_store.update(
+                        existing.id, composition=self.composition())
+                except (KeyError, RecipeNameTakenError, ValueError) as exc:
+                    dlg.show_error(str(exc))
+                    continue
+                self.recipe_saved.emit(recipe)
+                self._toast(tr(
+                    "Recipe '{name}' updated.").format(name=name))
+                return
             except ValueError as exc:                       # bad name
                 dlg.show_error(str(exc))
                 continue

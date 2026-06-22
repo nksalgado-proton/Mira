@@ -109,13 +109,18 @@ def test_show_help_method_exists(qapp, gw, tmp_path):
 
 def test_on_titlebar_back_dispatches_per_stack_state(qapp, gw, tmp_path):
     """spec/94 Phase 3 — Back steps back one level inside the
-    drilldown, only leaving the session at the top level."""
+    drilldown, only leaving the session at the top level. (spec/98
+    revised the start landing to the day list; the per-level dispatch
+    still steps single → grid → days → leave.)"""
     page = _page(gw, tmp_path)
-    # Start lands on the first day's grid (stack index 1, the day grid).
+    # spec/98 — start now lands on the day list (index 0). Drill into a
+    # day so the test exercises the grid → days → leave walk.
+    assert page._stack.currentIndex() == 0
+    page._open_day(0)
     assert page._stack.currentIndex() == 1
-    # Title-bar Back at the grid → days panel (index 0), no signal yet.
     fired: list = []
     page.back_requested.connect(lambda: fired.append("leave"))
+    # Title-bar Back at the grid → days panel (index 0), no signal yet.
     page.on_titlebar_back()
     assert page._stack.currentIndex() == 0
     assert fired == []
@@ -127,7 +132,9 @@ def test_on_titlebar_back_dispatches_per_stack_state(qapp, gw, tmp_path):
 def test_on_titlebar_back_from_single_view_returns_to_grid(qapp, gw, tmp_path):
     """Three-level dispatch — single → grid → days → leave."""
     page = _page(gw, tmp_path)
-    # Open the single view on the first cell.
+    # spec/98 — drill into a day's grid so ``_open_single`` has its
+    # backing day_items populated.
+    page._open_day(0)
     page._open_single(0)
     assert page._stack.currentIndex() == 2
     page.on_titlebar_back()

@@ -49,10 +49,14 @@ def test_days_panel_rows_with_pick_counts(qapp, gw, tmp_path):
     assert "Day 2" in texts[1] and "3 of 3 picked" in texts[1]
 
 
-def test_start_lands_on_the_first_day_grid(qapp, gw, tmp_path):
-    """Nelson eyeball 2026-06-12: Start must put PHOTOS on screen —
-    the first day's grid opens immediately; days panel is one Back away."""
+def test_start_lands_on_the_day_list_when_multi_day(qapp, gw, tmp_path):
+    """spec/98 (2026-06-22, revising the 2026-06-12 land-on-photos
+    default): the session opens on the day list to match the other
+    phase surfaces, so every day is visible. A subsequent ``_open_day``
+    drills into the grid as before."""
     page = _page(gw, tmp_path)
+    assert page._stack.currentIndex() == 0
+    page._open_day(0)
     assert page._stack.currentIndex() == 1
     payloads = [it.payload for it in page._grid.items()]
     assert payloads and payloads[0] == "Exported Media/e2.jpg"

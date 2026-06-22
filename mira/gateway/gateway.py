@@ -17,7 +17,7 @@ import sqlite3
 from core.path_builder import ensure_event_tree
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from mira.gateway.event_gateway import EventGateway, _utc_now_iso
 from mira.gateway.index import EventsIndex, make_entry
@@ -57,6 +57,81 @@ def _live_app_version() -> str:
         return metadata.version("mira")
     except Exception:                                      # noqa: BLE001
         return "dev"
+
+
+# spec/100 §B — resilient rmtree retry shape. Three tries × ~150 ms
+# rides out the transient Windows-Search / antivirus locks that the
+# UI-layer quiesce (§A) can't control.
+_RMTREE_RETRIES = 3
+_RMTREE_BACKOFF_S = 0.15
+
+
+def _resilient_rmtree(root: Path) -> List[Path]:
+    """spec/100 §B — ``shutil.rmtree`` that survives a transient lock.
+
+    On Windows an open handle (background proxy build, antivirus scan,
+    Search-indexer crawl) makes a file un-deletable for a brief window.
+    The UI-layer quiesce (§A) handles the in-app handles; this helper
+    rides out everything else: clear the read-only bit and retry the
+    unlink up to :data:`_RMTREE_RETRIES` times with a short backoff.
+
+    Returns the list of file paths that STILL could not be unlinked
+    after retries (empty when the wipe was clean). Never raises — the
+    caller (`delete_event`) drops the index row regardless (§C, no
+    zombie). The (otherwise discarded) ``shutil.rmtree`` Python-version
+    differences are bridged here: ``onexc`` on 3.12+, ``onerror`` on
+    older.
+    """
+    import os
+    import shutil
+    import stat
+    import sys
+    import time
+
+    residue: List[Path] = []
+
+    def _force_unlink(path: Path) -> bool:
+        for attempt in range(_RMTREE_RETRIES):
+            try:
+                try:
+                    os.chmod(path, stat.S_IWRITE)
+                except OSError:
+                    pass                # the unlink retry below is the real test
+                if path.is_dir() and not path.is_symlink():
+                    os.rmdir(path)
+                else:
+                    os.unlink(path)
+                return True
+            except FileNotFoundError:
+                return True             # already gone — someone else won the race
+            except OSError:
+                if attempt + 1 < _RMTREE_RETRIES:
+                    time.sleep(_RMTREE_BACKOFF_S)
+                    continue
+                return False
+        return False
+
+    def _on_error_3_12(_func, path, _exc_info):
+        # Python 3.12 `onexc(func, path, exc)`; older
+        # `onerror(func, path, exc_info)`. The 3.12 signature still
+        # gives us a usable path string — that's all we need.
+        if not _force_unlink(Path(path)):
+            residue.append(Path(path))
+
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(root, onexc=_on_error_3_12)
+        else:
+            shutil.rmtree(root, onerror=_on_error_3_12)
+    except FileNotFoundError:
+        pass                        # root vanished mid-walk — nothing to do
+    except OSError as exc:
+        # Top-level rmdir of the root itself failed after the walk —
+        # report it as residue so the UI can name it.
+        log.warning("_resilient_rmtree: root unlink failed (%s): %s",
+                    root, exc)
+        residue.append(Path(root))
+    return residue
 
 
 @dataclass
@@ -1077,8 +1152,15 @@ class Gateway:
 
     # ----- delete one event ---------------------------------------------- #
 
-    def delete_event(self, event_id: str, *, delete_files: bool = False) -> bool:
-        """Remove an event from Mira's record. Returns ``True`` if a row was present.
+    def delete_event(
+        self, event_id: str, *, delete_files: bool = False,
+    ) -> Tuple[bool, list]:
+        """Remove an event from Mira's record. Returns
+        ``(was_present, residue_paths)``: ``was_present`` is ``True``
+        when the events-index row was present (and now removed);
+        ``residue_paths`` is the list of file paths the wipe could not
+        unlink (always ``[]`` when ``delete_files=False`` or the wipe
+        ran clean — see spec/100 §B+§C).
 
         ``delete_files=False`` (default) is **index-only** — the photos, folders and
         ``event.db`` on disk are NOT touched; only the events-index row is dropped, so the
@@ -1091,10 +1173,21 @@ class Gateway:
         user *originals*: it is the second sanctioned place the app removes them (after the
         SD-wipe gate, invariant #9), so callers MUST gate it behind a blunt confirmation. It
         only ever touches **this event's own folder** under the resolved event root — never a
-        camera card or any path outside it. The folder is removed first, then the index row;
-        an unresolvable root falls back to an index-only removal (nothing to delete)."""
+        camera card or any path outside it.
+
+        spec/100 §B+§C — the wipe uses a resilient rmtree (retry +
+        clear-read-only) to ride out transient antivirus / Search-
+        indexer locks, and the events-index row is dropped EVEN IF a
+        few files stubbornly remain (so the user's deliberate "delete
+        this event" never leaves a zombie in Mira's list). The
+        residual paths are logged and returned so the UI can name
+        them; the caller's UI-layer quiesce (spec/100 §A) is what
+        actually prevents the residue in the first place. An
+        unresolvable root falls back to an index-only removal
+        (nothing to delete)."""
         if self.index.get(event_id) is None:
-            return False
+            return False, []
+        residue: list = []
         if delete_files:
             entry = self.index.get(event_id)
             root = self.index.resolve_root(entry, self.photos_base_path())
@@ -1126,11 +1219,23 @@ class Gateway:
                             "delete_event: pre-destructive snapshot "
                             "FAILED for %s: %s", event_id, exc,
                         )
-                import shutil
-                shutil.rmtree(root)
-                log.info("delete_event: removed event folder %s", root)
+                residue = _resilient_rmtree(root)
+                if residue:
+                    log.warning(
+                        "delete_event: %d residual file(s) under %s "
+                        "could not be deleted (Windows lock?) — index "
+                        "row dropped anyway (spec/100 §C, no zombie)",
+                        len(residue), root,
+                    )
+                else:
+                    log.info(
+                        "delete_event: removed event folder %s", root)
+        # spec/100 §C — always drop the index row. The user's
+        # deliberate choice was honoured for the record even if the OS
+        # held a file at the wipe instant; the residue list lets the
+        # UI tell the user where the survivors live.
         self.index.remove(event_id)
-        return True
+        return True, residue
 
     # ----- open one event ------------------------------------------------ #
 

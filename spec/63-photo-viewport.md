@@ -36,6 +36,17 @@ Surfaces never decode, scale, or cache pixels again.
   and the poster→live flip happens only when real frames flow for the
   item still on screen. This keeps the spec/59 no-black-frame
   guarantee AND kills the per-keypress flicker (2026-06-12 bug #1).
+- **MediaNav chrome (Nelson 2026-06-22):** prev/next on every viewing
+  surface (Picker / Editor / Quick Sweep / Full Resolution / Video
+  Picker / Video Editor) is an **inline ghost-styled "‹ Prev" /
+  "Next ›"** pair via :func:`mira.ui.design.media_nav.nav_button`,
+  sitting in the bottom control row alongside the other ghost buttons.
+  This **overrides** the earlier "floating circular ‹/› arrows, no
+  text Previous/Next" rule: the floating-arrow QSS role
+  (``#MediaNavArrow``) never propagated cleanly, so the Quick Sweep
+  viewer was rendering raw native OS buttons next to the ghost-styled
+  Pick / Skip / Compare cluster. Inline labelled ghost buttons keep
+  consistency without depending on a custom chrome role.
 
 ## 3. Engine evolution (PhotoCache v2)
 

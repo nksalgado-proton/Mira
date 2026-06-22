@@ -77,7 +77,7 @@ from mira.ui.design.icons import (
     tinted_svg_pixmap,
 )
 from mira.ui.design.inputs import line_input, search_field, select
-from mira.ui.design.media_nav import Filmstrip, nav_arrow
+from mira.ui.design.media_nav import Filmstrip, nav_button
 from mira.ui.design.photo_cycler import PhotoCycler
 from mira.ui.design.progress import StageProgress
 from mira.ui.design.stable_stage import StableMediaStage
@@ -143,7 +143,7 @@ __all__ = [
     "danger_ghost_button",
     "ghost_button",
     "line_input",
-    "nav_arrow",
+    "nav_button",
     "paint_tinted_svg",
     "pill_toggle",
     "primary_button",

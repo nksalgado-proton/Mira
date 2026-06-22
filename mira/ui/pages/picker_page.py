@@ -74,6 +74,7 @@ from mira.ui.design import (
     apply_density,
     danger_ghost_button,
     ghost_button,
+    nav_button,
 )
 from mira.ui.i18n import tr
 from mira.ui.media.photo_cache import photo_cache
@@ -286,7 +287,7 @@ class PickerPage(QWidget):
         nav_layout = self._surface.nav.layout()
         # The redesign's floating ‹ / › nav arrows live inside the nav row
         # for now (until we add them as overlay children on the viewport).
-        self._prev_btn = ghost_button("‹")
+        self._prev_btn = nav_button("left")
         self._prev_btn.setToolTip(tr("Previous photo  (←)"))
         self._prev_btn.clicked.connect(lambda: self._go(self._index - 1))
         nav_layout.addWidget(self._prev_btn)
@@ -346,7 +347,7 @@ class PickerPage(QWidget):
         nav_layout.addWidget(self._fullscreen_btn)
 
         nav_layout.addStretch(1)
-        self._next_btn = ghost_button("›")
+        self._next_btn = nav_button("right")
         self._next_btn.setToolTip(tr("Next photo  (→)"))
         self._next_btn.clicked.connect(lambda: self._go(self._index + 1))
         nav_layout.addWidget(self._next_btn)

@@ -69,7 +69,7 @@ from mira.ui.design import (
     SurfaceIdentityHeader,
     danger_ghost_button,
     ghost_button,
-    nav_arrow,
+    nav_button,
     primary_button,
 )
 from mira.ui.i18n import tr
@@ -354,7 +354,7 @@ class QuickSweepPage(QWidget):
 
         # ── NAV — ‹ Prev · action cluster · Full Res · Full Screen · Next ›
         nav_layout = surface.nav.layout()
-        self._prev_btn = nav_arrow("left")
+        self._prev_btn = nav_button("left")
         self._prev_btn.setToolTip(tr(
             "Previous item  (←  or wheel)"))
         self._prev_btn.clicked.connect(self._go_prev)
@@ -395,7 +395,7 @@ class QuickSweepPage(QWidget):
         nav_layout.addWidget(self._fullscreen_btn)
 
         nav_layout.addStretch(1)
-        self._next_btn = nav_arrow("right")
+        self._next_btn = nav_button("right")
         self._next_btn.setToolTip(tr(
             "Next item  (→  or wheel)"))
         self._next_btn.clicked.connect(self._go_next)

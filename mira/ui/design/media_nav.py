@@ -1,18 +1,23 @@
-"""MediaNav primitives — floating prev/next arrows + filmstrip.
+"""MediaNav primitives — inline prev/next ghost buttons + filmstrip.
 
-The redesign's spec/63 photo-viewport mandate: every single-item viewing
-surface (Picker / Editor / Full Resolution / Video Picker / Video Editor)
-uses the SAME pair — floating ‹/› arrows overlaid on the stage + a thumbnail
-filmstrip in the lower bar. No text Previous/Next buttons; consistency wins.
+Spec/63's photo-viewport mandate (Nelson 2026-06-22 revision): every
+single-item viewing surface (Picker / Editor / Quick Sweep / Full
+Resolution / Video Picker / Video Editor) uses the SAME pair — inline
+ghost-styled **"‹ Prev"** / **"Next ›"** buttons sitting in the bottom
+control row + a thumbnail filmstrip. The original spec called for
+floating circular arrows; that broke down because ``#MediaNavArrow`` had
+no QSS rule, so the Quick Sweep viewer rendered raw native OS buttons
+next to the ghost-styled ones. Inline labelled ghost buttons keep
+consistency without depending on a custom QSS rule for the chrome.
 
 This module ships TWO primitives — not a turnkey "MediaNav container" —
 because surfaces vary in how the stage is composed (Picker's blurred-fill
 canvas vs. Video Editor's timeline stack) and forcing them into one shape
 leaks complexity. The host composes:
 
-    arrow_left = nav_arrow("left", parent=stage)
-    arrow_left.move(20, stage.height() // 2 - 22)   # or in stage.resizeEvent
-    arrow_left.clicked.connect(self._go_prev)
+    btn_prev = nav_button("left")
+    btn_prev.clicked.connect(self._go_prev)
+    row.addWidget(btn_prev)
 
     filmstrip = Filmstrip()
     filmstrip.setItems(neighbour_thumbs)
@@ -33,23 +38,26 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mira.ui.design.buttons import ghost_button
 
-def nav_arrow(
+
+def nav_button(
     direction: str = "left", parent: QWidget | None = None
 ) -> QPushButton:
-    """Circular floating ‹/› button (#MediaNavArrow). The host positions it
-    via ``button.move(...)`` inside the stage's ``resizeEvent``.
+    """Inline ghost-styled **"‹ Prev"** / **"Next ›"** button (spec/63
+    MediaNav). The host places it in the bottom control row alongside
+    the other ghost buttons; the chevron sits on the natural-language
+    side of the label so left/right reads at a glance.
 
-    Pointing-hand cursor + Qt::WA_TranslucentBackground so the rounded edge
-    paints over the photo without leaving a square hit-target shadow.
+    Returns a :func:`ghost_button` (#Ghost role + redesign.qss styling
+    + pointing-hand cursor + visible hover/pressed/disabled states).
     """
     if direction not in ("left", "right"):
-        raise ValueError(f"direction must be 'left' or 'right', got {direction!r}")
-    btn = QPushButton("‹" if direction == "left" else "›", parent)
-    btn.setObjectName("MediaNavArrow")
+        raise ValueError(
+            f"direction must be 'left' or 'right', got {direction!r}")
+    label = "‹ Prev" if direction == "left" else "Next ›"
+    btn = ghost_button(label, parent)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedSize(QSize(44, 44))
-    btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
     return btn
 
 

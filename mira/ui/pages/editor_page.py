@@ -96,6 +96,7 @@ from mira.store import models as m
 from mira.ui.design import (
     apply_density,
     ghost_button,
+    nav_button,
 )
 from mira.ui.edited.adjustment_surface import (
     AdjustmentSurface,
@@ -352,8 +353,9 @@ class EditorPage(QWidget):
         bottom = QHBoxLayout(self._bottom_widget)
         bottom.setContentsMargins(0, 0, 0, 0)
         bottom.setSpacing(10)
-        # Flat chevron ghosts — NOT the floating circular #MediaNavArrow.
-        self._prev_btn = ghost_button("‹")
+        # Inline labelled ghost prev/next (spec/63 MediaNav, 2026-06-22 —
+        # was a bare ‹ glyph, now '‹ Prev' for consistency across surfaces).
+        self._prev_btn = nav_button("left")
         self._prev_btn.setToolTip(tr("Previous photo  (←)"))
         self._prev_btn.clicked.connect(self._on_prev)
         bottom.addWidget(self._prev_btn)
@@ -377,7 +379,7 @@ class EditorPage(QWidget):
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         bottom.addWidget(self._fullscreen_btn)
         bottom.addStretch(1)
-        self._next_btn = ghost_button("›")
+        self._next_btn = nav_button("right")
         self._next_btn.setToolTip(tr("Next photo  (→)"))
         self._next_btn.clicked.connect(self._on_next)
         bottom.addWidget(self._next_btn)

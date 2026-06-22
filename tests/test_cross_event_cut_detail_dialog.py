@@ -36,29 +36,33 @@ def _make_umbrella(tmp_path):
 def _seed(tmp_path, gw, photos_base, *,
           cut_id="cut-x", source_eid="src",
           source_members=2, anchor_members=1, grab_members=0):
-    """Build a source event + an anchor event with cut_member rows mixing
-    anchor-event members + cross-event members from the source."""
+    """spec/94 Phase 4a-ii: cross-event Cuts live in mira.db (spec/93 §3).
+    Build a source event + an anchor event in the index (so their roots
+    resolve), then seed the cut + members in the library store. Every
+    member carries an explicit ``event_id`` — there is no NULL "anchor"
+    fallback anymore."""
     from mira.gateway.index import make_entry
 
-    # Source event.
-    if source_members or grab_members:
-        src = photos_base / "Source"
-        src.mkdir(exist_ok=True)
-        store = EventStore.create(
-            src / "event.db", event_id=source_eid,
-            app_version="test", created_at=NOW)
-        with store.transaction() as conn:
-            conn.execute(
-                "INSERT INTO event (id, uuid, name, created_at, updated_at) "
-                "VALUES (1, ?, ?, ?, ?)",
-                (source_eid, "Source event", NOW, NOW))
-        store.close()
-        gw.index.upsert(make_entry(
-            event_id=source_eid, name="Source event",
-            start_date=None, end_date=None, is_closed=False,
-            event_root=src, photos_base_path=photos_base))
+    # Source event registered in the index (its bytes don't need to
+    # exist for the detail dialog).
+    src = photos_base / "Source"
+    src.mkdir(exist_ok=True)
+    store = EventStore.create(
+        src / "event.db", event_id=source_eid,
+        app_version="test", created_at=NOW)
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO event (id, uuid, name, created_at, updated_at) "
+            "VALUES (1, ?, ?, ?, ?)",
+            (source_eid, "Source event", NOW, NOW))
+    store.close()
+    gw.index.upsert(make_entry(
+        event_id=source_eid, name="Source event",
+        start_date=None, end_date=None, is_closed=False,
+        event_root=src, photos_base_path=photos_base))
 
-    # Anchor event with cut + members.
+    # Anchor event in the index too — the row's display attribution
+    # falls back to whichever member's event_id it sees first.
     anchor = photos_base / "Anchor"
     anchor.mkdir(exist_ok=True)
     store = EventStore.create(
@@ -68,36 +72,38 @@ def _seed(tmp_path, gw, photos_base, *,
         conn.execute(
             "INSERT INTO event (id, uuid, name, created_at, updated_at) "
             "VALUES (1, ?, ?, ?, ?)", ("anchor", "Anchor event", NOW, NOW))
-        conn.execute(
-            "INSERT INTO cut (id, tag, source_dc_kind, created_at, updated_at) "
-            "VALUES (?, ?, 'user', ?, ?)",
-            (cut_id, "test_tag", NOW, NOW))
-        for i in range(anchor_members):
-            conn.execute(
-                "INSERT INTO cut_member (cut_id, member_id, kind, "
-                "export_relpath, added_at) "
-                "VALUES (?, ?, 'export', ?, ?)",
-                (cut_id, f"Exported Media/anchor{i}.jpg",
-                 f"Exported Media/anchor{i}.jpg", NOW))
-        for i in range(source_members):
-            conn.execute(
-                "INSERT INTO cut_member (cut_id, member_id, kind, "
-                "export_relpath, event_id, added_at) "
-                "VALUES (?, ?, 'export', ?, ?, ?)",
-                (cut_id, f"Exported Media/src{i}.jpg",
-                 f"Exported Media/src{i}.jpg", source_eid, NOW))
-        for i in range(grab_members):
-            conn.execute(
-                "INSERT INTO cut_member (cut_id, member_id, kind, "
-                "origin_relpath, event_id, added_at) "
-                "VALUES (?, ?, 'grab', ?, ?, ?)",
-                (cut_id, f"Original Media/raw{i}.raw",
-                 f"Original Media/raw{i}.raw", source_eid, NOW))
     store.close()
     gw.index.upsert(make_entry(
         event_id="anchor", name="Anchor event",
         start_date=None, end_date=None, is_closed=False,
         event_root=anchor, photos_base_path=photos_base))
+
+    # Seed the cut + members in mira.db (the library store).
+    lg = gw.library_gateway()
+    with lg.user_store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO cut (id, tag, source_dc_kind, "
+            "                 created_at, updated_at) "
+            "VALUES (?, ?, 'user', ?, ?)",
+            (cut_id, "test_tag", NOW, NOW))
+    members: list = []
+    for i in range(anchor_members):
+        members.append({
+            "event_id": "anchor", "kind": "export",
+            "export_relpath": f"Exported Media/anchor{i}.jpg",
+        })
+    for i in range(source_members):
+        members.append({
+            "event_id": source_eid, "kind": "export",
+            "export_relpath": f"Exported Media/src{i}.jpg",
+        })
+    for i in range(grab_members):
+        members.append({
+            "event_id": source_eid, "kind": "grab",
+            "origin_relpath": f"Original Media/raw{i}.raw",
+        })
+    if members:
+        lg.set_cross_event_cut_members(cut_id, members)
 
 
 def _row(cut_id="cut-x", *, member_count=3) -> CrossEventCutRow:
@@ -134,20 +140,19 @@ def test_empty_cut_shows_no_members(qapp, tmp_path):
 
 
 def test_groups_anchor_first_then_cross_event(qapp, tmp_path):
-    """Anchor-event members (event_id NULL) sort first; cross-event members
-    follow grouped by their source event."""
+    """Members are grouped by source event. spec/94 Phase 4a-ii: every
+    member has an explicit ``event_id`` (no NULL "anchor" fallback);
+    LibraryGateway returns rows ordered by ``event_id``."""
     gw, photos_base = _make_umbrella(tmp_path)
     _seed(tmp_path, gw, photos_base,
           anchor_members=2, source_members=3)
     d = CrossEventCutDetailDialog(gw, _row(member_count=5))
     groups = d._fetch_member_groups()
     assert len(groups) == 2
-    # First group = NULL event_id (anchor).
-    assert groups[0][0] is None
-    assert len(groups[0][1]) == 2
-    # Second group = 'src'.
-    assert groups[1][0] == "src"
-    assert len(groups[1][1]) == 3
+    event_ids = [g[0] for g in groups]
+    assert set(event_ids) == {"anchor", "src"}
+    sizes = {g[0]: len(g[1]) for g in groups}
+    assert sizes == {"anchor": 2, "src": 3}
     d.deleteLater()
     gw.close()
 

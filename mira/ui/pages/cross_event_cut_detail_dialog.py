@@ -106,38 +106,27 @@ class CrossEventCutDetailDialog(QDialog):
 
     def _fetch_member_groups(self) -> list:
         """Return ``[(event_id, [rows])]`` for the cut. Rows carry kind /
-        relpath / added_at."""
-        from mira.store.repo import EventStore
-        anchor_entry = self._gw.index.get(self._cut_row.anchor_event_id)
-        if anchor_entry is None:
-            return []
-        anchor_root = self._gw.index.resolve_root(
-            anchor_entry, self._gw.photos_base_path())
-        if anchor_root is None or not (anchor_root / "event.db").exists():
-            return []
-        store = EventStore.open(anchor_root / "event.db")
-        try:
-            rows = store.conn.execute(
-                "SELECT kind, export_relpath, origin_relpath, event_id "
-                "FROM cut_member WHERE cut_id = ? "
-                "ORDER BY event_id IS NULL DESC, event_id, added_at",
-                (self._cut_row.cut_id,),
-            ).fetchall()
-        finally:
-            store.close()
+        relpath / added_at.
+
+        spec/94 Phase 4a-ii: members live in mira.db (spec/93 §3); the
+        read is one ``LibraryGateway.cross_event_cut_members`` call,
+        no event.db opens. Per-event grouping is preserved (the library
+        gateway returns rows ordered by event_id, then added_at)."""
+        lg = self._gw.library_gateway()
+        rows = lg.cross_event_cut_members(self._cut_row.cut_id)
         groups: list = []
         current_id: object = object()
         current_list: list = []
         for r in rows:
-            eid = r["event_id"]
+            eid = r.event_id
             if eid != current_id:
                 current_id = eid
                 current_list = []
                 groups.append((eid, current_list))
             current_list.append({
-                "kind": r["kind"],
-                "export_relpath": r["export_relpath"],
-                "origin_relpath": r["origin_relpath"],
+                "kind": r.kind,
+                "export_relpath": r.export_relpath,
+                "origin_relpath": r.origin_relpath,
             })
         return groups
 

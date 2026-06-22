@@ -40,9 +40,19 @@ def _make_umbrella(tmp_path):
 
 def _seed_event_with_cuts(photos_base: Path, *, eid: str, name: str,
                           event_cut_count: int = 0,
-                          cross_event_cut_count: int = 0) -> Path:
-    """Build an event.db with some cuts split between event-scope and
-    cross-event (source_dc_kind = 'user'). Returns the event_root."""
+                          cross_event_cut_count: int = 0,
+                          gateway=None) -> Path:
+    """Build an event.db with some event-scope cuts AND seed
+    cross-event cuts in mira.db (spec/94 Phase 4a-ii). The event-scope
+    cuts stay per-event; the cross-event ones live in the library
+    store.
+
+    ``gateway`` (the umbrella) must be passed when ``cross_event_cut_count
+    > 0`` — that's the library store the cross-event rows go into. Each
+    cross-event cut is given one member from this event so the umbrella
+    list path attributes them a representative "anchor".
+
+    Returns the event_root."""
     root = photos_base / name
     root.mkdir(exist_ok=True)
     store = EventStore.create(
@@ -58,14 +68,20 @@ def _seed_event_with_cuts(photos_base: Path, *, eid: str, name: str,
                 "INSERT INTO cut (id, tag, source_dc_kind, created_at, "
                 "updated_at) VALUES (?, ?, 'event', ?, ?)",
                 (f"{eid}-evt-cut-{i}", f"evt_{eid}_{i}", NOW, NOW))
-        for i in range(cross_event_cut_count):
-            conn.execute(
-                "INSERT INTO cut (id, tag, source_dc_kind, "
-                "source_dc_id, created_at, updated_at) "
-                "VALUES (?, ?, 'user', ?, ?, ?)",
-                (f"{eid}-cross-cut-{i}", f"cross_{eid}_{i}",
-                 "sf-1", NOW, NOW))
     store.close()
+    if cross_event_cut_count and gateway is not None:
+        lg = gateway.library_gateway()
+        for i in range(cross_event_cut_count):
+            cut_id = f"{eid}-cross-cut-{i}"
+            with lg.user_store.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO cut (id, tag, source_dc_kind, "
+                    "source_dc_id, created_at, updated_at) "
+                    "VALUES (?, ?, 'user', ?, ?, ?)",
+                    (cut_id, f"cross_{eid}_{i}", "sf-1", NOW, NOW))
+            lg.set_cross_event_cut_members(cut_id, [
+                {"event_id": eid, "kind": "export",
+                 "export_relpath": f"Exported Media/p{i}.jpg"}])
     return root
 
 
@@ -84,27 +100,34 @@ def _register(gw, photos_base, root: Path, *, eid: str, name: str) -> None:
 
 
 def test_cross_event_cuts_lists_only_user_kind_cuts(tmp_path):
-    """Only ``source_dc_kind = 'user'`` cuts appear — event-scope cuts
-    don't leak into the cross-event surface."""
+    """spec/94 Phase 4a-ii: cross-event Cuts live in mira.db, so the
+    umbrella ``cross_event_cuts`` reads only from there. event.db
+    event-scope cuts are never visited."""
     gw, photos_base = _make_umbrella(tmp_path)
     r = _seed_event_with_cuts(
         photos_base, eid="e1", name="E1",
-        event_cut_count=2, cross_event_cut_count=3)
+        event_cut_count=2, cross_event_cut_count=3,
+        gateway=gw)
     _register(gw, photos_base, r, eid="e1", name="E1")
     rows = gw.cross_event_cuts()
     assert len(rows) == 3
     assert all(isinstance(r, CrossEventCutRow) for r in rows)
+    # The first member's event_id becomes the row's "anchor" display.
     assert all(r.anchor_event_id == "e1" for r in rows)
     gw.close()
 
 
 def test_cross_event_cuts_spans_every_event(tmp_path):
-    """The walk visits every event.db in the index."""
+    """spec/94 Phase 4a-ii: cross-event Cuts live in mira.db; members
+    from multiple events all sit side-by-side. The list returns every
+    Cut once, regardless of how many events it spans."""
     gw, photos_base = _make_umbrella(tmp_path)
     r1 = _seed_event_with_cuts(
-        photos_base, eid="e1", name="E1", cross_event_cut_count=2)
+        photos_base, eid="e1", name="E1",
+        cross_event_cut_count=2, gateway=gw)
     r2 = _seed_event_with_cuts(
-        photos_base, eid="e2", name="E2", cross_event_cut_count=1)
+        photos_base, eid="e2", name="E2",
+        cross_event_cut_count=1, gateway=gw)
     _register(gw, photos_base, r1, eid="e1", name="E1")
     _register(gw, photos_base, r2, eid="e2", name="E2")
     rows = gw.cross_event_cuts()
@@ -114,7 +137,10 @@ def test_cross_event_cuts_spans_every_event(tmp_path):
 
 
 def test_cross_event_cuts_skips_unopenable_events(tmp_path):
-    """An event whose store can't open is skipped + logged, never raised."""
+    """spec/94 Phase 4a-ii: cross-event Cuts live in mira.db, so an
+    unopenable event.db never blocks the list. The Cuts still
+    enumerate; their "anchor" attribution may fall back to the raw
+    uuid when the entry's missing."""
     gw, photos_base = _make_umbrella(tmp_path)
     # Register an event whose root doesn't exist on disk.
     ghost = photos_base / "Gone"
@@ -122,7 +148,8 @@ def test_cross_event_cuts_skips_unopenable_events(tmp_path):
     _register(gw, photos_base, ghost, eid="gone", name="Gone")
     # Also a real event.
     r = _seed_event_with_cuts(
-        photos_base, eid="e1", name="E1", cross_event_cut_count=1)
+        photos_base, eid="e1", name="E1",
+        cross_event_cut_count=1, gateway=gw)
     _register(gw, photos_base, r, eid="e1", name="E1")
     rows = gw.cross_event_cuts()
     assert len(rows) == 1
@@ -131,21 +158,19 @@ def test_cross_event_cuts_skips_unopenable_events(tmp_path):
 
 
 def test_cross_event_cuts_member_count(tmp_path):
-    """Each row reports the cut's member count."""
+    """Each row reports the Cut's member count from mira.db. The
+    LibraryGateway query is one SELECT — no event.db walks."""
     gw, photos_base = _make_umbrella(tmp_path)
     r = _seed_event_with_cuts(
-        photos_base, eid="e1", name="E1", cross_event_cut_count=1)
-    # Seed 3 cut_member rows directly.
-    store = EventStore.open(r / "event.db")
-    with store.transaction() as conn:
-        for i in range(3):
-            conn.execute(
-                "INSERT INTO cut_member (cut_id, member_id, kind, "
-                "export_relpath, added_at) "
-                "VALUES (?, ?, 'export', ?, ?)",
-                ("e1-cross-cut-0", f"Exported Media/p{i}.jpg",
-                 f"Exported Media/p{i}.jpg", NOW))
-    store.close()
+        photos_base, eid="e1", name="E1",
+        cross_event_cut_count=1, gateway=gw)
+    # Replace the single seeded member with 3.
+    lg = gw.library_gateway()
+    lg.set_cross_event_cut_members("e1-cross-cut-0", [
+        {"event_id": "e1", "kind": "export",
+         "export_relpath": f"Exported Media/p{i}.jpg"}
+        for i in range(3)
+    ])
     _register(gw, photos_base, r, eid="e1", name="E1")
     rows = gw.cross_event_cuts()
     assert rows[0].member_count == 3
@@ -162,7 +187,7 @@ def _open_dialog(qapp, tmp_path, *, num_cuts: int = 0):
     if num_cuts:
         r = _seed_event_with_cuts(
             photos_base, eid="e1", name="E1",
-            cross_event_cut_count=num_cuts)
+            cross_event_cut_count=num_cuts, gateway=gw)
         _register(gw, photos_base, r, eid="e1", name="E1")
     dialog = CrossEventCutsDialog(gw)
     return dialog, gw

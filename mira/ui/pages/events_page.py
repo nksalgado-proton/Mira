@@ -696,7 +696,7 @@ class EventsPage(QWidget):
                 return
 
             def _commit_cb(sess):
-                self._direct_commit_cross_event_cut(sess, anchor)
+                self._direct_commit_cross_event_cut(sess, library_gateway)
 
             picker = CrossEventPickerDialog(
                 session, commit_callback=_commit_cb, parent=self)
@@ -705,14 +705,14 @@ class EventsPage(QWidget):
         dlg.start_requested.connect(_on_start)
         dlg.exec()
 
-    def _direct_commit_cross_event_cut(self, session, anchor_event_id) -> None:
-        """Open the anchor event's gateway + drive ``session.commit`` +
-        close."""
-        anchor_gw = self.gateway.open_event(anchor_event_id)
-        try:
-            session.commit(anchor_gw)
-        finally:
-            anchor_gw.close()
+    def _direct_commit_cross_event_cut(self, session, library_gateway) -> None:
+        """Drive ``session.commit`` against the library gateway.
+
+        spec/94 Phase 4a-ii: cross-event Cuts now live in mira.db
+        (spec/93 §3) — no anchor event.db is opened. The library
+        gateway's lifecycle is owned by the umbrella Gateway / events
+        page; we just hand it off."""
+        session.commit(library_gateway)
 
     # ── data ────────────────────────────────────────────────────────────
 

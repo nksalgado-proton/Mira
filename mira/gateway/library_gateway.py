@@ -61,6 +61,12 @@ from mira.user_store.repo import UserStore
 log = logging.getLogger(__name__)
 
 
+#: Sentinel for "argument not passed" — distinguishes None (= NULL the
+#: column) from omission (= leave column untouched). Module-private so
+#: callers always go through the keyword API.
+_UNSET = object()
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1154,6 +1160,269 @@ class LibraryGateway:
             return (hint_scenario, confidence)
 
         return _hint
+
+    # =================================================================== #
+    # Cross-event Cuts (spec/93 §3, spec/94 Phase 4a-ii)
+    #
+    # mira.db's ``cut`` + ``cut_member`` tables hold the dishes that span
+    # events (one Cut row, members carry their source event's UUID). The
+    # bytes never move — only references. No FK across stores: a member's
+    # ``event_id`` is opaque TEXT here, validated against the events
+    # index out-of-band (gateway sweeps). The freeze invariant (spec/81
+    # §5) lives at this seam too: ``delete_dc`` NULLs ``source_dc_id``
+    # on any Cut that pointed at the dropped DC.
+    # =================================================================== #
+
+    def cross_event_cuts(self) -> List[um.Cut]:
+        """Every cross-event Cut, most-recently-updated first. Same
+        ordering :class:`mira.gateway.gateway.CrossEventCutRow` used in
+        the legacy event.db-walk surface so the dialogs see the same
+        sequence on the flip."""
+        return self.user_store.query_raw(
+            um.Cut, "SELECT * FROM cut ORDER BY updated_at DESC, id")
+
+    def cross_event_cut(self, cut_id: str) -> Optional[um.Cut]:
+        """Lookup by id; ``None`` when the Cut was deleted (the freeze
+        invariant lives on the Cut's frozen members, not the id)."""
+        return self.user_store.get(um.Cut, cut_id)
+
+    def cross_event_cut_by_tag(self, tag: str) -> Optional[um.Cut]:
+        """Lookup by tag — the cross-event name namespace is global at
+        the user level. COLLATE NOCASE matches the SQL constraint."""
+        rows = self.user_store.query_by(um.Cut, tag=tag)
+        return rows[0] if rows else None
+
+    def cross_event_cut_members(self, cut_id: str) -> List[um.CutMember]:
+        """Membership rows for one cross-event Cut, ordered by source
+        event then ``added_at`` (chronological insertion). The flat-grid
+        + export pipelines re-sort by capture-time downstream; this
+        order is the insertion order, useful for the detail viewer's
+        per-event grouping."""
+        return self.user_store.query_raw(
+            um.CutMember,
+            "SELECT * FROM cut_member WHERE cut_id = ? "
+            "ORDER BY event_id, added_at, member_id",
+            (cut_id,))
+
+    def create_cross_event_cut(
+        self,
+        name: str,
+        *,
+        source_dc_id: Optional[str] = None,
+        source_dc_kind: Optional[str] = "user",
+        expr_snapshot: Optional[Sequence[Sequence]] = None,
+        target_s: Optional[int] = None,
+        max_s: Optional[int] = None,
+        photo_s: float = 6.0,
+        default_state: str = "skipped",
+        music_category: Optional[str] = None,
+        separators: bool = False,
+        overlay_fields: Optional[Sequence[str]] = None,
+        overlay_mode: Optional[str] = None,
+        card_style: str = "black",
+    ) -> um.Cut:
+        """Create a cross-event Cut from a user-typed name (slugified
+        + validated against the cross-event Cut + DC namespaces).
+        Returns the persisted row.
+
+        ``expr_snapshot`` is the spec/81 §2 frozen formula — the Cut
+        never re-resolves against it (spec/81 §5); the membership is
+        the source of truth. ``card_style`` lands in ``extras_json``
+        per the standing house pattern (spec/61 §4)."""
+        slug = cut_names.slugify(name)
+        # Collide-check against existing cross-event Cuts + the cross-
+        # event DC namespace (a tag means one thing across the library).
+        taken = [c.tag for c in self.cross_event_cuts()]
+        taken.extend(d.tag for d in self.dynamic_collections())
+        err = cut_names.check_tag(slug, taken)
+        if err:
+            raise ValueError(err)
+        cut_id = self._new_id()
+        now = self._now()
+        expr_list = [list(t) for t in (expr_snapshot or ())]
+        extras = json.dumps(
+            {"card_style": card_style} if card_style else {})
+        row = um.Cut(
+            id=cut_id, tag=slug,
+            source_dc_id=source_dc_id,
+            source_dc_kind=source_dc_kind,
+            expr_snapshot_json=json.dumps(expr_list),
+            target_s=target_s, max_s=max_s, photo_s=photo_s,
+            default_state=default_state,
+            music_category=music_category,
+            separators=bool(separators),
+            overlay_fields_json=json.dumps(list(overlay_fields or ())),
+            overlay_mode=overlay_mode,
+            created_at=now, updated_at=now,
+            extras_json=extras,
+        )
+        with self.user_store.transaction():
+            self.user_store.upsert(row)
+        return row
+
+    def rename_cross_event_cut(self, cut_id: str, new_name: str) -> um.Cut:
+        """Rename — slug + validate against the cross-event namespace
+        (excluding this Cut's own tag). The freeze invariant is
+        untouched (rename changes only the tag, not the membership)."""
+        cut = self.cross_event_cut(cut_id)
+        if cut is None:
+            raise KeyError(cut_id)
+        slug = cut_names.slugify(new_name)
+        taken = [c.tag for c in self.cross_event_cuts() if c.id != cut_id]
+        taken.extend(d.tag for d in self.dynamic_collections())
+        err = cut_names.check_tag(slug, taken)
+        if err:
+            raise ValueError(err)
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "UPDATE cut SET tag = ?, updated_at = ? WHERE id = ?",
+                (slug, self._now(), cut_id))
+        return replace(cut, tag=slug, updated_at=self._now())
+
+    def update_cross_event_cut_settings(
+        self,
+        cut_id: str,
+        *,
+        source_dc_id: Any = _UNSET,
+        source_dc_kind: Any = _UNSET,
+        expr_snapshot_json: Any = _UNSET,
+        target_s: Any = _UNSET,
+        max_s: Any = _UNSET,
+        photo_s: Any = _UNSET,
+        default_state: Any = _UNSET,
+        music_category: Any = _UNSET,
+        separators: Any = _UNSET,
+        overlay_fields_json: Any = _UNSET,
+        overlay_mode: Any = _UNSET,
+        card_style: Any = _UNSET,
+    ) -> None:
+        """Edit-in-place — passes update only the fields the caller
+        names. Pass ``None`` to NULL a column; omit the kwarg to leave
+        it untouched (the ``_UNSET`` sentinel). ``card_style`` rides
+        in ``extras_json``."""
+        cut = self.cross_event_cut(cut_id)
+        if cut is None:
+            raise KeyError(cut_id)
+        sets: Dict[str, Any] = {}
+        for col, val in (
+            ("source_dc_id", source_dc_id),
+            ("source_dc_kind", source_dc_kind),
+            ("expr_snapshot_json", expr_snapshot_json),
+            ("target_s", target_s),
+            ("max_s", max_s),
+            ("photo_s", photo_s),
+            ("default_state", default_state),
+            ("music_category", music_category),
+            ("overlay_fields_json", overlay_fields_json),
+            ("overlay_mode", overlay_mode),
+        ):
+            if val is _UNSET:
+                continue
+            sets[col] = val
+        # ``separators`` is the only column with a Boolean coercion;
+        # handle it after the loop so the sentinel check stays clean.
+        if separators is not _UNSET:
+            sets["separators"] = 1 if bool(separators) else 0
+        if card_style is not _UNSET:
+            extras = {}
+            try:
+                extras = json.loads(cut.extras_json or "{}") or {}
+                if not isinstance(extras, dict):
+                    extras = {}
+            except (ValueError, TypeError):
+                extras = {}
+            if card_style is None:
+                extras.pop("card_style", None)
+            else:
+                extras["card_style"] = card_style
+            sets["extras_json"] = json.dumps(extras)
+        if not sets:
+            return
+        cols = ", ".join(f"{k} = ?" for k in sets)
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                f"UPDATE cut SET {cols}, updated_at = ? WHERE id = ?",
+                (*sets.values(), self._now(), cut_id))
+
+    def set_cross_event_cut_members(
+        self,
+        cut_id: str,
+        members: Iterable[Mapping[str, Any]],
+    ) -> None:
+        """Replace-all membership: drop every existing row for ``cut_id``
+        and insert the passed-in set in one transaction. Each member is a
+        mapping with ``event_id`` (REQUIRED, non-empty), ``kind`` ('export'
+        | 'grab'), and the matching relpath (``export_relpath`` for
+        'export', ``origin_relpath`` for 'grab'). ``member_id`` is
+        auto-derived from the relpath of the kind in use; the caller
+        may pass an explicit value to override.
+
+        The cut row's ``updated_at`` stamps to ``now`` so the list
+        ordering ("newest" first) reflects the membership change."""
+        if self.cross_event_cut(cut_id) is None:
+            raise KeyError(cut_id)
+        now = self._now()
+        prepared: list = []
+        for m_raw in members:
+            event_id = (m_raw.get("event_id") or "").strip()
+            if not event_id:
+                raise ValueError(
+                    "cross_event cut_member.event_id is required "
+                    "(spec/93 §3 — cross-event Cuts span events)")
+            kind = m_raw.get("kind") or "export"
+            export_relpath = m_raw.get("export_relpath")
+            origin_relpath = m_raw.get("origin_relpath")
+            member_id = m_raw.get("member_id")
+            if member_id is None:
+                member_id = (origin_relpath if kind == "grab"
+                             else export_relpath)
+            if not member_id:
+                raise ValueError(
+                    "cross_event cut_member requires either "
+                    "export_relpath (kind='export') or origin_relpath "
+                    "(kind='grab')")
+            prepared.append((
+                cut_id, event_id, member_id, kind,
+                export_relpath, origin_relpath, now))
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM cut_member WHERE cut_id = ?", (cut_id,))
+            for row in prepared:
+                conn.execute(
+                    "INSERT INTO cut_member "
+                    "(cut_id, event_id, member_id, kind, "
+                    " export_relpath, origin_relpath, added_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)", row)
+            conn.execute(
+                "UPDATE cut SET updated_at = ? WHERE id = ?",
+                (now, cut_id))
+
+    def delete_cross_event_cut(self, cut_id: str) -> None:
+        """Drop a cross-event Cut. Members cascade via the cut_id FK
+        (same store; the FK is safe). Already-exported folders on disk
+        are untouched — :meth:`export_cross_event_cut` writes
+        per-call, not as a freezing operation."""
+        with self.user_store.transaction() as conn:
+            conn.execute("DELETE FROM cut WHERE id = ?", (cut_id,))
+
+    def cross_event_cut_member_count(self, cut_id: str) -> int:
+        """Count members of one cross-event Cut — used by the Cuts list
+        row for the "N members" line without re-reading every row."""
+        row = self.user_store.conn.execute(
+            "SELECT COUNT(*) FROM cut_member WHERE cut_id = ?",
+            (cut_id,)).fetchone()
+        return int(row[0] if row else 0)
+
+    def stamp_cross_event_cut_exported(self, cut_id: str) -> None:
+        """The export pipeline's stamp: update ``last_exported_at`` only
+        (no other field). The Cut's identity is untouched."""
+        if self.cross_event_cut(cut_id) is None:
+            raise KeyError(cut_id)
+        now = self._now()
+        with self.user_store.transaction() as conn:
+            conn.execute(
+                "UPDATE cut SET last_exported_at = ? WHERE id = ?",
+                (now, cut_id))
 
     # =================================================================== #
     # Sync triggers — the projection stays in lockstep with event.db

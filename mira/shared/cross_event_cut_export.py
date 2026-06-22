@@ -1,23 +1,28 @@
-"""Cross-event Cut export — bytes flow (spec/81 Phase 2 polish — Item 4 + 6).
+"""Cross-event Cut export — bytes flow (spec/81 Phase 2 + spec/94
+Phase 4a-ii — repointed at mira.db).
 
-The cross-event analogue of :mod:`mira.shared.cut_export`. Materialises a
-cross-event Cut as a directory of links / copies:
+Materialises a cross-event Cut as a directory of links / copies:
 
-* **Export-kind members** (the legacy lineage path) — hardlink from the
-  source event's ``Exported Media/<export_relpath>``. Hardlink fails
-  cross-volume; falls back to a copy.
-* **Grab-kind members** (spec/61 §6, §8 — Item 6) — copy from the source
-  event's ``Original Media/<origin_relpath>``. Copies are never linked
-  because Original Media is the byte-pristine tier (charter §3 + spec/57):
+* **Export-kind members** — hardlink from the source event's
+  ``Exported Media/<export_relpath>``. Hardlink fails cross-volume;
+  falls back to a copy.
+* **Grab-kind members** (spec/61 §6, §8) — copy from the source event's
+  ``Original Media/<origin_relpath>``. Copies are never linked because
+  Original Media is the byte-pristine tier (charter §3 + spec/57):
   taking a link would couple the Cut's output to the source event's
   pristine bytes, and the export must stay independent.
 
 For each member the source event's root is resolved via the umbrella
-:class:`mira.gateway.gateway.Gateway`. Members whose source event isn't in
-the index (relocated, deleted) are reported under ``missing`` and skipped —
-the export still produces a directory; the user sees the warning. Atomic at
-the per-file level (each link/copy operation), idempotent at the
-directory level (re-export overwrites identically-named target files).
+:class:`mira.gateway.gateway.Gateway`. Members whose source event isn't
+in the index (relocated, deleted) are reported under ``missing`` and
+skipped — the export still produces a directory; the user sees the
+warning. Atomic at the per-file level, idempotent at the directory
+level (re-export overwrites identically-named target files).
+
+spec/94 Phase 4a-ii: the cut + cut_member rows now live in **mira.db**
+(spec/93 §3). The export pipeline reads them through the library
+gateway in one query; no event.db is opened for membership lookups.
+Per-member event_id still routes back to each source event's bytes.
 
 No Qt; the events page wires it from the cross-event Cuts list action.
 """
@@ -34,8 +39,8 @@ log = logging.getLogger(__name__)
 
 
 class CrossEventExportError(RuntimeError):
-    """Surface to the UI when export can't proceed (anchor event gone,
-    target unwritable, etc.)."""
+    """Surface to the UI when export can't proceed (cut gone from the
+    library, target unwritable, etc.)."""
 
 
 @dataclass(frozen=True)
@@ -47,14 +52,15 @@ class _ResolvedMember:
     kind: str                     # 'export' | 'grab'
     source_root: Path             # the source event's event_root
     source_relpath: str           # export_relpath OR origin_relpath
-    event_id: Optional[str]
+    event_id: str
 
 
 def _safe_filename(rel: str) -> str:
     """Flatten a relpath to a single filename for the cross-event Cut
-    output. Cross-event members come from multiple event roots, so a member
-    from event A and a member from event B could share a relpath; the output
-    folder needs distinct names. Replace path separators with ``_``."""
+    output. Cross-event members come from multiple event roots, so a
+    member from event A and a member from event B could share a relpath;
+    the output folder needs distinct names. Replace path separators with
+    ``_``."""
     rel = rel.replace("\\", "/")
     return rel.replace("/", "_")
 
@@ -90,14 +96,20 @@ def export_cross_event_cut(
 ) -> dict:
     """Materialise a cross-event Cut at ``target`` (a writable directory).
 
-    Opens the anchor event, reads cut_member rows, resolves each member to
-    its source event's bytes, and links / copies into ``target`` with a
-    flattened filename. Returns a summary dict ``{member_count, linked,
-    copied, missing, members_missing: [...]}`` for the UI to surface.
+    Reads cut_member rows from **mira.db** via
+    :meth:`LibraryGateway.cross_event_cut_members`, resolves each member
+    to its source event's bytes, and links / copies into ``target`` with
+    a flattened filename. Returns a summary dict ``{member_count, linked,
+    copied, missing, members_missing}`` for the UI to surface.
 
-    Raises :class:`CrossEventExportError` only when the export can't run at
-    all (anchor event gone, target unwritable). Per-member errors fall
-    under ``missing``."""
+    ``anchor_event_id`` is kept for back-compat with the legacy
+    signature and ignored — the cut + its members live in the library
+    store now (spec/93 §3); per-member event_id routes to the right
+    source event for each link/copy.
+
+    Raises :class:`CrossEventExportError` only when the export can't
+    run at all (cut gone from mira.db, target unwritable). Per-member
+    errors fall under ``missing``."""
     target = Path(target)
     if not target.exists():
         try:
@@ -106,43 +118,29 @@ def export_cross_event_cut(
             raise CrossEventExportError(
                 f"could not create target {target}: {exc}") from exc
 
-    anchor_root = _open_event_root(gateway, anchor_event_id)
-    if anchor_root is None or not (anchor_root / "event.db").exists():
+    lg = gateway.library_gateway()
+    cut = lg.cross_event_cut(cut_id)
+    if cut is None:
         raise CrossEventExportError(
-            f"anchor event {anchor_event_id} is unresolvable")
-
-    from mira.store.repo import EventStore
-    members: list = []
-    try:
-        anchor_store = EventStore.open(anchor_root / "event.db")
-    except Exception as exc:
-        raise CrossEventExportError(
-            f"could not open anchor event.db: {exc}") from exc
-    try:
-        rows = anchor_store.conn.execute(
-            "SELECT member_id, kind, export_relpath, origin_relpath, "
-            "event_id FROM cut_member WHERE cut_id = ?",
-            (cut_id,),
-        ).fetchall()
-    finally:
-        anchor_store.close()
+            f"cross-event Cut {cut_id} is no longer in the library")
+    rows = lg.cross_event_cut_members(cut_id)
 
     # Resolve each member's source-event root.
     resolved: list = []
     missing: list = []
     for r in rows:
-        eid = r["event_id"] or anchor_event_id
-        relpath = r["export_relpath"] or r["origin_relpath"]
-        kind = r["kind"]
+        eid = r.event_id
+        relpath = r.export_relpath or r.origin_relpath
+        kind = r.kind
         if not relpath:
-            missing.append((r["member_id"], "no relpath"))
+            missing.append((r.member_id, "no relpath"))
             continue
         source_root = _open_event_root(gateway, eid)
         if source_root is None:
-            missing.append((r["member_id"], f"source event {eid} gone"))
+            missing.append((r.member_id, f"source event {eid} gone"))
             continue
         resolved.append(_ResolvedMember(
-            member_id=r["member_id"], kind=kind,
+            member_id=r.member_id, kind=kind,
             source_root=source_root, source_relpath=relpath,
             event_id=eid,
         ))
@@ -182,18 +180,9 @@ def export_cross_event_cut(
         except OSError as exc:
             missing.append((m.member_id, f"link/copy failed: {exc}"))
 
-    # Stamp the cut row's last_exported_at.
+    # Stamp the cut row's last_exported_at via the library gateway.
     try:
-        anchor_store = EventStore.open(anchor_root / "event.db")
-        try:
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc).isoformat()
-            anchor_store.conn.execute(
-                "UPDATE cut SET last_exported_at = ? WHERE id = ?",
-                (now, cut_id))
-            anchor_store.conn.commit()
-        finally:
-            anchor_store.close()
+        lg.stamp_cross_event_cut_exported(cut_id)
     except Exception as exc:                                # noqa: BLE001
         log.warning("could not stamp last_exported_at: %s", exc)
 

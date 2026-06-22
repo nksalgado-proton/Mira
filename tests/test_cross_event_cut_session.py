@@ -323,17 +323,18 @@ def test_pick_anchor_event_breaks_ties_alphabetically(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Commit — writes cut row + member rows in the anchor event.db
+# Commit — writes cut row + member rows in mira.db (spec/93 §3, spec/94 4a-ii)
 # --------------------------------------------------------------------------- #
 
 
 def test_commit_creates_cut_with_user_kind(tmp_path):
-    """Cross-event Cut's ``source_dc_kind`` = 'user' lands in event.db, so
-    a reader can distinguish 'this Cut's DC is in mira.db' from event-scope."""
+    """Cross-event Cut's ``source_dc_kind`` = 'user' lands on the
+    ``cut`` row in mira.db. spec/94 Phase 4a-ii: the Cut is in the
+    library store now (spec/93 §3); the source_dc_id always points to
+    a mira.db ``saved_filter`` row."""
     user_store = _open_user_store(tmp_path)
     _seed_projection(user_store)
     lg = _make_lg(user_store)
-    # Save a cross-event DC so source_dc_id points somewhere.
     sf = lg.create_dc("five_star", expr=[["+", cr.BASE_EXPORTED]],
                       filters={"stars_min": 5})
     keys = lg.resolve_dc_keys(sf.expr_json and json.loads(sf.expr_json),
@@ -353,23 +354,23 @@ def test_commit_creates_cut_with_user_kind(tmp_path):
         separators_on=False,
     )
 
-    anchor_store = _make_anchor_event(tmp_path, event_id="anchor")
-    eg = _make_eg(anchor_store)
-    cut = session.commit(eg)
+    cut = session.commit(lg)
 
-    # Cut row: shape v8 fields populated.
+    # Cut row lives in mira.db; shape matches spec/93 §3.
     assert cut.tag == "five_star_cut"
     assert cut.source_dc_kind == "user"
     assert cut.source_dc_id == sf.id
     assert json.loads(cut.expr_snapshot_json) == [["+", "exported"]]
     assert cut.separators is False                 # cross-event default OFF
-
-    anchor_store.close(); user_store.close()
+    # And visible on the library gateway's list.
+    assert any(c.id == cut.id for c in lg.cross_event_cuts())
+    user_store.close()
 
 
 def test_commit_writes_cross_event_member_rows(tmp_path):
-    """Each member row carries the source ``event_id`` so the export
-    pipeline routes the relpath to the right ``event.db``'s lineage."""
+    """Each member row in mira.db carries the source ``event_id`` so
+    the export pipeline routes the relpath back to the right event's
+    Exported Media/."""
     user_store = _open_user_store(tmp_path)
     _seed_projection(user_store)
     lg = _make_lg(user_store)
@@ -388,15 +389,12 @@ def test_commit_writes_cross_event_member_rows(tmp_path):
         separators_on=False,
     )
 
-    anchor_store = _make_anchor_event(tmp_path, event_id="anchor")
-    eg = _make_eg(anchor_store)
-    cut = session.commit(eg)
+    cut = session.commit(lg)
 
-    # 5 members; each carries its source event_id (non-NULL).
-    members = anchor_store.conn.execute(
-        "SELECT export_relpath, event_id FROM cut_member "
-        "WHERE cut_id = ?", (cut.id,)).fetchall()
-    by_relpath = {r["export_relpath"]: r["event_id"] for r in members}
+    # 5 members in mira.db; each carries its source event_id (REQUIRED
+    # NOT NULL per the v8 cut_member schema).
+    members = lg.cross_event_cut_members(cut.id)
+    by_relpath = {m.export_relpath: m.event_id for m in members}
     assert by_relpath == {
         "Exported Media/Day01/b1.jpg": "B",
         "Exported Media/Day01/a1.jpg": "A",
@@ -404,14 +402,14 @@ def test_commit_writes_cross_event_member_rows(tmp_path):
         "Exported Media/Day02/a3.jpg": "A",
         "Exported Media/Day02/a4.mp4": "A",
     }
-    assert all(eid is not None for eid in by_relpath.values())   # cross-event
-    anchor_store.close(); user_store.close()
+    assert all(eid for eid in by_relpath.values())
+    user_store.close()
 
 
 def test_commit_replaces_membership_on_re_entry(tmp_path):
     """Re-entering an existing cross-event Cut (cut_id set) → commit
-    UPDATES settings + REPLACES membership. The frozen expr_snapshot tracks
-    the new formula at re-pin time (spec/81 §5)."""
+    UPDATES settings + REPLACES membership in mira.db. The frozen
+    expr_snapshot tracks the new formula at re-pin time (spec/81 §5)."""
     user_store = _open_user_store(tmp_path)
     _seed_projection(user_store)
     lg = _make_lg(user_store)
@@ -419,8 +417,6 @@ def test_commit_replaces_membership_on_re_entry(tmp_path):
     rows = user_store.query_raw(um.GlobalItem, "SELECT * FROM global_items")
     all_files = session_files_from_global_items(rows, keys)
 
-    anchor_store = _make_anchor_event(tmp_path, event_id="anchor")
-    eg = _make_eg(anchor_store, new_ids=("cut-A", "cut-B"))
     # First commit: everything picked.
     s1 = CrossEventCutSession(
         name="evolving", expr=tuple([("+", "exported")]),
@@ -428,11 +424,8 @@ def test_commit_replaces_membership_on_re_entry(tmp_path):
         target_s=None, max_s=None, photo_s=6.0, music_category=None,
         files=tuple(all_files), anchor_event_id="A",
     )
-    cut1 = s1.commit(eg)
-    initial = anchor_store.conn.execute(
-        "SELECT COUNT(*) AS n FROM cut_member WHERE cut_id = ?", (cut1.id,)
-    ).fetchone()["n"]
-    assert initial == 5
+    cut1 = s1.commit(lg)
+    assert lg.cross_event_cut_member_count(cut1.id) == 5
 
     # Re-enter: skip 3 of the 5; commit should leave only 2 members.
     s2 = CrossEventCutSession(
@@ -444,19 +437,16 @@ def test_commit_replaces_membership_on_re_entry(tmp_path):
     )
     for f in all_files[:3]:
         s2.set_state(f.key, False)
-    s2.commit(eg)
-    after = anchor_store.conn.execute(
-        "SELECT COUNT(*) AS n FROM cut_member WHERE cut_id = ?", (cut1.id,)
-    ).fetchone()["n"]
-    assert after == 2
-    anchor_store.close(); user_store.close()
+    s2.commit(lg)
+    assert lg.cross_event_cut_member_count(cut1.id) == 2
+    user_store.close()
 
 
 def test_commit_works_when_anchor_is_also_a_source_event(tmp_path):
-    """When the anchor event ALSO contributes members, those members still
-    get an explicit ``event_id`` (the anchor's UUID) — no NULL fallback for
-    cross-event Cuts. Cleaner discrimination from event-scope (which uses
-    NULL)."""
+    """spec/94 Phase 4a-ii: there is no "anchor event" anymore — every
+    cross-event member is named explicitly by ``event_id``. A member
+    from event A and one from event B sit side-by-side in mira.db's
+    ``cut_member``."""
     user_store = _open_user_store(tmp_path)
     _seed_projection(user_store)
     lg = _make_lg(user_store)
@@ -469,24 +459,15 @@ def test_commit_works_when_anchor_is_also_a_source_event(tmp_path):
         target_s=None, max_s=None, photo_s=6.0, music_category=None,
         files=tuple(files), anchor_event_id="A",
     )
-    anchor_store = _make_anchor_event(tmp_path, event_id="anchor")
-    eg = _make_eg(anchor_store)
-    cut = session.commit(eg)
-    # Members where event_id = 'A' (the same as the anchor key 'A') exist:
-    a_members = anchor_store.conn.execute(
-        "SELECT COUNT(*) AS n FROM cut_member "
-        "WHERE cut_id = ? AND event_id = 'A'", (cut.id,)
-    ).fetchone()["n"]
+    cut = session.commit(lg)
+    members = lg.cross_event_cut_members(cut.id)
+    a_members = sum(1 for m in members if m.event_id == "A")
+    assert a_members >= 1
+    # Every member carries an explicit event_id — there is no NULL
+    # "anchor" fallback in mira.db's cut_member shape.
+    assert all(m.event_id for m in members)
+    user_store.close()
     assert a_members == 4
-    # And NULL event_id never appears for this Cut.
-    null_members = anchor_store.conn.execute(
-        "SELECT COUNT(*) AS n FROM cut_member "
-        "WHERE cut_id = ? AND event_id IS NULL", (cut.id,)
-    ).fetchone()["n"]
-    assert null_members == 0
-    anchor_store.close(); user_store.close()
-
-
 # --------------------------------------------------------------------------- #
 # Draft-driven session construction
 # --------------------------------------------------------------------------- #

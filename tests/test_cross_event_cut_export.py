@@ -80,26 +80,23 @@ def _register(gw, photos_base, root: Path, *, eid: str, name: str) -> None:
 
 def _seed_anchor_cut(gw, anchor_event_id: str, cut_id: str,
                      members: list) -> None:
-    """Seed a cut + members in the anchor event. ``members`` is a list of
-    dicts with keys: kind, export_relpath, origin_relpath, event_id."""
-    anchor_root = gw.index.resolve_root(
-        gw.index.get(anchor_event_id), gw.photos_base_path())
-    store = EventStore.open(anchor_root / "event.db")
-    with store.transaction() as conn:
+    """Seed a cut + members in **mira.db** (spec/94 Phase 4a-ii — the
+    storage move; cross-event Cuts live in the library store, spec/93
+    §3). ``anchor_event_id`` is kept as a parameter name for back-compat
+    with the older shape; the value is ignored — every member names
+    its own ``event_id``.
+
+    ``members`` is a list of dicts with keys: kind, export_relpath,
+    origin_relpath, event_id."""
+    lg = gw.library_gateway()
+    # Insert the cut row directly so the test controls the id.
+    with lg.user_store.transaction() as conn:
         conn.execute(
-            "INSERT INTO cut (id, tag, source_dc_kind, created_at, updated_at) "
+            "INSERT INTO cut (id, tag, source_dc_kind, "
+            "                 created_at, updated_at) "
             "VALUES (?, ?, 'user', ?, ?)",
             (cut_id, "test_cut", NOW, NOW))
-        for m in members:
-            member_id = m.get("export_relpath") or m["origin_relpath"]
-            conn.execute(
-                "INSERT INTO cut_member "
-                "(cut_id, member_id, kind, export_relpath, origin_relpath, "
-                "event_id, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (cut_id, member_id, m["kind"],
-                 m.get("export_relpath"), m.get("origin_relpath"),
-                 m.get("event_id"), NOW))
-    store.close()
+    lg.set_cross_event_cut_members(cut_id, members)
 
 
 # --------------------------------------------------------------------------- #
@@ -107,11 +104,13 @@ def _seed_anchor_cut(gw, anchor_event_id: str, cut_id: str,
 # --------------------------------------------------------------------------- #
 
 
-def test_unresolvable_anchor_event_raises(tmp_path):
+def test_missing_cut_raises(tmp_path):
+    """spec/94 Phase 4a-ii: the export raises when the Cut isn't in
+    mira.db (was: 'anchor event gone' in the pre-flip code)."""
     gw, _ = _make_umbrella(tmp_path)
     with pytest.raises(CrossEventExportError):
         export_cross_event_cut(
-            gw, "missing", "cut-x", target=tmp_path / "out")
+            gw, "anchor-ignored", "cut-x", target=tmp_path / "out")
     gw.close()
 
 
@@ -119,6 +118,8 @@ def test_unwritable_target_raises(tmp_path):
     gw, photos_base = _make_umbrella(tmp_path)
     r = _build_event_with_files(photos_base, eid="e1", name="E1")
     _register(gw, photos_base, r, eid="e1", name="E1")
+    # Seed a cut so the lookup succeeds; the target is what fails.
+    _seed_anchor_cut(gw, "e1", "cut-x", [])
     # Use an obviously bad target (a file, not a directory).
     target_file = tmp_path / "not_a_dir.txt"
     target_file.write_text("blocker")
@@ -356,15 +357,9 @@ def test_export_stamps_last_exported_at(tmp_path):
     ])
     export_cross_event_cut(
         gw, "anchor", "cut-x", target=tmp_path / "out")
-    # Read back.
-    anchor_root = gw.index.resolve_root(
-        gw.index.get("anchor"), gw.photos_base_path())
-    store = EventStore.open(anchor_root / "event.db")
-    try:
-        row = store.conn.execute(
-            "SELECT last_exported_at FROM cut WHERE id = 'cut-x'"
-        ).fetchone()
-        assert row["last_exported_at"] is not None
-    finally:
-        store.close()
+    # Read back from mira.db — the Cut + its stamp live in the library
+    # store (spec/93 §3).
+    cut = gw.library_gateway().cross_event_cut("cut-x")
+    assert cut is not None
+    assert cut.last_exported_at is not None
     gw.close()

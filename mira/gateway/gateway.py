@@ -427,9 +427,13 @@ class Gateway:
                 event_db_rows=_recipes_event_rows,
             )
 
-        # First-touch only: run the dual-home migration.
+        # First-touch only: run the dual-home migration (spec/94 Phase
+        # 1b) + the cross-event Cut migration (spec/94 Phase 4a-ii).
+        # Both are idempotent, marker-gated, and best-effort — a failure
+        # leaves the legacy data in place for the next attempt.
         if not self._dual_home_migration_done:
             self._run_dual_home_migration()
+            self._run_cross_event_cut_migration()
             self._dual_home_migration_done = True
 
     def library_gateway(self):
@@ -532,6 +536,54 @@ class Gateway:
             )
         except Exception as exc:                            # noqa: BLE001
             log.warning("dual_home migrate: %s", exc)
+
+    def _run_cross_event_cut_migration(self) -> None:
+        """spec/94 Phase 4a-ii — move cross-event Cuts out of every
+        event.db into mira.db (spec/93 §3). Marker-gated, idempotent,
+        copy-verify-delete per Cut. Best-effort: an abort leaves both
+        stores intact and the marker absent so the next launch retries.
+        """
+        from core.cross_event_cut_migrate import (
+            CrossEventCutMigrationError,
+            migrate_cross_event_cuts,
+        )
+
+        def _list_events():
+            for entry in self.list_events():
+                uuid = entry.get("id") or entry.get("uuid")
+                if uuid:
+                    yield (uuid, entry.get("name") or "")
+
+        def _open_event_store(uuid):
+            entry = self.index.get(uuid)
+            if entry is None:
+                return None
+            root = self.index.resolve_root(entry, self.photos_base_path())
+            if root is None or not (root / "event.db").exists():
+                return None
+            return EventStore.open(root / "event.db")
+
+        library_root = self._resolve_definition_library_root()
+        (library_root / ".mira").mkdir(parents=True, exist_ok=True)
+        try:
+            report = migrate_cross_event_cuts(
+                library_root=library_root,
+                user_store=self.user_store,
+                list_events=_list_events,
+                open_event_store=_open_event_store,
+            )
+            if not report.skipped:
+                log.info(
+                    "cross_event_cut_migrate: %d cut(s) moved (%d members), "
+                    "%d candidate(s) inspected, %d event(s) visited / "
+                    "%d skipped",
+                    report.migrated_cuts, report.migrated_members,
+                    report.inspected_cuts,
+                    report.events_visited, report.events_skipped)
+        except CrossEventCutMigrationError as exc:
+            log.warning("cross_event_cut_migrate: aborted: %s", exc)
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("cross_event_cut_migrate: %s", exc)
 
     # ----- the base anchor ----------------------------------------------- #
 
@@ -1162,56 +1214,47 @@ class Gateway:
         return _hook
 
     def cross_event_cuts(self) -> list:
-        """All cross-event Cuts across the library — one row per cut row
-        with ``source_dc_kind = 'user'`` in any event.db. Events that can't
-        open (relocated, in-use lock) are skipped + logged, never raised.
+        """All cross-event Cuts — one row per ``cut`` row in **mira.db**
+        (spec/93 §3, spec/94 Phase 4a-ii). The pre-Phase 4a path walked
+        every ``event.db`` for ``source_dc_kind='user'`` markers; that
+        was wrong (an event-scope Cut pinned from a global Collection
+        legitimately carries ``source_dc_kind='user'`` too) and slow
+        (N event.db opens). The migration moved the right rows into
+        mira.db; this reads them in one query.
 
-        Returns ``list[CrossEventCutRow]`` ordered by ``updated_at`` desc
-        (most recent on top — the list page's default order)."""
+        Returns ``list[CrossEventCutRow]`` ordered by ``updated_at``
+        desc (most recent on top). ``anchor_event_id`` / ``anchor_event_name``
+        survive on the row shape for back-compat with the existing
+        Cuts-list dialog, but their meaning narrows: the "anchor" is
+        whichever source event the Cut last touched. Empty when the Cut
+        has no members (a freshly-named, un-committed Cut).
+        """
+        lg = self.library_gateway()
         out: list = []
-        for entry in self.list_events():
-            event_id = entry.get("id") or entry.get("uuid")
-            if not event_id:
-                continue
-            event_name = entry.get("name") or event_id
-            root = self.index.resolve_root(entry, self.photos_base_path())
-            if root is None:
-                continue
-            db_path = root / "event.db"
-            if not db_path.exists():
-                continue
-            try:
-                store = EventStore.open(db_path)
-            except Exception:                              # noqa: BLE001
-                log.warning(
-                    "cross_event_cuts: could not open %s — skipping", db_path)
-                continue
-            try:
-                rows = store.conn.execute(
-                    "SELECT c.id, c.tag, c.source_dc_id, c.last_exported_at, "
-                    "c.created_at, c.updated_at, "
-                    "(SELECT COUNT(*) FROM cut_member cm "
-                    "  WHERE cm.cut_id = c.id) AS member_count "
-                    "FROM cut c "
-                    "WHERE c.source_dc_kind = 'user' "
-                    "ORDER BY c.updated_at DESC"
-                ).fetchall()
-                for r in rows:
-                    out.append(CrossEventCutRow(
-                        cut_id=r["id"], tag=r["tag"],
-                        anchor_event_id=event_id,
-                        anchor_event_name=event_name,
-                        source_dc_id=r["source_dc_id"],
-                        member_count=int(r["member_count"] or 0),
-                        last_exported_at=r["last_exported_at"],
-                        created_at=r["created_at"],
-                        updated_at=r["updated_at"],
-                    ))
-            finally:
-                store.close()
-        # Sort by updated_at desc across all events (each event's slice is
-        # already sorted; flat-merge them).
-        out.sort(key=lambda r: r.updated_at, reverse=True)
+        for cut in lg.cross_event_cuts():
+            member_count = lg.cross_event_cut_member_count(cut.id)
+            anchor_id = ""
+            anchor_name = ""
+            # Find a representative source event for the row display —
+            # the first member's event_id is fine; the list shows
+            # "anchor + N members" + the user opens detail for the full
+            # per-event breakdown.
+            members = lg.cross_event_cut_members(cut.id)
+            if members:
+                first_event_id = members[0].event_id
+                entry = self.index.get(first_event_id)
+                anchor_id = first_event_id
+                anchor_name = (entry or {}).get("name") or first_event_id
+            out.append(CrossEventCutRow(
+                cut_id=cut.id, tag=cut.tag,
+                anchor_event_id=anchor_id,
+                anchor_event_name=anchor_name,
+                source_dc_id=cut.source_dc_id,
+                member_count=member_count,
+                last_exported_at=cut.last_exported_at,
+                created_at=cut.created_at,
+                updated_at=cut.updated_at,
+            ))
         return out
 
     def delete_cross_event_dc(self, dc_id: str) -> dict:
@@ -1238,14 +1281,17 @@ class Gateway:
 
     def delete_cross_event_cut(self, anchor_event_id: str,
                                cut_id: str) -> None:
-        """Delete a cross-event Cut by opening its anchor event's gateway
-        and calling :meth:`EventGateway.delete_cut`. Members cascade via the
-        cut_id FK."""
-        eg = self.open_event(anchor_event_id)
-        try:
-            eg.delete_cut(cut_id)
-        finally:
-            eg.close()
+        """Delete a cross-event Cut. spec/94 Phase 4a-ii: the row lives
+        in mira.db (spec/93 §3); the FK CASCADE drops the members in
+        the same store.
+
+        ``anchor_event_id`` is accepted for back-compat with the
+        legacy event.db-walk signature and IGNORED — the Cut's home
+        is the library, not any one event. Already-exported folders
+        on disk stay where they are; export isn't a freezing
+        operation."""
+        lg = self.library_gateway()
+        lg.delete_cross_event_cut(cut_id)
 
     def reconcile_global_items(self) -> dict:
         """Reconcile the cross-event ``global_items`` projection against

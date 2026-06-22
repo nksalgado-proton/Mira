@@ -59,6 +59,10 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.Person, "person", ("id",), ("display_name",)),
     _TableInfo(m.UserCamera, "user_camera", ("camera_id",)),
     _TableInfo(m.GearProfile, "gear_profile", ("kind", "key")),
+    _TableInfo(m.Cut, "cut", ("id",), ("created_at", "id")),
+    _TableInfo(m.CutMember, "cut_member",
+               ("cut_id", "event_id", "member_id"),
+               ("cut_id", "added_at", "event_id", "member_id")),
     _TableInfo(m.FeatureFlag, "feature_flag", ("key",)),
 ]
 _BY_CLS: Dict[type, _TableInfo] = {info.cls: info for info in _REGISTRY}

@@ -308,8 +308,9 @@ def test_picked_members_emits_grab_dict_for_grab_member(tmp_path):
 
 
 def test_set_cut_members_writes_mixed_kinds(tmp_path):
-    """A single Cut can carry export-kind AND grab-kind members
-    interleaved — set_cut_members preserves both."""
+    """A single cross-event Cut can carry export-kind AND grab-kind
+    members interleaved. spec/94 Phase 4a-ii: commit writes to mira.db
+    via LibraryGateway (spec/93 §3) — no anchor event.db opens."""
     user_store = _open_user(tmp_path)
     _seed_projection_with_grabs(user_store)
     lg = _make_lg(user_store)
@@ -317,37 +318,29 @@ def test_set_cut_members_writes_mixed_kinds(tmp_path):
     rows = user_store.query_raw(um.GlobalItem, "SELECT * FROM global_items")
     files = session_files_from_global_items(rows, keys)
 
-    anchor = _make_event(tmp_path, eid="anchor")
-    eg = EventGateway(anchor, now=lambda: NOW,
-                      new_id=lambda: "cut-X")
-    # Wipe the seeded cut (test_make_event seeds one) and create cleanly.
-    with anchor.transaction() as conn:
-        conn.execute("DELETE FROM cut WHERE id = 'c1'")
     session = CrossEventCutSession(
         name="mixed", expr=tuple([("+", "collected")]),
         filters={}, pin_mode=PIN_WEED_OUT,
         target_s=None, max_s=None, photo_s=6.0, music_category=None,
         files=tuple(files), anchor_event_id="anchor",
     )
-    cut = session.commit(eg)
-    by_member = anchor.conn.execute(
-        "SELECT member_id, kind, export_relpath, origin_relpath, event_id "
-        "FROM cut_member WHERE cut_id = ?", (cut.id,)).fetchall()
-    assert len(by_member) == 4
-    kinds = {r["kind"] for r in by_member}
+    cut = session.commit(lg)
+    members = lg.cross_event_cut_members(cut.id)
+    assert len(members) == 4
+    kinds = {m.kind for m in members}
     assert kinds == {"export", "grab"}
     # Each kind carries its own relpath column populated, the other NULL.
-    for r in by_member:
-        if r["kind"] == "export":
-            assert r["export_relpath"] is not None
-            assert r["origin_relpath"] is None
-            assert r["member_id"] == r["export_relpath"]
+    for m in members:
+        if m.kind == "export":
+            assert m.export_relpath is not None
+            assert m.origin_relpath is None
+            assert m.member_id == m.export_relpath
         else:
-            assert r["origin_relpath"] is not None
-            assert r["export_relpath"] is None
-            assert r["member_id"] == r["origin_relpath"]
-        assert r["event_id"] is not None        # cross-event always has it
-    anchor.close(); user_store.close()
+            assert m.origin_relpath is not None
+            assert m.export_relpath is None
+            assert m.member_id == m.origin_relpath
+        assert m.event_id           # cross-event always has it
+    user_store.close()
 
 
 def test_set_cut_members_dict_shape_works_for_grab_only(tmp_path):

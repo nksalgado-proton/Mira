@@ -280,32 +280,40 @@ class CrossEventCutSession:
 
     # ── the one persistence moment ─────────────────────────────────────── #
 
-    def commit(self, anchor_gateway) -> Any:
-        """Create the cross-event Cut: writes the cut row + the replace-all
-        membership in the anchor event's ``event.db``. ``anchor_gateway`` is
-        an :class:`mira.gateway.event_gateway.EventGateway` open on the
-        anchor event. The Cut's ``source_dc_kind`` is set to ``'user'`` and
-        ``source_dc_id`` to the cross-event DC's ``saved_filter`` id; each
-        ``cut_member`` row carries the source event's UUID so the export
-        pipeline routes the relpath through the right ``event.db``'s lineage.
+    def commit(self, library_gateway) -> Any:
+        """Create or update the cross-event Cut in **mira.db** (spec/93 §3,
+        spec/94 Phase 4a-ii). ``library_gateway`` is a
+        :class:`mira.gateway.library_gateway.LibraryGateway` open on the
+        user store.
 
-        Fresh session → ``create_cut`` (the gateway re-validates the name +
-        cycle-safe namespace within the anchor event). Re-entered session →
-        ``update_cut_settings`` + ``rename_cut`` + ``set_cut_members``.
-        Returns the cut row from the anchor's gateway."""
+        Before spec/94 Phase 4a-ii this method wrote into an *anchor
+        event's* ``event.db`` with ``source_dc_kind='user'`` as the
+        cross-event marker. Spec/93 §3 made that wrong: cross-event
+        Cuts live with their references, not anchored in one event's
+        store; the bytes never move. The signature now takes a
+        :class:`LibraryGateway`, and every ``cut_member`` row carries
+        its source event's UUID via the required ``event_id`` column.
+
+        Fresh session → ``create_cross_event_cut`` (the gateway
+        re-validates the name + cross-store namespace). Re-entered
+        session → ``update_cross_event_cut_settings`` +
+        ``rename_cross_event_cut`` + ``set_cross_event_cut_members``.
+        Returns the cut row from the library gateway.
+        """
         members = self.picked_members()
         expr_list = [list(t) for t in self.expr]
+        default_state = (
+            "picked" if self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
+            else "skipped")
         if self.cut_id is None:
-            cut = anchor_gateway.create_cut(
+            cut = library_gateway.create_cross_event_cut(
                 self.name,
                 source_dc_id=self.source_dc_id,
                 source_dc_kind="user",
                 expr_snapshot=expr_list,
                 target_s=self.target_s, max_s=self.max_s,
                 photo_s=self.photo_s,
-                default_state=(
-                    "picked" if self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
-                    else "skipped"),
+                default_state=default_state,
                 music_category=self.music_category,
                 separators=self.separators_on,
                 overlay_fields=list(self.overlay_fields),
@@ -313,29 +321,28 @@ class CrossEventCutSession:
                 card_style=self.card_style,
             )
         else:
-            current = anchor_gateway.cut(self.cut_id)
+            current = library_gateway.cross_event_cut(self.cut_id)
             from core import cut_names as _names
             if current is not None and \
                     _names.slugify(self.name) != current.tag:
-                anchor_gateway.rename_cut(self.cut_id, self.name)
-            anchor_gateway.update_cut_settings(
+                library_gateway.rename_cross_event_cut(
+                    self.cut_id, self.name)
+            library_gateway.update_cross_event_cut_settings(
                 self.cut_id,
                 source_dc_id=self.source_dc_id,
                 source_dc_kind="user",
                 expr_snapshot_json=json.dumps(expr_list),
                 target_s=self.target_s, max_s=self.max_s,
                 photo_s=self.photo_s,
-                default_state=(
-                    "picked" if self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
-                    else "skipped"),
+                default_state=default_state,
                 music_category=self.music_category,
                 separators=self.separators_on,
                 overlay_fields_json=json.dumps(list(self.overlay_fields)),
                 overlay_mode=self.overlay_mode,
                 card_style=self.card_style,
             )
-            cut = anchor_gateway.cut(self.cut_id)
-        anchor_gateway.set_cut_members(cut.id, members)
+            cut = library_gateway.cross_event_cut(self.cut_id)
+        library_gateway.set_cross_event_cut_members(cut.id, members)
         return cut
 
     # ── constructors ───────────────────────────────────────────────────── #

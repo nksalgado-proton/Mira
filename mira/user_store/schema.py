@@ -34,7 +34,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -368,6 +368,77 @@ CREATE TABLE gear_profile (
   PRIMARY KEY (kind, key)
 );
 CREATE INDEX ix_gear_profile_active ON gear_profile(kind, is_active) WHERE is_active = 1;
+
+-- ===== cut (D) — cross-event Cuts, library-level (spec/93 §3, schema v8) ===
+-- spec/94 Phase 4a-ii: a cross-event Cut is the only kind of Cut that lives
+-- here. Event-scope Cuts continue to live in their event.db (event.db's own
+-- ``cut`` table); the distinguishing fact is the MEMBERSHIP SHAPE — a Cut
+-- whose ``cut_member`` rows all live in one event is event-scope; a Cut with
+-- members from two or more events is cross-event and lives here.
+--
+-- Shape matches event.db's v8 ``cut`` table field-for-field, with two
+-- semantic shifts:
+--   * ``source_dc_id`` is always opaque TEXT here too (no FK across stores).
+--     ``source_dc_kind`` discriminates: 'user' = mira.db saved_filter (the
+--     ordinary cross-event Collection source); 'event' = one event's
+--     dynamic_collection (the rare single-event-bound source); NULL =
+--     ad-hoc / source deleted. The freeze invariant (spec/81 §5) lives at
+--     the gateway: deleting the source DC NULLs the id on every Cut that
+--     pointed at it; the Cut survives via ``expr_snapshot_json``.
+--   * ``separators`` DEFAULT is 0 — cross-event Cuts orient nothing single-
+--     timeline, so spec/81 §3.1 flips the default OFF (event.db keeps the
+--     ON default per spec/61 §4 — different audience).
+CREATE TABLE cut (
+  id                  TEXT PRIMARY KEY,
+  tag                 TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  source_dc_id        TEXT,
+  source_dc_kind      TEXT CHECK (source_dc_kind IN ('event','user') OR source_dc_kind IS NULL),
+  expr_snapshot_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_snapshot_json)),
+  target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s             REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  default_state       TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category      TEXT,
+  separators          INTEGER NOT NULL DEFAULT 0 CHECK (separators IN (0,1)),
+  overlay_fields_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(overlay_fields_json)),
+  overlay_mode        TEXT CHECK (overlay_mode IN ('embedded','burn_in') OR overlay_mode IS NULL),
+  last_exported_at    TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+);
+
+-- ===== cut_member (D) — membership rows for cross-event Cuts (schema v8) ===
+-- One row per (cut, source-event, file). ``event_id`` is REQUIRED here —
+-- the table only ever holds cross-event members (by definition; event-scope
+-- members live in event.db). PK is (cut_id, event_id, member_id) so the
+-- same export relpath can appear under different events without colliding;
+-- ``member_id`` is the content-stable path (export_relpath OR origin_relpath
+-- per ``kind``), matching event.db's convention.
+--
+-- ``kind`` discriminates: 'export' = the source event has shipped this file
+-- (export_relpath set; origin_relpath NULL); 'grab' = the source event
+-- still has the original only (origin_relpath set; export_relpath NULL —
+-- spec/61 §6 + §8). The export pipeline routes per kind.
+--
+-- No FK to event.db: the source event's lineage / Original Media may move
+-- or vanish (relocated event, sd-card-wiped); the gateway's sweeps handle
+-- those cases out-of-band. ``cut_id`` FK CASCADE drops members on Cut
+-- deletion (same store, safe).
+CREATE TABLE cut_member (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  member_id      TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'export' CHECK (kind IN ('export','grab')),
+  export_relpath TEXT,
+  origin_relpath TEXT,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, event_id, member_id),
+  CHECK ( (kind = 'export' AND export_relpath IS NOT NULL AND origin_relpath IS NULL)
+       OR (kind = 'grab'   AND export_relpath IS NULL     AND origin_relpath IS NOT NULL) )
+);
+CREATE INDEX ix_cut_member_event  ON cut_member(event_id);
+CREATE INDEX ix_cut_member_kind   ON cut_member(kind);
 
 -- ===== feature_flag (D) — runtime feature gating ==========================
 -- Flag KEYS are app-code constants (see ``core/feature_flags.py``); new flags
@@ -704,6 +775,65 @@ CREATE TABLE event_collection (
         "ALTER TABLE person ADD COLUMN representative_face_id TEXT")
 
 
+def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """spec/94 Phase 4a-ii (spec/93 §3) — cross-event Cuts move from event.db
+    to mira.db.
+
+    Two new tables, both empty after migration; the
+    :mod:`core.cross_event_cut_migrate` one-shot (run lazily on first
+    cross-event read) populates them by copying eligible Cuts out of the
+    event.db files. The discriminator there is the MEMBERSHIP SHAPE (any
+    member with a non-NULL ``event_id`` → cross-event; otherwise event-
+    scope and stays put), not ``source_dc_kind`` alone — a per-event Cut
+    pinned from a global Collection legitimately carries
+    ``source_dc_kind='user'`` and must not migrate.
+
+    ``cut.separators`` defaults to OFF here (cross-event Cuts orient
+    nothing single-timeline, spec/81 §3.1) — event.db keeps the ON
+    default. ``cut_member.event_id`` is NOT NULL here — by definition
+    a cross-event Cut spans events.
+
+    Uses individual ``conn.execute`` calls (not ``executescript``) so
+    the migrate wrapper's explicit BEGIN/COMMIT stays intact."""
+    conn.execute("""
+CREATE TABLE cut (
+  id                  TEXT PRIMARY KEY,
+  tag                 TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (tag <> ''),
+  source_dc_id        TEXT,
+  source_dc_kind      TEXT CHECK (source_dc_kind IN ('event','user') OR source_dc_kind IS NULL),
+  expr_snapshot_json  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(expr_snapshot_json)),
+  target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
+  max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
+  photo_s             REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  default_state       TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
+  music_category      TEXT,
+  separators          INTEGER NOT NULL DEFAULT 0 CHECK (separators IN (0,1)),
+  overlay_fields_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(overlay_fields_json)),
+  overlay_mode        TEXT CHECK (overlay_mode IN ('embedded','burn_in') OR overlay_mode IS NULL),
+  last_exported_at    TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+)""")
+    conn.execute("""
+CREATE TABLE cut_member (
+  cut_id         TEXT NOT NULL REFERENCES cut(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  member_id      TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'export' CHECK (kind IN ('export','grab')),
+  export_relpath TEXT,
+  origin_relpath TEXT,
+  added_at       TEXT NOT NULL,
+  PRIMARY KEY (cut_id, event_id, member_id),
+  CHECK ( (kind = 'export' AND export_relpath IS NOT NULL AND origin_relpath IS NULL)
+       OR (kind = 'grab'   AND export_relpath IS NULL     AND origin_relpath IS NOT NULL) )
+)""")
+    conn.execute(
+        "CREATE INDEX ix_cut_member_event ON cut_member(event_id)")
+    conn.execute(
+        "CREATE INDEX ix_cut_member_kind  ON cut_member(kind)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -711,6 +841,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v4_to_v5,
     _migrate_v5_to_v6,
     _migrate_v6_to_v7,
+    _migrate_v7_to_v8,
 ]
 
 

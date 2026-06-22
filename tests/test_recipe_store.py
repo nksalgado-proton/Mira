@@ -503,6 +503,10 @@ def test_migrate_v6_to_v7_adds_recipe_event_collection_and_person_column(tmp_pat
     conn.execute("DROP TABLE recipe")
     conn.execute("DROP TABLE event_collection")
     conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
+    # v8 (spec/94 Phase 4a-ii) added the cross-event cut tables; drop
+    # them so the migration chain re-creates them on the way back up.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
     conn.execute("UPDATE schema_info SET schema_version = 6 WHERE id = 1")
     # Seed a Person row that should survive the migration.
     conn.execute(

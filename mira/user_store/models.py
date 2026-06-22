@@ -330,6 +330,82 @@ class GearProfile:
 
 
 # --------------------------------------------------------------------------- #
+# Cross-event Cuts (spec/93 §3, spec/94 Phase 4a-ii) — schema v8
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Cut:
+    """One cross-event Cut (spec/93 §3 — cross-event Cuts live in mira.db).
+
+    Same field shape as :class:`mira.store.models.Cut` (event.db's per-event
+    Cut) so callers that read either side use the same dataclass shape.
+    Two semantic shifts here:
+
+    * ``source_dc_id`` is always opaque TEXT — no FK across stores. The
+      freeze invariant (spec/81 §5) moves to the gateway: delete a source
+      DC and any Cut that pointed at it has its ``source_dc_id`` NULLed;
+      the Cut survives via ``expr_snapshot_json``.
+    * ``separators`` defaults to ``False`` — cross-event Cuts orient no
+      single timeline (spec/81 §3.1). event.db's per-event ``Cut`` keeps
+      the True default (spec/61 §4).
+    """
+
+    id: str
+    tag: str
+    created_at: str
+    updated_at: str
+    source_dc_id: Optional[str] = None
+    source_dc_kind: Optional[str] = None        # 'event' | 'user' | None (legacy)
+    expr_snapshot_json: str = '[]'
+    target_s: Optional[int] = None
+    max_s: Optional[int] = None
+    photo_s: float = 6.0
+    default_state: str = "skipped"
+    music_category: Optional[str] = None
+    separators: bool = False
+    overlay_fields_json: str = '[]'
+    overlay_mode: Optional[str] = None
+    last_exported_at: Optional[str] = None
+    extras_json: str = '{}'
+
+
+@dataclass
+class CutMember:
+    """One row of a cross-event Cut's membership (spec/93 §3, schema v8).
+
+    ``event_id`` is REQUIRED — by definition a cross-event Cut spans
+    events; the source event's UUID routes the export pipeline back to
+    the right ``Exported Media/`` (kind='export') or ``Original Media/``
+    (kind='grab') tree. ``member_id`` is the content-stable distinguisher
+    (export_relpath OR origin_relpath, depending on kind), matching
+    event.db's PK convention.
+
+    No FK to event.db — the source event's lineage may move or vanish out
+    of band (relocated event, sd-card-wiped); the gateway's sweeps handle
+    those cases. ``cut_id`` FK CASCADE drops members on Cut deletion
+    (same store, safe).
+    """
+
+    cut_id: str
+    event_id: str
+    added_at: str = ""
+    member_id: Optional[str] = None
+    kind: str = "export"                          # 'export' | 'grab'
+    export_relpath: Optional[str] = None
+    origin_relpath: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.member_id is None:
+            # Auto-derive from the relpath of the kind in use — keeps
+            # construction ergonomic when callers pass just the relpath.
+            if self.kind == "grab" and self.origin_relpath:
+                object.__setattr__(self, "member_id", self.origin_relpath)
+            elif self.export_relpath:
+                object.__setattr__(self, "member_id", self.export_relpath)
+
+
+# --------------------------------------------------------------------------- #
 # Feature flags (spec/53 §2.7)
 # --------------------------------------------------------------------------- #
 

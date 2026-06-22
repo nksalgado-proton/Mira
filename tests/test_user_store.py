@@ -113,6 +113,9 @@ def test_ddl_creates_every_spec53_table(tmp_path):
     # spec/90 Phase 1 (schema v7): recipe (saved Cut/Collection configuration)
     # + event_collection (saved event sets) arrived; ``person`` gained a
     # ``representative_face_id`` column but is not a new table.
+    # spec/94 Phase 4a-ii (schema v8): cross-event Cuts arrive — cut +
+    # cut_member, library-level per spec/93 §3. Event-scope Cuts still
+    # live in event.db; the discriminator is the membership shape.
     assert names == {
         "schema_info",
         "installation_profile",
@@ -127,6 +130,8 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "person",
         "user_camera",
         "gear_profile",
+        "cut",
+        "cut_member",
         "feature_flag",
     }
     store.close()
@@ -413,6 +418,11 @@ def test_migrate_v1_to_v2_reshapes_cut_tables(tmp_path):
     conn.execute("DROP TABLE recipe")
     conn.execute("DROP TABLE event_collection")
     conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
+    # v8 (spec/94 Phase 4a-ii) added the cross-event cut + cut_member
+    # tables in mira.db. Drop them so the legacy v1 ``cut`` recreation
+    # below doesn't collide with the v8 cross-event ``cut``.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
     conn.execute("CREATE TABLE cut (id TEXT PRIMARY KEY, name TEXT)")
     conn.execute(
         "CREATE TABLE cut_template (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
@@ -426,10 +436,19 @@ def test_migrate_v1_to_v2_reshapes_cut_tables(tmp_path):
     assert schema.get_version(conn) == schema.SCHEMA_VERSION
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert "cut" not in names and "cut_template" in names
+    # ``cut`` is back at v8 (cross-event Cuts in mira.db) but with a
+    # totally different shape from v1's two-column placeholder.
+    # ``cut_template`` survived the v1→v2 reshape and is still here.
+    assert "cut" in names and "cut_template" in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(cut_template)")}
     assert {"pool_expr_json", "style_filter_json", "photo_s",
             "music_category"} <= cols
+    # v8's cut table carries the cross-event shape — the legacy v1
+    # 'name' column is gone, replaced by the full spec/93 §3 columns.
+    cut_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cut)")}
+    assert "name" not in cut_cols
+    assert {"tag", "expr_snapshot_json", "source_dc_kind",
+            "separators", "extras_json"} <= cut_cols
     store.close()
 
 
@@ -617,6 +636,10 @@ def test_migrate_v2_to_v3_adds_cross_event_tables(tmp_path):
     conn.execute("DROP TABLE recipe")
     conn.execute("DROP TABLE event_collection")
     conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
+    # v8 (spec/94 Phase 4a-ii) — drop the cross-event cut tables so the
+    # chain re-creates them on the way back up.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -677,6 +700,9 @@ def test_migrate_v4_to_v5_adds_gear_profile(tmp_path):
     conn.execute("DROP TABLE recipe")
     conn.execute("DROP TABLE event_collection")
     conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
+    # v8 (spec/94 Phase 4a-ii) — drop cross-event cut tables.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
     conn.execute("UPDATE schema_info SET schema_version = 4 WHERE id = 1")
     # Seed a row that should survive the migration.
     conn.execute(
@@ -732,6 +758,9 @@ def test_migrate_v5_to_v6_adds_event_qualifier_columns(tmp_path):
     conn.execute("DROP TABLE recipe")
     conn.execute("DROP TABLE event_collection")
     conn.execute("ALTER TABLE person DROP COLUMN representative_face_id")
+    # v8 (spec/94 Phase 4a-ii) — drop cross-event cut tables.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
     conn.execute("UPDATE schema_info SET schema_version = 5 WHERE id = 1")
     # Seed a pre-migration global_items row that should survive.
     conn.execute(
@@ -770,4 +799,148 @@ def test_migrate_v5_to_v6_adds_event_qualifier_columns(tmp_path):
         "ix_global_items_event_start",
         "ix_global_items_event_end",
     } <= idx
+    store.close()
+
+
+def test_migrate_v7_to_v8_adds_cross_event_cut_tables(tmp_path):
+    """v7→v8 (spec/94 Phase 4a-ii) creates ``cut`` + ``cut_member`` as
+    NEW tables — full CHECK + index complement intact. Existing rows
+    elsewhere stay untouched. The ``cut.tag`` UNIQUE COLLATE NOCASE
+    constraint survives so callers can't slip a duplicate-case-blind
+    tag in. ``cut_member.event_id`` is NOT NULL (cross-event Cuts
+    always span events), and the cut_id FK CASCADE drops members on
+    Cut deletion."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Reconstruct the v7 shape: drop the v8 cut tables, pin to 7.
+    conn.execute("DROP TABLE cut_member")
+    conn.execute("DROP TABLE cut")
+    conn.execute("UPDATE schema_info SET schema_version = 7 WHERE id = 1")
+    # Seed an unrelated row that should survive the migration.
+    conn.execute(
+        "INSERT INTO setting (key, value_json, updated_at) "
+        "VALUES ('marker', '\"v7-pre\"', '2026-06-21T00:00:00+00:00')"
+    )
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"cut", "cut_member"} <= names
+    # cut.tag UNIQUE COLLATE NOCASE survived the migration.
+    conn.execute(
+        "INSERT INTO cut (id, tag, created_at, updated_at) "
+        "VALUES ('c1', 'best-of', '2026-06-21T00:00:00+00:00', "
+        "        '2026-06-21T00:00:00+00:00')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cut (id, tag, created_at, updated_at) "
+            "VALUES ('c2', 'BEST-OF', '2026-06-21T00:00:00+00:00', "
+            "        '2026-06-21T00:00:00+00:00')")
+    # cut_member.event_id NOT NULL — inserting without one fails.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cut_member (cut_id, member_id, kind, "
+            "                        export_relpath, added_at) "
+            "VALUES ('c1', 'a.jpg', 'export', 'a.jpg', "
+            "        '2026-06-21T00:00:00+00:00')")
+    # FK CASCADE drops members when the Cut goes.
+    conn.execute(
+        "INSERT INTO cut_member (cut_id, event_id, member_id, kind, "
+        "                        export_relpath, added_at) "
+        "VALUES ('c1', 'evt-A', 'a.jpg', 'export', 'a.jpg', "
+        "        '2026-06-21T00:00:00+00:00')")
+    conn.execute("DELETE FROM cut WHERE id = 'c1'")
+    left = conn.execute(
+        "SELECT COUNT(*) FROM cut_member WHERE cut_id = 'c1'").fetchone()[0]
+    assert left == 0
+    # Pre-existing row untouched.
+    pre = conn.execute(
+        "SELECT value_json FROM setting WHERE key='marker'").fetchone()
+    assert pre is not None and pre["value_json"] == '"v7-pre"'
+    store.close()
+
+
+def test_cut_kind_check_constraint(tmp_path):
+    """cut_member.kind is the closed enum 'export'|'grab'; CHECK
+    rejects anything else. The dual-relpath rule ('export' needs
+    export_relpath only; 'grab' needs origin_relpath only) is also
+    enforced at the table level."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    conn.execute(
+        "INSERT INTO cut (id, tag, created_at, updated_at) "
+        "VALUES ('c1', 'x', '2026-06-21T00:00:00+00:00', "
+        "        '2026-06-21T00:00:00+00:00')")
+    # Invalid kind rejected.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cut_member (cut_id, event_id, member_id, kind, "
+            "                        export_relpath, added_at) "
+            "VALUES ('c1', 'e', 'm', 'something', 'a.jpg', "
+            "        '2026-06-21T00:00:00+00:00')")
+    # 'export' without export_relpath rejected.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cut_member (cut_id, event_id, member_id, kind, "
+            "                        added_at) "
+            "VALUES ('c1', 'e', 'm', 'export', "
+            "        '2026-06-21T00:00:00+00:00')")
+    # 'grab' with export_relpath set rejected (both populated).
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cut_member (cut_id, event_id, member_id, kind, "
+            "                        export_relpath, origin_relpath, added_at) "
+            "VALUES ('c1', 'e', 'm', 'grab', 'a.jpg', 'b.RAW', "
+            "        '2026-06-21T00:00:00+00:00')")
+    # 'grab' with origin_relpath only — valid.
+    conn.execute(
+        "INSERT INTO cut_member (cut_id, event_id, member_id, kind, "
+        "                        origin_relpath, added_at) "
+        "VALUES ('c1', 'e', 'r.RAW', 'grab', 'r.RAW', "
+        "        '2026-06-21T00:00:00+00:00')")
+    store.close()
+
+
+def test_cut_dataclass_roundtrip(tmp_path):
+    """The :class:`Cut` + :class:`CutMember` dataclasses round-trip
+    through UserStore upsert / get / query_by. Fields mirror columns
+    one-for-one; the registry order is set in user_store/repo.py."""
+    store = _make_store(tmp_path)
+    NOW = "2026-06-21T00:00:00+00:00"
+    store.upsert(m.Cut(
+        id="cut-1", tag="best-wildlife",
+        source_dc_id="sf-42", source_dc_kind="user",
+        expr_snapshot_json=json.dumps([["+", "exported"]]),
+        target_s=300, max_s=600, photo_s=5.0,
+        default_state="picked",
+        music_category="happy",
+        separators=False,
+        overlay_fields_json=json.dumps(["when", "where"]),
+        overlay_mode="embedded",
+        created_at=NOW, updated_at=NOW,
+    ))
+    got = store.get(m.Cut, "cut-1")
+    assert got.tag == "best-wildlife"
+    assert got.source_dc_kind == "user"
+    assert got.separators is False
+    assert json.loads(got.overlay_fields_json) == ["when", "where"]
+
+    store.upsert(m.CutMember(
+        cut_id="cut-1", event_id="evt-A",
+        kind="export", export_relpath="trip-cr/a.jpg",
+        added_at=NOW,
+    ))
+    store.upsert(m.CutMember(
+        cut_id="cut-1", event_id="evt-B",
+        kind="grab", origin_relpath="trip-np/raw.RAW",
+        added_at=NOW,
+    ))
+    rows = store.query_by(m.CutMember, cut_id="cut-1")
+    assert len(rows) == 2
+    by_event = {r.event_id: r for r in rows}
+    assert by_event["evt-A"].member_id == "trip-cr/a.jpg"
+    assert by_event["evt-B"].member_id == "trip-np/raw.RAW"
+    assert by_event["evt-B"].kind == "grab"
     store.close()

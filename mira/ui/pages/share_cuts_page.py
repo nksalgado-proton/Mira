@@ -1312,6 +1312,10 @@ class ShareCutsPage(QWidget):
             event_name=kwargs.get("event_label") or "",
             available_pools=available_pools,
             available_styles=list(kwargs.get("style_options") or []),
+            # spec/106 — thread the music inventory + empty-state hint
+            # the dialog needs to populate the soundtrack combo.
+            music_categories=list(kwargs.get("music_categories") or []),
+            music_hint=kwargs.get("music_hint") or None,
         )
         # Default selection — start the Source from #exported so the
         # user composes from there (matches the legacy New Cut default).
@@ -1418,6 +1422,12 @@ class ShareCutsPage(QWidget):
             isinstance(target_s, (int, float))
             or isinstance(max_s, (int, float))
         )
+        # spec/106 — pre-select the cut's current music category in the
+        # restored combo. ``None``/``""`` means the cut had no
+        # soundtrack; the combo defaults to its "No music" entry.
+        music_category = getattr(prefill, "music_category", None)
+        if music_category:
+            ctx.music_category = str(music_category)
 
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or

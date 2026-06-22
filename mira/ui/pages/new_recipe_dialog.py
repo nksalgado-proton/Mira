@@ -40,6 +40,7 @@ from PyQt6.QtGui import QColor, QIcon, QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -260,6 +261,19 @@ class NewRecipeContext:
     max_minutes: int = 12
     per_photo_seconds: float = 6.0
     has_budget: bool = True
+
+    # spec/106 — music / soundtrack picker. ``music_categories`` is
+    # the mood-folder list the share-cuts page builds via
+    # :func:`core.audio_library.list_moods`; ``music_hint`` is the
+    # plain-English empty-state copy (e.g. "Set the audio library
+    # folder in Settings…") the page also computes. Both are empty
+    # when no audio library is configured — the combo then disables
+    # and shows the hint. ``music_category`` is the prefill (the
+    # cut's current category when editing); ``None``/``""`` means
+    # "No music" (the explicit opt-out at the top of the combo).
+    music_categories: List[str] = field(default_factory=list)
+    music_hint: Optional[str] = None
+    music_category: Optional[str] = None
 
     # ``is_editing`` flips the Start-button gate to a permissive mode
     # (spec/90 Phase 4e — Nelson 2026-06-20): when True, Start enables
@@ -1663,6 +1677,13 @@ class NewRecipeDialog(QDialog):
         self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
         self._has_budget: bool = bool(ctx.has_budget)
         self._is_editing: bool = bool(ctx.is_editing)
+        # spec/106 — music picker. Categories + hint are fed from the
+        # ctx; the combo lands in the Runtime row beside the spinners.
+        self._music_categories: List[str] = list(ctx.music_categories or [])
+        self._music_hint: Optional[str] = ctx.music_hint
+        self._music_category: Optional[str] = (
+            (ctx.music_category or None) if ctx.music_category else None
+        )
 
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
@@ -2918,6 +2939,50 @@ class NewRecipeDialog(QDialog):
         pv.addWidget(self._per_photo_spin)
         row.addWidget(pp_box)
 
+        # spec/106 — music / soundtrack picker. "No music" sits at the
+        # top so a Cut can opt out cleanly; the rest are the mood
+        # folders the host scanned from the configured audio library.
+        # When no categories are available (no library set, or library
+        # empty), the combo disables and the hint label below explains
+        # how to enable music (the page's pre-computed ``music_hint``).
+        music_box = QWidget()
+        mb = QVBoxLayout(music_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.setSpacing(2)
+        mb.addWidget(QLabel(tr("Music")))
+        self._music_combo = QComboBox()
+        self._music_combo.setObjectName("RuntimeMusicCombo")
+        self._music_combo.addItem(tr("No music"), userData=None)
+        for cat in self._music_categories:
+            self._music_combo.addItem(str(cat), userData=str(cat))
+        if self._music_category:
+            idx = self._music_combo.findData(self._music_category)
+            if idx >= 0:
+                self._music_combo.setCurrentIndex(idx)
+            else:
+                # Category not in the current library (the cut was made
+                # against a previous audio library). Add it back as a
+                # disabled-looking entry so the prefill stays honest.
+                self._music_combo.addItem(
+                    tr("{cat} (not in current library)").replace(
+                        "{cat}", str(self._music_category)),
+                    userData=str(self._music_category))
+                self._music_combo.setCurrentIndex(
+                    self._music_combo.count() - 1)
+        self._music_combo.currentIndexChanged.connect(
+            self._on_music_changed)
+        # No categories AND no prefill → disable + show the hint.
+        if not self._music_categories and not self._music_category:
+            self._music_combo.setEnabled(False)
+        mb.addWidget(self._music_combo)
+        self._music_hint_label = QLabel(self._music_hint or "")
+        self._music_hint_label.setObjectName("PageHint")
+        self._music_hint_label.setWordWrap(True)
+        self._music_hint_label.setVisible(
+            bool(self._music_hint) and not self._music_categories)
+        mb.addWidget(self._music_hint_label)
+        row.addWidget(music_box)
+
         row.addStretch()
         v.addLayout(row)
         return host
@@ -2944,6 +3009,15 @@ class NewRecipeDialog(QDialog):
     def _on_per_photo_changed(self, value: float) -> None:
         self._per_photo_seconds = float(value)
         self._refresh_metrics_from_state()
+
+    def _on_music_changed(self, _index: int) -> None:
+        """spec/106 — track the picker's current value so
+        :meth:`presentation_payload` emits it on save. The userData of
+        the "No music" entry is :data:`None`; the categories carry
+        their string name verbatim."""
+        data = self._music_combo.currentData()
+        self._music_category = (
+            str(data) if isinstance(data, str) and data else None)
 
     # -------- Live metrics row (Phase 4d) ---------------------------- #
 
@@ -3571,6 +3645,30 @@ class NewRecipeDialog(QDialog):
                 self._target_spin.setEnabled(self._has_budget)
             if hasattr(self, "_max_spin"):
                 self._max_spin.setEnabled(self._has_budget)
+            # spec/106 — load the recipe's soundtrack pick into the
+            # music combo. ``None`` falls through to the "No music"
+            # entry at index 0.
+            music_category = presentation.get("music_category")
+            self._music_category = (
+                str(music_category) if music_category else None)
+            if hasattr(self, "_music_combo"):
+                self._music_combo.blockSignals(True)
+                if self._music_category:
+                    idx = self._music_combo.findData(self._music_category)
+                    if idx >= 0:
+                        self._music_combo.setCurrentIndex(idx)
+                    else:
+                        # Loaded category isn't in the current library —
+                        # add it back so the loaded value stays honest.
+                        self._music_combo.addItem(
+                            tr("{cat} (not in current library)").replace(
+                                "{cat}", str(self._music_category)),
+                            userData=str(self._music_category))
+                        self._music_combo.setCurrentIndex(
+                            self._music_combo.count() - 1)
+                else:
+                    self._music_combo.setCurrentIndex(0)
+                self._music_combo.blockSignals(False)
 
     def _decode_expr(
         self, expr: Sequence[Sequence[Any]],
@@ -3929,9 +4027,15 @@ class NewRecipeDialog(QDialog):
 
     def presentation_payload(self) -> dict:
         """The ``presentation`` block of the composition (spec/90 §5.1).
-        Emits the runtime fields the dialog currently exposes; leaves
-        the unimplemented Phase 4 fields (music_category, card_style,
-        overlay_fields, separators) out of the dict so the adapter's
+        Emits the runtime fields the dialog currently exposes.
+
+        spec/106 — ``music_category`` is now emitted (combo value, or
+        ``None`` for "No music") so :func:`recipe_to_cut_draft` carries
+        it onto the resulting ``CutDraft`` and downstream
+        ``create_cut`` / ``update_cut`` persist it. The remaining
+        Phase 4 gaps (``card_style``, ``overlay_fields``,
+        ``separators``) are still parked on a settings surface that
+        was never wired — they stay out of the dict so the adapter's
         tolerant defaults take over."""
         target_s: Optional[int] = (
             int(self._target_minutes) * 60 if self._has_budget else None
@@ -3943,6 +4047,7 @@ class NewRecipeDialog(QDialog):
             "target_s": target_s,
             "max_s": max_s,
             "photo_s": float(self._per_photo_seconds),
+            "music_category": self._music_category,
         }
 
     @staticmethod

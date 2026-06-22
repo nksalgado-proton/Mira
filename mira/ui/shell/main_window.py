@@ -3114,7 +3114,29 @@ class MainWindow(QMainWindow):
 
     def _on_days_grid_step_day(self, delta: int) -> None:
         """Day navigator pill ‹ / ›. Walks to the previous/next day in
-        the event's TripDay axis. No-op at the boundaries."""
+        the current grid's day axis. No-op at the boundaries.
+
+        spec/104 — a standalone Quick Sweep has no gateway event
+        (``_current_event_id is None``), so the bare gateway path
+        below would early-return and the chevrons would do nothing.
+        When a QS session is active AND tracks its own day axis
+        (standalone / wizard modes populate ``items_by_day`` at
+        session start), step through that axis and route via
+        :meth:`_qs_open_day`. Per-event QS leaves ``items_by_day``
+        empty (it reads days from the gateway via
+        :meth:`_open_days_lists_for`); it stays on the gateway path
+        below, which already routes through ``_qs_open_day`` via
+        :meth:`_on_days_lists_day_activated`."""
+        if (self._quick_sweep is not None
+                and self._quick_sweep.get("items_by_day")):
+            cur = self.days_grid_page.current_day_number()
+            days = sorted(self._quick_sweep["items_by_day"].keys())
+            if cur not in days:
+                return
+            idx = days.index(cur) + delta
+            if 0 <= idx < len(days):
+                self._qs_open_day(days[idx])
+            return
         if self._current_event_id is None:
             return
         cur = self.days_grid_page.current_day_number()

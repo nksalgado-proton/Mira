@@ -1,12 +1,12 @@
 # 95 — Adaptive display resolution (HiDPI + display-quality setting)
 
-**Status: IMPLEMENTED (2026-06-22). Revises spec/63 §5 (pixel tiers)
-and §7 (build order) — the proxy tier stays; what changes is how the
-*normal* (non-F10) display tier chooses its decode target. Does not
-touch the LOCKED keyboard map (§4) or the charter invariants. Final
-byte budget for the scaled LRU = 512 MB (`_SCALED_CACHE_BUDGET_MB`).
-Awaits Nelson eyeball on the big monitor before moving "implemented" →
-"shipped".**
+**Status: SHIPPED (Nelson accepted 2026-06-22). Revises spec/63 §5
+(pixel tiers) and §7 (build order) — the proxy tier stays; what
+changes is how the *normal* (non-F10) display tier chooses its decode
+target. Does not touch the LOCKED keyboard map (§4) or the charter
+invariants. Final byte budget for the scaled LRU = 512 MB
+(`_SCALED_CACHE_BUDGET_MB`). Implementation landed in commit
+[cb0934e](https://github.com/nksalgado-proton/Mira/commit/cb0934e).**
 
 > **Anti-lag is the hard constraint.** This whole proxy/cache pipeline
 > (spec/62 audit → spec/63) exists because switching photos was

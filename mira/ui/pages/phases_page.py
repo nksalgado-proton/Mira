@@ -90,7 +90,7 @@ class EventMeta:
 
 _PHASE_CAPTIONS = {
     "collect": "Per-camera contribution to the captured running time.",
-    "pick":    "Share of captures reviewed (picked or skipped).",
+    "pick":    "Share of captures kept (picked).",
     "edit":    "Share of picks that have been edited (developed).",
     "export":  "Share of picks materialised to an exported file.",
 }
@@ -343,21 +343,22 @@ class PhaseCard(Card):
     @staticmethod
     def _format_delta(snapshot: "PhaseSnapshot") -> str:
         """Tiny "remaining work" line beneath the donut. Collect skips
-        (its legend already explains the slice composition). Phases with
-        no captured denominator skip (the donut speaks 'Not started')."""
-        if snapshot.key == "collect":
+        (its legend already explains the slice composition). Pick also
+        skips (spec/66 keep-rate move: ``captured − picked`` is the
+        not-kept set, not a completion gap, so "N to review" would be
+        misleading). Phases with no captured denominator skip (the donut
+        speaks 'Not started')."""
+        if snapshot.key in ("collect", "pick"):
             return ""
         if snapshot.denominator <= 0:
             return ""
         remaining = snapshot.denominator - snapshot.numerator
         if remaining <= 0:
             return {
-                "pick":   "All reviewed",
                 "edit":   "All edited",
                 "export": "All exported",
             }.get(snapshot.key, "Done")
         verb = {
-            "pick":   "to review",
             "edit":   "to edit",
             "export": "to export",
         }.get(snapshot.key, "remaining")
@@ -535,7 +536,10 @@ class PhasesPage(QWidget):
             #   Pick   = picked keepers; Edit = developed (has an adjustment);
             #   Export = exported files. Edit/Export are shown against picked.
             captured_total = len(eg.items(provenance="captured"))
-            decided_total = eg.phase_decided_count("pick")   # reviewed
+            # spec/66: the Pick donut is keep rate (picked / captured),
+            # matching the Days-List Picked bar. The review-completeness
+            # ratio is still queryable via ``eg.phase_decided_count`` for
+            # other callers; it's just not what this tile shows.
             picked_total = eg.phase_picked_count("pick")      # keepers
             developed_total = len(eg.adjustments())
             exported_total = len(eg.exported_item_ids())
@@ -610,11 +614,11 @@ class PhasesPage(QWidget):
             state_word="" if captured_total else "Not started",
         ))
 
-        # Pick = decided / captured (review completeness, spec/66); Edit =
-        # developed / picked; Export = exported / picked (Edit & Export among
-        # the picked keepers).
+        # Pick = picked / captured (keep rate, spec/66 — matches the
+        # Days-List Picked bar); Edit = developed / picked; Export =
+        # exported / picked (Edit & Export among the picked keepers).
         snapshots.append(self._ratio_snapshot(
-            "pick", "Pick", decided_total, captured_total, p,
+            "pick", "Pick", picked_total, captured_total, p,
         ))
         snapshots.append(self._ratio_snapshot(
             "edit", "Edit", developed_total, picked_total, p,

@@ -22,15 +22,20 @@ it is reached through a closed event, not stepped through like a phase.
 | # | Phase | What it is | Progress metric (per day) |
 |---|---|---|---|
 | 1 | **Collect** | SD-card / past-photos ingest, day plan, Quick Sweep | captured items present (day done once it has captures) |
-| 2 | **Pick** | One unified decision pass across all captured content (default-Skip) | **decided / captured** — review completeness |
+| 2 | **Pick** | One unified decision pass across all captured content (default-Skip) | **picked / captured** — keep rate (matches the Days-List Picked bar) |
 | 3 | **Edit** | Fix classification, tone, crop — *or leave as-is*; a standard-correction baseline is applied to every keeper automatically | **reviewed / picked** — keepers cleared through the Edit pass |
 | 4 | **Export** | A green/red survival pass over the keepers; materialise the survivors to processed JPEGs | **exported / picked** — keepers materialised to a file |
 | — | *Share* | *(state, not a phase)* assemble Cuts from exported files on a **closed** event | *none — not a progress bar* |
 
 Notes on the metrics (Nelson 2026-06-14):
 
-- **Pick** measures *review completeness* (how much of the day you've decided),
-  not how many you kept. "Picked" = the keepers, the subset that feeds Edit.
+- **Pick** measures the *keep rate* — picked keepers ÷ all captured (Nelson
+  2026-06-22, revising the 2026-06-14 "review completeness" framing). The
+  PhasesPage donut and the Days-List Picked bar both read this ratio, so the
+  two surfaces stay in agreement. Review completeness (decided / captured)
+  is still queryable via the gateway's ``phase_decided_count`` for callers
+  that need it; it's just no longer what the tile shows. "Picked" = the
+  keepers, the subset that feeds Edit.
 - **Edit** progress = keepers you've passed through the Edit pass ÷ picked. It
   is **not** a pixel-change count: leaving a file as-is (it already carries the
   standard-correction baseline) still counts as cleared. Manual tone/crop is

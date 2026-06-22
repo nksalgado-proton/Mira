@@ -5250,6 +5250,21 @@ class MainWindow(QMainWindow):
             .replace("{cancel}", cancel_line)
             .replace("{warns}", warnings_line))
             ok_msg.exec()
+            # spec/102 — clear the in-progress flag BEFORE the
+            # navigation tail. The import is genuinely complete at this
+            # point (item rows written + index refreshed above), so the
+            # Pick gate (spec/84 §5) consulted by ``_on_phase_activated``
+            # must see ``is_ingesting(event_id) == False``. Leaving this
+            # to the ``finally`` below ran AFTER the landing call, so
+            # the app's own post-ingest Pick landing was self-blocked by
+            # the gate meant to stop premature USER entry; the flag
+            # then cleared a beat later in the finally, which is why a
+            # manual Pick retry always worked. ``_mark_ingest_finished``
+            # → ``set.discard`` is idempotent, so the finally backstop
+            # below stays in place to cover the early-return branches
+            # (crash / no-payload / zero-media cleanup) which never
+            # reach this point.
+            self._mark_ingest_finished(event_id)
             self._on_event_created(event_id)
             if land_phase and self._current_event_id == event_id:
                 # Backfill wizard landing (spec/57 §4.3) — straight to
@@ -5257,10 +5272,12 @@ class MainWindow(QMainWindow):
                 # Back.
                 self._on_phase_activated(land_phase)
         finally:
-            # spec/84 §5 — clear the per-event ingest-in-progress flag
-            # in EVERY path (success / crash / partial-cancel / zero-
-            # media-cleanup), so the tile reappears + Pick unlocks +
-            # the second-enqueue gate releases.
+            # spec/84 §5 — backstop: clear the per-event ingest-in-
+            # progress flag in EVERY path (crash / no-payload / zero-
+            # media cleanup) so the tile reappears + Pick unlocks + the
+            # second-enqueue gate releases. The happy path also cleared
+            # it just before navigation per spec/102; ``set.discard`` is
+            # safe to call twice.
             self._mark_ingest_finished(event_id)
 
     def _record_collect_in_event_db(

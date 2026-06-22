@@ -44,6 +44,9 @@ Implemented 2026-06-11 (layout frozen pending the visibility eyeball):
 - **Line 2**, aligned under line 1: [**Crop** under Look, same width,
   controls on one horizontal row — the aspect dropdown displays
   **"No Crop"** while persisting the canonical "Original" label |
+  **Rotate photo** (whole-picture ±90°, distinct from the crop-box
+  rotate inside the Crop group; wired to ``AdjustmentSurface.rotate_image``
+  which fires ``changed('rotation')`` for ``Adjustment.rotation``) |
   **Audio** (video-only; today's Fade controls) | **Vibrations**
   (video-only; today's Stabilise controls)].
 - **Line 3:** the action row, untouched.

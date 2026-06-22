@@ -188,6 +188,61 @@ def test_aspect_change_after_rotation_picks_rotated_crop(qapp):
     assert s._crop_norm == (0.0, 0.25, 1.0, 0.5)
 
 
+# ─────────────────── Bottom-panel buttons (spec/59) ───────────────────
+#
+# The image-rotate buttons were dropped in the dense-control-tier
+# rework (`a4c2a12`) while ``rotate_image`` stayed intact, so the
+# whole-picture rotate was reachable only from code. Restored
+# 2026-06-22 — these tests pin the new wiring so a future chrome pass
+# can't silently drop them again.
+
+
+def test_image_rotate_buttons_exist_on_tools_widget(qapp):
+    """Widget-exists guard — the two ``Rotate photo`` buttons live on
+    the surface and are click-driven by Qt's signal/slot."""
+    s, _ = _surface(qapp)
+    assert hasattr(s, "_img_rot_ccw_btn")
+    assert hasattr(s, "_img_rot_cw_btn")
+    assert s._img_rot_ccw_btn.text() == "Rotate photo ↺"
+    assert s._img_rot_cw_btn.text() == "Rotate photo ↻"
+
+
+def test_image_rotate_cw_button_advances_rotation(qapp):
+    """Clicking ``Rotate photo ↻`` walks _rotation cw through every
+    90° step and wraps to 0 on the fourth click."""
+    s, _ = _surface(qapp)
+    s._img_rot_cw_btn.click()
+    assert s._rotation == 90
+    s._img_rot_cw_btn.click()
+    assert s._rotation == 180
+    s._img_rot_cw_btn.click()
+    assert s._rotation == 270
+    s._img_rot_cw_btn.click()
+    assert s._rotation == 0
+
+
+def test_image_rotate_ccw_button_walks_rotation_backwards(qapp):
+    """Clicking ``Rotate photo ↺`` walks _rotation ccw through the same
+    stops in reverse."""
+    s, _ = _surface(qapp)
+    s._img_rot_ccw_btn.click()
+    assert s._rotation == 270
+    s._img_rot_ccw_btn.click()
+    assert s._rotation == 180
+
+
+def test_image_rotate_buttons_emit_changed_rotation(qapp):
+    """The button path goes through ``rotate_image``, which fires the
+    same ``changed('rotation')`` signal the host persists from. Pins the
+    wiring so the host's commit path keeps lighting up."""
+    s, _ = _surface(qapp)
+    seen: list[str] = []
+    s.changed.connect(seen.append)
+    s._img_rot_cw_btn.click()
+    s._img_rot_ccw_btn.click()
+    assert seen == ["rotation", "rotation"]
+
+
 def test_overlay_geometry_uses_rotated_dimensions(qapp):
     """Regression: dragging the crop on a 90°/270° photo USED to crash
     because ``_sync_crop_overlay_geometry`` fed the overlay the source

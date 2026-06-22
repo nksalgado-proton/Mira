@@ -461,6 +461,41 @@ def test_tab_traversal_is_disabled(qapp):
     assert page.focusNextPrevChild(False) is False
 
 
+def test_image_rotate_button_click_persists_adj_rotation(
+        qapp, app_gateway, store_and_gateway):
+    """spec/59 + 2026-06-22 restoration: clicking the bottom panel's
+    ``Rotate photo ↻`` runs the same path the dropped buttons used —
+    ``rotate_image(90)`` fires ``changed('rotation')`` and the editor
+    persists ``adj.rotation`` in one shot. Pins the commit seam so
+    another silent drop on the chrome side surfaces as a test failure
+    instead of a quiet regression."""
+    import numpy as np
+    _, eg = store_and_gateway
+    page = EditorPage(app_gateway)
+    assert page.open_to_item("evt-e", 1, "e1")
+    # Short-circuit the async edit-prep worker — feed the surface
+    # synthetic data, re-enable the tools (the page disables them
+    # until the prep callback lands), and pin _cached_path so the
+    # photo branch in _on_surface_changed takes the rotation commit
+    # path (the prep callback would normally do these in production).
+    page._surface.load_image(np.zeros((40, 60, 3), dtype=np.uint8))
+    page._surface.set_tools_enabled(True)
+    page._cached_path = page._items[0].path
+    # Pre-state: no Adjustment row yet → reads as rotation 0.
+    pre = eg.adjustment("e1")
+    assert (pre is None) or (int(getattr(pre, "rotation", 0) or 0) == 0)
+    # Click Rotate photo ↻ — same signal path the restored button uses.
+    page._surface._img_rot_cw_btn.click()
+    after_cw = eg.adjustment("e1")
+    assert after_cw is not None
+    assert int(after_cw.rotation) == 90
+    # A ccw step from 90 → 0 commits cleanly too — round-trip.
+    page._surface._img_rot_ccw_btn.click()
+    after_ccw = eg.adjustment("e1")
+    assert int(after_ccw.rotation) == 0
+    page.close_event()
+
+
 def test_unpack_adjustment_round_trips_saved_row(qapp):
     """A saved Adjustment row's style / look / filter / crop / angle /
     aspect all round-trip into the surface's load shape."""

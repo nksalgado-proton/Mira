@@ -290,6 +290,7 @@ class AdjustmentSurface(QWidget):
         line2 = QHBoxLayout()
         line2.setSpacing(10)
         line2.addWidget(self._build_crop_group())
+        line2.addWidget(self._build_image_rotate_group())
         self._audio_slot = QVBoxLayout()
         self._audio_slot.setContentsMargins(0, 0, 0, 0)
         self._vibrations_slot = QVBoxLayout()
@@ -510,6 +511,36 @@ class AdjustmentSurface(QWidget):
         crop_row.addWidget(self._box_rot_reset)
         col.addLayout(crop_row)
 
+        col.addStretch(1)
+        box.setMinimumHeight(box.minimumSizeHint().height())
+        return box
+
+    def _build_image_rotate_group(self) -> QWidget:
+        """The 'Rotate photo' box — rotates the WHOLE PICTURE by ±90°
+        (distinct from the Crop group's box-rotate row, which only
+        spins the crop frame). Wired to :meth:`rotate_image`, which
+        fires ``changed('rotation')``; the host persists
+        ``adj.rotation`` from that signal. Restored 2026-06-22 — the
+        buttons were dropped in the dense-control-tier rework
+        (``a4c2a12``) while the backend stayed intact (spec/59)."""
+        box, col = self._group(tr("Rotate photo"))
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self._img_rot_ccw_btn = self._btn(tr("Rotate photo ↺"))
+        self._img_rot_ccw_btn.setToolTip(tr(
+            "Rotate the entire photo 90° counter-clockwise. The crop "
+            "is reset so it matches the new frame."))
+        self._img_rot_ccw_btn.clicked.connect(
+            lambda: self.rotate_image(-90))
+        row.addWidget(self._img_rot_ccw_btn)
+        self._img_rot_cw_btn = self._btn(tr("Rotate photo ↻"))
+        self._img_rot_cw_btn.setToolTip(tr(
+            "Rotate the entire photo 90° clockwise. The crop is reset "
+            "so it matches the new frame."))
+        self._img_rot_cw_btn.clicked.connect(
+            lambda: self.rotate_image(90))
+        row.addWidget(self._img_rot_cw_btn)
+        col.addLayout(row)
         col.addStretch(1)
         box.setMinimumHeight(box.minimumSizeHint().height())
         return box

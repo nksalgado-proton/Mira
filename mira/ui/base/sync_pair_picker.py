@@ -21,13 +21,10 @@ Behaviour:
       two devices is fundamentally fuzzy).
     * Over tolerance → "Use this pair" button is disabled; the
       panel guides the user to pick different photos.
-* **No ``configured_tz``** → apply the RAW measured delta (rounded
-  to whole minutes — sub-minute is noise), spec/101. The 15-min snap
-  stays as a display-only sanity hint ("looks like UTC±X; pair is N
-  off a clean grid") because a sub-15-min clock error (camera set
-  wrong by 6 min, drift, etc.) would otherwise be discarded by the
-  snap. A clean-TZ camera yields raw ≈ grid so the result is
-  identical; a mis-set camera now preserves the real offset.
+* **No ``configured_tz``** → snap the raw diff to the nearest
+  15-minute multiple (covers every real-world UTC offset including
+  +5:45 Nepal, -3:30 Newfoundland, +5:30 India). The final offset
+  returned is the snapped value.
 
 The returned ``CalibrationPair`` is *adjusted*: the reference_time
 is set to ``camera_time + final_offset`` so the downstream engine's
@@ -63,11 +60,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.clock_calibration import (
-    CalibrationPair,
-    snap_disagreement,
-    snap_to_tz_offset,
-)
+from core.clock_calibration import CalibrationPair, snap_to_tz_offset
 from core.exif_reader import read_exif_single
 from core.fresh_source import camera_id_for
 from mira.ui.i18n import tr  # ported into mira/ui (charter §4 step 7)
@@ -347,19 +340,19 @@ class SyncPairPickerDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        # Intro / context. The 15-minute closeness rule (Nelson
-        # 2026-05-22) still applies — the closer in time the two shots
-        # are, the more accurate the derived offset — but spec/101
-        # now applies the measured raw delta to the minute instead of
-        # snapping to a 15-min grid, so a few-minute clock error is
-        # preserved instead of rounded away.
+        # Intro / context. The 15-minute requirement is a hard rule
+        # (Nelson 2026-05-22): without a declared ``configured_tz``,
+        # the dialog snaps the raw delta to the nearest 15-minute
+        # multiple — so any elapsed time longer than ~7.5 min between
+        # the two shots can push the snap into the wrong bucket
+        # silently. State it loudly upfront.
         intro = QLabel(tr(
             "<b>Pick one photo (or video) on each side, taken within "
             "15 minutes of each other at most.</b><br>"
             "The closer in time the two shots are, the more accurate "
-            "the derived offset. The verdict below shows the resulting "
-            "offset and whether it agrees with the timezone you "
-            "declared for this camera."
+            "the derived timezone offset. The verdict below shows the "
+            "resulting offset and whether it agrees with the timezone "
+            "you declared for this camera."
         ))
         intro.setTextFormat(Qt.TextFormat.RichText)
         intro.setWordWrap(True)
@@ -487,35 +480,22 @@ class SyncPairPickerDialog(QDialog):
                 self._use_btn.setEnabled(False)
                 self._final_offset = None
         else:
-            # spec/101 — apply the RAW measured offset (rounded to whole
-            # minutes at the apply boundary; ``recompute_corrected_times``
-            # takes ``applied_offset_minutes: int``, and sub-minute is
-            # noise). The 15-min ``snapped`` value stays as a DISPLAY-ONLY
-            # sanity hint ("looks like UTC±X; pair is N off a clean
-            # grid"): when the camera was set to a clean timezone the raw
-            # delta already equals the grid point, so applying raw never
-            # discards signal — and a sub-15-min clock error (camera set
-            # wrong by 6 min, drift, etc.) is now preserved instead of
-            # rounded away to 0 or over-corrected to 15.
             snapped = snap_to_tz_offset(raw)
-            snap_diff = snap_disagreement(raw, snapped)
-            raw_minutes = round(raw.total_seconds() / 60)
-            applied = timedelta(minutes=raw_minutes)
-            # A large snap disagreement still flags a likely mis-timed
-            # pair — the apply value is raw either way, but the warning
-            # tells the user the pair is far from any clean timezone and
-            # may not be simultaneous. Threshold matches the legacy
-            # Nelson 2026-05-22 rule ("photos within 15 min at most").
+            snap_diff = abs(raw - snapped)
+            # If snap_diff is large the user likely picked photos
+            # that weren't taken at the same moment — the snap can
+            # silently push them into the wrong 15-min bucket. Warn
+            # loudly above ~5 minutes (Nelson 2026-05-22: "photos
+            # have to be within 15 minutes of each other, at most").
             warn = snap_diff > timedelta(minutes=5)
             verdict_html = (
                 tr(
                     "Δ raw: <b>{raw}</b><br>"
-                    "Applying the measured offset to the minute: "
-                    "<b>{applied}</b><br>"
-                    "Looks like <b>{snap}</b> — pair is <b>{diff}</b> "
-                    "off a clean 15-min timezone grid (display only)."
+                    "No timezone declared for this camera — snapping "
+                    "to nearest 15-min multiple.<br>"
+                    "Snap: <b>{snap}</b> · "
+                    "photos within <b>{diff}</b> of each other in real time"
                 ).replace("{raw}", _fmt_offset(raw))
-                 .replace("{applied}", _fmt_offset(applied))
                  .replace("{snap}", _fmt_offset(snapped))
                  .replace("{diff}", _fmt_disagreement(snap_diff))
             )
@@ -524,16 +504,15 @@ class SyncPairPickerDialog(QDialog):
                     "<br><span style='color:#d97706; font-weight:bold;'>"
                     + tr(
                         "⚠ The two photos are more than 5 minutes "
-                        "off a clean timezone grid. If they weren't "
-                        "taken at the same moment the applied offset "
-                        "will inherit that error — pick a closer pair "
-                        "for a sharper correction."
+                        "apart in real time. Pick a closer pair — "
+                        "the further apart they are, the greater the "
+                        "risk of snapping to the wrong timezone bucket."
                     )
                     + "</span>"
                 )
             self._verdict.setText(verdict_html)
             self._use_btn.setEnabled(True)
-            self._final_offset = applied
+            self._final_offset = snapped
 
     # ── Result ─────────────────────────────────────────────────
 

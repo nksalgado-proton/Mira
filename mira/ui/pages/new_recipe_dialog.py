@@ -3753,15 +3753,22 @@ class NewRecipeDialog(QDialog):
           and a wired :attr:`_dc_loader`.
 
         Called from every source / name mutator + the Recipe-load path."""
+        from mira.ui.read_only import disable_if_read_only
+
         has_source = bool(self._source_chips)
         if hasattr(self, "_save_dc_btn"):
             self._save_dc_btn.setEnabled(
                 has_source and self._dc_creator is not None)
+            # spec/76 §B.1 — grey the save when the library is read-only,
+            # overriding the has-source enable above. Idempotent in
+            # writeable sessions.
+            disable_if_read_only(self._save_dc_btn)
         if hasattr(self, "_save_recipe_btn"):
             has_name = bool(self._name_edit.text().strip())
             self._save_recipe_btn.setEnabled(
                 has_source and has_name
                 and self._recipe_store is not None)
+            disable_if_read_only(self._save_recipe_btn)
         if hasattr(self, "_load_dc_btn"):
             has_dcs = any(
                 getattr(p, "kind", "") == "dc"

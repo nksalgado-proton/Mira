@@ -617,6 +617,10 @@ class EventHeaderDialog(QDialog):
             bool(subtype_text) and subtype_text != tr("— select or type —")
         )
         self._save_btn.setEnabled(name_ok and type_ok and subtype_ok)
+        # spec/76 §B.1 — overrides the validity-gated enable above when
+        # the library is read-only.
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(self._save_btn)
 
     # ── Existing-info pre-population ─────────────────────────────────
 

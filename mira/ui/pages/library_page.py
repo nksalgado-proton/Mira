@@ -121,6 +121,10 @@ class _CutRow(QFrame):
             "hand-off to PTE."))
         export_btn.clicked.connect(
             lambda: self.export_requested.emit(self._cut_id))
+        # spec/76 §B.1 — export stamps last_exported_at in mira.db
+        # (a guarded mutator). Grey the button so the user doesn't try.
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(export_btn)
         right.addWidget(export_btn)
         open_btn = ghost_button(tr("Open…"))
         open_btn.setToolTip(tr("Open the Cut's per-event member list."))
@@ -143,6 +147,10 @@ class _CutRow(QFrame):
         del_action = menu.addAction(tr("Delete"))
         del_action.triggered.connect(
             lambda: self.delete_requested.emit(self._cut_id))
+        # spec/76 §B.1 — read-only sessions can't drop cross-event
+        # Cuts; grey the menu item so the click is a no-op.
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(del_action)
         menu.exec(self._kebab.mapToGlobal(
             self._kebab.rect().bottomLeft()))
 
@@ -263,6 +271,10 @@ class LibraryPage(QWidget):
             "Compose a new cross-event Cut from a Collection — opens "
             "the Collection face of the New Cut dialog."))
         new_btn.clicked.connect(self._on_new_cut)
+        # spec/76 §B.1 — read-only sessions can browse Cuts + Play,
+        # but creating a new one writes to mira.db. Grey + hint.
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(new_btn)
         header.addWidget(new_btn)
         layout.addLayout(header)
 

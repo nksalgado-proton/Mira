@@ -549,6 +549,13 @@ class DaysGridPage(QWidget):
         self._export_btn = primary_button("↑ Export now")
         self._export_btn.clicked.connect(self._on_export_clicked)
         line2.addWidget(self._export_btn)
+        # spec/76 §B.1 — Export materialises files + stamps event.db.
+        # Both refuse in read-only; grey the trigger so the user sees
+        # the closure upfront. Same for the "new pass" verb (starts a
+        # pick session that mutates).
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(self._new_pass_btn)
+        disable_if_read_only(self._export_btn)
         top_l.addLayout(line2)
 
         outer.addWidget(top_band)

@@ -169,6 +169,11 @@ class CutDetailPage(QWidget):
         self._export_btn.clicked.connect(
             lambda: self._cut_id and self.export_requested.emit(self._cut_id))
         self._export_btn.setVisible(bool(show_export))
+        # spec/76 §B.1 — Export stamps last_exported_at in the store;
+        # refuse in read-only mode (the gateway guard catches it
+        # defensively too).
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(self._export_btn)
         chrome.addWidget(self._export_btn)
         top_l.addLayout(chrome)
 

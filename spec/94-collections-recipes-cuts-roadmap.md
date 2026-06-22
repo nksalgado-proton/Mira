@@ -119,18 +119,74 @@ the same shape. Play (`CutPlayerDialog`) + Export (`cut_export.py`) reused
 intact per the brief. 27 new tests; 17 quarantined-or-rebuilt existing
 suites still green; no inline QSS introduced; render smoke in both themes.
 
-## Phase 4 — Cross-event: scope, resolution, Cuts, Home/Library surface  *(L, multi-session)*
+## Phase 4 — Cross-event: scope, resolution, Cuts, Home/Library surface
 
-- The **cross-event power face** (spec/90 Scope = events / event-collections /
-  date ranges; the full spec/32 §2 filter catalogue) + cross-event resolution.
-- **Cross-event Cuts** (`cut_member.event_id` across events; bytes stay per
-  event).
-- The **Home / Library surface** (spec/76, spec/93 §9) that lists, plays, and
-  exports cross-event Cuts.
-- **Depends on the indexing track** (below) for the richer filters.
+### Phase 4a — today's filters only *(complete 2026-06-21, 3 commits on `main`, `verify.bat` green)*
 
-**Exit:** "best wildlife across every trip, 2010–2025" resolves, pins, plays,
-exports.
+The cross-event surface lands end-to-end using only the filters
+available today (Style / Media + Stars / Color label / Flag + the
+spec/86 event-level qualifiers + Capture date + Country / City).
+The richer filters (camera, lens, aperture / shutter / ISO, faces)
+stay gated on the **indexing track** below.
+
+- The **cross-event power face** (spec/90 Scope = events /
+  event-collections / date ranges) + cross-event resolution. UI
+  catalogue limited to Curatorial + Event + When/Where for now.
+- **Cross-event Cuts** in `mira.db` (spec/93 §3): one row per Cut +
+  `cut_member.event_id` per row; bytes stay per source event; no FK
+  spans stores.
+- The **Library page** (spec/76 §B.4, spec/93 §9): top-level
+  destination, three SurfaceBand sections (cross-event Cuts list with
+  per-row Play / Export / Open / Delete; Collections entry; Recipes
+  entry). Retires the events-page cross-event band.
+- Cross-event **Play** + **Export** gather members from each source
+  event's `Exported Media/`.
+
+**Exit met:** a Collection composed over selected events with date /
+style filters → pins to a cross-event Cut → appears in the Library
+page → plays + exports across events.
+
+**Landed:**
+
+- **(i)** [`36edbc6`](https://github.com/nksalgado-proton/Mira/commit/36edbc6)
+  — scope wiring (`LibraryGateway.resolve_scope` walks chip operands;
+  `resolve_dc_keys / dc_probe` accept `scope=`; `CrossEventCutSession.from_draft`
+  threads `scope_event_uuids`); filter gating
+  (`build_cross_event_phase4a_catalogue` hides Camera & lens + Settings
+  groups behind `INDEXING_GATED_DIM_IDS`; `NewRecipeDialog` Collection
+  face flipped to `show_hardware=False`); vocabulary sweep ("Collection"
+  user-facing across cross_event_* + share_cuts_page + dc_detail_page;
+  internal table names untouched per spec/93 §4); `test_collection_vocabulary.py`
+  smoke gates regressions.
+- **(ii)** [`affe261`](https://github.com/nksalgado-proton/Mira/commit/affe261)
+  — schema v8 (cross-event `cut` + `cut_member` in `mira.db`,
+  `event_id NOT NULL`, no FK across stores); full CRUD on `LibraryGateway`;
+  `CrossEventCutSession.commit(library_gateway)` flips storage target;
+  export pipeline + UI dialogs + sweeps re-pointed at `mira.db`;
+  `core/cross_event_cut_migrate.py` one-shot with the **membership-shape
+  discriminator** (Nelson 2026-06-21 — a Cut migrates iff at least one
+  member has a non-NULL `event_id`; `source_dc_kind='user'` alone is
+  insufficient) and **copy-verify-delete safety** (mira.db insert +
+  verify inside one transaction; event.db DELETE only after the
+  COMMIT + verify pass; a crash leaves both stores intact + marker
+  absent). Tests: discriminator behaviour, copy-verify-delete ordering
+  on a forced verify failure, idempotency + partial-recovery.
+- **(iii)** [`86a3220`](https://github.com/nksalgado-proton/Mira/commit/86a3220)
+  — `mira/ui/pages/library_page.py` (flush `#SurfaceHeaderRail[phase="share"]`
+  + three `#SurfaceBand` sections; `uses_titlebar_back` + `on_titlebar_back`
+  per Phase 3 contract; defensive failure handling); cross-event Play
+  (`mira/shared/cross_event_cut_play.py` walks members + projection,
+  builds entries chronologically across events; `CutPlayerDialog` gains
+  `resolve_path=` callable for per-member root resolution; event-scope
+  Play unchanged); MainWindow wiring + App-menu "Cross-event Cuts…"
+  entry; the events-page `CrossEventCutsBand` retires entirely.
+
+### Phase 4b — richer filters *(unlocked when the indexing track lands)*
+
+The dialog's hardware / EXIF / face groups light up by flipping
+`NewCrossEventDcDialog` + `NewRecipeDialog`'s Collection face back
+to the full `build_cross_event_catalogue` / `show_hardware=True`. No
+new dialog work; just the gate.
 
 ## Phase 5 — Publishing + multi-device (spec/76 §A / §B)  *(M)*
 

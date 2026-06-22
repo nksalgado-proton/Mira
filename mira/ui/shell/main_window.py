@@ -446,6 +446,10 @@ class MainWindow(QMainWindow):
             lambda: self._on_days_grid_step_day(+1))
         self.days_grid_page.new_pass_requested.connect(
             self._on_days_lists_new_pass_stub)
+        # Standalone Quick Sweep "Export now" on the day grid → copy the
+        # kept set to the destination + finish (Nelson 2026-06-22).
+        self.days_grid_page.quick_sweep_export_requested.connect(
+            self._qs_finalize_via_back)
         self.picker_page.closed.connect(self._on_select_closed)
         self.picker_page.fullscreen_changed.connect(self._on_select_fullscreen)
         self.edit_page.closed.connect(self._on_process_closed)
@@ -4625,6 +4629,9 @@ class MainWindow(QMainWindow):
         # Sweep; the shared widgets read Collect/blue under it.
         lists_page.set_phase_identity("collect")
         grid_page.set_phase_identity("collect")
+        # New-event Collect QS: kept photos flow into the event being
+        # created — the grid footer is "Back" (Nelson 2026-06-22).
+        grid_page.set_quick_sweep_footer("back")
         stack.addWidget(lists_page)
         stack.addWidget(grid_page)
         stack.addWidget(viewer_page)
@@ -6798,6 +6805,9 @@ class MainWindow(QMainWindow):
                 day_number, title, date_iso, grid_items)
             # spec/71 — Quick Sweep wears Collect chrome (blue).
             self.days_grid_page.set_phase_identity("collect")
+            # Standalone QS ends by copying the kept set to a folder —
+            # the grid footer is the "Export now" copy trigger.
+            self.days_grid_page.set_quick_sweep_footer("export")
             self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
             self.days_grid_page.setFocus()
             return
@@ -6820,6 +6830,10 @@ class MainWindow(QMainWindow):
             return
         # spec/71 — QS chrome even when reading from the Pick gateway.
         self.days_grid_page.set_phase_identity("collect")
+        # Event-context QS: the kept photos flow on into the event — no
+        # export step, so the grid footer is just "Back" (Nelson
+        # 2026-06-22).
+        self.days_grid_page.set_quick_sweep_footer("back")
         # Per-event mode tracks the day items list so the QS viewer
         # has a Sequence to walk. Build it from the gateway items.
         from datetime import datetime

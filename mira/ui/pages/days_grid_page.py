@@ -349,6 +349,9 @@ class DaysGridPage(QWidget):
     pick_all_requested = pyqtSignal()
     skip_all_requested = pyqtSignal()
     new_pass_requested = pyqtSignal()
+    # spec/70 / Nelson 2026-06-22 — standalone Quick Sweep footer fires
+    # this so the host copies the kept set to the destination + finishes.
+    quick_sweep_export_requested = pyqtSignal()
     # Single-photo / video click on the day grid OR cluster sub-grid.
     # Routed by the host to the Picker (legacy PickPage until surface
     # 07 lands the redesigned Picker shell).
@@ -378,6 +381,11 @@ class DaysGridPage(QWidget):
         self._phase = "pick"
         self._phase_default = STATE_SKIPPED
         self._export_mode = False
+        # Quick Sweep footer variant: ``"export"`` (standalone — copy to
+        # a folder), ``"back"`` (event-context — flow on into the event),
+        # or ``None`` (not a QS host; normal phase chrome). Set by
+        # :meth:`set_quick_sweep_footer`; reset by ``open_for_day``.
+        self._qs_footer: Optional[str] = None
         # spec/71 identity phase — drives the SurfaceIdentityHeader rail
         # + badge. Defaults to ``"pick"``; ``open_for_day(phase=...)``
         # syncs it from ``self._phase`` (Pick/Edit) and Quick Sweep
@@ -548,7 +556,33 @@ class DaysGridPage(QWidget):
         # below. Label is locked to "Export now" per spec/89 §5.1.
         self._export_btn = primary_button("↑ Export now")
         self._export_btn.clicked.connect(self._on_export_clicked)
+        self._export_btn.setVisible(False)   # only in Export phase
         line2.addWidget(self._export_btn)
+        # Quick Sweep footer (Nelson 2026-06-22). The shared grid is
+        # reused under two QS hosts with DIFFERENT endings:
+        #   * standalone QS → the kept set is COPIED to a destination
+        #     folder; the grid shows a primary "Export now" that fires
+        #     :sig:`quick_sweep_export_requested` so the host runs the
+        #     copy-and-finish.
+        #   * event-context QS (Collect / new-event) → there is no
+        #     export step: the kept photos flow on into the event, so
+        #     the grid shows a ghost "Back". (It's also hosted in a
+        #     modal with no app title bar, so it needs its own Back.)
+        # Both are hidden outside a QS session; the variant is chosen by
+        # :meth:`set_quick_sweep_footer` and applied in
+        # :meth:`_apply_phase_chrome`.
+        self._qs_export_btn = primary_button("↑ Export now")
+        self._qs_export_btn.setToolTip(
+            "Copy the kept photos to the destination folder and finish.")
+        self._qs_export_btn.clicked.connect(
+            self.quick_sweep_export_requested.emit)
+        self._qs_export_btn.setVisible(False)
+        line2.addWidget(self._qs_export_btn)
+        self._qs_back_btn = ghost_button("‹ Back")
+        self._qs_back_btn.setToolTip("Back to the day list  (Esc)")
+        self._qs_back_btn.clicked.connect(self.back_requested.emit)
+        self._qs_back_btn.setVisible(False)
+        line2.addWidget(self._qs_back_btn)
         # spec/76 §B.1 — Export materialises files + stamps event.db.
         # Both refuse in read-only; grey the trigger so the user sees
         # the closure upfront. Same for the "new pass" verb (starts a
@@ -696,16 +730,20 @@ class DaysGridPage(QWidget):
                 else default_state_for(self.gateway.settings, self._phase)
             )
             new_identity = self._phase
+        # Opening for a real phase clears any Quick Sweep footer left on
+        # the shared page from a prior QS session (Nelson 2026-06-22).
+        self._qs_footer = None
+        # spec/71 — sync the identity header FIRST so _apply_phase_chrome
+        # reads the final identity (QS hosts override afterwards via
+        # :meth:`set_phase_identity` / :meth:`set_quick_sweep_footer`).
+        if self._identity_phase != new_identity:
+            self._identity_phase = new_identity
+            self._refresh_identity()
         # spec/66 §1.1 — Edit is creative-only: hide the Pick all /
         # Skip all / Start a new pass… buttons (no decision to make
         # here). They reappear when the page opens for the Pick phase.
         # Export mode swaps the toolbar to the ship verbs.
         self._apply_phase_chrome()
-        # spec/71 — sync the identity header. QS hosts override
-        # afterwards via :meth:`set_phase_identity`.
-        if self._identity_phase != new_identity:
-            self._identity_phase = new_identity
-            self._refresh_identity()
         self._day_number = day_number
         self._day_title = title or ""
         self._day_date = date_iso or ""
@@ -880,6 +918,38 @@ class DaysGridPage(QWidget):
             self._scan_chip.setVisible(is_export)
         except Exception:                                          # noqa: BLE001
             pass
+        # Quick Sweep footer override (Nelson 2026-06-22). When a QS host
+        # is driving the grid, its footer replaces the gateway Export
+        # trigger + "Start a new pass…": standalone shows "Export now"
+        # (copy to folder), event-context shows "Back". Applied last so
+        # it wins over the phase-driven visibility above.
+        qs = getattr(self, "_qs_footer", None)
+        try:
+            self._qs_export_btn.setVisible(qs == "export")
+            self._qs_back_btn.setVisible(qs == "back")
+        except Exception:                                          # noqa: BLE001
+            pass
+        if qs in ("export", "back"):
+            for w in (self._export_btn, self._new_pass_btn):
+                try:
+                    w.setVisible(False)
+                except Exception:                                  # noqa: BLE001
+                    pass
+
+    def set_quick_sweep_footer(self, variant: Optional[str]) -> None:
+        """Select the Quick Sweep footer (Nelson 2026-06-22). Hosts call
+        this after :meth:`set_phase_identity` / :meth:`setDay` /
+        :meth:`open_for_day`:
+
+        * ``"export"`` — standalone QS: a primary "Export now" that fires
+          :sig:`quick_sweep_export_requested` (host copies the kept set
+          to the destination folder + finishes).
+        * ``"back"`` — event-context QS (Collect / new-event): a ghost
+          "Back" (the kept photos flow on into the event; no export).
+        * ``None`` — not a QS host; restore the normal phase chrome.
+        """
+        self._qs_footer = variant if variant in ("export", "back") else None
+        self._apply_phase_chrome()
 
     # ── spec/71 identity header (per-phase chrome) ────────────────────
 
@@ -3642,8 +3712,17 @@ class DaysGridPage(QWidget):
         return f"id:{item.item_id}"
 
     def _apply_thumb_pixmap(self, idx: int, pixmap: QPixmap) -> None:
-        if 0 <= idx < len(self._thumb_widgets):
-            self._thumb_widgets[idx].setPixmap(pixmap)
+        # Route through ThumbGrid.set_pixmap rather than poking the live
+        # cell directly. The grid builds cells in chunks (50 sync, the
+        # rest on QTimer ticks); poking ``_thumb_widgets[idx]`` only
+        # worked for cells already built. A decode that landed before a
+        # later-chunk cell existed was lost — and because the grid's own
+        # ThumbGridItem still carried ``pixmap=None``, the cell painted
+        # empty (border only) when it finally built. set_pixmap mutates
+        # the stored item too, so the pixmap survives the build
+        # (Nelson 2026-06-22 — "only borders" on Quick Sweep grids).
+        if 0 <= idx < self._grid.count():
+            self._grid.set_pixmap(idx, pixmap)
         if 0 <= idx < len(self._items):
             self._items[idx].pixmap = pixmap
 

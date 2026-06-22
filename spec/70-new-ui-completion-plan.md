@@ -147,6 +147,25 @@ Order chosen by dependency + risk:
    and "Quick Sweep this event" menu entries to it (replacing `_coming_next`).
    Placed after the Picker because it reuses the Picker's single-photo viewport
    machinery.
+
+   **Footer (Nelson 2026-06-22).** The Quick Sweep grid keeps its own
+   Back / Export in the toolbar even though `a4c2a12` standardised
+   every other surface on the title-bar Back: the QS grid runs inside
+   a **modal that lacks the app title bar**, so a title-bar Back is
+   unreachable. The variant depends on the host:
+   - **Standalone QS** ends with a copy step (the kept set →
+     destination folder), so the footer carries a primary **"↑ Export
+     now"** that fires `DaysGridPage.quick_sweep_export_requested`;
+     the host (`MainWindow._qs_finalize_via_back`) does the copy + the
+     finish.
+   - **Event-context QS** (Collect / new-event flow) has no export
+     step — the kept photos flow into the event being edited — so the
+     footer is a ghost **"‹ Back"**.
+   The host picks the variant with
+   `DaysGridPage.set_quick_sweep_footer("export" | "back")` right
+   after `set_phase_identity("collect")`. Outside Quick Sweep, both QS
+   buttons stay hidden and the normal phase chrome (Export now / +
+   Start a new pass…) drives the toolbar.
 5. ✅ **09 Share / Cuts** (2026-06-15) — `ShareCutsPage` absorbed the
    `CutsShellPage` chassis (list ↔ detail ↔ session stack + dialog
    handlers) and is now what MainWindow mounts at `_CURATE_PAGE_KEY`;

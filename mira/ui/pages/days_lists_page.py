@@ -300,6 +300,13 @@ class DayRow(Card):
         # ``_export_phase_active`` is set.
         self._is_export = phase == "export"
         self.setMinimumHeight(120)
+        # Fixed-height tile: never stretch vertically to fill the
+        # container, regardless of how few rows there are (Nelson
+        # 2026-06-22 — a single day used to balloon to the full viewport
+        # height). Maximum vertical policy caps the card at its sizeHint.
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         # Mockup `.day{padding:14px 16px}` — quieter than the legacy 16/14.
         self.layout().setContentsMargins(16, 14, 16, 14)
@@ -786,3 +793,9 @@ class DaysListsPage(QWidget):
             row.pick_all_requested.connect(self.day_pick_all_requested.emit)
             row.skip_all_requested.connect(self.day_skip_all_requested.emit)
             self._rows.addWidget(row)
+        # Trailing stretch keeps the rows at their fixed height anchored to
+        # the top. AlignTop alone doesn't stop Preferred-policy DayRow cards
+        # from filling the scroll viewport, so a single day used to stretch
+        # to occupy all the available vertical space (Nelson 2026-06-22).
+        # Same fix the Share Cuts list already carries.
+        self._rows.addStretch(1)

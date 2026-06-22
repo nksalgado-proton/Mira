@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -39,6 +39,13 @@ from PyQt6.QtWidgets import (
 from mira.ui.i18n import tr
 
 log = logging.getLogger(__name__)
+
+#: Poll cadence (ms) for the previews-pending count (spec/96 §1).
+#: The proxy builder is Qt-free and emits no signal; the activity line
+#: re-syncs on this timer so a long preview run drains visibly. ~400 ms
+#: is fast enough for the number to feel responsive while keeping the
+#: tick cost negligible (one int read under the builder's lock).
+_PREVIEWS_POLL_MS = 400
 
 
 #: Job-type tag passed to :meth:`BatchJobQueue.enqueue` — picks the verb
@@ -147,8 +154,22 @@ BatchExportQueue = BatchJobQueue
 
 
 class BatchProgressLine(QWidget):
-    """The one app-level progress line (spec/59 §8) — sits directly
-    below the menubar, spans the window, hidden when the queue idles."""
+    """The one app-level activity line — sits directly below the
+    menubar and spans the window. Always visible (spec/96 §1): when
+    nothing is running it shows a muted "Ready"; when a batch job is
+    in flight (export / ingest, spec/84 §2) it shows the job's head
+    + per-file progress + a Cancel; when no batch job runs but the
+    background proxy builder has work pending (spec/63 §5,
+    spec/95 §B), it shows the previews count so the user knows the
+    UI is busy. Message priority in :meth:`_sync` is **batch job >
+    previews > Ready**; the determinate progress bar drives only the
+    batch case.
+
+    Decoupling: the previews count is supplied by a host-injected
+    ``Callable[[], int]`` (``set_previews_source``) so this widget
+    has no dependency on the photo cache. The ``QTimer`` poll lives
+    here because the proxy builder is Qt-free (charter inv. 8) and
+    emits no signal."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -174,30 +195,119 @@ class BatchProgressLine(QWidget):
         self._cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         row.addWidget(self._cancel)
         self._queue: Optional[BatchJobQueue] = None
-        self.setVisible(False)
+        #: Host-supplied callable returning the proxy builder's
+        #: ``pending_count``. ``None`` while unwired (tests / early
+        #: startup); :meth:`_sync` treats that as zero previews
+        #: pending so the line still renders "Ready" without an
+        #: import-time dependency on the photo cache.
+        self._previews_source: Optional[Callable[[], int]] = None
+        #: Polls :attr:`_previews_source` on a steady cadence — the
+        #: proxy builder doesn't emit Qt signals (charter inv. 8) so
+        #: this is the seam that drives the previews display.
+        self._previews_poll = QTimer(self)
+        self._previews_poll.setInterval(_PREVIEWS_POLL_MS)
+        self._previews_poll.timeout.connect(self._sync)
+        # spec/96 §1 — always visible; the idle state is a quiet
+        # "Ready". The first ``_sync`` runs from ``bind`` (so the
+        # poll cadence has the queue + previews source in hand).
+        self._idle_label = tr("Ready")
+        self._sync()
 
     def bind(self, queue: BatchJobQueue) -> None:
+        """Connect the line to the batch queue (the one source of
+        export / ingest jobs). Starts the previews poll on the first
+        bind so the line picks up background proxy work even before
+        any batch job has run."""
         self._queue = queue
         queue.changed.connect(self._sync)
         self._cancel.clicked.connect(queue.cancel_current)
+        if not self._previews_poll.isActive():
+            self._previews_poll.start()
         self._sync()
+
+    def set_previews_source(
+        self, source: Optional[Callable[[], int]],
+    ) -> None:
+        """Inject the previews-pending source (spec/96 §1) — the
+        host hands in ``photo_cache().proxy_pending_count``. ``None``
+        clears it (test fixtures + headless boot). The poll keeps
+        running either way; with no source it just reads zero."""
+        self._previews_source = source
+        self._sync()
+
+    def _previews_pending(self) -> int:
+        """Safe read of the host-supplied previews source. Any
+        exception (the callable disappearing during teardown, a
+        Qt-thread mishap) collapses to zero — the activity line
+        never blocks the GUI on a status read."""
+        src = self._previews_source
+        if src is None:
+            return 0
+        try:
+            return max(0, int(src()))
+        except Exception:                                          # noqa: BLE001
+            log.exception("previews pending source raised")
+            return 0
 
     def _sync(self) -> None:
         q = self._queue
-        if q is None or q.idle:
-            self.setVisible(False)
+        # ── (1) batch job running → today's full readout. ────────
+        if q is not None and not q.idle:
+            done, total, name = q.progress
+            head = self._format_head(q.running_job_type, q.running_label)
+            self._label.setText(head + ("  ·  " + name if name else ""))
+            self._cancel.setToolTip(
+                self._cancel_tooltip(q.running_job_type))
+            self._bar.setMaximum(max(1, total))
+            self._bar.setValue(min(done, max(1, total)))
+            self._bar.setVisible(True)
+            self._bar.setProperty("idle", False)
+            self._queued.setText(
+                tr("+{n} waiting").replace("{n}", str(q.queued_count))
+                if q.queued_count else "")
+            self._cancel.setVisible(True)
+            self._set_idle_styling(False)
+            self.setVisible(True)
             return
-        done, total, name = q.progress
-        head = self._format_head(q.running_job_type, q.running_label)
-        self._label.setText(head + ("  ·  " + name if name else ""))
-        self._cancel.setToolTip(
-            self._cancel_tooltip(q.running_job_type))
-        self._bar.setMaximum(max(1, total))
-        self._bar.setValue(min(done, max(1, total)))
-        self._queued.setText(
-            tr("+{n} waiting").replace("{n}", str(q.queued_count))
-            if q.queued_count else "")
+        # ── (2) previews pending → previews message wins over Ready.
+        pending = self._previews_pending()
+        if pending > 0:
+            self._label.setText(
+                tr("Creating previews — responses may be slower "
+                   "({n} left)").replace("{n}", str(pending)))
+            # No determinate progress for previews — the count is in
+            # the text. Clear the bar so a leftover batch fill from
+            # the previous job doesn't read like progress.
+            self._bar.setMaximum(1)
+            self._bar.setValue(0)
+            self._bar.setVisible(False)
+            self._queued.setText("")
+            self._cancel.setVisible(False)
+            self._set_idle_styling(True)
+            self.setVisible(True)
+            return
+        # ── (3) idle → quiet "Ready". ────────────────────────────
+        self._label.setText(self._idle_label)
+        self._bar.setMaximum(1)
+        self._bar.setValue(0)
+        self._bar.setVisible(False)
+        self._queued.setText("")
+        self._cancel.setVisible(False)
+        self._set_idle_styling(True)
         self.setVisible(True)
+
+    def _set_idle_styling(self, idle: bool) -> None:
+        """Flip the muted-look property on the line + label so QSS
+        can render a quieter "Ready" / previews state vs the active
+        batch-job readout. No-op when the property is already at the
+        target value (re-polishing is cheap but pointless)."""
+        for widget in (self, self._label):
+            if widget.property("idle") != idle:
+                widget.setProperty("idle", idle)
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
 
     @staticmethod
     def _format_head(job_type: str, label: str) -> str:

@@ -89,6 +89,109 @@ def caption_html(exif: Any, highlight: Optional[List[str]] = None) -> str:
     return "  ·  ".join(parts)
 
 
+# --------------------------------------------------------------------------- #
+# Source-chip helpers (spec/96 §2) — camera + file type + file size
+#
+# Pure logic: the call sites (Picker / Quick Sweep) compute the strings
+# (camera name from the item, ``os.stat`` for size, suffix for type) and
+# pass them in. Keeping this module **filesystem-free** is the contract
+# the spec explicitly calls out.
+# --------------------------------------------------------------------------- #
+
+
+#: Suffixes the chip labels as RAW. Lowercase, includes the leading
+#: dot. The set covers the common camera brands Mira sees today.
+_RAW_SUFFIXES: frozenset = frozenset({
+    ".cr2", ".cr3",                       # Canon
+    ".nef", ".nrw",                       # Nikon
+    ".arw", ".srf", ".sr2",               # Sony
+    ".raf",                               # Fujifilm
+    ".rw2",                               # Panasonic
+    ".orf",                               # Olympus
+    ".pef",                               # Pentax
+    ".dng",                               # Adobe / generic / Leica / others
+    ".raw",                               # generic
+    ".rwl",                               # Leica
+    ".srw",                               # Samsung
+    ".x3f",                               # Sigma
+})
+
+
+def file_type_label(suffix: str) -> str:
+    """Short label for a file extension (spec/96 §2).
+
+    ``suffix`` is the path suffix including the dot (``Path.suffix``).
+    Output rules:
+
+    * RAW family (camera-specific raw formats) → ``"RAW"``.
+    * ``.jpg`` / ``.jpeg`` → ``"JPEG"``.
+    * ``.heic`` / ``.heif`` → ``"HEIF"``.
+    * anything else → uppercased extension without the dot
+      (``".tif"`` → ``"TIF"``).
+    * empty / missing suffix → empty string.
+    """
+    if not suffix:
+        return ""
+    s = suffix.lower()
+    if s in _RAW_SUFFIXES:
+        return "RAW"
+    if s in (".jpg", ".jpeg"):
+        return "JPEG"
+    if s in (".heic", ".heif"):
+        return "HEIF"
+    return s.lstrip(".").upper()
+
+
+def file_size_text(byte_size: Any) -> str:
+    """Human-readable file size for the chip (spec/96 §2).
+
+    ``byte_size`` is the ``os.stat(path).st_size`` result; ``None`` /
+    ``0`` / non-numeric collapse to an empty string so the chip drops
+    the segment cleanly when the file is missing or the caller hasn't
+    provided a size. Megabytes for files ≥ 1 MiB (``"{:.1f} MB"``);
+    KB for smaller ones (``"{:d} KB"``).
+    """
+    try:
+        n = int(byte_size)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    mb_threshold = 1024 * 1024
+    if n >= mb_threshold:
+        return f"{n / mb_threshold:.1f} MB"
+    kb = max(1, (n + 1023) // 1024)
+    return f"{kb} KB"
+
+
+def source_chip_html(
+    camera: Optional[str],
+    type_label: str,
+    size_text: str,
+    exposure_html: str = "",
+) -> str:
+    """Compose the spec/96 §2 exposure chip body.
+
+    Final shape:
+
+    ::
+
+        <Camera>  ·  1/250s · f/2.8 · ISO 400 · 85mm  ·  RAW · 24.3 MB
+
+    Each segment is optional — empty strings drop cleanly so the chip
+    stays tidy when EXIF is missing, the file isn't on disk, or the
+    item carries no camera id. ``exposure_html`` is the existing
+    :func:`caption_html` output (already rich-text) so the differing-
+    param highlighting still composes when the caller supplies it.
+    """
+    cam = (camera or "").strip()
+    typ = (type_label or "").strip()
+    size = (size_text or "").strip()
+    body = (exposure_html or "").strip()
+    tail = "  ·  ".join(t for t in (typ, size) if t)
+    return "  ·  ".join(s for s in (cam, body, tail) if s)
+
+
 def _norm(param: str, value: Any) -> Optional[float]:
     """A comparable scalar for one param, or ``None`` when absent/zero (the EXIF reader
     uses 0/0.0 for 'unknown'). ``None`` never equals a real value, so a missing field on

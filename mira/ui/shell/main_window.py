@@ -160,6 +160,14 @@ class MainWindow(QMainWindow):
         self.batch_queue = BatchJobQueue(self)
         self.batch_line = BatchProgressLine()
         self.batch_line.bind(self.batch_queue)
+        # spec/96 §1 — the activity line also reports background
+        # preview / proxy building. The proxy builder lives behind
+        # the photo-cache singleton (Qt-free, charter inv. 8); the
+        # line polls this callable on its own QTimer. Wired here so
+        # the line stays decoupled from the cache import.
+        from mira.ui.media.photo_cache import photo_cache
+        self.batch_line.set_previews_source(
+            photo_cache().proxy_pending_count)
         outer.addWidget(self.batch_line)
 
         body = QWidget()

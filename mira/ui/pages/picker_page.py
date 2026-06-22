@@ -51,7 +51,12 @@ from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from mira.gateway import Gateway
 from mira.picked import CullBucket, CullCluster, CullItem
-from mira.picked.exif_compare import caption_html
+from mira.picked.exif_compare import (
+    caption_html,
+    file_size_text,
+    file_type_label,
+    source_chip_html,
+)
 from mira.picked.status import (
     STATE_CANDIDATE,
     STATE_PICKED,
@@ -751,6 +756,27 @@ class PickerPage(QWidget):
 
     # ── EXIF + AF resolution ───────────────────────────────────────────
 
+    def _show_exposure_overlay(self) -> bool:
+        """spec/96 §2 — read the roaming Settings flag at call time so
+        a toggle in the Settings dialog applies on the next item show
+        without a relaunch. Defaults to True (preserves today's
+        behaviour) when the setting is missing or the load fails."""
+        try:
+            from mira.settings.repo import SettingsRepo
+            return bool(SettingsRepo().load().show_exposure_overlay)
+        except Exception:                                          # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _file_size_text_for(path: Path) -> str:
+        """Filesystem stat → spec/96 chip-friendly size text.
+        Missing file / unreadable stat → ``""`` so the chip's tail
+        drops the segment cleanly."""
+        try:
+            return file_size_text(path.stat().st_size)
+        except OSError:
+            return ""
+
     def _exif_for(self, path: Path):
         key = str(path)
         if key in self._exif_cache:
@@ -911,12 +937,24 @@ class PickerPage(QWidget):
         eff = self._effective(item.item_id)
         self._sync_state_pill(eff)
 
-        # Exposure overlay ON the photo.
-        if is_video:
+        # Exposure overlay ON the photo (spec/96 §2 — camera +
+        # shutter / aperture / ISO / focal + type + size). The
+        # roaming ``show_exposure_overlay`` setting gates the pill
+        # across both single views; default True preserves the
+        # historical behaviour.
+        if is_video or not self._show_exposure_overlay():
             self._expo_overlay.set_html("")
         else:
             exif = self._exif_for(item.path)
-            self._expo_overlay.set_html(caption_html(exif))
+            camera = getattr(exif, "model", "") if exif is not None else ""
+            type_label = file_type_label(item.path.suffix)
+            size_text = self._file_size_text_for(item.path)
+            self._expo_overlay.set_html(source_chip_html(
+                camera=camera,
+                type_label=type_label,
+                size_text=size_text,
+                exposure_html=caption_html(exif),
+            ))
 
         # AF — the viewport stores it for F10's inspection overlay.
         self.viewport.set_af_point(self._resolve_af(item.path))

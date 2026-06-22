@@ -679,6 +679,24 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "restart_required": False,
             },
+            # spec/96 §2 — the single-view exposure pill.
+            {
+                "key": "show_exposure_overlay",
+                "label": "Exposure overlay",
+                "widget": "checkbox",
+                "check_label": (
+                    "Show the exposure pill over photos in the Picker "
+                    "and Quick Sweep"
+                ),
+                "tooltip": (
+                    "The pill at the bottom of single-photo views in "
+                    "the Picker and Quick Sweep shows the camera + "
+                    "shutter / aperture / ISO / focal length + file "
+                    "type and size. Turn off to hide it everywhere; "
+                    "the EXIF in the file is untouched. Defaults to on."
+                ),
+                "restart_required": False,
+            },
             # Nelson 2026-06-09 audit — focus-peaking opacity promotion.
             # Completes the existing peaking_color + peaking_sensitivity
             # pair; the third knob users routinely want.

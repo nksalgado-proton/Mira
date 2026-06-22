@@ -53,7 +53,12 @@ from core.cull_state import (
 )
 from core.fresh_source import SourceItem
 from core.video_discovery import VIDEO_EXTENSIONS
-from mira.picked.exif_compare import caption_html
+from mira.picked.exif_compare import (
+    caption_html,
+    file_size_text,
+    file_type_label,
+    source_chip_html,
+)
 from mira.settings.repo import SettingsRepo
 from mira.ui.base.surface import (
     BasePickSurface,
@@ -486,6 +491,28 @@ class QuickSweepPage(QWidget):
     def _is_video(path: Path) -> bool:
         return path.suffix.lower() in VIDEO_EXTENSIONS
 
+    @staticmethod
+    def _show_exposure_overlay() -> bool:
+        """spec/96 §2 — read the roaming Settings flag at call time so
+        a Settings dialog toggle applies on the next item show without
+        a relaunch. Defaults to True (preserves today's behaviour) on
+        load failure / missing field."""
+        try:
+            from mira.settings.repo import SettingsRepo
+            return bool(SettingsRepo().load().show_exposure_overlay)
+        except Exception:                                          # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _file_size_text_for(path: Path) -> str:
+        """Filesystem stat → spec/96 chip-friendly size text. Missing
+        file / unreadable stat → ``""`` so the chip drops the segment
+        cleanly."""
+        try:
+            return file_size_text(path.stat().st_size)
+        except OSError:
+            return ""
+
     # ── Navigation ─────────────────────────────────────────────────────
 
     def _go_prev(self) -> None:
@@ -513,8 +540,23 @@ class QuickSweepPage(QWidget):
             bits.append(item.timestamp.strftime("%Y-%m-%d %H:%M:%S"))
         bits.append(item.path.name)
         self._info_label.setText("   ·   ".join(bits))
-        self._expo_overlay.set_html(
-            "" if is_video else caption_html(item))
+        # spec/96 §2 — exposure pill: camera + exposure + type + size.
+        # Gated by the roaming ``show_exposure_overlay`` setting
+        # (default True). The Quick Sweep ``SourceItem`` carries
+        # ``camera_id`` and exposes the COMPARE_PARAMS attrs directly,
+        # so ``caption_html(item)`` still works for the exposure
+        # segment.
+        if is_video or not self._show_exposure_overlay():
+            self._expo_overlay.set_html("")
+        else:
+            type_label = file_type_label(item.path.suffix)
+            size_text = self._file_size_text_for(item.path)
+            self._expo_overlay.set_html(source_chip_html(
+                camera=item.camera_id,
+                type_label=type_label,
+                size_text=size_text,
+                exposure_html=caption_html(item),
+            ))
         self._fullres_btn.setVisible(not is_video)
         self._surface.set_region_visible("compact_row", is_video)
         if is_video:

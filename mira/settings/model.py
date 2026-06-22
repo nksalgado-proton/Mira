@@ -223,6 +223,15 @@ class Settings:
     show_exported_watermark: bool = _u(
         "Show the diagonal 'Exported' watermark over photos that "
         "already have an exported version.", True)
+    # spec/96 §2 — the single-view exposure pill (camera · shutter ·
+    # aperture · ISO · focal · type · size). Viewing preference, NOT
+    # hardware-bound, so it lives in the roaming Settings (contrast
+    # spec/95's machine-local display_quality). Default ON preserves
+    # today's Picker / Quick Sweep behaviour.
+    show_exposure_overlay: bool = _u(
+        "Show the exposure pill (camera · shutter · aperture · ISO · "
+        "focal length · file type · size) over photos in the Picker "
+        "and Quick Sweep single views.", True)
     # ── Tone calibration trims (spec/54 §4.1 + spec/55, Nelson
     # 2026-06-10). Field-calibration knobs: -100..100, 0 = the shipped
     # recipe exactly. The Edit surface stays zero-slider (its thesis);

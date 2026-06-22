@@ -147,3 +147,49 @@ def test_native_image_size_reads_header_only(tmp_path):
     assert img.save(str(src), "JPG", 90)
     assert native_image_size(src) == QSize(123, 45)
     assert native_image_size(tmp_path / "missing.jpg") is None
+
+
+# --------------------------------------------------------------------------- #
+# spec/96 §1 — proxy_pending_count delegates to the builder
+# --------------------------------------------------------------------------- #
+
+
+def test_proxy_pending_count_delegates_to_builder(qapp, cache):
+    """The activity line polls ``cache.proxy_pending_count()`` to
+    decide whether to show the "Creating previews …" message. It
+    must read straight from the builder's thread-safe count."""
+
+    class _FakeBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+            self._value = 0
+
+        def pending_count(self) -> int:
+            self.calls += 1
+            return self._value
+
+        def stop(self, *_args, **_kwargs) -> None:    # teardown path
+            pass
+
+    fake = _FakeBuilder()
+    cache._proxy_builder = fake                       # noqa: SLF001
+    assert cache.proxy_pending_count() == 0
+    fake._value = 17                                  # noqa: SLF001
+    assert cache.proxy_pending_count() == 17
+    assert fake.calls == 2
+
+
+def test_proxy_pending_count_swallows_builder_failure(qapp, cache):
+    """The line polls every ~400 ms — a transient failure in the
+    builder must never crash the GUI thread; the accessor returns
+    zero so the line falls back to "Ready"."""
+
+    class _BoomBuilder:
+        def pending_count(self) -> int:
+            raise RuntimeError("simulated builder teardown")
+
+        def stop(self, *_args, **_kwargs) -> None:    # teardown path
+            pass
+
+    cache._proxy_builder = _BoomBuilder()             # noqa: SLF001
+    assert cache.proxy_pending_count() == 0

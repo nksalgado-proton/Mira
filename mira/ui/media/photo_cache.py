@@ -516,6 +516,20 @@ class PhotoCache(QObject):
         Returns how many were newly queued."""
         return self._proxy_builder.seed(Path(event_root), pairs)
 
+    def proxy_pending_count(self) -> int:
+        """How many background proxy builds are still queued
+        (spec/96 §1). Thread-safe — the builder reads it under its
+        own lock, so the GUI thread's ``BatchProgressLine`` poll
+        never blocks on a decode. Returns 0 when the builder is
+        idle (the activity line then falls back to "Ready"; an
+        active batch job still wins the line per the spec's
+        priority order)."""
+        try:
+            return int(self._proxy_builder.pending_count())
+        except Exception:                                          # noqa: BLE001
+            log.exception("proxy_pending_count failed")
+            return 0
+
     def clear(self) -> None:
         with self._pixmap_lock:
             self._pixmaps.clear()

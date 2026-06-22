@@ -292,6 +292,96 @@ def test_lock_file_with_non_object_payload_is_absent(root):
     assert read_holder(root) is None
 
 
+# ── Post-acquire verify (spec/76 §A.2 race tightener) ────────────
+
+
+def test_post_acquire_verify_drops_to_read_only_when_we_lost_the_race(
+    root, monkeypatch,
+):
+    """Spec/76 §A.2 race tightener (Nelson 2026-06-21): two writers can
+    both see a stale holder, both write atomically within the SMB caching
+    window, and `os.replace` succeeds for both. The post-acquire re-read
+    catches the loser by finding a holder that doesn't match THIS process
+    and returns ``acquired=False`` with the winner's identity.
+
+    Simulate by patching ``_atomic_write_lock`` to plant a different
+    writer's payload on top of ours — what a successful race would
+    look like from our perspective."""
+    import socket
+
+    other_payload = {
+        "hostname": "racer-host",
+        "pid": 99999,
+        "app_version": "dev",
+        "acquired_at": "2026-06-21T17:30:00Z",
+        "heartbeat_at": "2026-06-21T17:30:00Z",
+    }
+
+    real_write = library_lock._atomic_write_lock
+
+    def racy_write(path, payload):
+        # Pretend our atomic write succeeded, but the other writer wrote
+        # AFTER us with no visible error — exactly the SMB cache window.
+        real_write(path, other_payload)
+
+    monkeypatch.setattr(library_lock, "_atomic_write_lock", racy_write)
+
+    result = library_lock.acquire(root)
+    assert result.acquired is False
+    assert result.holder is not None
+    assert result.holder.hostname == "racer-host"
+    assert result.holder.pid == 99999
+    # And we didn't claim ownership of a lock we don't own.
+    assert result.holder.hostname != socket.gethostname()
+
+
+def test_post_acquire_verify_does_not_fire_on_normal_acquire(root):
+    """Sanity: a happy-path acquire still returns ``acquired=True`` — the
+    post-acquire verify only intervenes when the re-read holder isn't us.
+    """
+    result = library_lock.acquire(root)
+    assert result.acquired is True
+    assert result.holder is not None
+    assert result.holder.pid == os.getpid()
+
+
+# ── NAS-shaped contention ─────────────────────────────────────────
+
+
+def test_two_writers_alternating_one_share(root, monkeypatch):
+    """Two PCs share one library on a NAS. Writer A acquires; writer B
+    is told to open read-only (the holder names A). When A's lock goes
+    stale (5 min later, mtime-backdated), B acquires successfully and the
+    holder now names B. Mimics what spec/76 §A.2 promises for the
+    multi-PC path without an actual share."""
+    # First writer A acquires.
+    result_a = acquire(root)
+    assert result_a.acquired is True
+    holder_a = result_a.holder
+
+    # Pretend "we" are now a different machine (writer B) probing the lock.
+    monkeypatch.setattr(library_lock.socket, "gethostname",
+                        lambda: "machine-b")
+    monkeypatch.setattr(library_lock.os, "getpid", lambda: 70000)
+
+    # A fresh lock → B is denied and the holder still names A.
+    denied = acquire(root)
+    assert denied.acquired is False
+    assert denied.holder is not None
+    assert denied.holder.hostname == holder_a.hostname
+    assert denied.holder.pid == holder_a.pid
+
+    # A goes away (crash, network blip): mtime backdates past the timeout.
+    _backdate(_lock_file(root), seconds_ago=STALENESS_TIMEOUT_SECONDS + 30)
+
+    # B retries — the stale lock is taken over and the holder now names B.
+    taken = acquire(root)
+    assert taken.acquired is True
+    assert taken.holder is not None
+    assert taken.holder.hostname == "machine-b"
+    assert taken.holder.pid == 70000
+
+
 # ── Pure-logic / module-shape assertions ──────────────────────────
 
 

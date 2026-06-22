@@ -286,6 +286,95 @@ def _show_lock_conflict_dialog(holder) -> str:
     return "read_only" if dlg.result_kind() == "primary" else "cancel"
 
 
+def _show_lock_lost_dialog(holder) -> None:
+    """Modal when the writer heartbeat fails mid-session — another
+    machine has taken over editing while this Mira was running.
+
+    Spec/76 §A heartbeat-failure response (agreed Nelson 2026-06-21):
+    the window flips to read-only and the user is told who took over.
+    Single OK button — there is nothing for the user to decide here,
+    only to acknowledge.
+    """
+    from mira.ui.design.dialogs import MessageDialog
+    from mira.ui.i18n import tr
+    if holder is not None:
+        msg = (tr(
+            "Another machine has taken over editing this library: "
+            "{host} (since {since}). This window is now read-only — "
+            "decisions, edits, exports and plan changes are disabled "
+            "here until the other Mira closes."
+        ).replace("{host}", holder.hostname)
+         .replace("{since}", holder.acquired_at))
+    else:
+        msg = tr(
+            "Mira lost its writer lock on this library — another "
+            "machine has taken over editing. This window is now "
+            "read-only until the other Mira closes."
+        )
+    dlg = MessageDialog(
+        intent="warning",
+        title=tr("Editing taken over"),
+        message=msg,
+        primary_text=tr("OK"),
+    )
+    dlg.exec()
+
+
+def _refresh_read_only_banners() -> None:
+    """Find every :class:`ReadOnlyBanner` in the live widget tree and
+    re-read the session flag. Used by the heartbeat-loss handler so
+    the banner switches on without waiting for a window reopen.
+
+    Walks BOTH the top-level widgets themselves (a parentless banner
+    in a test) AND every banner nested inside any top-level (the
+    production wiring: MainWindow hosts one)."""
+    from mira.ui.shell.read_only_banner import ReadOnlyBanner
+    app = QApplication.instance()
+    if app is None:
+        return
+    for w in app.topLevelWidgets():
+        if isinstance(w, ReadOnlyBanner):
+            w.refresh()
+            continue
+        for banner in w.findChildren(ReadOnlyBanner):
+            banner.refresh()
+
+
+def _handle_lock_lost(library_root, *, show_modal: bool = True) -> bool:
+    """Heartbeat-loss path (spec/76 §A — Nelson 2026-06-21).
+
+    Called when the heartbeat timer's ``refresh()`` returns False —
+    another machine has wrested the writer lock. Flips the session to
+    read-only against the new holder (if we can read one), refreshes
+    the read-only banner, and shows the modal. Returns ``True`` when
+    the read-only flip happened (heartbeat was lost), ``False`` when
+    the lock is still ours (the refresh succeeded after all).
+
+    Extracted from the heartbeat closure for testability — the closure
+    additionally stops the QTimer; this helper does not, because
+    pulling Qt-state mocks into a unit test isn't worth the bytes."""
+    from core import library_lock
+    from mira import session as mira_session
+    if library_lock.refresh(library_root):
+        return False
+    new_holder = library_lock.read_holder(library_root)
+    holder_str = (
+        f"{new_holder.hostname} pid {new_holder.pid}"
+        if new_holder is not None else "another writer"
+    )
+    log = logging.getLogger("mira")
+    log.warning(
+        "Library writer lock heartbeat failed at %s — "
+        "lock is now held by %s; opening read-only.",
+        library_root, holder_str,
+    )
+    mira_session.set_read_only(True, new_holder)
+    _refresh_read_only_banners()
+    if show_modal:
+        _show_lock_lost_dialog(new_holder)
+    return True
+
+
 # spec/76 §A.2 — the heartbeat QTimer must outlive ``main()`` so the
 # library lock stays fresh for the lifetime of the QApplication. A
 # module-level reference keeps Qt's parent-less timer from being GC'd
@@ -464,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
     # so it lives as long as the event loop. Read-only sessions skip
     # this — we don't own the lock, so refreshing it would be wrong.
     global _LIBRARY_LOCK_HEARTBEAT
+    _lock_lost_handled = [False]              # single-flag closure box
     if not read_only_mode:
         from PyQt6.QtCore import QTimer
         _LIBRARY_LOCK_HEARTBEAT = QTimer(app)
@@ -471,10 +561,18 @@ def main(argv: list[str] | None = None) -> int:
             library_lock.HEARTBEAT_INTERVAL_SECONDS * 1000)
 
         def _heartbeat():
-            if not library_lock.refresh(library_root):
-                log.warning(
-                    "Library writer lock heartbeat failed at %s — "
-                    "lock may have been taken over.", library_root)
+            # spec/76 §A heartbeat-loss handler (Nelson 2026-06-21).
+            # When another machine took over the lock, do NOT keep
+            # writing as if we still own it: stop the timer + flip the
+            # session flag + show a modal. The defensive nets in
+            # EventGateway._touch and LibraryGateway._guard_read_only
+            # will catch any in-flight mutations the UI guard missed.
+            if _lock_lost_handled[0]:
+                return
+            if _handle_lock_lost(library_root):
+                _lock_lost_handled[0] = True
+                if _LIBRARY_LOCK_HEARTBEAT is not None:
+                    _LIBRARY_LOCK_HEARTBEAT.stop()
         _LIBRARY_LOCK_HEARTBEAT.timeout.connect(_heartbeat)
         _LIBRARY_LOCK_HEARTBEAT.start()
 

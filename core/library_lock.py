@@ -296,6 +296,20 @@ def acquire(root: Path) -> LockResult:
     if fresh is None:
         log.warning("library_lock: wrote lock but couldn't re-read it.")
         return LockResult(acquired=False, holder=None)
+    # Post-acquire verify (spec/76 §A.2 race tightener — Nelson
+    # 2026-06-21). Two machines that both see a stale holder and both
+    # write atomically within the network's caching window can both
+    # succeed if we trust the write; re-reading the lock catches the
+    # loser and forces it to read-only. Best-effort — the verify
+    # itself can race — but it shrinks the SMB/NFS acquire window
+    # enough to matter without claiming distributed-lock semantics.
+    if fresh.hostname != socket.gethostname() or fresh.pid != os.getpid():
+        log.warning(
+            "library_lock: post-acquire verify found a different holder "
+            "(%s pid %d); another writer raced us. Returning read-only.",
+            fresh.hostname, fresh.pid,
+        )
+        return LockResult(acquired=False, holder=fresh)
     return LockResult(acquired=True, holder=fresh)
 
 

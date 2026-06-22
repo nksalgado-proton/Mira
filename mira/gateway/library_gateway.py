@@ -128,6 +128,35 @@ class LibraryGateway:
         pass
 
     # =================================================================== #
+    # Read-only defensive net (spec/76 §B.1)
+    # =================================================================== #
+
+    def _guard_read_only(self) -> None:
+        """Raise :class:`ReadOnlyLibraryError` when the session is open
+        read-only. Mirrors :meth:`EventGateway._touch` — every mutator
+        below calls this BEFORE opening a transaction so the read-only
+        block is the same shape as the per-event guard. The UI surface
+        is still expected to disable controls upfront
+        (:func:`mira.session.is_read_only`); this catch is the
+        defensive net for paths that slipped through."""
+        from mira.session import ReadOnlyLibraryError, is_read_only
+        if is_read_only():
+            raise ReadOnlyLibraryError(
+                "Library is open read-only — cross-event mutation "
+                "refused. The writer lock is held by another machine.")
+
+    @staticmethod
+    def _skip_if_read_only() -> bool:
+        """``True`` when a maintenance write (projection sync /
+        reconcile / event-drop) should be SKIPPED rather than raise.
+        These paths are not user mutations — they run on startup +
+        event-close and the writer-half machine takes care of them.
+        Returning early in read-only mode keeps us from writing to
+        ``global_items`` from a session that doesn't own the lock."""
+        from mira.session import is_read_only
+        return is_read_only()
+
+    # =================================================================== #
     # Dynamic Collections (cross-event — ``saved_filter`` rows)
     # =================================================================== #
 
@@ -241,6 +270,7 @@ class LibraryGateway:
         ladder rungs + taken tags). Rejects self-referential operand graphs
         (cycle guard). ``filters`` is the spec/32 §2 catalogue as a dict —
         tolerant readers; unknown keys round-trip via ``filters_json``."""
+        self._guard_read_only()
         slug = cut_names.slugify(name)
         err = cut_names.check_tag(slug, [d.tag for d in self.dynamic_collections()])
         if err:
@@ -294,6 +324,7 @@ class LibraryGateway:
         whole mapping (event-scope's per-key merge is too narrow for the
         cross-event catalogue's open-ended key set; callers pass the full
         next state)."""
+        self._guard_read_only()
         dc = self.dynamic_collection(dc_id)
         if dc is None:
             raise KeyError(dc_id)
@@ -338,6 +369,7 @@ class LibraryGateway:
         """Rename a cross-event DC (slug + validate against the cross-event
         namespace, excluding itself). The cycle guard does not need to
         re-run — renaming changes only the tag, not the operand graph."""
+        self._guard_read_only()
         dc = self.dynamic_collection(dc_id)
         if dc is None:
             raise KeyError(dc_id)
@@ -368,6 +400,7 @@ class LibraryGateway:
         survive via the same opaque-id discipline event-scope already uses
         (the FK is dropped per the Phase-2 handover recommendation; freeze
         invariant — spec/81 §5)."""
+        self._guard_read_only()
         if self._collections_library is not None:
             self._collections_library.delete(dc_id)
             return
@@ -1039,6 +1072,7 @@ class LibraryGateway:
         active-set read cheap. ``preferred_genres`` is preserved across the
         upsert (the spec/85 §3 wizard sets it via :meth:`set_gear_genres`).
         """
+        self._guard_read_only()
         self._validate_gear_kind(kind)
         if not key:
             raise ValueError("gear_profile.key must not be empty")
@@ -1060,6 +1094,7 @@ class LibraryGateway:
         these in); ``None`` or empty clears the tag. Upserts — see
         :meth:`set_gear_active`; ``is_active`` is preserved across the
         upsert (the wizard sets both independently)."""
+        self._guard_read_only()
         self._validate_gear_kind(kind)
         if not key:
             raise ValueError("gear_profile.key must not be empty")
@@ -1229,6 +1264,7 @@ class LibraryGateway:
         never re-resolves against it (spec/81 §5); the membership is
         the source of truth. ``card_style`` lands in ``extras_json``
         per the standing house pattern (spec/61 §4)."""
+        self._guard_read_only()
         slug = cut_names.slugify(name)
         # Collide-check against existing cross-event Cuts + the cross-
         # event DC namespace (a tag means one thing across the library).
@@ -1264,6 +1300,7 @@ class LibraryGateway:
         """Rename — slug + validate against the cross-event namespace
         (excluding this Cut's own tag). The freeze invariant is
         untouched (rename changes only the tag, not the membership)."""
+        self._guard_read_only()
         cut = self.cross_event_cut(cut_id)
         if cut is None:
             raise KeyError(cut_id)
@@ -1300,6 +1337,7 @@ class LibraryGateway:
         names. Pass ``None`` to NULL a column; omit the kwarg to leave
         it untouched (the ``_UNSET`` sentinel). ``card_style`` rides
         in ``extras_json``."""
+        self._guard_read_only()
         cut = self.cross_event_cut(cut_id)
         if cut is None:
             raise KeyError(cut_id)
@@ -1359,6 +1397,7 @@ class LibraryGateway:
 
         The cut row's ``updated_at`` stamps to ``now`` so the list
         ordering ("newest" first) reflects the membership change."""
+        self._guard_read_only()
         if self.cross_event_cut(cut_id) is None:
             raise KeyError(cut_id)
         now = self._now()
@@ -1402,6 +1441,7 @@ class LibraryGateway:
         (same store; the FK is safe). Already-exported folders on disk
         are untouched — :meth:`export_cross_event_cut` writes
         per-call, not as a freezing operation."""
+        self._guard_read_only()
         with self.user_store.transaction() as conn:
             conn.execute("DELETE FROM cut WHERE id = ?", (cut_id,))
 
@@ -1416,6 +1456,7 @@ class LibraryGateway:
     def stamp_cross_event_cut_exported(self, cut_id: str) -> None:
         """The export pipeline's stamp: update ``last_exported_at`` only
         (no other field). The Cut's identity is untouched."""
+        self._guard_read_only()
         if self.cross_event_cut(cut_id) is None:
             raise KeyError(cut_id)
         now = self._now()
@@ -1438,7 +1479,14 @@ class LibraryGateway:
         """Sync one event's projection slice. The per-event close hook calls
         this so the cross-event index never goes stale on a clean close
         (spec/81 Phase 2 handover recommendation #2). Returns the row count
-        written."""
+        written.
+
+        Read-only sessions skip the projection write — the writer-half
+        machine owns sync (spec/76 §B.1). Returning 0 keeps the caller's
+        bookkeeping clean (it's the same shape as "event had no rows")."""
+        if self._skip_if_read_only():
+            log.debug("sync_event skipped for %s (read-only mode)", event_uuid)
+            return 0
         return gis.sync_event(
             event_store=event_store,
             user_store=self.user_store,
@@ -1449,7 +1497,15 @@ class LibraryGateway:
 
     def drop_event(self, event_uuid: str) -> int:
         """Drop one event's projection slice (event deleted from the
-        library). Returns the row count removed."""
+        library). Returns the row count removed.
+
+        Read-only sessions skip the drop — event deletion itself is
+        gated by :meth:`EventGateway._touch`, so reaching here in
+        read-only mode means a maintenance pass triggered it
+        unexpectedly. Skip silently rather than raise (spec/76 §B.1)."""
+        if self._skip_if_read_only():
+            log.debug("drop_event skipped for %s (read-only mode)", event_uuid)
+            return 0
         return gis.drop_event(user_store=self.user_store, event_uuid=event_uuid)
 
     def reconcile_all(
@@ -1463,7 +1519,14 @@ class LibraryGateway:
         ``(event_uuid, event_name)`` tuples from the events index;
         ``open_event_store(uuid) -> EventStore | None`` lets the caller
         decide the open-policy (read-only? snapshot?). Unopenable events are
-        skipped + logged, never raised."""
+        skipped + logged, never raised.
+
+        Read-only sessions skip the reconcile pass — projection writes
+        belong to the writer machine (spec/76 §B.1). Returns an empty
+        summary dict so callers' bookkeeping stays uniform."""
+        if self._skip_if_read_only():
+            log.debug("reconcile_all skipped (read-only mode)")
+            return {"synced": 0, "dropped": 0, "skipped": []}
         return gis.reconcile_all(
             user_store=self.user_store,
             open_event_store=open_event_store,

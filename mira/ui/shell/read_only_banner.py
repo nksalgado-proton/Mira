@@ -42,9 +42,13 @@ class ReadOnlyBanner(QWidget):
         self._label.setWordWrap(False)
         row.addWidget(self._label, stretch=1)
         self.setVisible(False)
-        self._refresh_from_session()
+        self.refresh()
 
-    def _refresh_from_session(self) -> None:
+    def refresh(self) -> None:
+        """Re-read :func:`mira.session.is_read_only` and update the
+        banner. Public so the §A heartbeat-loss handler can flip the
+        banner on at runtime when the writer lock is wrested away by
+        another machine."""
         from mira.session import is_read_only, read_only_holder
         if not is_read_only():
             self.setVisible(False)

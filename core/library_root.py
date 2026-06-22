@@ -1,4 +1,5 @@
-"""Library root resolution + bootstrap pointer (spec/76 §B.4).
+"""Library root resolution + bootstrap pointer + validation
+(spec/76 §B.4 + §B.2).
 
 The library root is the user-chosen folder holding everything Mira
 durably owns:
@@ -38,8 +39,9 @@ import logging
 import os
 import platform
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -331,10 +333,171 @@ def migrate_legacy_data_dir(root: Path) -> bool:
     return copied > 0
 
 
+# --------------------------------------------------------------------------- #
+# Validation — spec/76 §B.2 (library on NAS or local disk)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Outcome of :func:`validate_root`. ``ok`` is False when one of
+    the hard probes failed (path unreachable, unwritable, atomic
+    rename fails). ``reasons`` carries fatal messages; ``warnings``
+    carries non-fatal flags (e.g. mapped-drive letter — works today,
+    but breaks the multi-PC story per spec/76)."""
+    ok: bool
+    reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def _windows_is_mapped_network_drive(path: Path) -> bool:
+    """``True`` when ``path`` resolves to a Windows mapped network
+    drive (drive letter pointing at a remote share). Detected via
+    ``GetDriveType(W:)``: DRIVE_REMOTE (4) = mapped network drive.
+
+    Best-effort — failure returns ``False`` (no warning rather than
+    a false alarm). UNC paths (``\\\\server\\share``) get a separate
+    bookkeeping note in :func:`validate_root` — those are the
+    PREFERRED multi-PC shape.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        drive, _ = os.path.splitdrive(str(path))
+        if not drive or not drive.endswith(":"):
+            return False
+        import ctypes
+
+        DRIVE_REMOTE = 4
+        kernel32 = ctypes.windll.kernel32
+        # GetDriveTypeW wants a NUL-terminated wide string ending
+        # with a backslash (e.g. "Z:\\"). Splitting then padding
+        # keeps us safe against odd inputs.
+        root = drive + "\\"
+        result = kernel32.GetDriveTypeW(root)
+        return int(result) == DRIVE_REMOTE
+    except (OSError, AttributeError) as exc:
+        log.debug("library_root: mapped-drive probe failed for %s: %s",
+                  path, exc)
+        return False
+
+
+def _is_unc_path(path: Path) -> bool:
+    """``True`` for UNC paths (``\\\\server\\share\\…``) — the
+    multi-PC-friendly shape on Windows. POSIX never matches."""
+    raw = str(path)
+    return raw.startswith("\\\\") or raw.startswith("//")
+
+
+def _probe_writable_atomic_rename(root: Path) -> Optional[str]:
+    """Round-trip a small file via the project's atomic
+    write-then-rename pattern (invariant #6). Returns ``None`` on
+    success or a human-readable error reason. Used by
+    :func:`validate_root` as the deciding test for "library bytes
+    can land here safely."""
+    probe_dir = root / MIRA_DIRNAME
+    try:
+        probe_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"could not create {probe_dir}: {exc}"
+    target = probe_dir / ".validate-probe"
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    payload = b'{"probe": "library-root-validate"}\n'
+    try:
+        with open(tmp, "wb") as f:
+            f.write(payload)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass
+        os.replace(str(tmp), str(target))
+    except OSError as exc:
+        # Clean up the tmp if the replace didn't get there.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return f"write-then-rename failed in {probe_dir}: {exc}"
+    try:
+        actual = target.read_bytes()
+        if actual != payload:
+            return (
+                f"probe round-trip mismatch in {probe_dir} — the share "
+                "may be caching writes aggressively")
+    except OSError as exc:
+        return f"probe re-read failed in {probe_dir}: {exc}"
+    finally:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+    return None
+
+
+def validate_root(path: Path) -> ValidationResult:
+    """Probe ``path`` for spec/76 §B.2 library suitability.
+
+    Used by the first-run dialog (Create + Open doors) BEFORE writing
+    the bootstrap pointer, and by any future "switch library" entry.
+    Hard probes — failure means the path cannot host a library:
+
+    * the path exists OR its parent does and is creatable;
+    * a write-then-rename round-trip succeeds inside ``<path>/.mira/``
+      (the same primitive every lock + settings write uses);
+    * the round-trip's bytes survive a re-read (catches over-eager
+      client-side caching on misbehaving SMB clients).
+
+    Soft warnings — work today but flagged to the user:
+
+    * mapped network drive on Windows (``Z:\\`` pointing at a share):
+      drive letters can re-assign per PC, breaking the multi-PC
+      portability spec/76 promises. UNC (``\\\\server\\share``) is
+      strongly preferred.
+
+    UNC paths get a positive note in ``warnings`` so the dialog can
+    surface "good — multi-PC ready" rather than nothing.
+    """
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    p = Path(path)
+    if not p.exists():
+        parent = p.parent
+        if not parent.exists():
+            reasons.append(
+                f"{p} does not exist and neither does its parent "
+                f"{parent}")
+            return ValidationResult(ok=False, reasons=reasons,
+                                    warnings=warnings)
+        # The parent exists — we'll create p as part of the probe.
+
+    # Hard probe: writable + atomic rename + round-trip.
+    err = _probe_writable_atomic_rename(p)
+    if err is not None:
+        reasons.append(err)
+        return ValidationResult(ok=False, reasons=reasons,
+                                warnings=warnings)
+
+    # Soft warnings.
+    if _windows_is_mapped_network_drive(p):
+        warnings.append(
+            f"{p} is on a mapped network drive — drive letters can "
+            "re-assign per PC, which breaks the multi-PC library "
+            "story. Prefer a UNC path (\\\\server\\share\\…).")
+    elif _is_unc_path(p):
+        warnings.append(
+            f"{p} is a UNC path — good. The library will resolve "
+            "the same way from every PC on the network.")
+
+    return ValidationResult(ok=True, reasons=reasons, warnings=warnings)
+
+
 __all__ = [
     "MIRA_DIRNAME",
     "MARKER_FILENAME",
     "POINTER_FILENAME",
+    "ValidationResult",
     "bootstrap_pointer_path",
     "clear_pointer",
     "is_library_shape",
@@ -343,5 +506,6 @@ __all__ = [
     "read_pointer",
     "resolve_library_root",
     "scaffold_library",
+    "validate_root",
     "write_pointer",
 ]

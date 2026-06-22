@@ -18,12 +18,14 @@ from core.library_root import (
     MARKER_FILENAME,
     MIRA_DIRNAME,
     POINTER_FILENAME,
+    ValidationResult,
     is_library_shape,
     legacy_user_data_dir,
     migrate_legacy_data_dir,
     read_pointer,
     resolve_library_root,
     scaffold_library,
+    validate_root,
     write_pointer,
     clear_pointer,
 )
@@ -340,3 +342,75 @@ def test_marker_file_alone_is_treated_as_empty(isolate, legacy_dir):
     assert {p.name for p in contents} == {MARKER_FILENAME}
     # Migration proceeds.
     assert migrate_legacy_data_dir(root) is True
+
+
+# ── validate_root — spec/76 §B.2 NAS suitability probes ───────────
+
+
+def test_validate_root_ok_on_writable_local_path(tmp_path: Path):
+    """Happy path: an empty writable folder passes every probe."""
+    result = validate_root(tmp_path)
+    assert result.ok is True
+    assert result.reasons == []
+    # No mapped-drive / UNC warning for a local tmp path.
+    assert result.warnings == []
+
+
+def test_validate_root_creates_mira_dir_for_probe(tmp_path: Path):
+    """The probe writes through ``<root>/.mira/`` — exercising the
+    same primitive every settings + lock + recipe write uses. The
+    probe file is cleaned up afterwards so a happy validate leaves
+    only the empty ``.mira/`` folder behind."""
+    result = validate_root(tmp_path)
+    assert result.ok is True
+    assert (tmp_path / MIRA_DIRNAME).is_dir()
+    # No leftover probe file.
+    assert not (tmp_path / MIRA_DIRNAME / ".validate-probe").exists()
+
+
+def test_validate_root_fails_when_parent_missing(tmp_path: Path):
+    """A path whose parent doesn't exist either is unreachable —
+    spec/76 §B.2 says fail upfront, don't try to mkdir -p across
+    multiple missing levels (a typo'd UNC share would otherwise
+    create chaos)."""
+    bogus = tmp_path / "never-existed" / "deep" / "library"
+    result = validate_root(bogus)
+    assert result.ok is False
+    assert any("does not exist" in r for r in result.reasons)
+
+
+def test_validate_root_fails_when_write_blocked(tmp_path: Path, monkeypatch):
+    """Simulate a write failure by patching ``_probe_writable_atomic_rename``
+    to return a reason — exercises the failure path without needing
+    a real read-only filesystem (which is hard on Windows tmp)."""
+    from core import library_root as lr
+    monkeypatch.setattr(
+        lr, "_probe_writable_atomic_rename",
+        lambda root: "share is mounted read-only")
+    result = validate_root(tmp_path)
+    assert result.ok is False
+    assert "share is mounted read-only" in result.reasons
+
+
+def test_validate_root_warns_on_mapped_network_drive(tmp_path, monkeypatch):
+    """A Windows mapped network drive should generate a warning
+    (works today, but breaks the multi-PC story per spec/76 §B.2)."""
+    from core import library_root as lr
+    monkeypatch.setattr(
+        lr, "_windows_is_mapped_network_drive", lambda p: True)
+    result = validate_root(tmp_path)
+    assert result.ok is True
+    assert any("mapped network drive" in w for w in result.warnings)
+
+
+def test_validate_root_notes_unc_path_as_good(tmp_path, monkeypatch):
+    """UNC paths are the preferred multi-PC shape — surfaced as a
+    positive note in ``warnings``."""
+    from core import library_root as lr
+    monkeypatch.setattr(lr, "_is_unc_path", lambda p: True)
+    # Mapped-drive probe must NOT fire (mutually exclusive with UNC).
+    monkeypatch.setattr(
+        lr, "_windows_is_mapped_network_drive", lambda p: False)
+    result = validate_root(tmp_path)
+    assert result.ok is True
+    assert any("good" in w.lower() for w in result.warnings)

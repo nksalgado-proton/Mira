@@ -219,3 +219,85 @@ def test_create_runs_legacy_migration(qapp, isolate, monkeypatch):
     assert dlg.chosen_root() == target
     assert dlg.did_migrate_legacy() is True
     assert (target / MIRA_DIRNAME / "settings.json").is_file()
+
+
+# ── Validation hook — spec/76 §B.2 ────────────────────────────────
+
+
+def test_create_aborts_on_validation_failure(qapp, isolate, monkeypatch):
+    """Create against an unwritable / unreachable target: validation
+    fails → critical dialog → no scaffold + no pointer."""
+    from mira.ui.wizard.first_run_library import FirstRunLibraryDialog
+
+    tmp, pointer_path = isolate
+    target = tmp / "fresh_library"
+    _stub_folder_picker(monkeypatch, target)
+    msgs = _suppress_message_boxes(monkeypatch)
+
+    # Force validation to fail with a specific reason.
+    from core.library_root import ValidationResult
+    monkeypatch.setattr(
+        _library_root, "validate_root",
+        lambda p: ValidationResult(
+            ok=False, reasons=["share is unreachable"], warnings=[]),
+    )
+
+    dlg = FirstRunLibraryDialog()
+    dlg._on_create_clicked()                    # noqa: SLF001
+
+    assert dlg.chosen_root() is None
+    assert not pointer_path.exists()
+    # The user was told what went wrong.
+    assert msgs and msgs[-1][0] == "critical"
+
+
+def test_open_aborts_on_validation_failure(qapp, isolate, monkeypatch):
+    """Open against an existing-but-stale library (share dropped):
+    validation fails → critical dialog → no pointer."""
+    from mira.ui.wizard.first_run_library import FirstRunLibraryDialog
+
+    tmp, pointer_path = isolate
+    target = tmp / "stale_library"
+    scaffold_library(target)
+    _stub_folder_picker(monkeypatch, target)
+    msgs = _suppress_message_boxes(monkeypatch)
+
+    from core.library_root import ValidationResult
+    monkeypatch.setattr(
+        _library_root, "validate_root",
+        lambda p: ValidationResult(
+            ok=False, reasons=["share unreachable"], warnings=[]),
+    )
+
+    dlg = FirstRunLibraryDialog()
+    dlg._on_open_clicked()                      # noqa: SLF001
+
+    assert dlg.chosen_root() is None
+    assert not pointer_path.exists()
+    assert msgs and msgs[-1][0] == "critical"
+
+
+def test_create_proceeds_through_unc_positive_note(qapp, isolate, monkeypatch):
+    """The "good — UNC" positive note is informational and NEVER
+    blocks scaffold. The user is not prompted; the note just logs."""
+    from mira.ui.wizard.first_run_library import FirstRunLibraryDialog
+
+    tmp, pointer_path = isolate
+    target = tmp / "library_unc"
+    _stub_folder_picker(monkeypatch, target)
+    _suppress_message_boxes(monkeypatch)
+
+    from core.library_root import ValidationResult
+    monkeypatch.setattr(
+        _library_root, "validate_root",
+        lambda p: ValidationResult(
+            ok=True, reasons=[],
+            warnings=["UNC path — good — multi-PC ready"]),
+    )
+
+    dlg = FirstRunLibraryDialog()
+    dlg._on_create_clicked()                    # noqa: SLF001
+
+    # Scaffold proceeded; positive note didn't ask for confirmation.
+    assert dlg.chosen_root() == target
+    assert pointer_path.is_file()

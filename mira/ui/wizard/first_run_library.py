@@ -152,6 +152,34 @@ class FirstRunLibraryDialog(QDialog):
                 ),
             )
             return
+        # spec/76 §B.2 — probe the target for writable + atomic-rename
+        # BEFORE we scaffold. Catches an unreachable NAS share or a
+        # read-only folder upfront instead of mid-scaffold. Mapped
+        # drives still scaffold (warning, not failure) — surfaced
+        # below.
+        validation = _library_root.validate_root(path)
+        if not validation.ok:
+            log.warning(
+                "first_run_library: target %s failed validation: %s",
+                path, "; ".join(validation.reasons),
+            )
+            QMessageBox.critical(
+                self,
+                tr("Couldn't create library"),
+                tr(
+                    "Mira can't create a library at {path} — "
+                    "{reason}.\nPick another folder."
+                ).format(path=str(path),
+                         reason=validation.reasons[0]),
+            )
+            return
+        if validation.warnings and not self._confirm_warnings(
+                path, validation.warnings):
+            # The probe left an empty ``.mira/`` behind; tidy it up so
+            # a subsequent Create on the same folder still sees an
+            # empty tree.
+            self._cleanup_empty_dot_mira(path)
+            return
         try:
             _library_root.scaffold_library(path)
             self._migrated = _library_root.migrate_legacy_data_dir(path)
@@ -173,6 +201,24 @@ class FirstRunLibraryDialog(QDialog):
                  path, self._migrated)
         self.accept()
 
+    @staticmethod
+    def _cleanup_empty_dot_mira(path: Path) -> None:
+        """Remove ``<path>/.mira/`` if it exists and is empty — used to
+        roll back the validation-probe side effect when the user
+        declined a warning on the Create path."""
+        from core.library_root import MIRA_DIRNAME
+        dot_mira = path / MIRA_DIRNAME
+        try:
+            if dot_mira.is_dir() and not any(dot_mira.iterdir()):
+                dot_mira.rmdir()
+        except OSError:
+            # Permissions / locking / non-empty — leave it; the next
+            # Create attempt on the same folder will fail the empty-
+            # target check loudly enough.
+            log.debug(
+                "first_run_library: cleanup of %s skipped — not empty "
+                "or not removable", dot_mira)
+
     def _on_open_clicked(self) -> None:
         path = self._pick_folder(
             tr("Open an existing Mira library"))
@@ -188,6 +234,29 @@ class FirstRunLibraryDialog(QDialog):
                     "set one up here, or pick a different folder."
                 ).format(path=str(path)),
             )
+            return
+        # spec/76 §B.2 — Open path probes too: a NAS share whose
+        # mount is half-up will pass the .mira-shape check but fail
+        # an atomic-rename probe. Catch upfront so the lock acquire
+        # doesn't fail with a less-useful error.
+        validation = _library_root.validate_root(path)
+        if not validation.ok:
+            log.warning(
+                "first_run_library: existing library at %s failed "
+                "validation: %s", path, "; ".join(validation.reasons))
+            QMessageBox.critical(
+                self,
+                tr("Couldn't open library"),
+                tr(
+                    "Mira can't open the library at {path} — "
+                    "{reason}.\nCheck the share is mounted and "
+                    "writable, then try again."
+                ).format(path=str(path),
+                         reason=validation.reasons[0]),
+            )
+            return
+        if validation.warnings and not self._confirm_warnings(
+                path, validation.warnings):
             return
         try:
             _library_root.write_pointer(path)
@@ -206,6 +275,38 @@ class FirstRunLibraryDialog(QDialog):
         self._chosen_root = path
         log.info("first_run_library: opened existing library at %s", path)
         self.accept()
+
+    def _confirm_warnings(
+        self, path: "Path", warnings: list,
+    ) -> bool:
+        """Show non-fatal validation warnings to the user. Returns
+        ``True`` when the user opts to proceed (default) — UNC notes
+        + mapped-drive warnings are flagged but not blockers.
+
+        Spec/76 §B.2 — mapped network drives still work today; the
+        warning exists so the user can re-pick before they've moved
+        events into the wrong shape.
+        """
+        # Filter for the "good — UNC" positive note: surface it as
+        # information, not a confirmation prompt. Real warnings still
+        # ask before proceeding.
+        positive = [w for w in warnings if "good" in w.lower()]
+        real = [w for w in warnings if w not in positive]
+        for note in positive:
+            log.info("first_run_library: %s", note)
+        if not real:
+            return True
+        text = tr(
+            "Mira can use {path}, but flagged the following:\n\n{warns}"
+            "\n\nContinue anyway?"
+        ).format(path=str(path), warns="\n• " + "\n• ".join(real))
+        choice = QMessageBox.question(
+            self, tr("Library location warning"), text,
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return choice == QMessageBox.StandardButton.Yes
 
     # ── helpers ──────────────────────────────────────────────────────
 

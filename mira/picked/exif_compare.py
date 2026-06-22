@@ -27,8 +27,50 @@ from typing import Any, List, Optional
 # (it's the most common bracketing axis and the one the cull readout was missing).
 COMPARE_PARAMS: tuple[str, ...] = ("shutter_speed", "aperture", "iso", "focal_length")
 
+#: Per-param attribute-name fallbacks: the gateway's store Item
+#: (`mira/store/models.py`) writes the suffix-aliased forms
+#: (``shutter_speed_s`` / ``aperture_f`` / ``focal_length_mm``) while
+#: the EXIF reader and ``SourceItem`` use the bare canonical names.
+#: :func:`_resolve_value` walks this tuple per param and returns the
+#: first attribute that's set, so callers can pass EITHER shape (live
+#: EXIF, SourceItem, store Item) without caring which.
+_PARAM_ALIASES: dict = {
+    "shutter_speed": ("shutter_speed", "shutter_speed_s"),
+    "aperture":      ("aperture", "aperture_f"),
+    "focal_length":  ("focal_length", "focal_length_mm"),
+    "iso":           ("iso",),
+}
+
 # Per-param normalisation for the equality test — round away float noise so 6.3 == 6.30001.
 _ROUND = {"shutter_speed": 6, "aperture": 2, "focal_length": 1, "iso": 0}
+
+
+def _resolve_value(obj: Any, param: str) -> Any:
+    """Read ``param`` off ``obj``, trying every alias in
+    :data:`_PARAM_ALIASES`. Returns the first non-None / non-zero
+    value it finds, or ``None`` when none of the aliases is set —
+    so the readout drops cleanly on a missing field regardless of
+    which object shape the caller passed in.
+
+    A literal zero is treated as "missing" (the EXIF reader uses
+    0/0.0 for unknown), so a populated alias on the same object
+    still wins. This makes a partially-extracted live ``PhotoExif``
+    (model set, exposure zeroed) fall back to the store ``Item``
+    where ingest already wrote the values.
+    """
+    for name in _PARAM_ALIASES.get(param, (param,)):
+        value = getattr(obj, name, None)
+        if value is None:
+            continue
+        # 0 / 0.0 is the EXIF reader's "unknown" sentinel — keep
+        # walking the aliases so a populated suffixed alias wins.
+        try:
+            if float(value) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        return value
+    return None
 
 # Above this many differing params, the two photos aren't a controlled comparison.
 _MAX_DIFFS = 2
@@ -63,28 +105,64 @@ def fmt_param(param: str, value) -> str:
 
 def exposure_text(exif: Any) -> str:
     """Plain (non-HTML) exposure readout — ``shutter · aperture · ISO · focal`` — for a
-    single-photo info line (any object exposing the COMPARE_PARAMS attrs, incl. SourceItem).
+    single-photo info line. Accepts any object exposing the
+    :data:`COMPARE_PARAMS` attrs OR their store-Item aliases
+    (``shutter_speed_s`` / ``aperture_f`` / ``focal_length_mm``); the
+    Picker, Quick Sweep, and the cull tile readouts all converge here.
     Empty when ``exif`` is missing or has no usable values."""
     if exif is None:
         return ""
     return "  ·  ".join(
-        t for t in (fmt_param(p, getattr(exif, p, None)) for p in COMPARE_PARAMS) if t)
+        t for t in (fmt_param(p, _resolve_value(exif, p))
+                    for p in COMPARE_PARAMS) if t)
 
 
 def caption_html(exif: Any, highlight: Optional[List[str]] = None) -> str:
     """One tile's exposure caption (rich text). ``highlight`` = the params to emphasise (the
     differing ones in a 2-photo compare), or ``None`` for a plain readout (no emphasis).
-    Empty string when ``exif`` is missing or has no usable values."""
+    Empty string when ``exif`` is missing or has no usable values.
+
+    Reads through :func:`_resolve_value` so a partially-extracted live
+    EXIF (model set, exposure zeroed) can be paired with a store-shaped
+    fallback object — see :func:`exposure_for_chip` for the
+    Picker's two-source merge. Direct callers (Quick Sweep
+    ``SourceItem``, EXIF compare-grid) keep their canonical attribute
+    names unchanged.
+    """
     if exif is None:
         return ""
     parts: List[str] = []
     for p in COMPARE_PARAMS:
-        text = fmt_param(p, getattr(exif, p, None))
+        text = fmt_param(p, _resolve_value(exif, p))
         if not text:
             continue
         if highlight and p in highlight:
             parts.append(f"<b style='color:{_HIGHLIGHT}'>{text}</b>")
         else:
+            parts.append(text)
+    return "  ·  ".join(parts)
+
+
+def exposure_for_chip(primary: Any, fallback: Any = None) -> str:
+    """Compose the chip's exposure segment, preferring populated
+    values from ``primary`` and falling back to ``fallback`` per
+    param (spec/96 §2 — the Picker's live EXIF can return model
+    without exposure for some camera bodies; the gateway store Item
+    always has the post-ingest values).
+
+    Returns the rich-text exposure block (the same shape
+    :func:`caption_html` produces). Empty when neither source
+    carries any of the four params.
+    """
+    if primary is None and fallback is None:
+        return ""
+    parts: List[str] = []
+    for p in COMPARE_PARAMS:
+        value = _resolve_value(primary, p) if primary is not None else None
+        if value is None and fallback is not None:
+            value = _resolve_value(fallback, p)
+        text = fmt_param(p, value)
+        if text:
             parts.append(text)
     return "  ·  ".join(parts)
 
@@ -230,7 +308,8 @@ def exposure_diff(
         return None
     diffs = [
         p for p in COMPARE_PARAMS
-        if _norm(p, getattr(exif_a, p, None)) != _norm(p, getattr(exif_b, p, None))
+        if _norm(p, _resolve_value(exif_a, p))
+        != _norm(p, _resolve_value(exif_b, p))
     ]
     if len(diffs) > _MAX_DIFFS:
         return None

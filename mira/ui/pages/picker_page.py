@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
@@ -53,6 +53,7 @@ from mira.gateway import Gateway
 from mira.picked import CullBucket, CullCluster, CullItem
 from mira.picked.exif_compare import (
     caption_html,
+    exposure_for_chip,
     file_size_text,
     file_type_label,
     source_chip_html,
@@ -768,13 +769,20 @@ class PickerPage(QWidget):
             return True
 
     @staticmethod
-    def _file_size_text_for(path: Path) -> str:
-        """Filesystem stat → spec/96 chip-friendly size text.
-        Missing file / unreadable stat → ``""`` so the chip's tail
-        drops the segment cleanly."""
+    def _file_size_text_for(path: Path, store_item: Any = None) -> str:
+        """Filesystem stat → spec/96 chip-friendly size text. Falls
+        back to ``store_item.byte_size`` (post-ingest, persisted by
+        the gateway) when the live stat fails — the chip still shows
+        the size when the source file moved between ingest and now
+        (e.g., card pulled). Returns ``""`` when neither source
+        carries a value."""
         try:
             return file_size_text(path.stat().st_size)
         except OSError:
+            if store_item is not None:
+                fallback = getattr(store_item, "byte_size", None)
+                if fallback:
+                    return file_size_text(fallback)
             return ""
 
     def _exif_for(self, path: Path):
@@ -945,15 +953,36 @@ class PickerPage(QWidget):
         if is_video or not self._show_exposure_overlay():
             self._expo_overlay.set_html("")
         else:
+            # Two sources merge: live EXIF (read off the file each
+            # time the chip refreshes — fast on the cache) AND the
+            # gateway's store Item (post-ingest, populated once
+            # with the EXIF reader's full pass + the user's edits).
+            # Some camera bodies' EXIF returns the Model tag but
+            # zeroes the FNumber / ExposureTime tags on a live re-
+            # read — the chip then shows camera but no exposure,
+            # which is the report Nelson hit 2026-06-22. The store
+            # Item has the post-ingest values, so we use it as the
+            # fallback per param via :func:`exposure_for_chip`.
             exif = self._exif_for(item.path)
-            camera = getattr(exif, "model", "") if exif is not None else ""
+            store_item = (
+                self._eg.item(item.item_id)
+                if self._eg is not None else None
+            )
+            camera = (
+                (store_item.camera_id or "") if (
+                    store_item is not None
+                    and getattr(store_item, "camera_id", None))
+                else (getattr(exif, "model", "")
+                      if exif is not None else "")
+            )
+            exposure_html = exposure_for_chip(exif, store_item)
             type_label = file_type_label(item.path.suffix)
-            size_text = self._file_size_text_for(item.path)
+            size_text = self._file_size_text_for(item.path, store_item)
             self._expo_overlay.set_html(source_chip_html(
                 camera=camera,
                 type_label=type_label,
                 size_text=size_text,
-                exposure_html=caption_html(exif),
+                exposure_html=exposure_html,
             ))
 
         # AF — the viewport stores it for F10's inspection overlay.

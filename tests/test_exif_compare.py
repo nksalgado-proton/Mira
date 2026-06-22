@@ -212,3 +212,97 @@ def test_source_chip_html_preserves_exposure_html():
         "Pana+G9M2", "RAW", "24.3 MB", exposure)
     assert "<b" in chip
     assert "#F37021" in chip
+
+
+# --------------------------------------------------------------------------- #
+# spec/96 §2 — alias-aware readers (Nelson 2026-06-22 follow-up)
+#
+# The gateway store Item exposes ``shutter_speed_s`` / ``aperture_f`` /
+# ``focal_length_mm``; the EXIF reader + ``SourceItem`` use the bare
+# names. ``caption_html`` + ``exposure_for_chip`` walk both so the
+# chip composes correctly regardless of which object shape arrived.
+# --------------------------------------------------------------------------- #
+
+
+def _store_item(shutter_s=0.005, aperture_f=2.8, iso=400,
+                focal_mm=50.0, camera_id=""):
+    """Mirror of the gateway's ``Item`` shape for the exposure fields
+    the chip reads."""
+    return SimpleNamespace(
+        shutter_speed_s=shutter_s, aperture_f=aperture_f, iso=iso,
+        focal_length_mm=focal_mm, camera_id=camera_id,
+    )
+
+
+def test_caption_html_reads_store_item_aliases():
+    """A store-shaped object (suffixed attr names) yields the same
+    readout as a PhotoExif / SourceItem with canonical names — the
+    spec/96 §2 Picker fix."""
+    text = caption_html(_store_item())
+    assert "1/200s" in text
+    assert "f/2.8" in text
+    assert "ISO 400" in text
+    assert "50mm" in text
+
+
+def test_caption_html_skips_alias_zeros():
+    """An EXIF reader that returns 0/0.0 for unknown values should
+    not produce a chip segment — the suffixed alias check skips
+    zeros the same way the canonical path does."""
+    text = caption_html(_store_item(
+        shutter_s=0.0, aperture_f=0.0, iso=0, focal_mm=0.0))
+    assert text == ""
+
+
+def test_exposure_for_chip_prefers_primary_when_populated():
+    """``primary`` (live EXIF) wins per param when it has a value.
+    No fallback consulted for those params."""
+    from mira.picked.exif_compare import exposure_for_chip
+    primary = _exif(shutter=0.004, aperture=2.8, iso=400, focal=85.0)
+    fallback = _store_item(shutter_s=1.0, aperture_f=22.0, iso=100,
+                           focal_mm=24.0)
+    text = exposure_for_chip(primary, fallback)
+    assert "1/250s" in text          # primary's shutter
+    assert "f/2.8" in text           # primary's aperture
+    assert "ISO 400" in text         # primary's iso
+    assert "85mm" in text            # primary's focal
+    # Fallback values do NOT appear.
+    assert "1s" not in text
+    assert "f/22" not in text
+
+
+def test_exposure_for_chip_falls_back_per_param():
+    """spec/96 §2 (Nelson 2026-06-22 follow-up) — the live EXIF can
+    return ``model`` but zero exposure tags for some camera bodies.
+    The store Item carries the post-ingest exposure; the chip then
+    merges per-param so each segment ends up populated."""
+    from mira.picked.exif_compare import exposure_for_chip
+    # Live EXIF: all exposure values are the reader's "unknown" 0.
+    primary = _exif(shutter=0.0, aperture=0.0, iso=0, focal=0.0)
+    fallback = _store_item(shutter_s=0.004, aperture_f=2.8,
+                           iso=400, focal_mm=85.0)
+    text = exposure_for_chip(primary, fallback)
+    assert "1/250s" in text
+    assert "f/2.8" in text
+    assert "ISO 400" in text
+    assert "85mm" in text
+
+
+def test_exposure_for_chip_partial_primary_partial_fallback():
+    """Mixed: primary has shutter + aperture, fallback has iso +
+    focal. The final chip pulls each segment from whichever source
+    has it."""
+    from mira.picked.exif_compare import exposure_for_chip
+    primary = _exif(shutter=0.004, aperture=2.8, iso=0, focal=0.0)
+    fallback = _store_item(shutter_s=0.0, aperture_f=0.0,
+                           iso=800, focal_mm=200.0)
+    text = exposure_for_chip(primary, fallback)
+    assert "1/250s" in text and "f/2.8" in text
+    assert "ISO 800" in text and "200mm" in text
+
+
+def test_exposure_for_chip_both_empty_returns_blank():
+    from mira.picked.exif_compare import exposure_for_chip
+    assert exposure_for_chip(None, None) == ""
+    assert exposure_for_chip(_exif(0, 0, 0, 0),
+                             _store_item(0, 0, 0, 0)) == ""

@@ -549,6 +549,47 @@ class PhotoCache(QObject):
         if not self._worker.wait(2000):
             log.warning("PhotoCache worker did not stop within 2s")
 
+    def release_for_delete(self, timeout: float = 2.0) -> None:
+        """spec/100 §A — let go of every file handle this cache holds
+        under the current event root so a ``shutil.rmtree`` of that
+        root can run without hitting a Windows open-handle lock.
+
+        Concretely: drop every cached pixmap/scaled/thumb entry,
+        forget the event context, and QUIESCE both background builders
+        (proxy + export-thumb) — that's the wait that interrupts the
+        ``Image.open`` already in progress, the actual cause of the
+        spec/100 zombie. Also bumps the worker generation so any
+        in-flight decode delivery is stale on landing.
+
+        Unlike :meth:`shutdown`, the builders/worker remain reusable —
+        the next event open seeds them again exactly as before. Always
+        safe to call (no-op on a cold cache)."""
+        # 1. Drop the in-RAM tiers + forget the event context. After
+        # this, the per-event sha map is empty, so the worker's
+        # write-on-decode hook (which routes via the snapshot) is a
+        # no-op even if a stale job lands.
+        self.set_event_context(None, {})
+        self.clear()
+        # 2. Bump the worker's generation so any in-flight or queued
+        # decode is stale by the time it lands. The worker drops jobs
+        # whose generation is older than the latest one observed.
+        self._generation += 1
+        # 3. Quiesce both background builders. ``quiesce`` clears the
+        # queue and waits for the in-flight build's ``Image.open`` to
+        # release the source handle.
+        try:
+            ok_proxy = self._proxy_builder.quiesce(timeout)
+        except Exception:                                              # noqa: BLE001
+            log.exception("release_for_delete: proxy quiesce failed")
+            ok_proxy = False
+        ok_thumb = photo_thumb_cache.quiesce_export_thumb_builder(timeout)
+        if not (ok_proxy and ok_thumb):
+            log.warning(
+                "release_for_delete: builder quiesce timed out "
+                "(proxy=%s, export_thumb=%s) — resilient rmtree will "
+                "ride out residual locks", ok_proxy, ok_thumb,
+            )
+
     # ── Proxy-tier seams (run on the DECODE WORKER thread) ─────────
 
     def _context_snapshot(

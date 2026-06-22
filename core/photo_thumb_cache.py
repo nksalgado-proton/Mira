@@ -394,3 +394,23 @@ def stop_export_thumb_builder() -> None:
         _export_builder = None
     if builder is not None:
         builder.stop()
+
+
+def quiesce_export_thumb_builder(timeout: float = 2.0) -> bool:
+    """spec/100 §A — drain queued work and wait for the in-flight
+    export-thumb build to finish, WITHOUT permanently stopping the
+    thread. Used by :meth:`PhotoCache.release_for_delete` so a delete
+    of the event the user was just browsing doesn't race the builder
+    holding an export file open.
+
+    Returns ``True`` when the builder fell idle (or wasn't running)
+    within ``timeout``; ``False`` on timeout. Never raises."""
+    with _export_builder_lock:
+        builder = _export_builder
+    if builder is None:
+        return True
+    try:
+        return builder.quiesce(timeout)
+    except Exception:                                                  # noqa: BLE001
+        log.exception("quiesce_export_thumb_builder failed")
+        return False

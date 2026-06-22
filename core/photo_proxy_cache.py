@@ -463,6 +463,11 @@ class ProxyBuilder:
         self._queued_shas: set = set()    # dedupe for the current root
         self._root: Optional[Path] = None
         self._stopping = False
+        # spec/100 §A — set while ``_ensure`` runs (which holds the
+        # source file open via ``Image.open``). :meth:`quiesce` waits on
+        # the condition for this to drop to False so the delete path
+        # can rmtree without a stray Windows open-handle lock.
+        self._building = False
         self._thread: Optional[threading.Thread] = None
 
     # ── API (any thread) ──────────────────────────────────────────
@@ -511,6 +516,41 @@ class ProxyBuilder:
         if thread is not None and thread.is_alive():
             thread.join(timeout)
 
+    def quiesce(self, timeout: float = 2.0) -> bool:
+        """Spec/100 §A — drain queued work AND wait for the in-flight
+        build (the one holding the source file open inside
+        ``Image.open``) to finish, WITHOUT setting ``_stopping``. Unlike
+        :meth:`stop`, later :meth:`seed` calls still queue, so the
+        builder is fully reusable after a "delete the event next door"
+        gesture.
+
+        Returns ``True`` when the builder fell idle within ``timeout``,
+        ``False`` on timeout (caller logs; the resilient rmtree §B
+        rides out a residual handle either way).
+
+        ``clear()`` alone is not enough — it empties the queue but the
+        ``Image.open`` already in progress keeps the source open until
+        ``ensure`` returns, so the Windows file handle would survive
+        the wipe."""
+        deadline = None
+        with self._cond:
+            self._queue.clear()
+            self._queued_shas.clear()
+            if not self._building:
+                return True
+            # Wake the run loop in case it's blocked on the empty-queue
+            # condition; not strictly needed (the build itself will
+            # notify on exit), but it costs nothing.
+            self._cond.notify_all()
+            import time
+            deadline = time.monotonic() + max(0.0, float(timeout))
+            while self._building:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+            return True
+
     def pending_count(self) -> int:
         with self._cond:
             return len(self._queue)
@@ -546,10 +586,19 @@ class ProxyBuilder:
             if self._stopping:
                 return
             event_root, source_path, key = job
+            with self._cond:
+                self._building = True
             try:
                 self._ensure(event_root, source_path, key)
             except Exception:                                      # noqa: BLE001
                 log.exception("proxy builder failed on %s", source_path)
+            finally:
+                # spec/100 §A — drop the flag + notify so a concurrent
+                # :meth:`quiesce` wakes the moment the source handle
+                # is released by ``ensure`` returning.
+                with self._cond:
+                    self._building = False
+                    self._cond.notify_all()
             threading.Event().wait(self._IDLE_GAP_S)
 
     def _is_busy_safe(self) -> bool:

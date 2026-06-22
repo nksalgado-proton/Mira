@@ -3703,19 +3703,73 @@ class MainWindow(QMainWindow):
 
         def _work(progress, _eid=event_id, _df=delete_files):
             progress(0, 0, label)
+            # spec/100 §A — let go of every file handle this app holds
+            # under the event root BEFORE the rmtree. On Windows an
+            # open handle (the background proxy builder's ``Image.open``,
+            # an armed QMediaPlayer, a transient decode-worker original)
+            # makes the file un-deletable, so without this the wipe
+            # throws WinError 32 and ``delete_event`` returns with a
+            # zombie (event still in the index + half-deleted folder).
+            # Index-only deletes don't need the quiesce, but the call
+            # is cheap (no-op when nothing is queued / armed) and keeps
+            # one code path.
+            if _df:
+                self._release_event_media_handles()
+                from mira.ui.media.photo_cache import photo_cache
+                photo_cache().release_for_delete()
             return self.gateway.delete_event(_eid, delete_files=_df)
 
-        ok, _res = run_with_progress(
+        ok, res = run_with_progress(
             self, tr("Delete event"), _work, label=label,
         )
+        # spec/100 §C — the gateway now returns
+        # ``(was_present, residue_paths)``. The event row drops even
+        # when residue remains, so the UI never leaves a zombie in the
+        # list; the dialog just names the residual files so the user
+        # can clean them up by hand.
+        residue: list = []
+        if ok and isinstance(res, tuple) and len(res) == 2:
+            _was_present, residue = res
         if not ok:
             QMessageBox.warning(
                 self, tr("Delete event"),
                 tr("The event could not be fully deleted. "
                    "Some files may remain on disk."),
             )
+        elif residue:
+            n = len(residue)
+            sample = "\n".join(str(p) for p in residue[:5])
+            if n > 5:
+                sample += "\n…"
+            QMessageBox.information(
+                self, tr("Delete event"),
+                tr("Event removed from Mira, but {n} file(s) could not "
+                   "be deleted and remain on disk:")
+                .replace("{n}", str(n)) + "\n\n" + sample,
+            )
         self._current_event_id = None
         self._on_event_back()
+
+    def _release_event_media_handles(self) -> None:
+        """spec/100 §A — disarm every PhotoViewport / QMediaPlayer that
+        might still hold a file under the event root the user is about
+        to delete. Called from :meth:`_on_delete_event` before the
+        rmtree. No-op when a surface hasn't been built / has no live
+        clip. Failures log and continue (the resilient rmtree §B rides
+        out whatever residual lock remains)."""
+        for surface_name in ("picker_page", "edit_page", "quick_sweep_page"):
+            surface = getattr(self, surface_name, None)
+            if surface is None:
+                continue
+            vp = getattr(surface, "_viewport", None)
+            if vp is None or not hasattr(vp, "shutdown_video"):
+                continue
+            try:
+                vp.shutdown_video()
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "shutdown_video failed on %s — continuing",
+                    surface_name)
 
     def _open_camera_clocks_for_event(self) -> None:
         """Plan page "Camera clocks" → the reused CameraClockDialog (Slice B1). Reads the

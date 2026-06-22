@@ -1,14 +1,15 @@
 # 96 — Always-on activity line + exposure-chip setting & content
 
-**Status: IMPLEMENTED (2026-06-22). Two independent viewing-feedback
-changes: (1) the batch progress line is now permanent and also reports
-background preview/proxy building; (2) the new `show_exposure_overlay`
-roaming setting (default ON) gates the pill in Picker + Quick Sweep,
-and the chip carries camera + exposure + file type + file size.
-Touches `mira/ui/shell`, `mira/ui/media`, `mira/ui/pages` (Picker +
-Quick Sweep), `mira/settings`, and `mira/picked/exif_compare.py`. No
-charter-invariant or LOCKED-keymap impact. Awaits Nelson eyeball
-before moving "implemented" → "shipped".**
+**Status: SHIPPED (Nelson accepted 2026-06-22). Two independent
+viewing-feedback changes: (1) the batch progress line is now permanent
+and also reports background preview/proxy building; (2) the new
+`show_exposure_overlay` roaming setting (default ON) gates the pill in
+Picker + Quick Sweep, and the chip carries camera + exposure + file
+type + file size. Touches `mira/ui/shell`, `mira/ui/media`,
+`mira/ui/pages` (Picker + Quick Sweep), `mira/settings`, and
+`mira/picked/exif_compare.py`. No charter-invariant or LOCKED-keymap
+impact. Implementation landed in commit
+[539596e](https://github.com/nksalgado-proton/Mira/commit/539596e).**
 
 ---
 

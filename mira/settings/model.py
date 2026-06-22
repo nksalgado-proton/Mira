@@ -141,6 +141,15 @@ class Settings:
     separator_aspect: str = _u(
         "Separator slide aspect ratio — matches the screen your shows "
         "play on (e.g. 16:9).", "16:9")
+    # spec/76 §B.3 — Cut publish target. Where a TV media server
+    # (Jellyfin / DLNA / a smart TV's folder slideshow) reads from.
+    # Empty defaults to <library_root>/Published/ so the publish slot
+    # rides with the library when it relocates. Override to point at
+    # any other folder (e.g. a share dedicated to TV content).
+    library_publish_root: str = _u(
+        "Where published Cuts land for the TV media server. Empty = "
+        "<library_root>/Published/. Set to a different folder when "
+        "the media server reads from a fixed location.", "")
 
     # ── Tooling (user) ────────────────────────────────────────────────────
     tool_preferences: Dict[str, str] = _u(

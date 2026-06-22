@@ -1002,6 +1002,7 @@ class ShareCutsPage(QWidget):
         self.detail_page.adjust_requested.connect(self._on_adjust_cut)
         self.detail_page.export_requested.connect(self._on_export_cut)
         self.detail_page.play_requested.connect(self._on_play_cut)
+        self.detail_page.publish_requested.connect(self._on_publish_cut)
         self._stack.addWidget(self.detail_page)
         # The #exported pool detail — flat grid of every shipped file
         # with multi-select + cascade-aware Delete (spec/61 §1.4 + the
@@ -1961,6 +1962,47 @@ class ShareCutsPage(QWidget):
             if not img.save(str(target), "JPG", 92):
                 raise OSError(f"could not write {target}")
         return write
+
+    def _on_publish_cut(self, cut_id: str) -> None:
+        """spec/76 §B.3 — publish the event Cut to the library publish
+        slot with a manifest. Re-publish overwrites the slot. The
+        publish root comes from ``library_publish_root`` (settings),
+        defaulting to ``<library_root>/Published/``."""
+        eg = self._eg
+        cut = eg.cut(cut_id) if eg else None
+        if cut is None:
+            return
+        from mira.paths import library_root as _library_root_from_paths
+        root = _library_root_from_paths()
+        if root is None:
+            QMessageBox.warning(
+                self, tr("Publish failed"),
+                tr("Mira couldn't resolve the library root — publish "
+                   "needs a library to write into."))
+            return
+        event = eg.event()
+        from mira.shared.cut_publish import (
+            CutPublishError, publish_cut,
+        )
+        try:
+            result = publish_cut(
+                eg, cut,
+                event_root=Path(eg.event_root),
+                event_uuid=event.uuid,
+                library_root_path=root,
+                settings=self._settings(),
+            )
+        except CutPublishError as exc:
+            QMessageBox.warning(self, tr("Publish failed"), str(exc))
+            return
+        QMessageBox.information(
+            self, tr("Cut published"),
+            tr("{n} frame(s) + manifest published to:\n{path}").replace(
+                "{n}", str(len([
+                    p for p in result.target.iterdir()
+                    if p.is_file() and p.name != "manifest.json"
+                ]))).replace(
+                "{path}", str(result.target)))
 
     def _on_export_cut(self, cut_id: str) -> None:
         """Export all (spec/61 §5.2): links + separators + audio, wait

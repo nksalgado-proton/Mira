@@ -70,6 +70,7 @@ class _CutRow(QFrame):
     export_requested = pyqtSignal(str)
     open_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
+    publish_requested = pyqtSignal(str)
 
     def __init__(self, *, cut_id: str, tag: str,
                  anchor_event_name: str,
@@ -144,12 +145,23 @@ class _CutRow(QFrame):
 
     def _show_kebab(self) -> None:
         menu = QMenu(self)
+        # spec/76 §B.3 — Publish materialises the Cut to the library
+        # publish slot + writes a manifest, for a TV media server to
+        # read. Re-publish overwrites; the slot is the live handoff.
+        publish_action = menu.addAction(tr("Publish"))
+        publish_action.setToolTip(tr(
+            "Materialise this Cut to the library publish slot "
+            "(Jellyfin / DLNA-friendly) with a manifest."))
+        publish_action.triggered.connect(
+            lambda: self.publish_requested.emit(self._cut_id))
+        from mira.ui.read_only import disable_if_read_only
+        disable_if_read_only(publish_action)
+        menu.addSeparator()
         del_action = menu.addAction(tr("Delete"))
         del_action.triggered.connect(
             lambda: self.delete_requested.emit(self._cut_id))
         # spec/76 §B.1 — read-only sessions can't drop cross-event
         # Cuts; grey the menu item so the click is a no-op.
-        from mira.ui.read_only import disable_if_read_only
         disable_if_read_only(del_action)
         menu.exec(self._kebab.mapToGlobal(
             self._kebab.rect().bottomLeft()))
@@ -379,6 +391,7 @@ class LibraryPage(QWidget):
                 widget.export_requested.connect(self._on_export_cut)
                 widget.open_requested.connect(self._on_open_cut)
                 widget.delete_requested.connect(self._on_delete_cut)
+                widget.publish_requested.connect(self._on_publish_cut)
                 # Insert above the empty label.
                 self._cuts_rows_layout.insertWidget(0, widget)
         self._refresh_counts()
@@ -536,6 +549,38 @@ class LibraryPage(QWidget):
                     self._gateway, row, parent=self)
                 dlg.exec()
                 return
+
+    def _on_publish_cut(self, cut_id: str) -> None:
+        """spec/76 §B.3 — publish the Cut to the library publish
+        slot with a manifest. Re-publish overwrites the slot."""
+        from mira.shared.cut_publish import (
+            CutPublishError, publish_cross_event_cut,
+        )
+        from mira.paths import library_root as _library_root_from_paths
+        root = _library_root_from_paths()
+        if root is None:
+            QMessageBox.warning(
+                self, tr("Publish failed"),
+                tr("Mira couldn't resolve the library root — publish "
+                   "needs a library to write into."))
+            return
+        try:
+            settings = self._gateway.settings.load()
+            result = publish_cross_event_cut(
+                self._gateway, cut_id,
+                library_root_path=root, settings=settings,
+            )
+        except CutPublishError as exc:
+            QMessageBox.warning(self, tr("Publish failed"), str(exc))
+            return
+        n_frames = sum(1 for _ in result.target.iterdir()
+                       if _.is_file() and _.name != "manifest.json")
+        QMessageBox.information(
+            self, tr("Cut published"),
+            tr("{n} file(s) published to:\n{path}\n\n"
+               "Manifest written for the media server.").replace(
+                "{n}", str(n_frames)).replace(
+                "{path}", str(result.target)))
 
     def _on_delete_cut(self, cut_id: str) -> None:
         # Resolve the row for the confirm-dialog tag.

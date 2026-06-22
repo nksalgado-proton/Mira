@@ -72,6 +72,7 @@ class CutDetailPage(QWidget):
     adjust_requested = pyqtSignal(str)      # cut_id — re-enter the session
     play_requested = pyqtSignal(str)        # cut_id — slice 8 wires
     export_requested = pyqtSignal(str)      # cut_id — slice 9 wires
+    publish_requested = pyqtSignal(str)     # cut_id — spec/76 §B.3
 
     def __init__(
         self,
@@ -175,6 +176,19 @@ class CutDetailPage(QWidget):
         from mira.ui.read_only import disable_if_read_only
         disable_if_read_only(self._export_btn)
         chrome.addWidget(self._export_btn)
+        # spec/76 §B.3 — Publish materialises the Cut to the library
+        # publish slot + writes a manifest, for a TV media server to
+        # read. Same enable/visibility shape as Export.
+        self._publish_btn = QPushButton(tr("📡 Publish"))
+        self._publish_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._publish_btn.setToolTip(tr(
+            "Publish this Cut to the library's TV media-server slot "
+            "with a manifest sidecar."))
+        self._publish_btn.clicked.connect(
+            lambda: self._cut_id and self.publish_requested.emit(self._cut_id))
+        self._publish_btn.setVisible(bool(show_export))
+        disable_if_read_only(self._publish_btn)
+        chrome.addWidget(self._publish_btn)
         top_l.addLayout(chrome)
 
         outer.addWidget(top_band)

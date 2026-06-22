@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QStackedLayout, QVBoxLayout, QWidget)
 
+from core import photo_proxy_cache
 from core.brand_profile import AfPoint
 from mira.ui.i18n import tr
 
@@ -64,6 +65,30 @@ _SETTLE_MS = 150
 #: Display-target quantum: requests round the viewport size UP to this
 #: step so small window resizes reuse cache entries.
 _TARGET_STEP = 512
+
+#: Ceiling (long-edge px) for the normal viewing tier per
+#: ``display_quality`` (spec/95 §C). Bounded — there is deliberately
+#: no ``"native" / unbounded`` option (the anti-lag invariant: a
+#: full-frame 24–45 MP decode is exactly what spec/62 removed).
+_DISPLAY_QUALITY_CEILINGS = {
+    "balanced": 3840,   # 4K-class — default; cheap on laptops
+    "high":     5120,   # 5K-class — opt-in for big desktops
+}
+
+
+def _display_quality_ceiling() -> int:
+    """Resolve the current machine-local ``display_quality`` to its
+    long-edge ceiling. Reads the per-install override at call time
+    so a Settings dialog edit takes effect on the next viewport
+    target computation (the next item change / resize / settle).
+    Defaults to ``"balanced"`` on read failure / unknown value via
+    :func:`core.machine_settings.read_display_quality` (which
+    normalises both)."""
+    from core.machine_settings import read_display_quality
+    return _DISPLAY_QUALITY_CEILINGS.get(
+        read_display_quality(),
+        _DISPLAY_QUALITY_CEILINGS["balanced"],
+    )
 
 #: Wheel: one notch (120 units) = one item, exactly like MediaCanvas.
 _WHEEL_STEP_UNITS = 120
@@ -756,6 +781,11 @@ class PhotoViewport(QWidget):
         self._native: Optional[QSize] = None       # their TRUE dimensions
         self._displayed: QPixmap = QPixmap()       # whatever is on screen
         self._target_key: Tuple[int, int] = (0, 0)
+        #: spec/95 §A test seam — the last pixmap handed to
+        #: ``QLabel.setPixmap`` WITH its tagged DPR intact (QLabel
+        #: re-normalises a custom DPR to the host's screen DPR; this
+        #: attribute carries the pre-normalisation value).
+        self._last_label_pixmap: Optional[QPixmap] = None
 
         # Photo/poster label — only widget in the stack now. The video
         # widget rides as a raised sibling (managed manually so it sits
@@ -919,13 +949,24 @@ class PhotoViewport(QWidget):
 
     def image_rect_in_photo_area(self) -> QRect:
         """The displayed image's letterboxed rect inside
-        :meth:`photo_area_widget` coordinates."""
+        :meth:`photo_area_widget` coordinates.
+
+        Reads ``deviceIndependentSize`` instead of raw ``size`` so
+        the rect is in LOGICAL pixels even when the pixmap was
+        rendered at PHYSICAL pixels (spec/95 §A DPR fix). Qt paints
+        the pixmap in logical coords too, so the letterbox geometry
+        the host hands to the video widget / watermark needs to match
+        — using the raw pixel count would leak DPR into the layout.
+        """
         pm = self._label.pixmap()
         if pm is None or pm.isNull():
             return self._label.rect()
-        x = (self._label.width() - pm.width()) // 2
-        y = (self._label.height() - pm.height()) // 2
-        return QRect(x, y, pm.width(), pm.height())
+        di = pm.deviceIndependentSize().toSize()
+        w = max(0, di.width())
+        h = max(0, di.height())
+        x = (self._label.width() - w) // 2
+        y = (self._label.height() - h) // 2
+        return QRect(x, y, w, h)
 
     def set_exported_watermark(self, on: bool) -> None:
         """spec/59 §8: the diagonal "Exported" overlay over the
@@ -1038,9 +1079,24 @@ class PhotoViewport(QWidget):
             # tier; else keep the previous frame (never blank-flicker).
             self._show_video_poster(item)
             return
-        target = self._target_size()
-        self._target_key = (target.width(), target.height())
-        hit = self._cache.get_scaled_pixmap_if_cached(item.path, target)
+        # spec/95 §B — split the request into nav (proxy-bounded) and
+        # settle (full physical+ceiling). First paint always asks for
+        # the nav target so the worker's scaled branch rides the proxy
+        # fast path; the settle timer issues a follow-up at the full
+        # settle target ONLY when it's bigger than the nav target,
+        # and the spec/63 §3.1 coalescing drops it if the user moves
+        # on. The cache key tracks the requested target, so both
+        # results coexist in the LRU without collision.
+        settle_target = self._target_size()
+        nav_target = self._nav_target_size()
+        self._target_key = (nav_target.width(), nav_target.height())
+        # Prefer the higher-quality settle cache hit when warm — same
+        # zero-decode cost as a nav hit, sharper result.
+        hit = self._cache.get_scaled_pixmap_if_cached(
+            item.path, settle_target)
+        if hit is None:
+            hit = self._cache.get_scaled_pixmap_if_cached(
+                item.path, nav_target)
         if hit is not None:
             self._adopt_sharp(hit[0], hit[1])
             return
@@ -1048,7 +1104,8 @@ class PhotoViewport(QWidget):
         if thumb is not None and not thumb.isNull():
             self._display(thumb)
         # else: keep the previous image — never blank the canvas.
-        self._cache.request_scaled_pixmap(item.path, target, priority=0)
+        self._cache.request_scaled_pixmap(
+            item.path, nav_target, priority=0)
 
     def _show_video_poster(self, item: ViewportItem) -> None:
         # The QLabel stays the current stack widget; the QVideoWidget
@@ -1065,6 +1122,16 @@ class PhotoViewport(QWidget):
 
     def _on_settle(self) -> None:
         self._prefetch_neighbours()
+        # spec/95 §B — the settle-only original-decode upgrade. The
+        # held-arrow / first-paint path already requested the nav
+        # target (proxy fast path); if the settle target is bigger,
+        # issue the upgrade here. The cache dedupes by
+        # (path, target_tuple) — settle target differs from nav
+        # target on big / HiDPI displays, so this is a fresh job.
+        # Priority 1 (predecode) so concurrent navigation always
+        # pops first; the spec/63 §3.1 generation-drop kills this
+        # job if the user moves on before it lands.
+        self._request_settle_upgrade()
         item = self.current_item()
         if item is not None and item.kind == "video" and item.path is not None:
             self._arm_video(item.path)
@@ -1072,7 +1139,11 @@ class PhotoViewport(QWidget):
     def _prefetch_neighbours(self) -> None:
         if not self._items:
             return
-        target = self._target_size()
+        # spec/95 §B — prefetch at the NAV target (proxy-bounded) so
+        # a held-arrow burst over neighbours never queues slow
+        # original decodes for fly-by items. The settle upgrade
+        # raises only the LANDED item to the full settle target.
+        target = self._nav_target_size()
         for offset in _PREFETCH_OFFSETS:
             idx = self._index + offset
             if 0 <= idx < len(self._items):
@@ -1081,6 +1152,29 @@ class PhotoViewport(QWidget):
                         and neighbour.kind != "video"):
                     self._cache.request_scaled_pixmap(
                         neighbour.path, target, priority=1)
+
+    def _request_settle_upgrade(self) -> None:
+        """Request the §B settle-only original-decode for the LANDED
+        item. No-op when the settle target equals the nav target (the
+        nav request already covers it) or when no item / a video is
+        landed (no upgrade meaningful)."""
+        item = self.current_item()
+        if (item is None or item.path is None or item.kind == "video"
+                or item.pixmap is not None):
+            return
+        settle = self._target_size()
+        nav = self._nav_target_size()
+        if (settle.width(), settle.height()) == (
+                nav.width(), nav.height()):
+            return                                  # nothing to upgrade
+        # Cache-warm? skip the request (the worker would dedupe via
+        # ``_pending`` anyway; this guard saves the round-trip).
+        hit = self._cache.get_scaled_pixmap_if_cached(item.path, settle)
+        if hit is not None:
+            self._adopt_sharp(hit[0], hit[1])
+            return
+        self._cache.request_scaled_pixmap(
+            item.path, settle, priority=1)
 
     # ── video: arm-on-landing ─────────────────────────────────────
 
@@ -1507,17 +1601,61 @@ class PhotoViewport(QWidget):
             max(2, size.width() - 2 * pad),
             max(2, size.height() - 2 * pad),
         )
+        # spec/95 §A — render at PHYSICAL pixels and tag the result
+        # with the panel's DPR so Qt paints one source pixel per
+        # device pixel on scaled / HiDPI displays. The "never upscale
+        # beyond native" clamp applies to the SHARP photo only — a
+        # thumb / poster / override held while a real decode is
+        # in-flight is a placeholder and must still fill the inner
+        # viewport (otherwise a video poster would render as a tiny
+        # 160×90 island in the centre of a 1920×1080 canvas).
+        dpr = float(self.devicePixelRatioF()) or 1.0
+        if dpr < 1.0:
+            dpr = 1.0
+        phys_inner_w = max(2, int(round(inner.width() * dpr)))
+        phys_inner_h = max(2, int(round(inner.height() * dpr)))
+        # Is ``base`` the sharp decode of the current photo (where we
+        # know the true native dims)? cacheKey identity — the
+        # ``_adopt_sharp`` path stores a QPixmap that shares the
+        # decoded data, so the sharp and ``self._displayed`` agree on
+        # the cache key. A placeholder thumb / poster / loose-slide
+        # pixmap has a different cache key (or the sharp is None).
+        is_sharp = (
+            self._sharp is not None
+            and not self._sharp.isNull()
+            and base.cacheKey() == self._sharp.cacheKey()
+        )
+        # Bound the scale target by the base's natural size for the
+        # sharp (spec/95 §A "never upscale beyond native"); placeholders
+        # are allowed to upscale so the poster fills the inner. Letting
+        # Qt's ``base.scaled(..., KeepAspectRatio)`` do the math in one
+        # pass keeps the rounding identical to the pre-§A path so the
+        # video widget letterbox geometry stays pixel-accurate.
+        target_w = phys_inner_w
+        target_h = phys_inner_h
+        if is_sharp:
+            target_w = min(target_w, base.width())
+            target_h = min(target_h, base.height())
         scaled = base.scaled(
-            inner,
+            QSize(target_w, target_h),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
         if override is None:
             if self._peaking_enabled:
                 scaled = self._composite_peaking(scaled)
+                scaled.setDevicePixelRatio(dpr)
             # KeepAspectRatio → the scaled pixmap IS the image at
             # display size (ox=oy=0), so AF coords map directly onto it.
             if self._should_draw_af():
                 self._draw_af_overlay(scaled)
+        # spec/95 §A test seam — keep a reference to the pixmap WITH
+        # its tagged DPR. ``QLabel.setPixmap`` re-normalises a
+        # custom DPR to the host's screen DPR (deviceIndependentSize
+        # preserved, pixel count adjusted), so reading back from the
+        # label loses the value. Tests that simulate a non-host DPR
+        # via ``_patch_dpr`` read this attribute instead.
+        self._last_label_pixmap = scaled
         self._label.setPixmap(scaled)
         # Overlay hosts (crop tool, watermark) re-sync on this pulse —
         # the MediaCanvas contract (spec/63 §6.1).
@@ -1697,12 +1835,81 @@ class PhotoViewport(QWidget):
         return out
 
     def _target_size(self) -> QSize:
-        """Viewport size rounded UP to the 512-px quantum (stable cache
-        keys across small resizes), floored at one quantum."""
+        """Decode target for the normal viewing tier (spec/95).
+
+        Honours the display's ``devicePixelRatio`` so a scaled / HiDPI
+        panel gets PHYSICAL pixels (not logical), and clamps to the
+        machine-local ``display_quality`` ceiling so the settle-only
+        original decode (spec/95 §B) can never become the full-frame
+        24-45 MP path spec/62 removed. Then quantises UP to
+        ``_TARGET_STEP`` so small viewport resizes reuse cache entries.
+
+        This is the **settle target** — the size the §B original-decode
+        upgrade is meant to deliver. Nav / held-arrow requests use
+        :meth:`_nav_target_size`, which caps this at the proxy edge
+        so the held-arrow hot path always rides the proxy fast tier.
+
+        Native dims are not consulted here — the scaled cache key
+        is the *requested* target, and the worker clamps to native
+        in its own resolve path (the spec/95 §A "never upscale beyond
+        native" rule is enforced where the actual pixmap is rendered,
+        in :meth:`_fit`).
+        """
         w = max(self.width(), 1)
         h = max(self.height(), 1)
+        # Physical pixels: a 1920×1080 viewport at DPR 1.5 wants a
+        # 2880×1620 decode so the painted pixmap is one source pixel
+        # per panel pixel after Qt's DPR transform.
+        dpr = float(self.devicePixelRatioF()) or 1.0
+        if dpr < 1.0:
+            dpr = 1.0
+        pw = int(round(w * dpr))
+        ph = int(round(h * dpr))
+        # Display-quality ceiling — applies BEFORE quantisation so the
+        # quantised cache key tracks the ceiling, not the next-step-up
+        # past it. Long edge bounds the short edge in lockstep.
+        ceiling = _display_quality_ceiling()
+        long_edge = max(pw, ph)
+        if long_edge > ceiling and long_edge > 0:
+            scale = ceiling / long_edge
+            pw = int(round(pw * scale))
+            ph = int(round(ph * scale))
         q = _TARGET_STEP
-        return QSize(((w + q - 1) // q) * q, ((h + q - 1) // q) * q)
+        return QSize(
+            max(q, ((pw + q - 1) // q) * q),
+            max(q, ((ph + q - 1) // q) * q),
+        )
+
+    def _nav_target_size(self) -> QSize:
+        """Navigation / first-paint target — :meth:`_target_size`
+        capped at the proxy long edge (spec/95 §B anti-lag rule).
+
+        Held-arrow navigation issues priority-0 requests at this
+        size. The cap guarantees the worker's scaled branch hits the
+        proxy fast path (target ≤ ``PROXY_MAX_EDGE``) and never
+        triggers the slow original-decode for a fly-by item — the
+        spec/63 §3.1 coalescing already drops stale jobs, but a slow
+        decode in flight while the user holds the arrow would stall
+        the next pop.
+
+        Equals :meth:`_target_size` when the settle target already
+        fits within the proxy edge (laptop case, low-DPR / small
+        viewport — nothing to upgrade, no second request fires)."""
+        settle = self._target_size()
+        edge = photo_proxy_cache.PROXY_MAX_EDGE
+        long_edge = max(settle.width(), settle.height())
+        if long_edge <= edge:
+            return settle
+        # Axis-preserving scale-down so the cache key tracks the
+        # actual aspect of the viewport.
+        scale = edge / long_edge
+        nw = int(round(settle.width() * scale))
+        nh = int(round(settle.height() * scale))
+        q = _TARGET_STEP
+        return QSize(
+            max(q, ((nw + q - 1) // q) * q),
+            max(q, ((nh + q - 1) // q) * q),
+        )
 
     # ── events ────────────────────────────────────────────────────
 
@@ -1736,7 +1943,11 @@ class PhotoViewport(QWidget):
         item = self.current_item()
         if (item is not None and item.path is not None
                 and item.pixmap is None and item.kind != "video"):
-            target = self._target_size()
+            # spec/95 §B — request the NAV target (proxy-bounded) for
+            # the resize first-paint; the settle timer then upgrades
+            # to the full settle target via ``_request_settle_upgrade``
+            # if the viewport is now big / HiDPI enough to want more.
+            target = self._nav_target_size()
             key = (target.width(), target.height())
             if key != self._target_key:
                 self._target_key = key

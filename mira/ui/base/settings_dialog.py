@@ -77,6 +77,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import machine_settings as _machine_settings
 from core.aspect_ratio import aspect_ratio_labels as _aspect_ratio_labels
 from mira.settings.model import Settings as _Settings
 from mira.settings.repo import SettingsRepo as _SettingsRepo
@@ -89,18 +90,39 @@ from mira.ui.i18n import tr  # ported into mira/ui (charter §4 step 7)
 # ``current = load_settings(); current[k] = v; save_settings(current)`` flow unchanged
 # (tolerant ``from_dict`` drops any non-Settings key). The host overrides
 # ``changes_applied`` to react to theme / photos_base_path changes (see MainWindow).
+#
+# spec/95 §C — ``display_quality`` is **machine-local** (per-install)
+# and must NOT roam through ``SettingsRepo`` (the roaming
+# ``settings.rebuild.json`` lives inside the library root and a shared
+# NAS library would last-writer-wins between desktop + laptop). Route
+# it via ``core.machine_settings`` instead so the schema-driven dialog
+# still sees a single dict but the bytes land in the right file.
 def load_settings() -> dict:
-    return _SettingsRepo().load().to_dict()
+    data = _SettingsRepo().load().to_dict()
+    data["display_quality"] = _machine_settings.read_display_quality()
+    return data
 
 
 def save_settings(data: dict) -> None:
+    data = dict(data)
+    dq = data.pop("display_quality", None)
     _SettingsRepo().save(_Settings.from_dict(data))
+    if isinstance(dq, str) and dq in _machine_settings.DISPLAY_QUALITY_VALUES:
+        _machine_settings.write_display_quality(dq)
 
 
 def reset_settings_to_defaults() -> dict:
     defaults = _Settings()
     _SettingsRepo().save(defaults)
-    return defaults.to_dict()
+    # spec/95 §C — Reset to defaults also clears the per-install
+    # display_quality override (writes the documented default so
+    # the dialog reads back ``balanced`` rather than whatever the
+    # user previously chose).
+    _machine_settings.write_display_quality(
+        _machine_settings.DEFAULT_DISPLAY_QUALITY)
+    data = defaults.to_dict()
+    data["display_quality"] = _machine_settings.DEFAULT_DISPLAY_QUALITY
+    return data
 
 
 log = logging.getLogger(__name__)
@@ -243,6 +265,33 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "min": 80, "max": 280, "step": 10,
                 "decimals": 0, "suffix": " px",
+            },
+            # spec/95 §C — adaptive display resolution ceiling.
+            # Machine-local (NOT in the roaming Settings): a desktop on
+            # ``high`` and a laptop on ``balanced`` share one library
+            # without conflict, by routing this key through
+            # ``core.machine_settings`` in load_settings / save_settings
+            # above.
+            {
+                "key": "display_quality",
+                "label": "Display resolution",
+                "widget": "combo",
+                "tooltip": (
+                    "Ceiling for the normal photo view (not Full "
+                    "Resolution / F10). Balanced caps at 3840 px "
+                    "(crisp on a 4K monitor, cheap on a laptop). High "
+                    "caps at 5120 px for 5K/6K panels. Held-arrow "
+                    "navigation always paints from the proxy first — "
+                    "the higher-quality decode upgrades only after "
+                    "you stop on a photo. This setting is per-machine "
+                    "so a desktop and a laptop sharing one library "
+                    "can each pick their own."
+                ),
+                "options": [
+                    ("balanced", "Balanced (4K-class, 3840 px)"),
+                    ("high", "High (5K-class, 5120 px)"),
+                ],
+                "restart_required": False,
             },
         ],
     },

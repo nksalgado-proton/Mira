@@ -113,12 +113,28 @@ log = logging.getLogger(__name__)
 #: 1 behind, repeated for the last few buckets the user touched" set.
 _PIXMAP_CACHE_CAP = 20
 
-#: LRU cap for the scaled-pixmap tier (spec/63). Entries are decoded at
-#: a display target (~2560 px → ~17 MB each), so 32 entries ≈ 0.5 GB —
-#: a much wider working window than the native tier per byte. The two
-#: caps merge into the single app-wide budget when the PhotoViewport
-#: becomes the only consumer (spec/63 §3.4).
-_SCALED_CACHE_CAP = 32
+#: Byte budget (MB) for the scaled-pixmap tier (spec/95 §3).
+#: spec/63 capped the LRU at 32 entries sized for a 2560 target
+#: (~17 MB each ≈ 0.5 GB), but at ``display_quality='high'`` on a
+#: 4K+ display an entry can be ~30-38 MB; 32 of them would hit
+#: ~1.2 GB. A byte budget keeps the memory ceiling stable
+#: regardless of the display-quality setting — large entries take
+#: more of the budget; small entries take less. ~512 MB is enough
+#: for a wide working window at every tier the spec admits.
+_SCALED_CACHE_BUDGET_MB = 512
+_SCALED_CACHE_BUDGET_BYTES = _SCALED_CACHE_BUDGET_MB * 1024 * 1024
+
+
+def _pixmap_byte_cost(pixmap: QPixmap) -> int:
+    """Approximate the in-RAM byte cost of a ``QPixmap`` for budget
+    accounting. Qt stores most pixmaps at 4 bytes per pixel (32-bit
+    BGRA); ``depth()`` is the truth on the rare 24-bit / 16-bit
+    formats. Edge cases (null pixmap, missing depth) collapse to 0
+    so the budget never goes negative."""
+    if pixmap is None or pixmap.isNull():
+        return 0
+    bpp = max(8, pixmap.depth())
+    return max(0, pixmap.width() * pixmap.height() * (bpp // 8))
 
 
 # ── Job model ─────────────────────────────────────────────────────────────
@@ -254,52 +270,71 @@ class _DecodeWorker(QThread):
                 continue
             try:
                 if job.scaled:
-                    # Export-thumb tier (spec/63 slice 8): a Cut-grid
-                    # class request (target ≤ the grid's max cell) for
-                    # an exported file decodes the 280-px thumb in
-                    # ~2 ms. Native dims stay honest via the cheap
-                    # header probe of the ORIGINAL. Stale/absent →
-                    # fall through (original decode lazily rebuilds).
-                    if (self._resolve_export_thumb is not None
-                            and max(job.size_w, job.size_h)
-                            <= EXPORT_THUMB_MAX_EDGE):
-                        thumb = self._resolve_export_thumb(job.path)
-                        if thumb is not None:
-                            image = load_qimage(
-                                thumb, QSize(job.size_w, job.size_h))
-                            if not image.isNull():
-                                native = native_image_size(job.path)
-                                self.scaled_image_ready.emit(
-                                    job.path, image,
-                                    native if native is not None
-                                    else image.size())
-                                continue
-                    # Proxy tier (spec/63 slice 7): a valid on-disk
-                    # proxy decodes at the display target in the
-                    # 20-40 ms class; the sidecar keeps the ORIGINAL's
-                    # native dims so 1:1 / box-zoom math never learns
-                    # proxies exist. A corrupt proxy self-heals: drop
-                    # the pair, decode the original below (which
-                    # re-persists it).
-                    if self._resolve_proxy is not None:
-                        hit = self._resolve_proxy(job.path)
-                        if hit is not None:
-                            proxy_file, native = hit
-                            image = load_qimage(
-                                proxy_file, QSize(job.size_w, job.size_h))
-                            if not image.isNull():
-                                self.scaled_image_ready.emit(
-                                    job.path, image, native)
-                                continue
-                            log.warning(
-                                "corrupt proxy for %s — rebuilding from "
-                                "the original", job.path)
-                            if self._drop_proxy is not None:
-                                self._drop_proxy(job.path)
+                    # spec/95 §B — when the requested target exceeds
+                    # the proxy long edge (PROXY_MAX_EDGE = 2560), the
+                    # on-disk proxy cannot satisfy it: serving the
+                    # proxy and letting Qt upscale produces the "soft
+                    # on a 4K monitor" path. Instead, decode the
+                    # ORIGINAL down to target (DCT-domain downscale,
+                    # bounded by the viewport's display-quality
+                    # ceiling — never the full 24-45 MP path
+                    # spec/62 removed). The viewport keeps this off
+                    # the nav hot path by sending nav-bounded targets
+                    # (capped at the proxy edge) on first-paint /
+                    # held-arrow; only settle / prefetch requests
+                    # actually reach the upgrade branch.
+                    target_long = max(job.size_w, job.size_h)
+                    upgrade_target = (
+                        target_long > photo_proxy_cache.PROXY_MAX_EDGE)
+                    if not upgrade_target:
+                        # Export-thumb tier (spec/63 slice 8): a
+                        # Cut-grid class request (target ≤ the grid's
+                        # max cell) for an exported file decodes the
+                        # 280-px thumb in ~2 ms. Native dims stay
+                        # honest via the cheap header probe of the
+                        # ORIGINAL. Stale/absent → fall through.
+                        if (self._resolve_export_thumb is not None
+                                and target_long <= EXPORT_THUMB_MAX_EDGE):
+                            thumb = self._resolve_export_thumb(job.path)
+                            if thumb is not None:
+                                image = load_qimage(
+                                    thumb, QSize(job.size_w, job.size_h))
+                                if not image.isNull():
+                                    native = native_image_size(job.path)
+                                    self.scaled_image_ready.emit(
+                                        job.path, image,
+                                        native if native is not None
+                                        else image.size())
+                                    continue
+                        # Proxy tier (spec/63 slice 7): a valid on-disk
+                        # proxy decodes at the display target in the
+                        # 20-40 ms class; the sidecar keeps the
+                        # ORIGINAL's native dims so 1:1 / box-zoom
+                        # math never learns proxies exist. A corrupt
+                        # proxy self-heals: drop the pair, decode the
+                        # original below (which re-persists it).
+                        if self._resolve_proxy is not None:
+                            hit = self._resolve_proxy(job.path)
+                            if hit is not None:
+                                proxy_file, native = hit
+                                image = load_qimage(
+                                    proxy_file,
+                                    QSize(job.size_w, job.size_h))
+                                if not image.isNull():
+                                    self.scaled_image_ready.emit(
+                                        job.path, image, native)
+                                    continue
+                                log.warning(
+                                    "corrupt proxy for %s — rebuilding "
+                                    "from the original", job.path)
+                                if self._drop_proxy is not None:
+                                    self._drop_proxy(job.path)
                     # Decode AT the display target (JPEG DCT-domain
                     # downscale) and probe true dimensions from the
                     # header — consumers keep honest 1:1 / box-zoom
-                    # math without paying for native pixels.
+                    # math without paying for native pixels. For
+                    # upgrade-target jobs, this is the §B settle-only
+                    # original-decode that gives true 4K-class sharp.
                     image = load_qimage(
                         job.path, QSize(job.size_w, job.size_h))
                 else:
@@ -326,7 +361,17 @@ class _DecodeWorker(QThread):
                 # already in hand — persist it as a proxy or export
                 # thumb when it qualifies (the cache routes). AFTER
                 # the emit: sharp latency never pays for the encode.
-                if self._persist_decode is not None:
+                #
+                # spec/95 §B: skip the proxy write when the decode
+                # was an upgrade target (the served image is larger
+                # than ``PROXY_MAX_EDGE`` — persisting it would
+                # blow up the on-disk proxy size, which the spec
+                # explicitly does NOT change). The builder still
+                # fills the canonical 2560 proxy via its own path.
+                target_long = max(job.size_w, job.size_h)
+                if (self._persist_decode is not None
+                        and target_long
+                        <= photo_proxy_cache.PROXY_MAX_EDGE):
                     self._persist_decode(
                         job.path, image, reported,
                         QSize(job.size_w, job.size_h))
@@ -363,7 +408,15 @@ class PhotoCache(QObject):
         self._pixmap_lock = threading.Lock()
         # Scaled tier (spec/63): keyed by (path, (w, h)); the value
         # carries the probed NATIVE size alongside the scaled pixmap.
+        # Budget-evicted (spec/95 §3) — see ``_scaled_bytes``.
         self._scaled: "OrderedDict[Tuple[Path, Tuple[int, int]], Tuple[QPixmap, QSize]]" = OrderedDict()  # noqa: E501
+        #: Running total of the in-RAM bytes the scaled LRU holds.
+        #: Spec/95 §3 — the cap is a byte budget (not entry count) so
+        #: large entries at ``display_quality='high'`` (~30-38 MB)
+        #: don't blow past the memory ceiling the 32-entry cap was
+        #: tuned for. Mirrors what :attr:`_scaled` accumulates over
+        #: time and is the deciding number in eviction.
+        self._scaled_bytes: int = 0
         # Last requested scaled target per path — lets the delivery
         # handler key the LRU without threading the target through the
         # worker signal. Main-thread only.
@@ -467,6 +520,7 @@ class PhotoCache(QObject):
         with self._pixmap_lock:
             self._pixmaps.clear()
             self._scaled.clear()
+            self._scaled_bytes = 0
         self._thumb_pixmaps.clear()
         self._scaled_target_by_path.clear()
         self._pending.clear()
@@ -722,10 +776,25 @@ class PhotoCache(QObject):
             self._pending.pop((path, target), None)
             with self._pixmap_lock:
                 key = (path, target)
+                # spec/95 §3 — byte-budget eviction. Account for the
+                # incoming entry first, then evict from the LRU front
+                # until total bytes ≤ budget. The bookkeeping accepts
+                # an entry that exceeds the budget by itself (a
+                # corner case: 5K decode > 512 MB / 1) so the live
+                # display never goes blank.
+                old = self._scaled.pop(key, None)
+                if old is not None:
+                    self._scaled_bytes -= _pixmap_byte_cost(old[0])
+                cost = _pixmap_byte_cost(pixmap)
                 self._scaled[key] = (pixmap, native)
-                self._scaled.move_to_end(key)
-                while len(self._scaled) > _SCALED_CACHE_CAP:
-                    self._scaled.popitem(last=False)
+                self._scaled_bytes += cost
+                while (self._scaled_bytes > _SCALED_CACHE_BUDGET_BYTES
+                        and len(self._scaled) > 1):
+                    _evicted_key, evicted = self._scaled.popitem(
+                        last=False)
+                    self._scaled_bytes -= _pixmap_byte_cost(evicted[0])
+                if self._scaled_bytes < 0:
+                    self._scaled_bytes = 0
         self.scaled_pixmap_ready.emit(path, pixmap, native)
 
     def _on_worker_decode_failed(self, path: Path) -> None:

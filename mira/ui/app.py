@@ -536,6 +536,21 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = SettingsRepo().load()
 
+    # spec/105 §1 — the encouraged "one root" install: when
+    # ``photos_base_path`` is empty (a fresh first-run, or a legacy
+    # install that never explicitly chose a media root), default it
+    # to the library root so events and the Cuts home end up on one
+    # volume by default (hardlinks always work). A user who wants
+    # the catalog/media split keeps it separable via the advanced
+    # Settings field — only the DEFAULT changes here.
+    from mira.paths import library_root as _library_root_from_paths
+    if not (getattr(settings, "photos_base_path", "") or "").strip():
+        _lib_root = _library_root_from_paths()
+        if _lib_root is not None:
+            from mira.settings.repo import SettingsRepo as _SR
+            _SR().update(photos_base_path=str(_lib_root))
+            settings = _SR().load()
+
     # spec/76 §A — the library single-writer lock. Acquire at the
     # library root (post-§B.4, that's the bootstrap-pointer-driven path;
     # legacy fallbacks live in :func:`_resolve_library_root`). Replaces

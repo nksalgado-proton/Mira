@@ -150,6 +150,18 @@ class Settings:
         "Where published Cuts land for the TV media server. Empty = "
         "<library_root>/Published/. Set to a different folder when "
         "the media server reads from a fixed location.", "")
+    # spec/105 §1 — Cut export root override. Blank = the volume-aware
+    # default (`<library_root>/Cuts/<event>/<cut>/` for same-volume
+    # events, `<event_root>/Cuts/<cut>/` for off-volume / external
+    # events, `<library_root>/Cuts/Cross-event/<cut>/` for cross-event
+    # Cuts) so hardlinks keep working wherever an event physically
+    # lives. Set this to override and always write Cuts under one
+    # folder — the dialog warns when that folder is off-volume from
+    # the event's media (links → copies).
+    cuts_export_root: str = _u(
+        "Root for exported Cuts, as <root>/<event>/<cut>. Blank = a "
+        "Cuts/ folder on the same volume as each event (keeps "
+        "hardlinks).", "")
 
     # ── Tooling (user) ────────────────────────────────────────────────────
     tool_preferences: Dict[str, str] = _u(

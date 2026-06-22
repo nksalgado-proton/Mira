@@ -64,6 +64,19 @@ def display_tag(slug: str) -> str:
     return DISPLAY_PREFIX + slug
 
 
+def slugify_event_name(name: str) -> str:
+    """Filesystem-safe slug for an EVENT name — used as a directory
+    component under ``<library_root>/Cuts/<event slug>/<cut slug>/``
+    (spec/105 §2). Same transform as :func:`slugify` (lowercase,
+    accents stripped, separators → underscores, anything else
+    dropped): one canonical predictable spelling per event keeps the
+    Cuts home discoverable and stable across renames that touch only
+    accents / punctuation. Falls back to ``"event"`` when the name
+    has no usable characters (an empty path component would be a
+    user-confusing crash)."""
+    return slugify(name) or "event"
+
+
 def check_tag(slug: str, existing_tags: Iterable[str]) -> Optional[str]:
     """Validate a slug against the event's existing Cut tags.
 

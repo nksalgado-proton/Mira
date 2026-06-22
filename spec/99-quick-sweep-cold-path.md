@@ -1,11 +1,15 @@
 # 99 — Quick Sweep cold path: a fast pre-ingest decode tier
 
-**Status: PROPOSED (Nelson 2026-06-22). Makes the pre-ingest Quick
-Sweep usable on an oversized source (a whole multi-day trip) without
-touching the post-ingest pipeline that the Picker relies on. Revises
-nothing in spec/63 §4 (the LOCKED keymap is untouched) or the charter
-invariants; it adds a Quick-Sweep-only decode profile layered on the
-existing `PhotoViewport` / `PhotoCache` engine. Touches
+**Status: §A + §B SHIPPED (Nelson 2026-06-22). §C — the oversized-source
+nudge — is HELD: the existing new-event Quick Sweep flow already routes
+per-day exclusively via the DaysListsPage → DaysGridPage → QuickSweepPage
+stack (spec/97); there is no flat all-items entry to nudge away from
+today. Re-open if a flat-all entry is later introduced. Makes the
+pre-ingest Quick Sweep usable on an oversized source (a whole multi-day
+trip) without touching the post-ingest pipeline that the Picker relies
+on. Revises nothing in spec/63 §4 (the LOCKED keymap is untouched) or
+the charter invariants; it adds a Quick-Sweep-only decode profile
+layered on the existing `PhotoViewport` / `PhotoCache` engine. Touches
 `mira/ui/pages/quick_sweep_page.py` and `mira/ui/media/photo_viewport.py`
 (a per-instance profile), with no change to the shared decode worker's
 contract. Sibling to spec/97 (the same new-event Quick Sweep flow).**
@@ -162,14 +166,21 @@ invisible.
 - The oversized-source nudge (§C) fires on a multi-day source and is
   absent on a single day's card.
 
-## 5. Open questions
+## 5. Tuning (resolved-but-flagged — live knobs to revisit on the laptop)
 
-1. **Sweep ceiling value.** 2048 is the proposed start; confirm it reads
-   sharp enough for keep/skip on the laptop screen, or bump to 2560 (the
-   proxy edge) if 2048 feels soft. (F10 covers true inspection either
-   way.)
-2. **Prefetch depth.** `(1,2,3,4,-1)` vs a deeper forward window —
-   tune against the slowest target machine; deeper only helps while the
-   worker can stay ahead.
-3. **§C threshold.** Item-count vs day-span trigger (or both) — pick the
-   one that best separates "a day's card" from "a whole trip".
+The §A + §B shipped values are the proposed starts; each remains a live
+knob — bump only if the laptop reads it as a problem.
+
+1. **Sweep ceiling value — shipped at 2048.** Bump to 2560 (the proxy
+   edge) if 2048 reads soft on the laptop screen for keep/skip judgement.
+   F10 covers true inspection either way, so this only affects the
+   browse-tier eyeball pass.
+2. **Prefetch depth — shipped at `(1, 2, 3, 4, -1)`.** A deeper forward
+   window only helps while the single decode worker can stay ahead of
+   the user. If the laptop falls behind on a held arrow, drop back to
+   `(1, 2, 3, -1)` before adding worker threads (the worker-pool change
+   is held in §3 / "Non-goals").
+3. **§C threshold (when revisited) — start at >600 items OR >2 day-buckets.**
+   The numbers are tuned to separate "a day's card" from "a whole trip";
+   re-tune on the real card sizes the user brings back from trips.
+   §C itself is HELD — see status banner.

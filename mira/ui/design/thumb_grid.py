@@ -64,16 +64,14 @@ _CHUNK_TICK_MS = 0   # singleShot(0) — after the current event loop turn
 # capture grid looks identical after the migration.
 DEFAULT_CELL_SIZE = QSize(196, 146)
 
-# Border-zone hit-test ratio: a click within ``BORDER_RATIO * min(w, h)``
-# of any edge is the border zone (mirrors the legacy DayGridCell rule).
-# Nelson 2026-06-18 — bumped from 0.10 / 6 / 22 to 0.15 / 10 / 32: the
-# painted border stays the same width, only the click-hit zone widens
-# inward so "near the boundary" reliably catches the cycle. Wide tile
-# (~280px) hit zone goes from ~22px to ~32px; small tile (~140px)
-# from ~14px to ~21px.
-BORDER_RATIO = 0.15
-MIN_BORDER_PX = 10
-MAX_BORDER_PX = 32
+# Two-zone hit-test rule (spec/103, Nelson 2026-06-22): the outer
+# quarter on each axis is the BORDER zone (status toggle); the central
+# 50%×50% rectangle is the CENTER zone (open / drill-in). This is the
+# literal "closer to an edge than to the centre line" split — on a
+# single axis ``x < w/4`` means the click is nearer the left edge
+# than the centre. The painted 3 px state border is untouched; this
+# only widens the click target so "near the border" reliably toggles
+# the status instead of missing a thin 32-px band.
 
 
 @dataclass
@@ -188,17 +186,19 @@ class _GridCell(Thumb):
             # ``clicked`` signal — the grid listens there.
             super().mousePressEvent(event)
             return
-        # Two-zone hit-test: a press within ``b`` of any edge routes to
-        # border; everything else to center. Mirrors the legacy
-        # DayGridCell._border_px rule so the migration preserves the
-        # exact click grammar.
-        b = self._border_px()
+        # Two-zone hit-test (spec/103): the outer quarter on each axis
+        # is BORDER (status toggle); the central 50%×50% is CENTER
+        # (open / drill-in). A click closer to an edge than to the
+        # centre line on EITHER axis toggles status — a much larger
+        # target than the legacy ≤32-px band that scales with the tile.
+        bx = self.width() // 4
+        by = self.height() // 4
         pos = event.position().toPoint()
         in_border = (
-            pos.x() < b
-            or pos.x() >= self.width() - b
-            or pos.y() < b
-            or pos.y() >= self.height() - b
+            pos.x() < bx
+            or pos.x() >= self.width() - bx
+            or pos.y() < by
+            or pos.y() >= self.height() - by
         )
         if in_border:
             self.border_clicked.emit(self._index)
@@ -206,19 +206,16 @@ class _GridCell(Thumb):
             self.center_clicked.emit(self._index)
         event.accept()
 
-    def _border_px(self) -> int:
-        side = min(self.width(), self.height())
-        return max(MIN_BORDER_PX, min(MAX_BORDER_PX, int(side * BORDER_RATIO)))
-
-    # Hit-test helper (exposed for unit tests, same shape as the
-    # legacy DayGridCell.hit_zone).
+    # Hit-test helper (exposed for unit tests). Same outer-quarter
+    # rule as ``mousePressEvent`` above — must stay in lockstep.
     def hit_zone(self, x: int, y: int) -> str:
         if not (0 <= x < self.width() and 0 <= y < self.height()):
             return "outside"
-        b = self._border_px()
+        bx = self.width() // 4
+        by = self.height() // 4
         if (
-            x < b or x >= self.width() - b
-            or y < b or y >= self.height() - b
+            x < bx or x >= self.width() - bx
+            or y < by or y >= self.height() - by
         ):
             return "border"
         return "center"

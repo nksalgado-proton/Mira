@@ -4522,7 +4522,8 @@ class MainWindow(QMainWindow):
         ``None`` if the user backed out without confirming the import.
         """
         from PyQt6.QtWidgets import (
-            QDialog, QMessageBox, QStackedWidget, QVBoxLayout,
+            QDialog, QHBoxLayout, QMessageBox, QStackedWidget,
+            QVBoxLayout, QWidget,
         )
         from core.cull_state import (
             STATE_CANDIDATE as _C,
@@ -4531,6 +4532,7 @@ class MainWindow(QMainWindow):
         )
         from core.fresh_source import SourceItem
         from mira.picked.quick_sweep_buckets import build_fast_days
+        from mira.ui.design import confirm, ghost_button, primary_button
         from mira.ui.pages.days_grid_page import DaysGridPage
         from mira.ui.pages.days_lists_page import DaysListsPage
         from mira.ui.pages.quick_sweep_page import QuickSweepPage
@@ -4619,14 +4621,31 @@ class MainWindow(QMainWindow):
         }
 
         # ── Modal host with internal 3-page stack ────────────────
-        host = QDialog(self)
+        # spec/97 — the dialog overrides ``reject`` so [X], Esc, and any
+        # other reject path route through the footer's discard-confirm
+        # rather than silently aborting. ``accept`` (via Finish & import)
+        # is unaffected.
+        class _QSHostDialog(QDialog):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self._confirm_reject = None
+
+            def set_confirm_reject(self, fn):
+                self._confirm_reject = fn
+
+            def reject(self):  # noqa: N802 — Qt slot name
+                if self._confirm_reject is None or self._confirm_reject():
+                    super().reject()
+
+        host = _QSHostDialog(self)
         host.setWindowTitle(tr("Quick Sweep — pick what to import"))
         host.setModal(True)
         host.resize(1280, 800)
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         stack = QStackedWidget()
-        layout.addWidget(stack)
+        layout.addWidget(stack, 1)
 
         # Paths-mode pages: no gateway, no main-window signal wiring —
         # the closures below own the navigation locally.
@@ -4732,6 +4751,38 @@ class MainWindow(QMainWindow):
             if box.clickedButton() is import_btn:
                 result["kept"] = kept_set
                 host.accept()
+
+        # spec/97 — footer Cancel + window-close [X]/Esc all flow
+        # through here so an accidental close can't drop the sweep.
+        def request_cancel() -> None:
+            host.reject()
+
+        host.set_confirm_reject(lambda: confirm(
+            host,
+            tr("Discard this Quick Sweep?"),
+            tr("Nothing will be imported."),
+            primary_text=tr("Discard"),
+        ))
+
+        # ── Persistent footer (spec/97) — Finish & import + Cancel,
+        # visible on every page so the user can always commit/abort
+        # without depending on the (modal-absent) title-bar Back.
+        footer_host = QWidget()
+        footer = QHBoxLayout(footer_host)
+        footer.setContentsMargins(22, 14, 22, 14)
+        footer.setSpacing(8)
+        cancel_btn = ghost_button(tr("Cancel"))
+        cancel_btn.clicked.connect(request_cancel)
+        footer.addWidget(cancel_btn)
+        footer.addStretch()
+        finish_btn = primary_button(tr("Finish & import…"))
+        finish_btn.clicked.connect(finalize)
+        footer.addWidget(finish_btn)
+        layout.addWidget(footer_host)
+
+        # spec/97 — handles for tests and keyboard wiring.
+        host._qs_finish_btn = finish_btn
+        host._qs_cancel_btn = cancel_btn
 
         lists_page.back_requested.connect(finalize)
         lists_page.day_activated.connect(open_day)

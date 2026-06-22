@@ -181,12 +181,57 @@ page → plays + exports across events.
   Play unchanged); MainWindow wiring + App-menu "Cross-event Cuts…"
   entry; the events-page `CrossEventCutsBand` retires entirely.
 
-### Phase 4b — richer filters *(unlocked when the indexing track lands)*
+### Phase 4b — richer filters *(complete 2026-06-21, 3 commits on `main`, `verify.bat` green)*
 
-The dialog's hardware / EXIF / face groups light up by flipping
-`NewCrossEventDcDialog` + `NewRecipeDialog`'s Collection face back
-to the full `build_cross_event_catalogue` / `show_hardware=True`. No
-new dialog work; just the gate.
+The audit confirmed the resolver's `_filter_clauses` and the
+`global_items` projection already speak every spec/32 §2 dim except
+faces. Phase 4b lifted the Phase 4a UI gate after closing the
+single substantive reliability gap (startup reconcile). Face
+recognition (spec/91) stays its own track — Phase 4b is an
+EXIF/gear lift, not a face lift.
+
+**Landed:**
+
+- **(4b-i)** [`216fd1d`](https://github.com/nksalgado-proton/Mira/commit/216fd1d)
+  — `mira/ui/app._startup_reconcile_global_items(gateway)` runs
+  `Gateway.reconcile_global_items()` synchronously between
+  MainWindow construction and `window.show()`. The close-time sync
+  was dirty-gated (`event_gateway.py:221`), so events opened-but-
+  not-mutated since a schema bump kept stale or absent
+  `global_items` rows and the cross-event resolver returned empty
+  / partial results for EXIF / gear / location filters. The
+  reconcile is sub-second on normal libraries; failures log but
+  never block launch; read-only sessions inherit
+  `LibraryGateway._skip_if_read_only` (5a). The stale-caveat in
+  `event_gateway.py:219` was updated to reflect the catchup is
+  now wired. Tests: stale events catch up; failure returns empty
+  dict; empty library is a no-op; read-only skip.
+- **(4b-ii)** [`c678c55`](https://github.com/nksalgado-proton/Mira/commit/c678c55)
+  — `INDEXING_GATED_DIM_IDS` shrinks to `()` (the constant survives
+  as the seam for a future spec/91 face dim);
+  `build_cross_event_phase4a_catalogue` keeps its name (history
+  marker) and now returns the full catalogue. `events_page.py`
+  flips `show_hardware=False` → `True` for the Collection-face
+  `NewRecipeDialog`; a new `show_faces: bool = False` parameter
+  decouples the Faces UI from `show_hardware` so the EXIF/gear
+  lift doesn't drag the deferred face surface along — the
+  `_OperandPickerPopover` and the "Faces: (Phase 4c)" placeholder
+  both ride the new flag. Affected tests updated to the post-4b
+  shape (filter_family, new_cross_event_dc_dialog, phase2_wiring,
+  new_recipe_dialog_rules + scaffold). The event-scope Cut face
+  stays `show_hardware=False` per spec/81 §2.1 — Phase 4b is a
+  cross-event-only lift.
+- **(4b-iii)** [`cb0244d`](https://github.com/nksalgado-proton/Mira/commit/cb0244d)
+  — `tests/test_phase4b_cross_event_resolution.py` pins the
+  end-to-end promise: two events with distinct cameras + apertures,
+  `LibraryGateway.resolve_dc_keys` with `camera_ids` +
+  `aperture_max` filters composes correctly across events.
+  `dc_probe` reads the same intersection (dialog live-count
+  contract). Spec/94 marked Phase 4b complete here.
+
+Manual real-data DoD remains Nelson's: compose a Collection with a
+camera filter across multiple trips, pin → Cut, see it in the
+Library page, play and export across events.
 
 ## Phase 5 — Publishing + multi-device (spec/76 §A / §B)  *(complete 2026-06-21, 4 commits on `main`, `verify.bat` green)*
 

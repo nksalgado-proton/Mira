@@ -1956,7 +1956,47 @@ QLabel#PctZero     { color: {ink_faint}; font-weight: 700; }
 
 QPushButton#PillToggle            { background: {card2}; border: 1px solid {line}; color: {ink};
                                     border-radius: 16px; padding: 6px 14px; font-weight: 600; }
-QPushButton#PillToggle:checked    { background: {accent_soft}; border-color: {accent}; color: {accent}; }
+/* spec/113 — an active filter must be UNMISTAKABLE: full-accent fill
+ * with contrasting text, mirroring the ``#HelpInvite`` active-affordance.
+ * The previous soft tint ({accent_soft} bg + {accent} text) let an
+ * accidental click slip past unnoticed, silently shrinking the Cut.
+ * Applies to every chip wearing the role (style / camera / lens) via
+ * the shared pill_toggle factory. */
+QPushButton#PillToggle:checked    { background: {accent}; border-color: {accent}; color: {accent_text}; }
+QPushButton#PillToggle:checked:hover    { background: {accent_hover}; border-color: {accent_hover}; }
+QPushButton#PillToggle:checked:pressed  { background: {accent_pressed}; border-color: {accent_pressed}; }
+
+/* spec/113 — the "filters active" indicator + Clear filters CTA. A
+ * gentle attention cue (not an error) so the user can see WHY their
+ * Cut shrank and undo it in one click. The cue rides the soft accent
+ * tint so it draws the eye without competing with the #Primary CTA.
+ * Hidden entirely when no filter is active — the role is only painted
+ * by the controller when the indicator is visible. */
+QLabel#FilterActiveIndicator {
+    background: {accent_subtle};
+    color: {accent};
+    border: 1px solid {accent};
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-weight: 600;
+}
+QPushButton#FilterClear {
+    background-color: transparent;
+    color: {accent};
+    border: 1px solid {accent};
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-weight: 600;
+}
+QPushButton#FilterClear:hover {
+    background-color: {accent};
+    color: {accent_text};
+}
+QPushButton#FilterClear:pressed {
+    background-color: {accent_pressed};
+    color: {accent_text};
+    border-color: {accent_pressed};
+}
 
 /* ---- Theme toggle (right of TitleBar) ---- */
 QPushButton#ThemeToggle           { background: {card2}; border: 1px solid {line}; color: {ink};

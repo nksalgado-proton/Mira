@@ -3095,6 +3095,38 @@ class NewRecipeDialog(QDialog):
         self._metrics_banner.setVisible(False)
         v.addWidget(self._metrics_banner)
 
+        # spec/113 — "filters active" indicator + Clear filters CTA.
+        # Without a visible cue, a stray click on a style chip silently
+        # shrinks the Cut and the user has no way to see WHY their pool
+        # is smaller than expected. The row sits between the error
+        # banner and the metrics line so it lands in the user's eyeline
+        # alongside the count drop it explains. Hidden by default; the
+        # probe path (:meth:`_refresh_filter_indicator`) shows it iff
+        # any filter is active.
+        self._filter_indicator_row = QWidget()
+        self._filter_indicator_row.setObjectName("FilterActiveRow")
+        fi_layout = QHBoxLayout(self._filter_indicator_row)
+        fi_layout.setContentsMargins(0, 0, 0, 0)
+        fi_layout.setSpacing(8)
+        self._filter_indicator_label = QLabel("")
+        self._filter_indicator_label.setObjectName("FilterActiveIndicator")
+        self._filter_indicator_label.setWordWrap(True)
+        fi_layout.addWidget(self._filter_indicator_label, 1)
+        self._filter_clear_btn = QPushButton(tr("Clear filters"))
+        self._filter_clear_btn.setObjectName("FilterClear")
+        self._filter_clear_btn.setToolTip(tr(
+            "Reset every filter (style, media type, hardware) and "
+            "restore the unfiltered pool."))
+        self._filter_clear_btn.clicked.connect(self._on_clear_filters)
+        fi_layout.addWidget(self._filter_clear_btn, 0)
+        self._filter_indicator_row.setVisible(False)
+        v.addWidget(self._filter_indicator_row)
+        # Cache the unfiltered pool size from the last successful probe
+        # so the indicator can display "showing X of Y" without paying
+        # for an extra resolver call on every keystroke. ``None`` =
+        # never probed (the first run fills it).
+        self._unfiltered_pool_count: Optional[int] = None
+
         # The metrics line itself. spec/90 §10:
         # "386 in pool · 11 initially picked · 1:30 of 5:00 target"
         self._metrics_label = QLabel(tr("(no probe wired yet)"))
@@ -3151,6 +3183,11 @@ class NewRecipeDialog(QDialog):
         self._apply_metrics(resolution)
         self._apply_rule_breakdown(resolution.rule_breakdown)
         self._clear_banner()
+        # spec/113 — refresh the "filters active" indicator AFTER metrics
+        # so the X / Y reads off the same probe result the metrics line
+        # shows. The unfiltered probe is paid only when a filter IS
+        # active (the hot path of an empty filter set short-circuits).
+        self._refresh_filter_indicator(composition, resolution)
         self._refresh_start_enabled()
         # spec/93 §7 — refresh the binding badge + the one-shot migration
         # note. Done at the end so a probe failure earlier in the method
@@ -3305,6 +3342,125 @@ class NewRecipeDialog(QDialog):
     def _clear_banner(self) -> None:
         self._metrics_banner.setVisible(False)
         self._metrics_banner.setText("")
+
+    # -------- Filters-active indicator (spec/113) -------------------- #
+
+    def _active_filter_count(self) -> int:
+        """Count active filter axes (spec/113): each axis contributes 1
+        when it's drifted from the unfiltered default.
+
+        * style — every checked style chip counts;
+        * media-type — counts iff not the default ``'both'``;
+        * hardware — every checked camera + lens chip counts.
+
+        Returns 0 when nothing is filtered (the indicator stays hidden)."""
+        count = sum(
+            1 for chip in self._style_chips.values() if chip.isChecked())
+        if self._media_type() != "both":
+            count += 1
+        if self._show_hardware:
+            count += sum(
+                1 for chip in self._camera_chips.values() if chip.isChecked())
+            count += sum(
+                1 for chip in self._lens_chips.values() if chip.isChecked())
+        return count
+
+    def _composition_with_filters_cleared(
+        self, composition: dict,
+    ) -> dict:
+        """Same source / rules / scope as ``composition`` but with every
+        filter axis reset to its unfiltered default. The resolver's
+        pool size on this composition is the spec/113 ``Y`` (unfiltered
+        total) — the denominator the indicator quotes."""
+        unfiltered = dict(composition)
+        unfiltered["filters"] = {"styles": [], "media_type": "both"}
+        return unfiltered
+
+    def _refresh_filter_indicator(
+        self, composition: dict,
+        resolution: "_recipe_resolver.RecipeResolution",
+    ) -> None:
+        """Render the "filters active" cue. Visible iff at least one
+        filter axis is non-default; hidden entirely otherwise (a clean
+        Cut has no clutter, spec/113 §3)."""
+        n_active = self._active_filter_count()
+        if n_active == 0:
+            self._filter_indicator_row.setVisible(False)
+            self._filter_indicator_label.setText("")
+            return
+        filtered_count = len(resolution.pool)
+        unfiltered_count = filtered_count
+        if self._recipe_probe is not None:
+            try:
+                unfiltered_res = self._recipe_probe(
+                    self._composition_with_filters_cleared(composition))
+                unfiltered_count = len(unfiltered_res.pool)
+                self._unfiltered_pool_count = unfiltered_count
+            except Exception:                                  # noqa: BLE001
+                log.warning(
+                    "filter indicator: unfiltered probe failed; falling "
+                    "back to last known total",
+                    exc_info=True)
+                if self._unfiltered_pool_count is not None:
+                    unfiltered_count = max(
+                        self._unfiltered_pool_count, filtered_count)
+        # Singular / plural is one switch (the rest of the sentence is
+        # value-stable). ``tr()`` carries the localizable forms.
+        head = (tr("1 filter active") if n_active == 1
+                else tr("{n} filters active").replace("{n}", str(n_active)))
+        text = tr("{head} — showing {x} of {y} items") \
+            .replace("{head}", head) \
+            .replace("{x}", str(filtered_count)) \
+            .replace("{y}", str(unfiltered_count))
+        self._filter_indicator_label.setText(text)
+        self._filter_indicator_row.setVisible(True)
+
+    def _on_clear_filters(self) -> None:
+        """spec/113 — one-click recovery from an accidental filter.
+
+        Clears every style chip, restores the media-type default
+        (Photos AND Videos), and unchecks every hardware chip; then
+        re-kicks the probe so the indicator hides and the metrics line
+        returns to the unfiltered count. Signals are blocked during the
+        sweep so each chip toggle doesn't fire its own probe (one is
+        enough)."""
+        changed = False
+        for chip in self._style_chips.values():
+            if chip.isChecked():
+                chip.blockSignals(True)
+                chip.setChecked(False)
+                chip.blockSignals(False)
+                changed = True
+        if self._photos_cb is not None and not self._photos_cb.isChecked():
+            self._photos_cb.blockSignals(True)
+            self._photos_cb.setChecked(True)
+            self._photos_cb.blockSignals(False)
+            changed = True
+        if self._videos_cb is not None and not self._videos_cb.isChecked():
+            self._videos_cb.blockSignals(True)
+            self._videos_cb.setChecked(True)
+            self._videos_cb.blockSignals(False)
+            changed = True
+        if self._show_hardware:
+            for chip in self._camera_chips.values():
+                if chip.isChecked():
+                    chip.blockSignals(True)
+                    chip.setChecked(False)
+                    chip.blockSignals(False)
+                    changed = True
+            for chip in self._lens_chips.values():
+                if chip.isChecked():
+                    chip.blockSignals(True)
+                    chip.setChecked(False)
+                    chip.blockSignals(False)
+                    changed = True
+        # Hide the indicator immediately; the re-probe will keep it
+        # hidden (no filter is active) but a snappy local update beats
+        # waiting for the debounce timer.
+        self._filter_indicator_row.setVisible(False)
+        self._filter_indicator_label.setText("")
+        if changed:
+            self._kick_probe()
 
     @staticmethod
     def _repolish(widget: QWidget) -> None:

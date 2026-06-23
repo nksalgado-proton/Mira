@@ -47,7 +47,9 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFrame, QLabel, QPushButton, QVBoxLayout, QWidget,
+)
 
 from mira.gateway import Gateway
 from mira.picked import CullBucket, CullCluster, CullItem
@@ -89,6 +91,12 @@ _CYCLE = (STATE_SKIPPED, STATE_PICKED, STATE_CANDIDATE)
 # Bracket / burst kinds the Play button steps as a sequence.
 _PLAY_KINDS = frozenset(("burst", "focus_bracket", "exposure_bracket"))
 _COMBINED_KINDS = frozenset(("exposure_bracket",))
+# spec/110 — the kinds that trigger the inviting Help button next to
+# the Play / Combined controls. Brackets are the one workflow that
+# needs the spec/108 round-trip contract surfaced in context (focus =
+# external-only stack; exposure = in-app Mertens via spec/109 OR the
+# same external drop).
+_BRACKET_KINDS = frozenset(("focus_bracket", "exposure_bracket"))
 # Film cadence (ms per frame) — 2.5 fps so a focus shift / burst frame
 # is actually visible on each tick.
 _FILM_MS = 400
@@ -115,6 +123,11 @@ class PickerPage(QWidget):
 
     closed = pyqtSignal()
     fullscreen_changed = pyqtSignal(bool)
+    # spec/110 — fired from the bracket help panel's "Merge in Mira"
+    # action (exposure brackets only). The host (main_window) routes
+    # this to the spec/109 in-app Mertens batch job; the picker stays
+    # out of the batch-queue layer.
+    inapp_merge_requested = pyqtSignal(str)   # bracket_key
 
     def __init__(
         self,
@@ -327,6 +340,23 @@ class PickerPage(QWidget):
         self._combined_btn.clicked.connect(self._toggle_combined)
         self._combined_btn.setVisible(False)
         nav_layout.addWidget(self._combined_btn)
+
+        # spec/110 — the inviting "How to handle this {focus|exposure}
+        # bracket" button. The HelpInvite QSS role makes it accented
+        # and labelled (NOT a passive ?); the label updates to name the
+        # kind in :meth:`_refresh_cluster_buttons`. Separate from the
+        # global F1 help (which is general; this one is bracket-
+        # specific). Visibility is gated identically to Play/Combined.
+        self._bracket_help_btn = QPushButton(self._bracket_help_label(""))
+        self._bracket_help_btn.setObjectName("HelpInvite")
+        self._bracket_help_btn.setToolTip(tr(
+            "Show the round-trip naming convention for this bracket "
+            "— how an external stacker's result returns as the bracket's "
+            "master, plus (for exposure brackets) the in-app Merge in "
+            "Mira option."))
+        self._bracket_help_btn.clicked.connect(self._open_bracket_help)
+        self._bracket_help_btn.setVisible(False)
+        nav_layout.addWidget(self._bracket_help_btn)
 
         # Full Resolution + Full Screen — the standard centre pair on every
         # photo surface (spec/63 §4 F10 / F11).
@@ -748,10 +778,81 @@ class PickerPage(QWidget):
         self.viewport.set_items(vitems, index)
 
     def _refresh_cluster_buttons(self) -> None:
-        """Play / Combined visibility — driven by the bucket's kind."""
+        """Play / Combined / Help visibility — driven by the bucket's kind."""
         kind = self._bucket.kind if self._bucket is not None else ""
         self._film_btn.setVisible(kind in _PLAY_KINDS)
         self._combined_btn.setVisible(kind in _COMBINED_KINDS)
+        # spec/110 — surface contextual guidance on bracket clusters
+        # only. Re-label so the button names the bracket type (the
+        # invitation reads like "ⓘ How to handle this focus bracket").
+        self._bracket_help_btn.setVisible(kind in _BRACKET_KINDS)
+        self._bracket_help_btn.setText(self._bracket_help_label(kind))
+
+    def _bracket_help_label(self, kind: str) -> str:
+        """spec/110 §2 — labelled, kind-aware invitation (NOT a passive
+        ``?``). Defaults to the focus copy so the off-screen text is
+        sensible if any caller reads it before the first visibility
+        refresh."""
+        if kind == "exposure_bracket":
+            return tr("ⓘ How to handle this exposure bracket")
+        return tr("ⓘ How to handle this focus bracket")
+
+    def _open_bracket_help(self) -> None:
+        """Open the spec/110 bracket help panel — kind-aware content,
+        the concrete link-stem prefix + Picked Media/ path for THIS
+        bracket, and the in-app Merge in Mira action for exposure
+        brackets."""
+        if self._bucket is None or self._bucket.kind not in _BRACKET_KINDS:
+            return
+        from core.bracket_help import build_help_context
+        from mira.ui.picked.bracket_help_panel import BracketHelpPanel
+
+        event_root = (
+            Path(self._eg.event_root)
+            if self._eg is not None and self._eg.event_root is not None
+            else Path("."))
+        try:
+            ctx = build_help_context(
+                self._bucket, gateway=self._eg, event_root=event_root)
+        except Exception:                                       # noqa: BLE001
+            log.exception("bracket-help context build failed")
+            return
+        bracket_key = self._bucket.bucket_key
+
+        def _emit_merge() -> None:
+            # The host (main_window) routes this to the spec/109
+            # in-app Mertens batch job; the picker stays decoupled
+            # from the batch-queue layer.
+            self.inapp_merge_requested.emit(bracket_key)
+
+        def _open_folder() -> None:
+            self._reveal_in_explorer(ctx.picked_media_dir)
+
+        panel = BracketHelpPanel(
+            ctx,
+            on_merge=(_emit_merge if ctx.kind == "exposure_bracket"
+                      else None),
+            on_open_folder=_open_folder,
+            on_full_guide=None,    # spec/108 doc opener — host-wired later
+            parent=self,
+        )
+        panel.exec()
+
+    def _reveal_in_explorer(self, path: Path) -> None:
+        """Open ``path`` in the OS file browser. ``Picked Media/`` may
+        not exist yet (it's built on entering Edit, spec/57 §2.2); fall
+        back to the event root so the user lands somewhere useful."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        target = path if path.is_dir() else path.parent
+        if not target.exists() and self._eg is not None \
+                and self._eg.event_root is not None:
+            target = Path(self._eg.event_root)
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        except Exception:                                       # noqa: BLE001
+            log.exception("openUrl failed for %s", target)
 
     def _effective(self, item_id: str) -> str:
         return self._state.get(item_id) or self._default_state

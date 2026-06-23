@@ -460,6 +460,11 @@ class MainWindow(QMainWindow):
             self._qs_finalize_via_back)
         self.picker_page.closed.connect(self._on_select_closed)
         self.picker_page.fullscreen_changed.connect(self._on_select_fullscreen)
+        # spec/110 — the bracket help panel's Merge in Mira action
+        # routes through here to the spec/109 in-app Mertens batch
+        # job (the same entry point the Edit returns box uses).
+        self.picker_page.inapp_merge_requested.connect(
+            self._on_picker_inapp_merge_requested)
         self.edit_page.closed.connect(self._on_process_closed)
         self.edit_page.fullscreen_changed.connect(self._on_process_fullscreen)
         # (Surface 12 folded into EditorPage 2026-06-15 — no separate
@@ -6681,6 +6686,14 @@ class MainWindow(QMainWindow):
         box.exec()
         if merge_button is not None and box.clickedButton() is merge_button:
             self._start_in_app_exposure_merge(unmerged_exposure_keys)
+
+    def _on_picker_inapp_merge_requested(self, bracket_key: str) -> None:
+        """spec/110 → spec/109 — the Picker's bracket help panel asked
+        for the in-app Mertens merge over one exposure bracket. Route
+        through the same batch entry point the Edit returns box uses."""
+        if not bracket_key:
+            return
+        self._start_in_app_exposure_merge([bracket_key])
 
     def _start_in_app_exposure_merge(
         self, bracket_keys: list,

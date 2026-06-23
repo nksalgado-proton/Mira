@@ -333,6 +333,41 @@ QPushButton#BatchOpButton:disabled {
     border-color: {border_subtle};
 }
 
+/* ── Inviting help button (spec/110) ──────────────────────────
+ * The bracket-help button in the Picker cluster controls. The
+ * round-trip naming convention (spec/108) is invisible and easy to
+ * get wrong; this role draws the eye when a bracket cluster is
+ * open so the user notices contextual guidance is one click away.
+ * Distinct from a passive `?` icon — a labelled, accented chip.
+ * Soft-tinted background so it sits comfortably beside the ghost
+ * Play / Combined controls without competing with the #Primary
+ * action CTA. Commits to a full accent fill on hover so the
+ * "press me" affordance is unmistakable. */
+QPushButton#HelpInvite {
+    background-color: {accent_subtle};
+    color: {accent};
+    border: 1px solid {accent};
+    font-weight: 500;
+}
+
+QPushButton#HelpInvite:hover {
+    background-color: {accent};
+    color: {accent_text};
+    border-color: {accent};
+}
+
+QPushButton#HelpInvite:pressed {
+    background-color: {accent_pressed};
+    color: {accent_text};
+    border-color: {accent_pressed};
+}
+
+QPushButton#HelpInvite:disabled {
+    background-color: transparent;
+    color: {disabled_text};
+    border-color: {border_subtle};
+}
+
 /* ── Calendar popup (QDateEdit ▾ in the plan editor) ──────────
  * Nelson eyeball: the month/year nav arrows were ~invisible (same
  * colour as the background). Give the nav bar a {primary} fill with

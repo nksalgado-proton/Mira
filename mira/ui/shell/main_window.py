@@ -6619,7 +6619,15 @@ class MainWindow(QMainWindow):
         return report
 
     def _show_returns_box(self, report, *, force: bool = False) -> None:
-        """The spec/57 §3 results summary — NoIcon, plain lines."""
+        """The spec/57 §3 results summary — NoIcon, plain lines.
+
+        spec/109 §5 — when the report lists picked exposure brackets
+        without a merged result, also offer the in-app Mertens lane
+        ("Merge in Mira (Mertens)") as a batch action alongside the
+        existing "send to external stacker" route. The button only
+        appears for exposure brackets; focus brackets stay external-
+        only and surface as the legacy "run your stacker" line.
+        """
         from PyQt6.QtWidgets import QMessageBox
 
         lines = []
@@ -6658,6 +6666,130 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.NoIcon)
         box.setWindowTitle(tr("External results"))
+        box.setText("\n".join(lines))
+        merge_button = None
+        unmerged_exposure_keys = list(getattr(
+            report, "unmerged_exposure_bracket_keys", []) or [])
+        if unmerged_exposure_keys:
+            # spec/109 §5 — batch action over every unmerged exposure
+            # bracket. The default button stays Close so a stray Enter
+            # doesn't kick off a long-running fusion.
+            merge_button = box.addButton(
+                tr("Merge exposure brackets in Mira"),
+                QMessageBox.ButtonRole.ActionRole,
+            )
+        box.exec()
+        if merge_button is not None and box.clickedButton() is merge_button:
+            self._start_in_app_exposure_merge(unmerged_exposure_keys)
+
+    def _start_in_app_exposure_merge(
+        self, bracket_keys: list,
+    ) -> None:
+        """spec/109 §3-§5 — enqueue the in-app Mertens merge over a list
+        of unmerged exposure bracket keys. The fusion engine runs on the
+        batch queue's worker thread (progress + cancel ride the existing
+        line); the adoption tail runs on the UI thread once
+        ``finished_result`` fires."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        if self._current_event_id is None or not bracket_keys:
+            return
+        from mira.picked.exposure_merge_job import (
+            adopt_merge_results, build_requests_for_brackets,
+            make_merge_work,
+        )
+        from mira.ui.ingest.ingest_job import IngestJob
+        from mira.ui.shell.batch_queue import JOB_TYPE_IMPORT
+
+        eg = self.gateway.open_event(self._current_event_id)
+        try:
+            try:
+                requests = build_requests_for_brackets(eg, bracket_keys)
+            except Exception:  # noqa: BLE001 — surface the error to the user
+                log.exception(
+                    "spec/109 merge: build_requests_for_brackets failed")
+                QMessageBox.warning(
+                    self, tr("Merge in Mira"),
+                    tr("Could not gather bracket frames for the in-app "
+                       "merge — see the log."),
+                )
+                return
+        finally:
+            eg.close()
+        if not requests:
+            QMessageBox.information(
+                self, tr("Merge in Mira"),
+                tr("No exposure brackets to merge."),
+            )
+            return
+
+        event_id = self._current_event_id
+        work = make_merge_work(requests, align=True)
+
+        def _on_done(result):
+            self._finish_in_app_exposure_merge(
+                result=result, event_id=event_id)
+
+        job = IngestJob(work)
+        label = tr("Merge in Mira — {n} bracket(s)") \
+            .replace("{n}", str(len(requests)))
+        job.finished.connect(job.deleteLater)
+        self.batch_queue.enqueue(
+            job, label, _on_done, job_type=JOB_TYPE_IMPORT)
+        log.info(
+            "spec/109 merge: enqueued %d exposure bracket(s) for %s",
+            len(requests), event_id)
+
+    def _finish_in_app_exposure_merge(
+        self, *, result, event_id: str,
+    ) -> None:
+        """UI-thread adoption tail for the in-app exposure merge job.
+
+        Opens its own gateway connection (spec/84 §3 — one SQLite
+        connection per thread; the worker thread never wrote event.db),
+        calls :func:`mira.picked.exposure_merge_job.adopt_merge_results`,
+        refreshes the Picked Media projection so the new master appears
+        at the root, and surfaces a small completion box."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        if result.error is not None:
+            log.error("spec/109 merge: worker crashed: %s", result.error)
+            QMessageBox.critical(
+                self, tr("Merge in Mira"),
+                tr("The merge crashed:\n\n{err}")
+                .replace("{err}", result.error),
+            )
+            return
+        engine_results = list(result.payload or [])
+        if not engine_results:
+            return
+        from mira.picked.exposure_merge_job import adopt_merge_results
+        eg = self.gateway.open_event(event_id)
+        try:
+            adopted = adopt_merge_results(eg, engine_results)
+        finally:
+            eg.close()
+        # Rebuild the Picked Media projection so the new masters appear
+        # at the root immediately (the spec/57 seamless-rider rule).
+        self._refresh_picked_media(quiet=True)
+        ok = sum(1 for a in adopted if a.new_item_id is not None)
+        cancelled = sum(1 for a in adopted if a.cancelled)
+        errors = [a.error for a in adopted if a.error]
+        lines = []
+        if ok:
+            lines.append(tr("{n} exposure bracket(s) merged in Mira.")
+                         .replace("{n}", str(ok)))
+        if cancelled:
+            lines.append(tr("{n} bracket(s) cancelled.")
+                         .replace("{n}", str(cancelled)))
+        if errors:
+            lines.append(tr("{n} bracket(s) failed — see the log.")
+                         .replace("{n}", str(len(errors))))
+        if not lines:
+            lines = [tr("No brackets merged.")]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Merge in Mira"))
         box.setText("\n".join(lines))
         box.exec()
 

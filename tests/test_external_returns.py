@@ -147,6 +147,52 @@ def test_unmerged_brackets_reminder_fact(tmp_path):
         report = scan_for_returns(eg, "skipped")
         assert report.unmerged_bracket_count == 1   # picked bracket, no result yet
         assert report.nothing_happened              # …but nothing to report otherwise
+        # spec/109 §5 — the picked focus bracket does NOT show up as an
+        # in-app-merge candidate (focus brackets stay external-only).
+        assert report.unmerged_exposure_bracket_keys == []
+    finally:
+        eg.close()
+
+
+def test_unmerged_exposure_bracket_keys_surface_for_inapp_merge(tmp_path):
+    """spec/109 §5 — picked exposure brackets without a merged result
+    are surfaced by key so the Edit-entry returns box can offer the
+    in-app Mertens lane over them."""
+    eg = _make_event(tmp_path)
+    try:
+        store = eg.store
+        # Add a picked exposure bracket alongside the existing focus one.
+        for iid, ts in (("i-e1", "2026-04-03T10:00:00"),
+                        ("i-e2", "2026-04-03T10:00:01")):
+            rel = f"Original Media/_cameras/d3/G9/{iid}.rw2"
+            src = tmp_path / rel
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_bytes(b"bytes-" + iid.encode())
+            store.upsert(m.Item(
+                id=iid, kind="photo", created_at="t",
+                provenance="captured", origin_relpath=rel,
+                sha256="sha-" + iid, byte_size=src.stat().st_size,
+                materialized_at="t", materialized_phase="ingest",
+                camera_id="G9", day_number=3,
+                capture_time_raw=ts, capture_time_corrected=ts,
+            ))
+            store.upsert(m.PhaseState(
+                item_id=iid, phase="pick", state="picked"))
+        store.upsert(m.BucketCache(
+            bucket_key="d3|exp|xyz", phase="pick",
+            kind="exposure_bracket", day_number=3))
+        store.upsert(m.BucketMember(
+            bucket_key="d3|exp|xyz", phase="pick",
+            item_id="i-e1", ordinal=0))
+        store.upsert(m.BucketMember(
+            bucket_key="d3|exp|xyz", phase="pick",
+            item_id="i-e2", ordinal=1))
+        _project(eg, tmp_path)
+
+        report = scan_for_returns(eg, "skipped")
+        assert report.unmerged_bracket_count == 2   # focus + exposure
+        # Only the exposure bracket is offered the in-app Mertens lane.
+        assert report.unmerged_exposure_bracket_keys == ["d3|exp|xyz"]
     finally:
         eg.close()
 

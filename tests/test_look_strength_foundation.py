@@ -139,6 +139,17 @@ def test_v4_event_db_migrates_clean(tmp_path):
             added_at       TEXT NOT NULL,
             PRIMARY KEY (cut_id, export_relpath)
         );
+        -- spec/109 added v13→v14 stack_bracket.producer; the v13→v14
+        -- migration ALTERs stack_bracket, so it must exist at v4 too.
+        -- v4 shape (pre-producer); the migration adds the column.
+        CREATE TABLE stack_bracket (
+            bracket_id     TEXT PRIMARY KEY,
+            kind           TEXT NOT NULL,
+            action         TEXT,
+            picked_index   INTEGER NOT NULL DEFAULT -1,
+            output_item_id TEXT,
+            day_number     INTEGER
+        );
     """)
     conn.commit()
     conn.close()

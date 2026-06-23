@@ -198,6 +198,9 @@ def test_migrate_v11_to_v12_adds_face_table(tmp_path):
     # will recreate so the test's path from v11 doesn't collide on the way
     # back up to SCHEMA_VERSION.
     conn.execute("DROP TABLE IF EXISTS recipe")
+    # spec/109 added v13→v14 stack_bracket.producer; strip the column so
+    # the up-migration's ALTER ADD doesn't collide on the way back up.
+    conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
     conn.execute("UPDATE schema_info SET schema_version = 11 WHERE id = 1")
 
     schema.migrate(conn)

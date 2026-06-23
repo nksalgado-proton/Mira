@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -438,13 +438,21 @@ CREATE TABLE video_adjustment (
 );
 
 -- ===== stack_bracket (D) + stack_member (D) ================================
+-- ``producer`` (spec/109 §5) — who fused this bracket's master:
+--   'external' — adopted from an external stacker (Helicon, Zerene, LRC)
+--                via the spec/57 round trip (default — see migration v13).
+--   'mira'     — fused in-app by ``core.exposure_fusion`` on the batch
+--                engine (the spec/109 lane; exposure brackets only).
+-- Drives the spec/89 origin wordmark on the consolidation badge: 'mira'
+-- → ``Mira``, 'external' → ``ext`` (post-spec/108 flatten).
 CREATE TABLE stack_bracket (
   bracket_id     TEXT PRIMARY KEY,
   kind           TEXT NOT NULL CHECK (kind IN ('focus','exposure')),
   action         TEXT CHECK (action IN ('stacked','picked','skipped') OR action IS NULL),
   picked_index   INTEGER NOT NULL DEFAULT -1,
   output_item_id TEXT REFERENCES item(id) ON DELETE SET NULL,   -- the merged result, an item
-  day_number     INTEGER REFERENCES trip_day(day_number) ON DELETE SET NULL
+  day_number     INTEGER REFERENCES trip_day(day_number) ON DELETE SET NULL,
+  producer       TEXT NOT NULL DEFAULT 'external' CHECK (producer IN ('mira','external'))
 );
 CREATE INDEX ix_stack_day ON stack_bracket(day_number);
 
@@ -1275,6 +1283,24 @@ CREATE TABLE recipe (
 )""")
 
 
+def _migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """spec/109 §5 — in-app exposure-bracket merge needs a way to
+    distinguish a Mira-fused master from an external stacker's output.
+
+    Adds ``stack_bracket.producer`` with default ``'external'`` so
+    every pre-spec/109 row reads as an external stacker output (the
+    only way they could have been adopted). Freshly-written rows take
+    the explicit producer the caller passes; the in-app merge job
+    sets it to ``'mira'``.
+
+    SQLite can't add a CHECK constraint via ALTER TABLE — validation
+    lives at the gateway seam on migrated rows. Fresh installs get
+    the full CHECK in the DDL."""
+    conn.execute(
+        "ALTER TABLE stack_bracket ADD COLUMN producer TEXT NOT NULL "
+        "DEFAULT 'external'")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1288,6 +1314,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v10_to_v11,
     _migrate_v11_to_v12,
     _migrate_v12_to_v13,
+    _migrate_v13_to_v14,
 ]
 
 

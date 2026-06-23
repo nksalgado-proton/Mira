@@ -66,6 +66,15 @@ def lineage_origin_label(provenance: str | None, export_relpath: str) -> str:
     return MIRA
 
 
+def stack_output_origin_label(producer: str | None) -> str:
+    """Resolve a stack-output master's wordmark from its bracket producer
+    (spec/109 §5). ``'mira'`` → ``Mira`` (in-app Mertens — the spec/109
+    lane); anything else → ``ext`` (third-party stacker via the spec/57
+    round trip; post-spec/108 the wordmark for ALL external origins is
+    flattened to ``ext``)."""
+    return MIRA if producer == "mira" else EXTERNAL
+
+
 def cell_origin_label(rows: list) -> str | None:
     """Summary label for a flat cell that may have one or more shipped
     lineage rows.
@@ -139,5 +148,6 @@ def scan_chip_text(report) -> str:
 __all__ = [
     "MIRA", "LRC", "HELICON", "CAPTURE_ONE", "EXTERNAL",
     "parse_third_party_label", "lineage_origin_label",
+    "stack_output_origin_label",
     "cell_origin_label", "scan_chip_text",
 ]

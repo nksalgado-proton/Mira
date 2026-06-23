@@ -1144,7 +1144,20 @@ class DaysGridPage(QWidget):
                 log.exception(
                     "DaysGridPage: items_with_mira_intent failed")
                 mira_intent_ids = set()
-            from core.export_provenance import cell_origin_label
+            from core.export_provenance import (
+                cell_origin_label, stack_output_origin_label,
+            )
+            # spec/109 §5 — stack-output masters wear their bracket's
+            # producer wordmark on the export strip when no ship row
+            # is yet on disk (Mira-fused → ``Mira``, third-party-
+            # stacker → ``ext``). Once an export ships, the lineage
+            # row's wordmark takes over via :func:`cell_origin_label`.
+            try:
+                stack_producers = self._eg.stack_producers_by_output()
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: stack_producers_by_output failed")
+                stack_producers = {}
             for it in day_items:
                 if it.item_kind == "cluster":
                     continue
@@ -1166,7 +1179,11 @@ class DaysGridPage(QWidget):
                 if it.item_id in skipped_in_pick_ids:
                     it.skipped_in_pick = True
                 rows = shipped_rows_by_item.get(it.item_id, [])
-                it.origin = cell_origin_label(rows)
+                origin = cell_origin_label(rows)
+                if origin is None and it.item_id in stack_producers:
+                    origin = stack_output_origin_label(
+                        stack_producers[it.item_id])
+                it.origin = origin
             # spec/89 Slice 5 / Block 1 D2 — items with 2+ ship intents
             # (lineage rows on disk + the Mira-render intent) become a
             # versions cluster cover; the existing video reshape runs

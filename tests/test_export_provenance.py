@@ -13,6 +13,7 @@ from core.export_provenance import (
     lineage_origin_label,
     parse_third_party_label,
     scan_chip_text,
+    stack_output_origin_label,
 )
 
 
@@ -149,3 +150,22 @@ def test_scan_chip_text_partial_match_lists_both():
     assert "1 new external edit" in text
     assert "1 LRC" in text
     assert "1 unmatched" in text
+
+
+# ── stack_output_origin_label ────────────────────────────────────────────
+
+
+def test_stack_output_origin_label_mira_producer_renders_mira():
+    """spec/109 §5 — a Mira-fused stack output reads as ``Mira`` so the
+    consolidation badge distinguishes the in-app Mertens lane from a
+    third-party stacker return."""
+    assert stack_output_origin_label("mira") == MIRA
+
+
+def test_stack_output_origin_label_external_producer_renders_ext():
+    """spec/108 §3 — every external origin flattens to ``ext`` (no
+    per-tool wordmarks). The default producer value also reads ``ext``
+    so legacy rows badge consistently."""
+    assert stack_output_origin_label("external") == EXTERNAL
+    assert stack_output_origin_label(None) == EXTERNAL
+    assert stack_output_origin_label("") == EXTERNAL

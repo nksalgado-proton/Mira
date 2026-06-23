@@ -55,6 +55,11 @@ class ReturnsReport:
     healed: List[str] = field(default_factory=list)       # Exported Media/ orphans Leg D recovered
     unmatched: List[str] = field(default_factory=list)    # flagged, never ignored
     unmerged_bracket_count: int = 0                       # the derived reminder fact
+    # spec/109 §5 — picked exposure brackets with no merged result yet.
+    # The Edit-entry surface offers "Merge in Mira (Mertens)" over this
+    # list (the in-app producer lane). Focus brackets stay external-only
+    # so they're not surfaced here.
+    unmerged_exposure_bracket_keys: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
     @property
@@ -184,9 +189,14 @@ def scan_for_returns(
             continue
         kind, member_ids = brackets[bracket_key]
         try:
+            # spec/109 §5 — producer='external' is the explicit signal
+            # that this master came from a third-party stacker; the
+            # in-app Mertens job (mira.shared.exposure_merge_job) calls
+            # adopt_stack_output with producer='mira'.
             gateway.adopt_stack_output(
                 f, bracket_key=bracket_key, bracket_kind=kind,
                 member_item_ids=member_ids,
+                producer="external",
             )
             report.adopted.append(f.name)
         except Exception as exc:  # noqa: BLE001 — one bad file never stops the scan
@@ -304,14 +314,22 @@ def scan_for_returns(
 
     # ── Leg C — the derived reminder fact (spec/57 §3.4) ───────────────
     merged = {sb.bracket_id for sb in gateway.stacks() if sb.output_item_id}
-    report.unmerged_bracket_count = sum(
-        1 for key in brackets if key not in merged)
+    unmerged_keys = [key for key in brackets if key not in merged]
+    report.unmerged_bracket_count = len(unmerged_keys)
+    # spec/109 §5 — split out the exposure-bracket subset so the Edit
+    # entry surface can offer the in-app Mertens merge over them. Focus
+    # brackets stay external-only and don't appear here.
+    report.unmerged_exposure_bracket_keys = [
+        key for key in unmerged_keys
+        if brackets[key][0] in ("exposure_bracket", "exposure")
+    ]
 
     log.info(
         "external-returns scan: %d adopted, %d associated, %d healed, "
-        "%d unmatched, %d unmerged bracket(s), %d error(s)",
+        "%d unmatched, %d unmerged bracket(s) (%d exposure), %d error(s)",
         len(report.adopted), len(report.associated), len(report.healed),
         len(report.unmatched), report.unmerged_bracket_count,
+        len(report.unmerged_exposure_bracket_keys),
         len(report.errors),
     )
     # spec/89 §1.5 diagnostic — when the matcher rejects every file the

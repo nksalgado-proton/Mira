@@ -202,6 +202,12 @@ class StackBracket:
     picked_index: int = -1
     output_item_id: Optional[str] = None
     day_number: Optional[int] = None
+    # spec/109 §5 — who fused the bracket's master. 'external' (default)
+    # = adopted from a third-party stacker via the spec/57 round trip;
+    # 'mira' = in-app Mertens (exposure brackets only, the spec/109
+    # lane). Drives the origin wordmark on the consolidation badge
+    # (``Mira`` vs ``ext`` post-spec/108 flatten).
+    producer: str = "external"
 
 
 @dataclass

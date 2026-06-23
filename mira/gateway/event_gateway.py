@@ -1856,6 +1856,19 @@ class EventGateway:
     def stack_members(self, bracket_id: str) -> List[m.StackMember]:
         return self.store.query_by(m.StackMember, bracket_id=bracket_id)
 
+    def stack_producers_by_output(self) -> Dict[str, str]:
+        """spec/109 §5 — ``output_item_id → producer`` for every
+        adopted stack master. The Export-surface origin-wordmark
+        resolver consults this to badge a stack output as ``Mira``
+        (in-app Mertens fusion) vs ``ext`` (third-party stacker
+        return). Skips rows whose output_item_id is ``NULL`` (the
+        bracket lost its master)."""
+        return {
+            sb.output_item_id: sb.producer
+            for sb in self.store.all(m.StackBracket)
+            if sb.output_item_id
+        }
+
     def bracket_memberships(self, phase: str = "pick") -> Dict[str, tuple]:
         """``item_id → (bucket_key, kind)`` for every member of a CACHED
         focus/exposure bracket cluster (spec/57 §2.1 — the brackets the
@@ -2525,22 +2538,30 @@ class EventGateway:
         bracket_kind: str,
         member_item_ids: List[str],
         item_id: Optional[str] = None,
+        producer: str = "external",
     ) -> str:
-        """Adopt an externally-merged stack master: move the tool's output
-        from the ``Picked Media/`` root into additive-only
-        ``Original Media/Merged/`` (copy → sha-verify → delete source; the
-        captured subtrees beside it stay untouchable) and record it as the
-        bracket's FINAL result — a ``provenance='stack_output'`` item
-        placed on the bracket's day so it sits beside its siblings, plus
-        the ``stack_bracket``/``stack_member`` rows and an explicit
+        """Adopt a merged stack master: move the source file from a scratch
+        path (the ``Picked Media/`` root for the spec/57 external round
+        trip, OR a working scratch file for the spec/109 in-app Mertens
+        merge) into additive-only ``Original Media/Merged/`` (copy →
+        sha-verify → delete source; the captured subtrees beside it stay
+        untouchable) and record it as the bracket's FINAL result — a
+        ``provenance='stack_output'`` item placed on the bracket's day so
+        it sits beside its siblings, plus the
+        ``stack_bracket``/``stack_member`` rows and an explicit
         ``phase_state('pick','picked')`` (merging it WAS the pick). The
         caller re-runs the links rebuild afterwards so the master appears
         at the projection root seamlessly (the locked spec/57 rider).
 
         ``bracket_kind`` is the cache kind (``focus_bracket`` /
         ``exposure_bracket``) or already the stack kind (``focus`` /
-        ``exposure``). Raises on any verification failure — the source
-        file is only removed after the copy proves byte-identical."""
+        ``exposure``). ``producer`` (spec/109 §5) records who fused
+        the master — ``'external'`` (default — third-party stacker) or
+        ``'mira'`` (the in-app Mertens job, exposure brackets only);
+        drives the consolidation badge's ``Mira`` / ``ext`` wordmark.
+
+        Raises on any verification failure — the source file is only
+        removed after the copy proves byte-identical."""
         from core.path_builder import merged_dir
 
         if self.event_root is None:
@@ -2552,6 +2573,13 @@ class EventGateway:
             bracket_kind, bracket_kind)
         if kind not in ("focus", "exposure"):
             raise ValueError(f"unknown bracket kind: {bracket_kind!r}")
+        if producer not in ("mira", "external"):
+            raise ValueError(f"unknown producer: {producer!r}")
+        if producer == "mira" and kind != "exposure":
+            # spec/109 §4: in-app Mertens is exposure-only — focus
+            # brackets stay external-only (no built-in focus stacker).
+            raise ValueError(
+                "producer='mira' is only valid for exposure brackets")
         members = [it for iid in member_item_ids
                    if (it := self.item(iid)) is not None]
         if not members:
@@ -2610,6 +2638,7 @@ class EventGateway:
                 self.store.upsert(m.StackBracket(
                     bracket_id=bracket_key, kind=kind, action="stacked",
                     output_item_id=new_id, day_number=anchor.day_number,
+                    producer=producer,
                 ))
                 for ordinal, it in enumerate(members):
                     self.store.upsert(m.StackMember(

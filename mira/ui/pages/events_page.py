@@ -534,6 +534,35 @@ class EventsPage(QWidget):
         pre_source = [(JOIN_OR, OperandOption(
             name=f"#{dc.tag}", count=0, kind="dc", id=dc.id, tag=dc.tag))]
 
+        # spec/106 — music inventory + empty-state hint for the
+        # cross-event dialog (so the soundtrack picker isn't blank
+        # there). Mirrors the per-event ShareCutsPage._dialog_kwargs
+        # path; both surfaces use the same NewRecipeDialog.
+        from core import audio_library, cut_overlay as _co
+        from mira.ui.i18n import tr as _tr
+        audio_path = getattr(
+            self.gateway.settings.load(), "audio_library_path", "")
+        categories = audio_library.list_moods(audio_path) if audio_path else []
+        if categories:
+            music_hint = None
+        elif audio_path:
+            music_hint = _tr(
+                "No category folders found in {path} — create subfolders "
+                "(e.g. happy, calm) with your music inside.").replace(
+                "{path}", str(audio_path))
+        else:
+            music_hint = _tr(
+                "Set the audio library folder in Settings to enable music.")
+        # spec/114 — the same overlay vocabulary the per-event surface
+        # supplies. Cross-event Cuts honour the same export path
+        # (embedded IPTC + burn-in pixels), so the picker is identical.
+        overlay_field_options = [
+            (_co.FIELD_WHEN, _tr("When")),
+            (_co.FIELD_WHERE, _tr("Where")),
+            (_co.FIELD_HOW1, _tr("Camera")),
+            (_co.FIELD_HOW2, _tr("Exposure")),
+        ]
+
         ctx = NewRecipeContext(
             event_name="",
             name=dc.tag,
@@ -543,6 +572,9 @@ class EventsPage(QWidget):
             available_cameras=cameras,
             available_lenses=lenses,
             selected_source=pre_source,
+            music_categories=list(categories),
+            music_hint=music_hint,
+            overlay_field_options=overlay_field_options,
         )
 
         # spec/94 Phase 1b — wire RecipeStore through the Gateway

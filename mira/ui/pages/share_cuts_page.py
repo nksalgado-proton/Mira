@@ -1264,6 +1264,20 @@ class ShareCutsPage(QWidget):
         else:
             music_hint = tr(
                 "Set the audio library folder in Settings to enable music.")
+        # spec/114 — the overlay multi-select vocabulary. The dialog
+        # renders one chip per (key, label) pair; the key matches
+        # :data:`core.cut_overlay.OVERLAY_FIELDS` so the export pipeline
+        # (embedded IPTC + burn-in pixels) reads them verbatim. Labels
+        # ride ``tr()`` for localisation. Same list for per-event and
+        # cross-event Cuts — overlays are a per-show choice, not a
+        # per-event one.
+        from core import cut_overlay as _co
+        overlay_field_options = [
+            (_co.FIELD_WHEN, tr("When")),
+            (_co.FIELD_WHERE, tr("Where")),
+            (_co.FIELD_HOW1, tr("Camera")),
+            (_co.FIELD_HOW2, tr("Exposure")),
+        ]
         return dict(
             existing_cuts=cut_counts,
             existing_dcs=dc_rows,
@@ -1271,6 +1285,7 @@ class ShareCutsPage(QWidget):
             style_options=eg.cut_style_options(),
             music_categories=categories,
             music_hint=music_hint,
+            overlay_field_options=overlay_field_options,
             pool_probe=lambda expr: len(eg.resolve_dc(expr)),
             totals_probe=lambda expr, styles, tf: eg.dc_show_totals(
                 expr, filters={"styles": list(styles), "media_type": tf}),
@@ -1316,6 +1331,11 @@ class ShareCutsPage(QWidget):
             # the dialog needs to populate the soundtrack combo.
             music_categories=list(kwargs.get("music_categories") or []),
             music_hint=kwargs.get("music_hint") or None,
+            # spec/114 — overlay vocabulary the dialog renders as the
+            # field multi-select. Empty list (host hadn't wired it)
+            # hides the control entirely.
+            overlay_field_options=list(
+                kwargs.get("overlay_field_options") or []),
         )
         # Default selection — start the Source from #exported so the
         # user composes from there (matches the legacy New Cut default).
@@ -1428,6 +1448,16 @@ class ShareCutsPage(QWidget):
         music_category = getattr(prefill, "music_category", None)
         if music_category:
             ctx.music_category = str(music_category)
+        # spec/114 — pre-select the Cut's overlay mode + fields so the
+        # Edit dialog opens on the existing choice. The prefill carries
+        # the saved values verbatim; unknown modes / fields drop in
+        # the dialog's own ``normalise``-style reader.
+        overlay_mode = getattr(prefill, "overlay_mode", None)
+        if overlay_mode in ("embedded", "burn_in"):
+            ctx.overlay_mode = overlay_mode
+        overlay_fields = getattr(prefill, "overlay_fields", None)
+        if overlay_fields:
+            ctx.overlay_fields = list(overlay_fields)
 
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or
@@ -1806,6 +1836,12 @@ class ShareCutsPage(QWidget):
             photo_s=cut.photo_s,
             music_category=cut.music_category,
             card_style=eg.cut_card_style(cut),
+            # spec/114 — overlay mode + fields ride the Edit prefill so
+            # the dialog opens on the Cut's existing choice. The
+            # gateway joins the fields out of ``overlay_fields_json``;
+            # the SimpleNamespace forwards them as a list / Optional.
+            overlay_mode=cut.overlay_mode,
+            overlay_fields=eg.cut_overlay_fields(cut),
         )
         kwargs = self._dialog_kwargs()
         kwargs["existing_cuts"] = [

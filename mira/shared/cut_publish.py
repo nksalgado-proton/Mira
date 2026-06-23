@@ -342,8 +342,13 @@ def publish_cross_event_cut(
     root = publish_root(Path(library_root_path), override)
     target = root / CROSS_EVENT_SCOPE_DIRNAME / cut.tag
     _prepare_publish_target(target)
+    # spec/112 — pass the audio library root so the published
+    # cross-event Cut carries the same ``audio/`` playlist a per-event
+    # publish does.
+    audio_root = getattr(settings, "audio_library_path", "") or ""
     summary = cross_event_cut_export.export_cross_event_cut(
         gateway, "", cut_id, target=target,
+        audio_root=audio_root or None,
     )
     manifest = _build_manifest(
         kind="cross_event_cut", cut=cut, target=target,

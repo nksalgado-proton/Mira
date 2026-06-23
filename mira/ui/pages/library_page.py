@@ -569,11 +569,17 @@ class LibraryPage(QWidget):
             copy_mode=dlg.copy_mode(),
         )
         try:
+            audio_root = ""
+            try:
+                audio_root = self._gateway.settings.load().audio_library_path or ""
+            except Exception:                                  # noqa: BLE001
+                audio_root = ""
             summary = export_cross_event_cut(
                 self._gateway, "", cut_id,
                 target=choices.target,
                 include_originals=choices.include_originals,
                 copy_mode=choices.copy_mode,
+                audio_root=audio_root or None,
             )
         except CrossEventExportError as exc:
             QMessageBox.warning(

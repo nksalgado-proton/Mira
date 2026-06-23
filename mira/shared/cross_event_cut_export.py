@@ -35,7 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from mira.shared.cut_export import _dedup_filename, _place
+from core import audio_library
+from mira.shared.cut_export import (
+    _dedup_filename, _place, write_audio_playlist,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +89,61 @@ def _open_event_root(gateway, event_id: str) -> Optional[Path]:
     if entry is None:
         return None
     return gateway.index.resolve_root(entry, gateway.photos_base_path())
+
+
+def _kind_index_for_source_event(
+    gateway, source_event_id: str,
+) -> dict:
+    """spec/112 — build a ``{relpath -> (kind, duration_ms)}`` map for
+    one source event so the cross-event audio block can compute the
+    show's projected duration without re-opening the event per member.
+
+    Resolves each member's relpath (an ``export_relpath`` for
+    ``kind='export'`` or an ``origin_relpath`` for ``kind='grab'``) to
+    the source item's ``kind`` + ``duration_ms``. Returns ``{}`` when
+    the source event can't be opened (relocated, deleted) — those
+    members default to photo / 0 ms downstream, identical to how
+    ``SessionFile`` degrades on a missing lineage join (mira.shared.
+    cut_session.files_from_lineage)."""
+    try:
+        eg = gateway.open_event(source_event_id)
+    except Exception:                                              # noqa: BLE001
+        log.exception(
+            "cross-event kind index: cannot open source event %s",
+            source_event_id)
+        return {}
+    try:
+        try:
+            by_item = {it.id: it for it in eg.items()}
+            origin_index = {
+                (it.origin_relpath or ""): it
+                for it in by_item.values() if it.origin_relpath
+            }
+            index: dict = {}
+            for ln in eg.exported_files():
+                src = by_item.get(getattr(ln, "source_item_id", None))
+                if src is None:
+                    continue
+                key = str(ln.export_relpath).replace("\\", "/")
+                index[key] = (src.kind, int(src.duration_ms or 0))
+            # Grab-kind members land on the source item's
+            # ``origin_relpath`` — register those directly so a Cut
+            # that mixes export and grab members from the same event
+            # resolves both in one pass.
+            for relpath, it in origin_index.items():
+                key = relpath.replace("\\", "/")
+                index.setdefault(key, (it.kind, int(it.duration_ms or 0)))
+            return index
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "cross-event kind index build failed for %s",
+                source_event_id)
+            return {}
+    finally:
+        try:
+            eg.close()
+        except Exception:                                          # noqa: BLE001
+            pass
 
 
 def _origin_index_for_source_event(
@@ -142,6 +200,9 @@ def export_cross_event_cut(
     target: Path,
     include_originals: bool = False,
     copy_mode: bool = False,
+    audio_root: Optional[str] = None,
+    audio_tracks: Optional[list] = None,
+    rng=None,
 ) -> dict:
     """Materialise a cross-event Cut at ``target`` (a writable directory).
 
@@ -168,6 +229,14 @@ def export_cross_event_cut(
     cross-volume copy fallback. Grab-kind members ALWAYS copy (charter
     §3 — Original Media is byte-pristine; a link couples the output
     to those bytes' lifecycle), regardless of ``copy_mode``.
+
+    spec/112 — ``audio_root`` (or pre-scanned ``audio_tracks``) drives
+    the soundtrack playlist, written into ``<target>/audio/`` via the
+    same :func:`mira.shared.cut_export.write_audio_playlist` helper the
+    per-event exporter uses, so per-event and cross-event Cuts emit
+    identical soundtrack layouts. The Cut's ``music_category`` gates
+    the block; ``None`` leaves ``audio/`` absent (parity with the
+    per-event behaviour for category-less Cuts).
 
     Raises :class:`CrossEventExportError` only when the export can't
     run at all (cut gone from mira.db, target unwritable). Per-member
@@ -213,6 +282,11 @@ def export_cross_event_cut(
     originals_linked = 0
     originals_copied = 0
     missing_originals: list = []
+    # spec/112 — running totals for the soundtrack duration math.
+    # ``video_ms_total`` carries true clip lengths so a Cut packed with
+    # videos gets a longer playlist than a same-count photo Cut.
+    audio_photo_count = 0
+    audio_video_ms = 0
     # spec/105 §3 — build a per-source-event lineage→origin index ONCE
     # so the per-member loop is O(1). Done only when originals are
     # requested and there's at least one export-kind member from each
@@ -222,6 +296,15 @@ def export_cross_event_cut(
         for eid in {m.event_id for m in resolved if m.kind == "export"}:
             origin_index[eid] = _origin_index_for_source_event(
                 gateway, eid)
+    # spec/112 — per-source-event kind/duration index for the soundtrack
+    # duration math. Only built when the Cut has a music_category (no
+    # category → no audio block → no need to open source events for
+    # kind/duration). The dict for an unopenable source event is empty;
+    # those members count as photos (the SessionFile degradation rule).
+    kind_index: dict = {}
+    if getattr(cut, "music_category", None):
+        for eid in {m.event_id for m in resolved}:
+            kind_index[eid] = _kind_index_for_source_event(gateway, eid)
     for m in resolved:
         src = (m.source_root / m.source_relpath)
         if not src.is_file():
@@ -253,6 +336,20 @@ def export_cross_event_cut(
         except OSError as exc:
             missing.append((m.member_id, f"link/copy failed: {exc}"))
             continue
+
+        # spec/112 — accumulate kind/duration for the playlist length.
+        # Members whose source event is missing default to photo / 0 ms
+        # (the same degradation rule as the per-event SessionFile
+        # build). The lookup uses the same relpath the member was
+        # resolved against.
+        if kind_index:
+            member_key = str(m.source_relpath).replace("\\", "/")
+            kind_kind, duration_ms = kind_index.get(
+                m.event_id, {}).get(member_key, ("photo", 0))
+            if kind_kind == "video":
+                audio_video_ms += duration_ms
+            else:
+                audio_photo_count += 1
 
         # spec/105 §3 — Original Media/ subdir, resolved against the
         # member's OWN source-event root (cross-event members span
@@ -287,6 +384,23 @@ def export_cross_event_cut(
                     origin_src, origin_dst, exc)
                 missing_originals.append((m.member_id, origin_rel))
 
+    # spec/112 — soundtrack via the shared helper so per-event and
+    # cross-event Cuts emit identical audio/ playlists. Cross-event
+    # Cuts have no separators today (the cross-event flow doesn't
+    # render them), so ``separator_count=0``.
+    audio_files, audio_short = write_audio_playlist(
+        dest=target,
+        music_category=getattr(cut, "music_category", None),
+        photo_count=audio_photo_count,
+        separator_count=0,
+        video_ms_total=audio_video_ms,
+        photo_s=getattr(cut, "photo_s", 6.0),
+        audio_root=audio_root,
+        audio_tracks=audio_tracks,
+        copy_mode=copy_mode,
+        rng=rng,
+    )
+
     # Stamp the cut row's last_exported_at via the library gateway.
     try:
         lg.stamp_cross_event_cut_exported(cut_id)
@@ -304,6 +418,11 @@ def export_cross_event_cut(
         "originals_linked": originals_linked,
         "originals_copied": originals_copied,
         "missing_originals": missing_originals,
+        # spec/112 — audio playlist counters, matching the per-event
+        # ExportResult.audio_files / audio_short fields so the UI
+        # summary path is uniform.
+        "audio_files": audio_files,
+        "audio_short": audio_short,
     }
 
 

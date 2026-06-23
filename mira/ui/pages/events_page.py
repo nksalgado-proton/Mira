@@ -442,9 +442,15 @@ class EventsPage(QWidget):
         if not target:
             return
         try:
+            audio_root = ""
+            try:
+                audio_root = self.gateway.settings.load().audio_library_path or ""
+            except Exception:                                  # noqa: BLE001
+                audio_root = ""
             summary = export_cross_event_cut(
                 self.gateway, row.anchor_event_id, row.cut_id,
                 target=target,
+                audio_root=audio_root or None,
             )
         except CrossEventExportError as exc:
             QMessageBox.warning(

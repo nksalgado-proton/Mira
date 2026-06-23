@@ -265,6 +265,71 @@ def _default_original_resolver(gateway) -> OriginalResolver:
     return resolve
 
 
+def write_audio_playlist(
+    *,
+    dest: Path,
+    music_category: Optional[str],
+    photo_count: int,
+    separator_count: int,
+    video_ms_total: int,
+    photo_s: float,
+    audio_root: Optional[str],
+    audio_tracks: Optional[Sequence[audio_library.AudioTrack]] = None,
+    copy_mode: bool = False,
+    rng=None,
+) -> tuple[int, bool]:
+    """spec/112 — build + place one Cut's soundtrack into ``dest/audio/``.
+
+    Shared between :func:`export_cut` (per-event) and
+    :func:`mira.shared.cross_event_cut_export.export_cross_event_cut`
+    (cross-event) so the per-event and cross-event paths build
+    soundtracks identically (spec/112: the cross-event exporter had no
+    audio block at all — verified by spec/112 §1 — so the fix is to
+    share this one).
+
+    * No ``music_category`` → no audio dir; returns ``(0, False)``.
+    * No matching tracks → returns ``(0, True)`` when the show has
+      length (the empty playlist is "short" of the show), ``(0, False)``
+      for a zero-length show.
+    * Otherwise → write the playlist via :func:`_place`, mirroring the
+      ``copy_mode`` switch (spec/105 §5).
+
+    Returns ``(audio_files, audio_short)`` so the caller can stamp its
+    own result counters."""
+    if not music_category:
+        return (0, False)
+    show_s = cut_budget.ShowTotals(
+        photo_count=photo_count,
+        separator_count=separator_count,
+        video_ms_total=video_ms_total,
+    ).seconds(photo_s)
+    if audio_tracks is not None:
+        tracks = list(audio_tracks)
+    elif audio_root:
+        tracks = [
+            t for t in audio_library.scan_library(Path(audio_root))
+            if t.kind is audio_library.AudioKind.MUSIC
+            and t.mood == music_category
+        ]
+    else:
+        tracks = []
+    playlist = audio_library.build_playlist(tracks, show_s, rng=rng)
+    if not playlist:
+        return (0, show_s > 0)
+    audio_dir = dest / "audio"
+    audio_dir.mkdir(exist_ok=True)
+    audio_files = 0
+    for i, t in enumerate(playlist, start=1):
+        target_path = audio_dir / f"{i:02d}_{t.path.name}"
+        try:
+            _place(t.path, target_path, force_copy=copy_mode)
+            audio_files += 1
+        except OSError:
+            log.exception("audio link failed for %s", t.path)
+    covered = sum(t.duration_seconds for t in playlist)
+    return (audio_files, covered < show_s)
+
+
 def _exiftool_iptc_writer(path: Path, tags: Dict[str, str]) -> bool:
     """The default embedded-mode IPTC writer: stamp the *where* tags into a
     file IN PLACE via the bundled ExifTool (``-overwrite_original``, atomic).
@@ -444,32 +509,20 @@ def export_cut(
                     "original place failed for %s", origin_rel)
                 result.missing_originals.append(origin_rel)
 
-    if cut.music_category:
-        show_s = cut_budget.ShowTotals(
-            photo_count=totals_photos,
-            separator_count=totals_seps,
-            video_ms_total=totals_video_ms,
-        ).seconds(cut.photo_s)
-        tracks = list(audio_tracks) if audio_tracks is not None else [
-            t for t in audio_library.scan_library(Path(audio_root))
-            if t.kind is audio_library.AudioKind.MUSIC
-            and t.mood == cut.music_category
-        ] if audio_root else []
-        playlist = audio_library.build_playlist(tracks, show_s, rng=rng)
-        if playlist:
-            audio_dir = dest / "audio"
-            audio_dir.mkdir(exist_ok=True)
-            for i, t in enumerate(playlist, start=1):
-                target_path = audio_dir / f"{i:02d}_{t.path.name}"
-                try:
-                    _place(t.path, target_path, force_copy=copy_mode)
-                    result.audio_files += 1
-                except OSError:
-                    log.exception("audio link failed for %s", t.path)
-            covered = sum(t.duration_seconds for t in playlist)
-            result.audio_short = covered < show_s
-        else:
-            result.audio_short = show_s > 0
+    # spec/112 — soundtrack via the shared helper so the per-event and
+    # cross-event exporters build identical playlists.
+    result.audio_files, result.audio_short = write_audio_playlist(
+        dest=dest,
+        music_category=cut.music_category,
+        photo_count=totals_photos,
+        separator_count=totals_seps,
+        video_ms_total=totals_video_ms,
+        photo_s=cut.photo_s,
+        audio_root=audio_root,
+        audio_tracks=audio_tracks,
+        copy_mode=copy_mode,
+        rng=rng,
+    )
 
     gateway.mark_cut_exported(cut.id)
     log.info(

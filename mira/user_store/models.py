@@ -367,6 +367,8 @@ class Cut:
     overlay_fields_json: str = '[]'
     overlay_mode: Optional[str] = None
     last_exported_at: Optional[str] = None
+    # spec/111 — slideshow canvas aspect (mirrors event.db Cut.aspect).
+    aspect: str = "16:9"
     extras_json: str = '{}'
 
 

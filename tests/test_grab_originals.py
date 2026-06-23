@@ -147,6 +147,7 @@ CREATE TABLE cut_member (
     conn.execute("DROP TABLE face")
     conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
+    conn.execute("ALTER TABLE cut DROP COLUMN aspect")
     conn.execute("UPDATE schema_info SET schema_version = 8 WHERE id = 1")
     conn.execute(
         "INSERT INTO cut (id, tag, created_at, updated_at) "

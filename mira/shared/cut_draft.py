@@ -80,6 +80,9 @@ class CutDraft:
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
     card_style: str = "black"
+    #: spec/111 — slideshow canvas aspect ('16:9' / '4:3' / '3:2' /
+    #: '1:1'). Sibling to ``photo_s``; both belong to the show.
+    aspect: str = "16:9"
     #: spec/90 §1.5 — the rule list (ordered, first-match-wins). Empty for
     #: every legacy ``keep-all`` / ``weed-out`` / ``pick-in`` draft. Carries
     #: through to the picker when ``pin_mode == 'rule-based'``.
@@ -138,6 +141,8 @@ class CrossEventCutDraft:
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
     card_style: str = "black"
+    # spec/111 — slideshow canvas aspect (sibling to ``photo_s``).
+    aspect: str = "16:9"
 
     def __post_init__(self):
         # ``dict`` default = None pattern: frozen dataclasses can't mutate

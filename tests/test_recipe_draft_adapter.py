@@ -304,7 +304,9 @@ def test_rule_based_draft_serialises_rules_verbatim():
 
 def test_presentation_block_serialises_optional_fields():
     """Optional fields drop out of the presentation block when unset, so
-    the composition stays compact for the simple cases."""
+    the composition stays compact for the simple cases. spec/111 added
+    the always-emitted ``aspect`` field (round-trip exact regardless of
+    value)."""
     draft = _draft_minimal()
     comp = cut_draft_to_recipe_composition(draft)
     presentation = comp["presentation"]
@@ -312,6 +314,7 @@ def test_presentation_block_serialises_optional_fields():
         "photo_s": 6.0,
         "card_style": "black",
         "separators": True,
+        "aspect": "16:9",
     }
 
     rich = _draft_minimal(

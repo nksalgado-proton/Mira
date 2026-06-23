@@ -2727,6 +2727,7 @@ class EventGateway:
         overlay_fields: Sequence[str] = (),
         overlay_mode: Optional[str] = None,
         card_style: str = "black",
+        aspect: str = "16:9",
     ) -> m.Cut:
         """Create a frozen Cut from a user-typed name (spec/81 §3). The dialog
         previews the transform live, but the gateway is the enforcement point:
@@ -2767,6 +2768,7 @@ class EventGateway:
         # in event.db or in the file library.
         if source_dc_id and source_dc_kind is None:
             source_dc_kind = self._infer_source_dc_kind(source_dc_id)
+        from core.cut_aspect import normalise as _normalise_aspect
         cut = m.Cut(
             id=self._new_id(), tag=slug, created_at=now, updated_at=now,
             source_dc_id=source_dc_id,
@@ -2778,6 +2780,10 @@ class EventGateway:
             separators=separators,
             overlay_fields_json=json.dumps(list(overlay_fields)),
             overlay_mode=overlay_mode,
+            # spec/111 — coerce through the canonical list so a UI bug
+            # or stale call site can't park a bogus value on disk; the
+            # DDL CHECK is belt-and-braces for fresh installs.
+            aspect=_normalise_aspect(aspect),
             extras_json=json.dumps({"card_style": card_style}),
         )
         with self.store.transaction():
@@ -2843,10 +2849,15 @@ class EventGateway:
                    "source_dc_kind",
                    "expr_snapshot_json", "default_state", "music_category",
                    "separators", "overlay_fields_json", "overlay_mode",
-                   "extras_json"}
+                   "extras_json",
+                   # spec/111 — slideshow canvas aspect.
+                   "aspect"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown cut fields: {sorted(unknown)}")
+        if "aspect" in fields:
+            from core.cut_aspect import normalise as _normalise_aspect
+            fields["aspect"] = _normalise_aspect(fields["aspect"])
         if not fields:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)

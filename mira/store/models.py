@@ -263,6 +263,10 @@ class Cut:
     overlay_fields_json: str = '[]'
     overlay_mode: Optional[str] = None
     last_exported_at: Optional[str] = None
+    # spec/111 — slideshow canvas aspect ('16:9' | '4:3' | '3:2' | '1:1').
+    # Drives separator / opener card dimensions on export AND the PTE
+    # [Main] AspectRatio override (spec/107).
+    aspect: str = "16:9"
     extras_json: str = '{}'
 
 

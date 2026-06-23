@@ -1255,6 +1255,7 @@ class LibraryGateway:
         overlay_fields: Optional[Sequence[str]] = None,
         overlay_mode: Optional[str] = None,
         card_style: str = "black",
+        aspect: str = "16:9",
     ) -> um.Cut:
         """Create a cross-event Cut from a user-typed name (slugified
         + validated against the cross-event Cut + DC namespaces).
@@ -1278,6 +1279,7 @@ class LibraryGateway:
         expr_list = [list(t) for t in (expr_snapshot or ())]
         extras = json.dumps(
             {"card_style": card_style} if card_style else {})
+        from core.cut_aspect import normalise as _normalise_aspect
         row = um.Cut(
             id=cut_id, tag=slug,
             source_dc_id=source_dc_id,
@@ -1289,6 +1291,10 @@ class LibraryGateway:
             separators=bool(separators),
             overlay_fields_json=json.dumps(list(overlay_fields or ())),
             overlay_mode=overlay_mode,
+            # spec/111 — canvas aspect, coerced through the canonical
+            # list so the DDL CHECK + migrated rows can both rely on
+            # the value being one of the four enum members.
+            aspect=_normalise_aspect(aspect),
             created_at=now, updated_at=now,
             extras_json=extras,
         )
@@ -1332,6 +1338,7 @@ class LibraryGateway:
         overlay_fields_json: Any = _UNSET,
         overlay_mode: Any = _UNSET,
         card_style: Any = _UNSET,
+        aspect: Any = _UNSET,
     ) -> None:
         """Edit-in-place — passes update only the fields the caller
         names. Pass ``None`` to NULL a column; omit the kwarg to leave
@@ -1361,6 +1368,9 @@ class LibraryGateway:
         # handle it after the loop so the sentinel check stays clean.
         if separators is not _UNSET:
             sets["separators"] = 1 if bool(separators) else 0
+        if aspect is not _UNSET:
+            from core.cut_aspect import normalise as _normalise_aspect
+            sets["aspect"] = _normalise_aspect(aspect)
         if card_style is not _UNSET:
             extras = {}
             try:

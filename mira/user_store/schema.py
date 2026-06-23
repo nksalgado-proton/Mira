@@ -34,7 +34,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -403,6 +403,11 @@ CREATE TABLE cut (
   overlay_fields_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(overlay_fields_json)),
   overlay_mode        TEXT CHECK (overlay_mode IN ('embedded','burn_in') OR overlay_mode IS NULL),
   last_exported_at    TEXT,
+  -- spec/111 — slideshow canvas aspect (mirrors event.db cut.aspect).
+  -- Drives separator / opener card dimensions on export AND the PTE
+  -- [Main] AspectRatio override (spec/107). Default '16:9'.
+  aspect              TEXT NOT NULL DEFAULT '16:9'
+                       CHECK (aspect IN ('16:9','4:3','3:2','1:1')),
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   extras_json         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
@@ -834,6 +839,21 @@ CREATE TABLE cut_member (
         "CREATE INDEX ix_cut_member_kind  ON cut_member(kind)")
 
 
+def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """spec/111 — cross-event Cuts gain the same ``aspect`` column as
+    event.db's per-event Cuts (the slideshow canvas shape belongs to
+    the Cut, not the event).
+
+    Adds ``cut.aspect`` with default ``'16:9'`` so every pre-spec/111
+    row renders separator / opener cards at the same aspect they did
+    under the legacy ``settings.separator_aspect`` knob. SQLite ALTER
+    cannot add a CHECK constraint; validation lives at the gateway
+    seam for migrated rows. Fresh installs get the full CHECK in the
+    DDL above."""
+    conn.execute(
+        "ALTER TABLE cut ADD COLUMN aspect TEXT NOT NULL DEFAULT '16:9'")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -842,6 +862,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v5_to_v6,
     _migrate_v6_to_v7,
     _migrate_v7_to_v8,
+    _migrate_v8_to_v9,
 ]
 
 

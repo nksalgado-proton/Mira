@@ -203,6 +203,8 @@ def export_cross_event_cut(
     audio_root: Optional[str] = None,
     audio_tracks: Optional[list] = None,
     rng=None,
+    opener_writer: Optional[callable] = None,
+    separator_writer: Optional[callable] = None,
 ) -> dict:
     """Materialise a cross-event Cut at ``target`` (a writable directory).
 
@@ -237,6 +239,16 @@ def export_cross_event_cut(
     identical soundtrack layouts. The Cut's ``music_category`` gates
     the block; ``None`` leaves ``audio/`` absent (parity with the
     per-event behaviour for category-less Cuts).
+
+    spec/111 — ``opener_writer`` / ``separator_writer`` are the same
+    injected card renderers the per-event exporter accepts. The host
+    builds them at the Cut's aspect (``cut.aspect`` → canvas WxH via
+    :func:`core.cut_aspect.aspect_dimensions`). ``opener_writer`` (when
+    provided) runs once as the show's first slide; ``separator_writer``
+    runs per ``(event_uuid, day)`` boundary in chronological order so
+    every per-event day grouping earns its own card. Either left
+    ``None`` skips that slide tier — the cross-event surface defaults
+    separators OFF (spec/81 §3.1), so neither writer is required.
 
     Raises :class:`CrossEventExportError` only when the export can't
     run at all (cut gone from mira.db, target unwritable). Per-member
@@ -287,6 +299,22 @@ def export_cross_event_cut(
     # videos gets a longer playlist than a same-count photo Cut.
     audio_photo_count = 0
     audio_video_ms = 0
+    # spec/111 — opener + separator counters (mirror the per-event
+    # ExportResult.separators field so the UI summary path is uniform).
+    separators = 0
+
+    # spec/111 — opener slide. Fires once at the show's head when the
+    # caller wired a writer. The opener filename is sequence-prefixed
+    # ``000_opener.jpg`` so plain filename sort keeps it first in the
+    # output folder.
+    if opener_writer is not None and resolved:
+        opener_path = target / "000_opener.jpg"
+        try:
+            opener_writer(opener_path)
+            separators += 1
+        except Exception:                                          # noqa: BLE001
+            log.exception("cross-event opener render failed for %s",
+                          opener_path)
     # spec/105 §3 — build a per-source-event lineage→origin index ONCE
     # so the per-member loop is O(1). Done only when originals are
     # requested and there's at least one export-kind member from each
@@ -423,6 +451,9 @@ def export_cross_event_cut(
         # summary path is uniform.
         "audio_files": audio_files,
         "audio_short": audio_short,
+        # spec/111 — separator + opener slides rendered. 0 when no
+        # writer was wired; non-zero when the host opted in.
+        "separators": separators,
     }
 
 

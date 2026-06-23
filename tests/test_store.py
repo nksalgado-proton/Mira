@@ -517,6 +517,9 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     # Strip the v14 stack_bracket.producer column so the v13→v14 ADD
     # COLUMN migration doesn't collide on the way back up (spec/109).
     conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
+    # NB: cut table was dropped above, so the spec/111 v14→v15 cut.aspect
+    # add doesn't collide here — v2→v3 will re-create the table sans
+    # aspect; v14→v15 will then add the column on top of it.
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
 
     schema.migrate(conn)
@@ -546,7 +549,11 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     post-v6 ADD COLUMN / CREATE TABLE migrations on the way back up
     don't collide (spec/89 v9→v10 added ``provenance``; v10→v11 added
     ``intent_state``; spec/90 v11→v12 created ``face``; spec/94 v12→v13
-    created ``recipe``; spec/109 v13→v14 added stack_bracket.producer)."""
+    created ``recipe``; spec/109 v13→v14 added stack_bracket.producer).
+    NB: the spec/111 v14→v15 ``cut.aspect`` column does NOT need
+    stripping here — callers run :func:`_rebuild_v6_cut_tables` first,
+    which recreates ``cut`` at the v6 shape (no aspect column); v14→v15
+    will then add it on the way back up."""
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("DROP TABLE face")

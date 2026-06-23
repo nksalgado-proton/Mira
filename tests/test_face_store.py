@@ -201,6 +201,8 @@ def test_migrate_v11_to_v12_adds_face_table(tmp_path):
     # spec/109 added v13→v14 stack_bracket.producer; strip the column so
     # the up-migration's ALTER ADD doesn't collide on the way back up.
     conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
+    # spec/111 added v14→v15 cut.aspect; strip likewise.
+    conn.execute("ALTER TABLE cut DROP COLUMN aspect")
     conn.execute("UPDATE schema_info SET schema_version = 11 WHERE id = 1")
 
     schema.migrate(conn)

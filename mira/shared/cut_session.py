@@ -139,6 +139,8 @@ class CutSession:
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
     card_style: str = "black"               # 'black' | 'single' | 'multi'
+    # spec/111 — slideshow canvas aspect (sibling to ``photo_s``).
+    aspect: str = "16:9"
     cut_id: Optional[str] = None
     #: spec/94 Phase 3 — Rules/Otherwise seed verdicts (export_relpath →
     #: picked) computed by the dialog's :class:`recipe_resolver` call. When
@@ -271,6 +273,7 @@ class CutSession:
                 overlay_fields=list(self.overlay_fields),
                 overlay_mode=self.overlay_mode,
                 card_style=self.card_style,
+                aspect=self.aspect,
             )
         else:
             current = gateway.cut(self.cut_id)
@@ -294,6 +297,7 @@ class CutSession:
                 overlay_fields_json=json.dumps(list(self.overlay_fields)),
                 overlay_mode=self.overlay_mode,
                 card_style=self.card_style,
+                aspect=self.aspect,
             )
             cut = gateway.cut(self.cut_id)
         gateway.set_cut_members(cut.id, picked)
@@ -335,6 +339,7 @@ class CutSession:
             overlay_fields=tuple(getattr(draft, "overlay_fields", ()) or ()),
             overlay_mode=getattr(draft, "overlay_mode", None),
             card_style=getattr(draft, "card_style", "black"),
+            aspect=getattr(draft, "aspect", "16:9"),
             seed=seed,
         )
 
@@ -497,6 +502,7 @@ class CutSession:
             overlay_fields=tuple(gateway.cut_overlay_fields(cut)),
             overlay_mode=cut.overlay_mode,
             card_style=gateway.cut_card_style(cut),
+            aspect=getattr(cut, "aspect", "16:9"),
             cut_id=cut.id,
         )
         session._picked = {

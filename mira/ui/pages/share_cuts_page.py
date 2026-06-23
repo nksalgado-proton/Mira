@@ -1887,10 +1887,15 @@ class ShareCutsPage(QWidget):
         cut = self._eg.cut(cut_id) if self._eg else None
         if cut is None:
             return
+        # spec/111 — the slideshow canvas aspect lives on the Cut. The
+        # detail page renders separator / opener cards at the Cut's
+        # aspect so the rehearsal and the export match (no more 16:9
+        # cards in a 4:3 show).
+        from core.cut_aspect import normalise as _normalise_aspect
         self.detail_page.show_cut(
             self._eg, cut,
             separators_on=self._separators_on(),
-            aspect=getattr(self._settings(), "separator_aspect", "16:9"))
+            aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")))
         self._stack.setCurrentWidget(self.detail_page)
 
     def _on_detail_back(self) -> None:
@@ -1957,7 +1962,12 @@ class ShareCutsPage(QWidget):
                 totals = _replace(totals, separator_count=0)
             music = audio_library.build_playlist(
                 tracks, totals.seconds(cut.photo_s))
-        aspect = getattr(self._settings(), "separator_aspect", "16:9")
+        # spec/111 — the Cut carries the slideshow canvas aspect; the
+        # Play preview matches the export's pixel dimensions so the
+        # rehearsal isn't a different shape from the handoff.
+        from core.cut_aspect import aspect_dimensions, normalise
+        aspect = normalise(getattr(cut, "aspect", "16:9"))
+        _, canvas_h = aspect_dimensions(aspect)
         card_style = eg.cut_card_style(cut)
         opener_image = None
         if self._separators_on():
@@ -1968,7 +1978,7 @@ class ShareCutsPage(QWidget):
             opener_image = render_cut_opener_image(
                 tag_text=cut_names.display_tag(cut.tag),
                 lines=cut_opener_lines(cut, totals, cut.photo_s),
-                aspect=aspect, height=1080,
+                aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=cut.id)
         # Spec/81 §3.1 — live overlays in Play. When the Cut has any
         # overlay field selected, the dialog draws ``when / where / how¹
@@ -2057,11 +2067,18 @@ class ShareCutsPage(QWidget):
 
     def _separator_writer(self, cut):
         """The export's separator renderer — the UI layer owns pixels
-        (QImage), the export module owns files and order."""
+        (QImage), the export module owns files and order.
+
+        spec/111 — the canvas aspect lives on the Cut, not on a
+        per-install setting. Cards render at the Cut's
+        ``(width, height)`` so cards, photos and the show canvas all
+        agree."""
+        from core.cut_aspect import aspect_dimensions, normalise
         from mira.ui.shared.separator_card import render_separator_image
         eg = self._eg
         day_meta = {d.day_number: d for d in eg.trip_days()}
-        aspect = getattr(self._settings(), "separator_aspect", "16:9")
+        aspect = normalise(getattr(cut, "aspect", "16:9"))
+        _, canvas_h = aspect_dimensions(aspect)
         card_style = eg.cut_card_style(cut)
 
         def write(target: Path, day) -> None:
@@ -2071,7 +2088,7 @@ class ShareCutsPage(QWidget):
                 date=getattr(meta, "date", None),
                 location=getattr(meta, "location", None),
                 description=getattr(meta, "description", "") or "",
-                aspect=aspect, height=1080,
+                aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=f"{cut.id}:{day}")
             if not img.save(str(target), "JPG", 92):
                 raise OSError(f"could not write {target}")
@@ -2139,10 +2156,16 @@ class ShareCutsPage(QWidget):
         seps = self._separators_on()
         opener_writer = None
         if seps:
+            from core.cut_aspect import aspect_dimensions, normalise
             from mira.ui.shared.separator_card import (
                 cut_opener_lines, render_cut_opener_image,
             )
-            aspect = getattr(self._settings(), "separator_aspect", "16:9")
+            # spec/111 — aspect lives on the Cut. The renderer takes
+            # the aspect string + a canvas height (width is derived);
+            # we pass the canonical pixel height so the card matches
+            # the (width, height) the PTE override (spec/107) writes.
+            aspect = normalise(getattr(cut, "aspect", "16:9"))
+            _, canvas_h = aspect_dimensions(aspect)
             totals = eg.cut_show_totals(cut.id)
             lines = cut_opener_lines(cut, totals, cut.photo_s)
             tag_text = cut_names.display_tag(cut.tag)
@@ -2152,7 +2175,7 @@ class ShareCutsPage(QWidget):
             def opener_writer(target: Path) -> None:  # noqa: F811
                 img = render_cut_opener_image(
                     tag_text=tag_text, lines=lines,
-                    aspect=aspect, height=1080,
+                    aspect=aspect, height=canvas_h,
                     card_style=card_style, seed_key=cut_id_seed)
                 if not img.save(str(target), "JPG", 92):
                     raise OSError(f"could not write {target}")

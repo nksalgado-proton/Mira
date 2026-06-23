@@ -261,6 +261,11 @@ class NewRecipeContext:
     max_minutes: int = 12
     per_photo_seconds: float = 6.0
     has_budget: bool = True
+    # spec/111 — slideshow canvas aspect ("16:9" / "4:3" / "3:2" / "1:1"),
+    # the sibling parameter to ``per_photo_seconds`` (both belong to the
+    # *show*, not the event). Defaults to the most common aspect; the
+    # Adjust prefill drops in the existing Cut's value.
+    aspect: str = "16:9"
 
     # spec/106 — music / soundtrack picker. ``music_categories`` is
     # the mood-folder list the share-cuts page builds via
@@ -1677,6 +1682,11 @@ class NewRecipeDialog(QDialog):
         self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
         self._has_budget: bool = bool(ctx.has_budget)
         self._is_editing: bool = bool(ctx.is_editing)
+        # spec/111 — aspect state. Normalised through the canonical list
+        # so a legacy ctx prefill (e.g. a setting-only value) can't park
+        # a bogus aspect on the dialog.
+        from core.cut_aspect import normalise as _normalise_aspect
+        self._aspect: str = _normalise_aspect(ctx.aspect)
         # spec/106 — music picker. Categories + hint are fed from the
         # ctx; the combo lands in the Runtime row beside the spinners.
         self._music_categories: List[str] = list(ctx.music_categories or [])
@@ -2939,6 +2949,32 @@ class NewRecipeDialog(QDialog):
         pv.addWidget(self._per_photo_spin)
         row.addWidget(pp_box)
 
+        # spec/111 — aspect picker. Sibling to the per-photo duration:
+        # both belong to the *show*, not the event. Drives the
+        # separator / opener card dimensions on export AND the PTE
+        # [Main] AspectRatio override (spec/107).
+        from core.cut_aspect import all_aspects
+        aspect_box = QWidget()
+        av = QVBoxLayout(aspect_box)
+        av.setContentsMargins(0, 0, 0, 0)
+        av.setSpacing(2)
+        av.addWidget(QLabel(tr("Aspect")))
+        self._aspect_combo = QComboBox()
+        self._aspect_combo.setObjectName("RuntimeAspectCombo")
+        self._aspect_combo.setToolTip(tr(
+            "Slideshow canvas aspect — cards, photos and the show all "
+            "render at this shape (e.g. 16:9 for widescreen TVs, 4:3 "
+            "for older displays)."))
+        for ar in all_aspects():
+            self._aspect_combo.addItem(str(ar), userData=str(ar))
+        idx = self._aspect_combo.findData(self._aspect)
+        if idx >= 0:
+            self._aspect_combo.setCurrentIndex(idx)
+        self._aspect_combo.currentIndexChanged.connect(
+            self._on_aspect_changed)
+        av.addWidget(self._aspect_combo)
+        row.addWidget(aspect_box)
+
         # spec/106 — music / soundtrack picker. "No music" sits at the
         # top so a Cut can opt out cleanly; the rest are the mood
         # folders the host scanned from the configured audio library.
@@ -3009,6 +3045,15 @@ class NewRecipeDialog(QDialog):
     def _on_per_photo_changed(self, value: float) -> None:
         self._per_photo_seconds = float(value)
         self._refresh_metrics_from_state()
+
+    def _on_aspect_changed(self, _index: int) -> None:
+        """spec/111 — aspect picker changed. Sibling to the per-photo
+        duration; persists through to the Cut row on save (the dialog's
+        emit path threads ``aspect`` into the presentation block, which
+        ``recipe_to_cut_draft`` reads into the Cut)."""
+        data = self._aspect_combo.currentData()
+        from core.cut_aspect import normalise as _normalise_aspect
+        self._aspect = _normalise_aspect(data)
 
     def _on_music_changed(self, _index: int) -> None:
         """spec/106 — track the picker's current value so
@@ -3669,6 +3714,18 @@ class NewRecipeDialog(QDialog):
                 else:
                     self._music_combo.setCurrentIndex(0)
                 self._music_combo.blockSignals(False)
+            # spec/111 — load the Cut's slideshow canvas aspect into the
+            # picker. Unknown / missing values fall through to the
+            # canonical default via ``normalise``.
+            aspect_value = presentation.get("aspect")
+            from core.cut_aspect import normalise as _normalise_aspect
+            self._aspect = _normalise_aspect(aspect_value)
+            if hasattr(self, "_aspect_combo"):
+                self._aspect_combo.blockSignals(True)
+                idx = self._aspect_combo.findData(self._aspect)
+                if idx >= 0:
+                    self._aspect_combo.setCurrentIndex(idx)
+                self._aspect_combo.blockSignals(False)
 
     def _decode_expr(
         self, expr: Sequence[Sequence[Any]],
@@ -4048,6 +4105,10 @@ class NewRecipeDialog(QDialog):
             "max_s": max_s,
             "photo_s": float(self._per_photo_seconds),
             "music_category": self._music_category,
+            # spec/111 — slideshow canvas aspect; the sibling of
+            # ``photo_s``. ``recipe_to_cut_draft`` threads it onto the
+            # CutDraft so create_cut / update_cut_settings persist it.
+            "aspect": self._aspect,
         }
 
     @staticmethod

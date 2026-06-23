@@ -231,6 +231,11 @@ def recipe_to_cut_draft(recipe: um.Recipe) -> CutDraft:
     separators = (
         bool(separators_raw) if separators_raw is not None else True
     )
+    # spec/111 — slideshow canvas aspect. Normalised through the
+    # canonical list so a legacy / bogus value can't crash the
+    # downstream render path.
+    from core.cut_aspect import normalise as _normalise_aspect
+    aspect = _normalise_aspect(presentation.get("aspect"))
 
     # ``source_dc_id`` is reverse-derivable when the source expression is a
     # single ``+`` over a typed DC ref (the spec/81 §2 "DC only" shape). For
@@ -254,6 +259,7 @@ def recipe_to_cut_draft(recipe: um.Recipe) -> CutDraft:
         overlay_fields=overlay_fields,
         overlay_mode=overlay_mode,
         card_style=card_style,
+        aspect=aspect,
         rules=tuple(rule_list),
         otherwise=otherwise,
     )
@@ -317,6 +323,9 @@ def cut_draft_to_recipe_composition(draft: CutDraft) -> dict:
         "photo_s": draft.photo_s,
         "card_style": draft.card_style,
         "separators": draft.separators,
+        # spec/111 — slideshow canvas aspect; always emitted so the
+        # round-trip is exact regardless of value.
+        "aspect": draft.aspect,
     }
     if draft.target_s is not None:
         presentation["target_s"] = int(draft.target_s)
@@ -481,6 +490,10 @@ def recipe_to_cross_event_cut_draft(recipe: um.Recipe) -> CrossEventCutDraft:
     overlay_mode = presentation.get("overlay_mode")
     if overlay_mode not in ("embedded", "burn_in"):
         overlay_mode = None
+    # spec/111 — cross-event aspect mirrors the per-event reader; canon
+    # via ``normalise`` so a stale composition can't park a bogus value.
+    from core.cut_aspect import normalise as _normalise_aspect_xe
+    aspect = _normalise_aspect_xe(presentation.get("aspect"))
     # spec/81 §3.1 — cross-event default for separators is OFF (no single
     # timeline to orient). Honour an explicit composition override.
     separators_raw = presentation.get("separators")
@@ -505,6 +518,7 @@ def recipe_to_cross_event_cut_draft(recipe: um.Recipe) -> CrossEventCutDraft:
         overlay_fields=overlay_fields,
         overlay_mode=overlay_mode,
         card_style=card_style,
+        aspect=aspect,
     )
 
 
@@ -544,6 +558,9 @@ def cross_event_cut_draft_to_recipe_composition(
         "photo_s": draft.photo_s,
         "card_style": draft.card_style,
         "separators": draft.separators,
+        # spec/111 — slideshow canvas aspect; always emitted so the
+        # round-trip is exact regardless of value.
+        "aspect": draft.aspect,
     }
     if draft.target_s is not None:
         presentation["target_s"] = int(draft.target_s)

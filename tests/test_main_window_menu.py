@@ -232,8 +232,11 @@ def test_collect_menu_per_event_has_edit_event_and_edit_plan_and_tz(main_window)
     assert "Edit Event…" in labels
     assert "Edit plan…" in labels
     assert "Manage days…" in labels
-    assert "Camera clocks…" in labels
-    assert "Adjust TZ…" in labels
+    # spec/127 — the two old menu items ("Camera clocks…" + "Adjust
+    # TZ…") merged into one unified handler / single menu item.
+    assert "Camera Clock Correction…" in labels
+    assert "Camera clocks…" not in labels
+    assert "Adjust TZ…" not in labels
     assert "Re-import from LRC…" in labels
 
 
@@ -511,8 +514,12 @@ def test_export_phase_active_clears_on_days_lists_back(main_window):
 
 def test_closed_event_hides_modification_entries_but_keeps_stats_backup(main_window):
     """Spec F-024: closed events hide modification entries
-    (Edit info / Edit plan / Manage days / Camera clocks / Adjust TZ /
-    Re-import LRC / Delete event). Stats / Back up / Close-toggle stay."""
+    (Edit info / Edit plan / Manage days / Camera Clock Correction /
+    Re-import LRC / Delete event). Stats / Back up / Close-toggle stay.
+
+    spec/127 — "Camera clocks…" + "Adjust TZ…" merged into the unified
+    "Camera Clock Correction…" entry; the closed-event filter still
+    hides it."""
     main_window._current_event_id = "fake-evt-id"
     with patch.object(MainWindow, "_event_is_closed_now", return_value=True):
         main_window._refresh_menu_state()
@@ -524,8 +531,7 @@ def test_closed_event_hides_modification_entries_but_keeps_stats_backup(main_win
     assert "Delete event" not in event_labels
     assert "Edit plan…" not in collect_labels
     assert "Manage days…" not in collect_labels
-    assert "Camera clocks…" not in collect_labels
-    assert "Adjust TZ…" not in collect_labels
+    assert "Camera Clock Correction…" not in collect_labels
     assert "Re-import from LRC…" not in collect_labels
 
     # Survives the filter — Stats / Back up / Close-toggle.

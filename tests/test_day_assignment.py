@@ -42,7 +42,7 @@ def test_tz_calibration_pulls_midnight_frame_to_correct_dia():
     # Camera left on a prior trip's TZ (the Nepal day-shift
     # incident) → a constant offset; representative -3h here.
     cal = CameraCalibration(camera_id="G9",
-                            tz_offset=timedelta(hours=-3))
+                            offset_seconds=-3 * 3600)
     # Camera clock reads 21 Apr 01:30 → corrected 20 Apr 22:30.
     a = assign_one(datetime(2026, 4, 21, 1, 30), cal,
                    by_date, by_number)
@@ -88,7 +88,7 @@ def test_no_timestamp_and_off_plan_are_undated():
 
 def test_assign_days_maps_each_path_and_never_raises():
     cal = CameraCalibration(camera_id="G9",
-                            tz_offset=timedelta(hours=-3))
+                            offset_seconds=-3 * 3600)
     items = [
         (Path("a.rw2"), datetime(2026, 4, 20, 9, 0), cal),
         (Path("b.rw2"), datetime(2026, 4, 21, 1, 30), cal),  # → Dia 9

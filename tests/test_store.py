@@ -63,7 +63,7 @@ def _rich_document() -> m.EventDocument:
             m.TripDay(day_number=2, date="2026-04-02"),
         ],
         cameras=[
-            m.Camera(camera_id="G9M2", configured_tz_minutes=-180, applied_offset_minutes=-540),
+            m.Camera(camera_id="G9M2", configured_tz_seconds=-180 * 60, applied_offset_seconds=-540 * 60),
             m.Camera(camera_id="iPhone", is_phone=True),
         ],
     )
@@ -76,7 +76,7 @@ def _rich_document() -> m.EventDocument:
         materialized_at="2026-05-30T00:00:00+00:00", materialized_phase="ingest",
         camera_id="G9M2", day_number=1,
         capture_time_raw="2026-04-01T08:00:00", capture_time_corrected="2026-04-01T02:00:00",
-        tz_offset_minutes=-360, tz_source="pair_picker",
+        tz_offset_seconds=-360 * 60, tz_source="pair_picker",
         classification="wildlife", classification_source="auto", classification_rules_version="2026.1",
         sharpness_score=0.82, sharpness_metric="laplacian",
     ))
@@ -488,6 +488,9 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     # Strip the v5 column from adjustment so the v4→v5 ADD COLUMN
     # step doesn't collide on the way back up (Nelson 2026-06-13).
     conn.execute("ALTER TABLE adjustment DROP COLUMN look_strength")
+    # spec/115 — strip the v16 user_exposure column so the v15→v16
+    # ADD COLUMN doesn't collide on the way back up.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
     # Reverse the v5→v6 event qualifier swap so v5→v6 finds the v5
     # shape it expects (spec/64). The fresh store ships at the current
     # SCHEMA_VERSION; rolling back to v2 means restoring scope / mood /
@@ -520,6 +523,22 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     # NB: cut table was dropped above, so the spec/111 v14→v15 cut.aspect
     # add doesn't collide here — v2→v3 will re-create the table sans
     # aspect; v14→v15 will then add the column on top of it.
+    # spec/123 v16→v17 — rename the *_seconds columns back to *_minutes
+    # so the migration on the way back up has the v16 shape to work
+    # with (and divide the seeded values back down).
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN applied_offset_seconds "
+        "TO applied_offset_minutes")
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN configured_tz_seconds "
+        "TO configured_tz_minutes")
+    conn.execute(
+        "ALTER TABLE item RENAME COLUMN tz_offset_seconds "
+        "TO tz_offset_minutes")
+    # spec/127 v17→v18 — drop the per-(camera, trip-TZ) correction table
+    # so the migration on the way back up creates it fresh.
+    conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
+    conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
     conn.execute("UPDATE schema_info SET schema_version = 2 WHERE id = 1")
 
     schema.migrate(conn)
@@ -559,6 +578,24 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     conn.execute("DROP TABLE face")
     conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
+    # spec/115 — strip v15→v16 adjustment.user_exposure too so the
+    # ADD COLUMN on the way back up doesn't collide.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
+    # spec/123 v16→v17 — rename the *_seconds columns back to *_minutes
+    # so the rename + ×60 migration has the v16 shape to work with.
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN applied_offset_seconds "
+        "TO applied_offset_minutes")
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN configured_tz_seconds "
+        "TO configured_tz_minutes")
+    conn.execute(
+        "ALTER TABLE item RENAME COLUMN tz_offset_seconds "
+        "TO tz_offset_minutes")
+    # spec/127 v17→v18 — drop camera_tz_correction so the v17→v18
+    # CREATE TABLE on the way back up doesn't collide.
+    conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
+    conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
 
 
 def _rebuild_v6_cut_tables(conn) -> None:
@@ -707,4 +744,76 @@ def test_cut_member_lineage_cascade_dropped_in_v8(tmp_path):
     # Cut delete still cascades (cut_id FK ON DELETE CASCADE survives).
     store.conn.execute("DELETE FROM cut WHERE id = 'cut-1'")
     assert store.all(m.CutMember) == []
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# v16 -> v17 (spec/123 — *_minutes -> *_seconds, ×60 conversion)
+# --------------------------------------------------------------------------- #
+
+
+def test_migrate_v16_to_v17_renames_and_scales_minute_columns(tmp_path):
+    """v16→v17 (spec/123): camera.applied_offset_minutes and
+    configured_tz_minutes, and item.tz_offset_minutes, become *_seconds
+    with values ×60. Lossless on whole-minute values."""
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Rebuild the v16 column shape (the fresh DDL is at v17 with the
+    # renamed columns), then seed values in MINUTES, then migrate.
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN applied_offset_seconds "
+        "TO applied_offset_minutes")
+    conn.execute(
+        "ALTER TABLE camera RENAME COLUMN configured_tz_seconds "
+        "TO configured_tz_minutes")
+    conn.execute(
+        "ALTER TABLE item RENAME COLUMN tz_offset_seconds "
+        "TO tz_offset_minutes")
+    # spec/127 v17→v18 — drop camera_tz_correction so the v17→v18
+    # migration's CREATE TABLE doesn't collide on the way back up.
+    conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
+    conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
+    conn.execute(
+        "INSERT INTO camera (camera_id, applied_offset_minutes, "
+        "configured_tz_minutes) VALUES "
+        "('GoPro', 525, -180), "        # +8:45 minutes, -3:00 minutes
+        "('phone', NULL, NULL)")
+    conn.execute(
+        "INSERT INTO item (id, kind, provenance, origin_relpath, sha256, "
+        "byte_size, materialized_at, materialized_phase, camera_id, "
+        "capture_time_raw, capture_time_corrected, tz_offset_minutes, "
+        "tz_source, created_at) VALUES "
+        "('a', 'photo', 'captured', 'a.jpg', 'sha', 1, "
+        "'2026-03-10T00:00:00', 'ingest', 'GoPro', '2026-03-09T23:30:00', "
+        "'2026-03-10T08:15:00', 525, 'user_declared', "
+        "'2026-03-10T00:00:00')")
+    conn.execute("UPDATE schema_info SET schema_version = 16 WHERE id = 1")
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    # Columns now named *_seconds.
+    cam_cols = {r[1] for r in conn.execute("PRAGMA table_info(camera)")}
+    assert "applied_offset_seconds" in cam_cols
+    assert "configured_tz_seconds" in cam_cols
+    assert "applied_offset_minutes" not in cam_cols
+    assert "configured_tz_minutes" not in cam_cols
+    item_cols = {r[1] for r in conn.execute("PRAGMA table_info(item)")}
+    assert "tz_offset_seconds" in item_cols
+    assert "tz_offset_minutes" not in item_cols
+    # Values multiplied by 60.
+    gopro = conn.execute(
+        "SELECT applied_offset_seconds, configured_tz_seconds "
+        "FROM camera WHERE camera_id = 'GoPro'").fetchone()
+    assert gopro["applied_offset_seconds"] == 525 * 60      # 31 500
+    assert gopro["configured_tz_seconds"] == -180 * 60      # -10 800
+    # NULLs stay NULL on cameras with no recorded offset.
+    phone = conn.execute(
+        "SELECT applied_offset_seconds, configured_tz_seconds "
+        "FROM camera WHERE camera_id = 'phone'").fetchone()
+    assert phone["applied_offset_seconds"] is None
+    assert phone["configured_tz_seconds"] is None
+    item = conn.execute(
+        "SELECT tz_offset_seconds FROM item WHERE id = 'a'").fetchone()
+    assert item["tz_offset_seconds"] == 525 * 60
     store.close()

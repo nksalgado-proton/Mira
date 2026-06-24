@@ -52,10 +52,10 @@ def look_display_name(key: str) -> str:
 
 
 def filter_display_name(key: str) -> str:
-    """User-visible creative-filter names (spec/55). PROVISIONAL —
-    the naming session (EN + pt-BR) is the last vocabulary lock of
-    the redesign; until then these are the working keys, title-cased
-    through tr()."""
+    """User-visible creative-filter names (spec/55 + spec/116).
+    PROVISIONAL — the naming session (EN + pt-BR) is the last
+    vocabulary lock of the redesign; until then these are the working
+    keys, title-cased through tr()."""
     return {
         "vivid": tr("Vivid"),
         "bw": tr("B&W"),
@@ -66,6 +66,13 @@ def filter_display_name(key: str) -> str:
         "bleach": tr("Bleach"),
         "dramatic": tr("Dramatic"),
         "crisp": tr("Crisp"),
+        # spec/116 — four new filters built on the new primitives.
+        "subject_pop": tr("Subject Pop"),
+        "dehaze": tr("Dehaze"),
+        "dreamy_glow": tr("Dreamy Glow"),
+        "film_grain": tr("Film Grain"),
+        # spec/118 — specular-hotspot tamer.
+        "deglare": tr("De-glare"),
     }.get(key, key)
 
 

@@ -95,6 +95,7 @@ class ThumbGridItem:
     origin: Optional[str] = None          # spec/89 §2.1 — Mira / LRC / Helicon / CO / ext
     skipped_in_pick: bool = False         # spec/89 Block 7 D2.B indicator
     export_destructive_mode: bool = False # spec/89 Block 7 D3.B Slice 7 — watermark = destructive cue
+    edited_since_export: bool = False     # spec/118 §2 — loud "edited" badge on stale exports
     payload: object = None
     focusable: bool = False               # Tab-focusable for the locked §63 keymap
     tooltip: str = ""
@@ -132,6 +133,7 @@ class _GridCell(Thumb):
             stamp=item.stamp,
             origin=item.origin,
             skipped_in_pick=item.skipped_in_pick,
+            edited_since_export=item.edited_since_export,
             parent=parent,
         )
         self.setExportDestructiveMode(item.export_destructive_mode)
@@ -166,6 +168,7 @@ class _GridCell(Thumb):
         self.setOrigin(item.origin)
         self.setSkippedInPick(item.skipped_in_pick)
         self.setExportDestructiveMode(item.export_destructive_mode)
+        self.setEditedSinceExport(item.edited_since_export)
         self.setClusterCount(item.cluster_count)
         # cluster_type + cluster_split aren't setter-exposed on Thumb;
         # write them directly (paintEvent reads instance attrs).
@@ -238,6 +241,11 @@ class ThumbGrid(QWidget):
     cell_activated = pyqtSignal(int)
     cell_border_clicked = pyqtSignal(int)
     back_requested = pyqtSignal()
+    # spec/131 — fired once the chunked builder has placed every cell
+    # for the current ``set_items`` call. Lets the host (or
+    # :meth:`ensure_item_visible`) defer "scroll to an anchor" work
+    # until the target cell actually exists in the layout.
+    build_finished = pyqtSignal()
 
     def __init__(
         self,
@@ -258,6 +266,14 @@ class ThumbGrid(QWidget):
         # builder tick from a previous call drops its work instead of
         # appending stale widgets.
         self._build_token: int = 0
+        # spec/131 — deferred-anchor state. When the host calls
+        # :meth:`ensure_item_visible` before the chunked builder reaches
+        # the target cell, we stash the request here and apply it on
+        # :sig:`build_finished`. A fresh ``set_items`` clears it (a
+        # stale anchor from the prior contents shouldn't fire on the
+        # new ones).
+        self._pending_anchor_payload: object = None
+        self._pending_anchor_select: bool = True
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -279,6 +295,12 @@ class ThumbGrid(QWidget):
         self._scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer.addWidget(self._scroll, 1)
+
+        # spec/131 — auto-apply any pending anchor when the chunked
+        # builder finishes. The host queues the request via
+        # ``ensure_item_visible`` right after ``set_items``; the cell
+        # usually isn't built yet on a 200-cell day, so we wait.
+        self.build_finished.connect(self._apply_pending_anchor)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -306,6 +328,9 @@ class ThumbGrid(QWidget):
         self._build_token += 1
         token = self._build_token
         self._items = list(items)
+        # spec/131 — drop any anchor stashed from the previous contents.
+        # The host re-asserts the anchor for the new set after this call.
+        self._pending_anchor_payload = None
         viewport = self._scroll.viewport()
         viewport.setUpdatesEnabled(False)
         t0 = time.perf_counter()
@@ -325,6 +350,34 @@ class ThumbGrid(QWidget):
         if len(self._cells) < len(self._items):
             QTimer.singleShot(
                 _CHUNK_TICK_MS, lambda: self._build_next_batch(token))
+        else:
+            # spec/131 — small set built entirely synchronously; signal
+            # build completion on the next event-loop turn so any anchor
+            # ``ensure_item_visible`` call queued by the host (which
+            # typically runs RIGHT AFTER ``set_items``) still gets the
+            # deferred-application path. singleShot(0) keeps the order
+            # deterministic + matches the chunked builder's tail. The
+            # token guard + try/except guard against the Qt-zombie case
+            # — a widget destroyed before the timer fires.
+            QTimer.singleShot(
+                0, lambda t=token: self._safe_emit_build_finished(t))
+
+    def _safe_emit_build_finished(self, token: int) -> None:
+        """spec/131 — emit ``build_finished`` only when this timer's
+        token still matches the current build (a fresh ``set_items``
+        bumps the token, dropping stale ticks). Swallows the
+        ``RuntimeError`` raised when the widget's C++ side was
+        destroyed before the deferred tick fired (Qt-zombie case the
+        existing ``set_pixmap`` / ``update_item`` guards already
+        cover)."""
+        try:
+            if token != self._build_token:
+                return
+            self.build_finished.emit()
+        except RuntimeError:
+            log.debug(
+                "ThumbGrid: build_finished emit dropped — widget gone",
+                exc_info=True)
 
     def update_item(self, index: int, item: ThumbGridItem) -> None:
         """Replace one cell's data. Works for both built and pending
@@ -388,6 +441,81 @@ class ThumbGrid(QWidget):
     def cells(self) -> List[_GridCell]:
         return list(self._cells)
 
+    # ── spec/131 — restore-anchor helpers ─────────────────────────────
+
+    def index_of_payload(self, payload: object) -> Optional[int]:
+        """Return the index of the first item whose ``payload`` matches,
+        or ``None`` when no item carries that payload. Linear scan; the
+        host calls this once per restore, so the cost is fine even on a
+        200-cell day."""
+        for i, item in enumerate(self._items):
+            if item.payload == payload:
+                return i
+        return None
+
+    def ensure_item_visible(
+        self, payload: object, *, select: bool = True,
+    ) -> bool:
+        """spec/131 — scroll the inner viewport so the cell whose item
+        carries ``payload`` is visible. When ``select=True`` (the
+        default) the cell gets keyboard focus too, so the locked §63
+        keys land on it.
+
+        When the target cell hasn't been built yet (chunked construction
+        still pending), the request is **stashed** and applied on the
+        next :sig:`build_finished` signal — so the host can call this
+        immediately after ``set_items`` without timing the chunked
+        builder. Returns ``True`` when the request was applied OR
+        deferred; ``False`` when no item carries ``payload`` (the
+        request is dropped).
+
+        Returns False on graceful misses (anchor for an item not on this
+        page) so the host doesn't loop forever."""
+        idx = self.index_of_payload(payload)
+        if idx is None:
+            # Drop any prior pending anchor too — a missed restore
+            # request shouldn't quietly resurrect on the next build.
+            self._pending_anchor_payload = None
+            return False
+        if 0 <= idx < len(self._cells):
+            self._scroll_to_cell(self._cells[idx], select=select)
+            self._pending_anchor_payload = None
+            return True
+        # Cell not built yet — queue.
+        self._pending_anchor_payload = payload
+        self._pending_anchor_select = bool(select)
+        return True
+
+    def select_item(self, payload: object) -> bool:
+        """Convenience alias — same as :meth:`ensure_item_visible` with
+        ``select=True``. Named for the spec/131 reader so the intent
+        ("highlight this item") is clear at the call site."""
+        return self.ensure_item_visible(payload, select=True)
+
+    def _scroll_to_cell(self, cell: "_GridCell", *, select: bool) -> None:
+        """Scroll the cell into view; optionally give it focus so the
+        cell paints its focus ring + the locked §63 keys target it.
+        Resilient against the Qt zombie case (cell already deleted) —
+        log + drop."""
+        try:
+            self._scroll.ensureWidgetVisible(cell)
+            if select:
+                cell.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            log.debug(
+                "ThumbGrid._scroll_to_cell: cell already deleted",
+                exc_info=True)
+
+    def _apply_pending_anchor(self) -> None:
+        """Build-finished hook — applies any anchor the host queued
+        before the chunked builder reached the target cell."""
+        payload = self._pending_anchor_payload
+        if payload is None:
+            return
+        select = self._pending_anchor_select
+        self._pending_anchor_payload = None
+        self.ensure_item_visible(payload, select=select)
+
     # ── internals ─────────────────────────────────────────────────────
 
     def _clear_cells(self) -> None:
@@ -438,6 +566,14 @@ class ThumbGrid(QWidget):
         if len(self._cells) < len(self._items):
             QTimer.singleShot(
                 _CHUNK_TICK_MS, lambda: self._build_next_batch(token))
+        else:
+            # spec/131 — the chunked build has reached every cell.
+            # Defer the signal by one tick so the layout settles before
+            # ensure_item_visible runs (otherwise the QScrollArea's
+            # geometry can still be mid-relayout and the scroll lands
+            # short). Token-guarded against the Qt-zombie case.
+            QTimer.singleShot(
+                0, lambda t=token: self._safe_emit_build_finished(t))
 
     # ── keyboard ──────────────────────────────────────────────────────
 

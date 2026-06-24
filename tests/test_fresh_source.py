@@ -189,7 +189,7 @@ def test_per_camera_tz_pulls_midnight_frame_to_right_dia(
         "g9.jpg": (datetime(2026, 4, 21, 1, 30), _G9),
     })
     cal = {camera_id_for(_G9): CameraCalibration(
-        camera_id="g9", tz_offset=timedelta(hours=-3))}
+        camera_id="g9", offset_seconds=-3 * 3600)}
     days = scan_fresh_source_days(src, _days(), cal)
     assert len(days) == 1
     assert days[0].key == "Dia 9 - 2026-04-20 - Manuel Antonio National Park"
@@ -213,7 +213,7 @@ def test_uncalibrated_camera_in_nonempty_map_passes_through(
         "p.jpg": (datetime(2026, 4, 20, 10, 0), _PHONE),
     })
     cal = {camera_id_for(_G9): CameraCalibration(
-        camera_id="g9", tz_offset=timedelta(hours=-3))}
+        camera_id="g9", offset_seconds=-3 * 3600)}
     days = scan_fresh_source_days(src, _days(), cal)
     assert days[0].key == "Dia 9 - 2026-04-20 - Manuel Antonio National Park"
 
@@ -299,7 +299,7 @@ def test_group_items_to_days_is_pure_and_applies_calibration():
     must land on Dia 9, the phone on Dia 9 too; ordered, Undated
     last."""
     cal = {camera_id_for(_G9): CameraCalibration(
-        camera_id="g9", tz_offset=timedelta(hours=-3))}
+        camera_id="g9", offset_seconds=-3 * 3600)}
     items = [
         SourceItem(Path("g9.jpg"), datetime(2026, 4, 21, 1, 30),
                    camera_id_for(_G9)),

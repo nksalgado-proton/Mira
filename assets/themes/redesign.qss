@@ -1161,21 +1161,25 @@ QLabel#LookGridHint {
     color: {text_secondary};
 }
 
-/* Scrollbars. No rule existed, so the handle fell back to the
- * palette and was invisible against the softened off-white bg
- * (Nelson eyeball 2026-05-17). Visible mid-tone handle, Gulf-blue on
- * hover, no step arrows. App-wide (the navigator's QScrollArea and
- * every other scroll surface). */
+/* Scrollbars. spec/133 — the original transparent track left the
+ * handle floating against the surface bg, with no visible/clickable
+ * groove in either theme. Paint the {track} token (dark #222734 /
+ * light #d3d7df — the same one that backs QProgressBar#StageBar) so
+ * the groove is obvious and click-on-page-to-page-step lands somewhere
+ * the user can see. The handle's 2 px margin frames the track around
+ * it. Gulf-blue handle hover, no step arrows. App-wide. */
 QScrollBar:vertical {
-    background: transparent;
+    background: {track};
     width: 12px;
     margin: 0;
+    border-radius: 6px;
 }
 
 QScrollBar:horizontal {
-    background: transparent;
+    background: {track};
     height: 12px;
     margin: 0;
+    border-radius: 6px;
 }
 
 QScrollBar::handle:vertical {

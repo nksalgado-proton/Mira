@@ -103,9 +103,10 @@ def nearest_valid_offset(minutes: int) -> Optional[int]:
     :data:`STANDARD_TZ_OFFSETS_MINUTES`. Returns ``None`` only when the
     enum is empty (defensive — never expected in real code).
 
-    Used by the dialog when seeding from `camera.applied_offset_minutes`
-    (a legacy continuous value) or from a phone's `OffsetTimeOriginal` that
-    arrives at an unusual minute boundary."""
+    Used by the dialog when seeding from `camera.applied_offset_seconds`
+    (a continuous value, converted to minutes at the read seam) or from a
+    phone's `OffsetTimeOriginal` that arrives at an unusual minute
+    boundary."""
     if not STANDARD_TZ_OFFSETS_MINUTES:
         return None
     return min(STANDARD_TZ_OFFSETS_MINUTES, key=lambda v: abs(v - int(minutes)))

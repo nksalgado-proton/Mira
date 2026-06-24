@@ -63,11 +63,35 @@ def test_moving_the_slider_updates_strength_and_label(surface):
     assert surface._strength_value.text() == "0.00"
 
 
-def test_moving_the_slider_emits_changed_tone(surface, qtbot=None):
+def test_moving_the_slider_emits_changed_tone_on_release(surface, qtbot=None):
+    """spec/115 §1 — ``changed("tone")`` now fires on the COMMIT event
+    (slider release for a drag, or the debounce timer for a keyboard /
+    programmatic change) rather than per-tick. A bare ``setValue``
+    counts as the keyboard-style path; the surface arms its render
+    timer and emits ``changed("tone")`` from the timer's slot."""
     captured = []
     surface.changed.connect(lambda kind: captured.append(kind))
     surface._strength_slider.setValue(120)
+    # Programmatic tick → live label only, no emit yet.
+    assert captured == []
+    assert surface._render_timer.isActive()
+    # Fire the debounce manually to avoid waiting ~150 ms.
+    surface._render_timer.stop()
+    surface._on_render_timer()
     assert "tone" in captured
+
+
+def test_drag_release_emits_changed_tone_once(surface):
+    """The drag path also fires ``changed("tone")`` exactly once on
+    release — the host persists the new look_strength from there."""
+    captured = []
+    surface.changed.connect(lambda kind: captured.append(kind))
+    surface._strength_slider.sliderPressed.emit()
+    surface._strength_slider.setValue(140)
+    surface._strength_slider.setValue(160)
+    assert captured == []
+    surface._strength_slider.sliderReleased.emit()
+    assert captured == ["tone"]
 
 
 def test_double_click_snaps_slider_to_one(surface):

@@ -74,8 +74,8 @@ def _seed_minimal_event(store: EventStore) -> None:
             (2, "2026-04-02", "Monteverde", "Monteverde", -360),
         )
         conn.execute(
-            "INSERT INTO camera (camera_id, configured_tz_minutes) VALUES (?, ?)",
-            ("Panasonic+DC-G9M2", -180),
+            "INSERT INTO camera (camera_id, configured_tz_seconds) VALUES (?, ?)",
+            ("Panasonic+DC-G9M2", -180 * 60),
         )
         # Four items.
         _insert_item(conn, "i-collected", day_number=1, classification="macro",
@@ -130,11 +130,11 @@ def _insert_item(conn, item_id: str, *, day_number: int,
         "INSERT INTO item (id, kind, provenance, origin_relpath, sha256, "
         "byte_size, materialized_at, materialized_phase, camera_id, "
         "day_number, capture_time_raw, capture_time_corrected, "
-        "tz_offset_minutes, tz_source, classification, iso, aperture_f, "
+        "tz_offset_seconds, tz_source, classification, iso, aperture_f, "
         "shutter_speed_s, focal_length_mm, flash_fired, lens_model, "
         "extras_json, created_at) "
         "VALUES (?, 'photo', 'captured', ?, ?, ?, ?, 'ingest', "
-        "?, ?, ?, ?, -360, 'pair_picker', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "?, ?, ?, ?, -21600, 'pair_picker', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (item_id, f"Original Media/{item_id}.jpg", "a" * 64, 1000,
          "2026-06-16T00:00:00+00:00", "Panasonic+DC-G9M2",
          day_number, f"2026-04-0{day_number}T10:00:00",

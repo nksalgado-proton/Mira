@@ -187,6 +187,27 @@ def test_per_event_migration_adds_aspect_column_to_legacy_db(tmp_path):
                 "VALUES ('c-legacy', 'legacy', 'user', '16:9', ?, ?)",
                 (NOW, NOW))
             conn.execute("ALTER TABLE cut DROP COLUMN aspect")
+            # spec/115 — re-running the migration replays v15→v16 too,
+            # which tries to ADD COLUMN ``user_exposure``. Drop it so
+            # the replay can re-add it cleanly (this test cares about
+            # v14→v15, but ``migrate`` always lands at the latest).
+            conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
+            # spec/123 v16→v17 — rename the *_seconds columns back to
+            # *_minutes so the replay rename-and-scale succeeds.
+            conn.execute(
+                "ALTER TABLE camera RENAME COLUMN applied_offset_seconds "
+                "TO applied_offset_minutes")
+            conn.execute(
+                "ALTER TABLE camera RENAME COLUMN configured_tz_seconds "
+                "TO configured_tz_minutes")
+            conn.execute(
+                "ALTER TABLE item RENAME COLUMN tz_offset_seconds "
+                "TO tz_offset_minutes")
+            # spec/127 v17→v18 — drop the per-(camera, trip-TZ)
+            # correction table so the v17→v18 CREATE TABLE doesn't
+            # collide on the way back up.
+            conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
+            conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
             conn.execute(
                 "UPDATE schema_info SET schema_version = 14 WHERE id = 1")
 

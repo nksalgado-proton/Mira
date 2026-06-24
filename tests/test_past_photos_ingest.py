@@ -84,7 +84,7 @@ def test_plan_from_reconcile_then_ingest_applies_the_correction(tmp_path):
         eg.close()
     # raw 08:00 + (5.75 − (−3.0)) = +8:45 → 16:45.
     assert it.capture_time_corrected == "2026-03-10T16:45:00"
-    assert it.tz_offset_minutes == 525
+    assert it.tz_offset_seconds == 525 * 60
 
 
 def test_past_photos_flow_constructs(qapp, tmp_path):

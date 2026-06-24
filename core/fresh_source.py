@@ -172,12 +172,18 @@ def build_tz_calibrations(
     constant-offset :class:`CameraCalibration`
     (``trip_tz - configured_tz``). Cameras whose clock was correct
     are simply absent → pass-through (no entry). ``trip_tz`` is the
-    destination's offset in hours (e.g. Nepal ``+5.75``)."""
-    return {
-        cam: build_calibration(
-            cam, [], configured_tz=configured, trip_tz=trip_tz)
-        for cam, configured in wrong_tz_by_camera.items()
-    }
+    destination's offset in hours (e.g. Nepal ``+5.75``).
+
+    spec/123 reverts spec/122 — there is no UTC special-case. A camera
+    like the GoPro is simply source 1 (``configured_tz=-3, trip_tz=+5:45 →
+    offset=+8:45``)."""
+    out: dict[str, CameraCalibration] = {}
+    for cam, configured in wrong_tz_by_camera.items():
+        out[cam] = build_calibration(
+            cam, [],
+            configured_tz=configured, trip_tz=trip_tz,
+        )
+    return out
 
 
 def plan_trip_tz(trip_days: Sequence[TripDay]) -> float:

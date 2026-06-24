@@ -1433,6 +1433,18 @@ class PhotoViewport(QWidget):
         # the hot path never imports QtMultimedia (offscreen-safe).
         return self._video_playing
 
+    def video_playback_rate(self) -> float:
+        """The engine's CURRENT playback rate (spec/137 §2A).
+
+        Mirror of :meth:`video_is_playing`: returns the cached
+        ``_video_rate`` that ``_ensure_player`` applies to every clip,
+        so the rate is sticky across arms — a clip after a 2× clip
+        plays at 2×. The transport bar's reveal-resync uses this to
+        push :meth:`TransportBar.set_speed` and keep the dropdown
+        faithful to the engine's actual rate (spec/130 reveal-resync
+        + spec/137 §2B)."""
+        return float(self._video_rate)
+
     def video_toggle_play(self) -> None:
         if self._player is None or self._video_armed is None:
             return

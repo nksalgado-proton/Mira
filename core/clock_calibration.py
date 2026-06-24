@@ -1,41 +1,35 @@
-"""Per-camera clock-offset calibration for the Reconcile workflow.
+"""Per-camera clock-offset calibration (spec/123).
 
-Multi-camera trips taken before the user discovered "sync clocks before
-the trip" produce photos whose ``DateTimeOriginal`` is wrong by a
-constant offset (camera was set up months ago, drifted) and sometimes
-also drifts further during the trip (cheap clocks lose seconds per day).
-The Reconcile pre-processing pipeline corrects this so downstream
-day-routing and chronological ordering work as if the user had synced
-correctly.
+The model collapsed into **one offset_seconds per camera** derived from
+exactly three sources:
 
-Calibration model
------------------
+1. **Known TZ** — the user states which zone the camera's clock was on.
+   ``offset_seconds = trip_tz_seconds − camera_tz_seconds``. Zones are
+   whole minutes, so this is always a whole-minute integer-seconds value.
+   Nepal GoPro: ``+5:45 − (−3:00) = +8:45 = +31 500 s``.
 
-The user provides one or more **pairs** per camera: a photo from the
-camera plus a photo from a designated reference (the user's phone, which
-auto-syncs via NTP and is therefore the trip's "true clock"). Both
-photos must depict the same moment — typically a quick double-shot of
-the same scene. The offset for that pair is
+2. **Recognized "these two were the same moment, clock was right"** —
+   the user confirms a pair is simultaneous AND the camera needed no
+   shift. ``offset_seconds = 0``.
 
-    offset = reference_time - camera_time
+3. **Measured pair** — the user picks a pair (one camera shot + one
+   reference shot) they know depicts the same moment. ``offset_seconds
+   = round((reference_time − camera_time).total_seconds())`` — the raw
+   measured delta, to the nearest second, with **no snapping**. The
+   pair *is* the measurement; snapping (the spec/101 model) substitutes
+   the assumption "the error must be a clean zone", which is false in
+   general — the Nepal pair (5h00m02s measured) is in no zone at all
+   from Kathmandu.
 
-If the camera were perfectly stable, one pair would suffice for the
-whole trip. In practice cheap clocks drift, so:
+Sources 1 and 3 are two ways to derive the same kind of number; source
+2 is the zero case. Nothing infers a zone from a measured delta;
+nothing snaps. The result flows through one apply path —
+``EventGateway.recompute_corrected_times(offset_seconds=…)`` — that
+re-derives ``capture_time_corrected`` for every captured item of the
+camera (photos AND videos).
 
-* **1 pair** → constant offset (best we can do — assume no drift)
-* **2 pairs** → linear interpolation between the two pairs by camera
-  time. Photos before the first pair use the first pair's offset;
-  photos after the last use the last pair's offset (no extrapolation
-  to avoid amplifying noise).
-* **3+ pairs** → same linear-segments shape, but with simple outlier
-  rejection: any pair whose offset deviates from the median pair offset
-  by more than a configurable threshold (default 5 minutes) is dropped
-  with a warning. Rare in well-constructed trips, but protects against
-  a paired photo where the user accidentally captured the wrong
-  reference shot.
-
-The class is Qt-free; the UI hands it parsed pairs and reads back the
-correction function.
+Qt-free; the UI hands in either a TZ pair (source 1) or a measured
+pair (source 3) and reads the offset_seconds back.
 """
 
 from __future__ import annotations
@@ -47,9 +41,6 @@ from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
-
-
-_DEFAULT_OUTLIER_THRESHOLD = timedelta(minutes=5)
 
 
 @dataclass
@@ -65,10 +56,8 @@ class CalibrationPair:
 
     @property
     def offset(self) -> timedelta:
-        """How far ahead the reference is from the camera. Positive
-        means the camera's clock is BEHIND reference; subtract this
-        from camera time? No — ADD this offset to camera time to get
-        reference time:
+        """How far ahead the reference is from the camera. ADD this
+        offset to camera time to get reference time:
 
             reference_time = camera_time + offset
         """
@@ -77,102 +66,76 @@ class CalibrationPair:
 
 @dataclass
 class CameraCalibration:
-    """Calibration for one camera, derived from pair(s), a TZ
-    declaration, or both.
+    """One camera's resolved offset (spec/123 — single integer-seconds
+    value, from one of three sources). ``offset_seconds`` is the
+    canonical field; ``tz_offset`` is kept as a compatibility view for
+    callers that still expect a :class:`timedelta`.
 
-    ``camera_id`` is the user-facing identifier (e.g. ``"Lumix G9 II"``
-    or ``"celular_nelson"``) — typically the source subfolder name in
-    the reconcile input layout.
-
-    Three sources of offset, used in order of priority:
-
-    1. ``pairs`` (1+) — measured from photo pairs. Most precise; can
-       capture drift when 2+ pairs span the trip. ``rejected_pairs``
-       holds outliers excluded by ``build_calibration``.
-    2. ``tz_offset`` — derived from a TZ declaration
-       (``trip_tz - camera_configured_tz``). Constant; used as a
-       fallback when no pairs were provided.
-    3. (no source) — caller must skip the camera or pass photos
-       through uncorrected.
-
-    ``warnings`` carries human-readable diagnostics from
-    ``build_calibration`` — e.g. when the measured pair offset
-    disagrees with the TZ-derived expectation by more than 5 minutes,
-    suggesting either a mistaken TZ declaration or a poorly chosen
-    pair. The pipeline surfaces these to the user.
-    """
+    ``pairs`` is kept for the engine's per-segment interpolation path
+    (Reconcile multi-pair calibration); empty for the simple TZ /
+    measured-pair source. ``rejected_pairs`` / ``warnings`` are
+    preserved for diagnostics surfaces but no longer flow through the
+    snap path."""
     camera_id: str
+    offset_seconds: Optional[int] = None
     pairs: list[CalibrationPair] = field(default_factory=list)
     rejected_pairs: list[CalibrationPair] = field(default_factory=list)
-    tz_offset: Optional[timedelta] = None
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def tz_offset(self) -> Optional[timedelta]:
+        """Compatibility view — callers that read the resolved offset
+        as a :class:`timedelta` keep working."""
+        if self.offset_seconds is None:
+            return None
+        return timedelta(seconds=self.offset_seconds)
 
     @property
     def has_drift_correction(self) -> bool:
         """True iff the calibration interpolates between two or more
-        pairs in time. Single-pair and TZ-only calibrations apply a
-        constant offset and don't model drift."""
+        pairs in time (the Reconcile multi-pair case). Constant-offset
+        calibrations (sources 1/2/3) don't model drift."""
         return len(self.pairs) >= 2
 
     @property
     def has_any_source(self) -> bool:
         """Whether the calibration has anything to compute an offset
-        with — either pairs or a TZ declaration. Pipelines check this
-        before calling ``offset_at`` / ``correct``."""
-        return bool(self.pairs) or self.tz_offset is not None
+        with."""
+        return self.offset_seconds is not None or bool(self.pairs)
 
     def offset_at(self, camera_time: datetime) -> timedelta:
         """Return the offset to apply to ``camera_time`` to bring it
-        onto reference time.
-
-        Resolution order:
-
-        * If ``pairs`` are present, linearly interpolate between them
-          (clamped to endpoints — no extrapolation).
-        * Else if ``tz_offset`` is set, return it constant for any
-          time.
-        * Else raise ``ValueError`` — caller programming error.
-        """
+        onto reference time. Constant ``offset_seconds`` wins; only
+        falls through to per-pair interpolation if no constant is set
+        but pairs exist (legacy Reconcile multi-pair path)."""
+        if self.offset_seconds is not None and not self.pairs:
+            return timedelta(seconds=self.offset_seconds)
         if not self.pairs:
-            if self.tz_offset is not None:
-                return self.tz_offset
+            if self.offset_seconds is not None:
+                return timedelta(seconds=self.offset_seconds)
             raise ValueError(
-                f"camera {self.camera_id!r} has no calibration source "
-                f"(pairs nor TZ); cannot compute offset"
+                f"camera {self.camera_id!r} has no calibration source"
             )
-        # Sort by camera time so before/after lookups are deterministic.
-        # Cached on first call to avoid re-sorting on every photo.
+        # Multi-pair drift interpolation (Reconcile path) — kept for
+        # callers that still construct calibrations from pair lists.
         sorted_pairs = sorted(self.pairs, key=lambda p: p.camera_time)
         if camera_time <= sorted_pairs[0].camera_time:
             return sorted_pairs[0].offset
         if camera_time >= sorted_pairs[-1].camera_time:
             return sorted_pairs[-1].offset
-        # Find the bracketing pair indices and interpolate linearly.
         for i in range(len(sorted_pairs) - 1):
             left = sorted_pairs[i]
             right = sorted_pairs[i + 1]
             if left.camera_time <= camera_time <= right.camera_time:
                 span = (right.camera_time - left.camera_time).total_seconds()
                 if span <= 0:
-                    # Two pairs at exactly the same camera time —
-                    # fall back to averaging their offsets to avoid
-                    # divide-by-zero. Rare edge case (user drops two
-                    # different reference photos against the same
-                    # camera shot).
                     avg = (left.offset + right.offset) / 2
                     return avg
                 t = (camera_time - left.camera_time).total_seconds() / span
-                # Linear interpolation between two timedeltas.
                 left_s = left.offset.total_seconds()
                 right_s = right.offset.total_seconds()
                 interp_s = left_s + t * (right_s - left_s)
                 return timedelta(seconds=interp_s)
-        # Defensive fallback — shouldn't reach here if logic above
-        # is correct, but if it does, return the closest pair's offset.
-        log.warning(
-            "offset_at fell through for %s at %s; using nearest pair",
-            self.camera_id, camera_time,
-        )
         nearest = min(
             sorted_pairs,
             key=lambda p: abs((p.camera_time - camera_time).total_seconds()),
@@ -180,9 +143,73 @@ class CameraCalibration:
         return nearest.offset
 
     def correct(self, camera_time: datetime) -> datetime:
-        """Apply the calibration to a camera-recorded timestamp.
-        Convenience wrapper around ``offset_at``."""
+        """Apply the calibration to a camera-recorded timestamp."""
         return camera_time + self.offset_at(camera_time)
+
+
+# ── Three explicit sources (spec/123 §1) ──────────────────────────────
+
+
+def offset_from_known_tz(
+    *, trip_tz_seconds: int, camera_tz_seconds: int,
+) -> int:
+    """Source 1 — the user states which zone the camera's clock was on.
+    Both inputs are integer SECONDS east of UTC (zones are whole
+    minutes, so always a multiple of 60). Returns the integer-seconds
+    offset to ADD to a camera time to land on trip-local time.
+
+    Nepal GoPro: ``trip_tz_seconds=+20700`` (+5:45),
+    ``camera_tz_seconds=-10800`` (−3:00) → ``+31500`` s (+8:45)."""
+    return int(trip_tz_seconds) - int(camera_tz_seconds)
+
+
+def offset_from_simultaneous() -> int:
+    """Source 2 — the user confirmed a pair is simultaneous and the
+    camera needed no shift. Always 0."""
+    return 0
+
+
+def offset_from_measured_pair(pair: CalibrationPair) -> int:
+    """Source 3 — the measured delta, applied raw to the nearest
+    second. NO snapping. The Nepal pair (5h00m02s) yields 18 002 s,
+    not 18 000 (snapped 5:00) and not 17 100 (snapped 4:45)."""
+    return int(round(pair.offset.total_seconds()))
+
+
+# ── Builders (UI seam) ────────────────────────────────────────────────
+
+
+def build_calibration_from_known_tz(
+    camera_id: str, *, trip_tz_seconds: int, camera_tz_seconds: int,
+) -> CameraCalibration:
+    """Source 1 → CameraCalibration."""
+    return CameraCalibration(
+        camera_id=camera_id,
+        offset_seconds=offset_from_known_tz(
+            trip_tz_seconds=trip_tz_seconds,
+            camera_tz_seconds=camera_tz_seconds,
+        ),
+    )
+
+
+def build_calibration_simultaneous(camera_id: str) -> CameraCalibration:
+    """Source 2 → CameraCalibration (offset_seconds=0)."""
+    return CameraCalibration(
+        camera_id=camera_id, offset_seconds=0)
+
+
+def build_calibration_from_pair(
+    camera_id: str, pair: CalibrationPair,
+) -> CameraCalibration:
+    """Source 3 → CameraCalibration. Stores the raw measured delta as
+    the single constant offset; the pair is also kept on
+    ``pairs`` so the diagnostics surfaces (e.g. "which photos did the
+    user pick?") still resolve."""
+    return CameraCalibration(
+        camera_id=camera_id,
+        offset_seconds=offset_from_measured_pair(pair),
+        pairs=[pair],
+    )
 
 
 def build_calibration(
@@ -191,98 +218,40 @@ def build_calibration(
     *,
     configured_tz: Optional[float] = None,
     trip_tz: Optional[float] = None,
-    outlier_threshold: timedelta = _DEFAULT_OUTLIER_THRESHOLD,
 ) -> CameraCalibration:
-    """Construct a ``CameraCalibration`` from pairs and/or a TZ
-    declaration. Both inputs are optional but at least one is needed
-    for the calibration to produce offsets later.
+    """Legacy multi-source builder kept for the Reconcile pipeline.
 
-    **TZ-derived offset** (when ``configured_tz`` and ``trip_tz`` are
-    both given): the constant offset is ``trip_tz - configured_tz``
-    in hours. Example: G9 set to São Paulo (-3) shooting in Nepal
-    (+5.75) → expected offset of +8.75h. This is recorded as
-    ``tz_offset`` on the calibration. When pairs are also provided,
-    the TZ offset is used only as a sanity check (see below).
+    spec/123 collapsed the applied path to one of three sources; this
+    function still exists so :mod:`mira.ingest.plan` /
+    :mod:`core.reconcile_pipeline` can keep producing a calibration
+    from "pairs + optional TZ declaration". The math:
 
-    **Pair-derived offset** (from ``pairs``): same as the previous
-    behavior — linear interpolation between accepted pairs, with
-    median-based outlier rejection when 3+ pairs are given.
-
-    **Cross-check** when both sources are present: compute the median
-    pair-measured offset, compare to the TZ-derived value. If they
-    disagree by more than 5 minutes, emit a warning; the pair value
-    still wins (it's empirical), but the user should double-check
-    that either the TZ declaration or the pairs are correct.
-
-    Pairs with non-positive offsets (the reference is BEHIND the
-    camera) are accepted — that's the normal case when a camera was
-    configured later than the phone, or the phone TZ was miscopied.
+    * If ``configured_tz`` and ``trip_tz`` are both given, the
+      TZ-derived constant offset is ``(trip_tz − configured_tz) × 3600``
+      seconds (hours → seconds, whole-minute precision preserved).
+    * Pairs, when present, override the TZ offset with the raw
+      measured delta of the median pair (no snapping — spec/123). The
+      multi-pair drift interpolation path on ``CameraCalibration``
+      stays available for callers that want it.
     """
-    tz_offset: Optional[timedelta] = None
-    warnings: list[str] = []
+    offset_seconds: Optional[int] = None
     if configured_tz is not None and trip_tz is not None:
-        tz_offset = timedelta(hours=trip_tz - configured_tz)
+        # Whole-minute zones → seconds. Tolerance: callers that still
+        # pass float hours retain the same numbers (×3600 is exact for
+        # whole-quarter-hour values).
+        offset_seconds = int(round((float(trip_tz) - float(configured_tz)) * 3600))
 
-    if not pairs:
-        # TZ-only or fully-empty calibration.
-        return CameraCalibration(
-            camera_id=camera_id, pairs=[], rejected_pairs=[],
-            tz_offset=tz_offset, warnings=warnings,
-        )
-
-    # Outlier rejection on pairs (unchanged from previous version).
-    accepted: list[CalibrationPair] = list(pairs)
-    rejected: list[CalibrationPair] = []
-    if len(pairs) >= 3:
-        offsets = sorted(p.offset.total_seconds() for p in pairs)
-        median_s = offsets[len(offsets) // 2]
-        threshold_s = outlier_threshold.total_seconds()
-        accepted = []
-        for p in pairs:
-            if abs(p.offset.total_seconds() - median_s) > threshold_s:
-                log.info(
-                    "calibration outlier rejected for %s: pair %s "
-                    "(offset %.1fs vs median %.1fs)",
-                    camera_id, p.camera_path.name,
-                    p.offset.total_seconds(), median_s,
-                )
-                rejected.append(p)
-            else:
-                accepted.append(p)
-
-    if not accepted:
-        log.warning(
-            "all %d calibration pairs for %s rejected as outliers; "
-            "keeping the one closest to median",
-            len(pairs), camera_id,
-        )
-        offsets = sorted(p.offset.total_seconds() for p in pairs)
-        median_s = offsets[len(offsets) // 2]
-        closest = min(
-            pairs,
-            key=lambda p: abs(p.offset.total_seconds() - median_s),
-        )
-        accepted = [closest]
-        rejected = [p for p in pairs if p is not closest]
-
-    # Cross-check pair offset against TZ-derived expectation.
-    if tz_offset is not None and accepted:
-        accepted_secs = sorted(p.offset.total_seconds() for p in accepted)
-        median_pair_s = accepted_secs[len(accepted_secs) // 2]
-        tz_s = tz_offset.total_seconds()
-        diff_s = abs(median_pair_s - tz_s)
-        if diff_s > _DEFAULT_OUTLIER_THRESHOLD.total_seconds():
-            warnings.append(
-                f"camera {camera_id!r}: measured pair offset "
-                f"({median_pair_s:+.0f}s) disagrees with TZ-derived "
-                f"expectation ({tz_s:+.0f}s) by {diff_s:.0f}s. "
-                f"Verify your TZ declaration or that the pair photos "
-                f"are truly concurrent."
-            )
+    if pairs:
+        # Source 3 — take the median pair's raw delta (the legacy
+        # multi-pair outlier reject path is moot here; v1 keeps a
+        # simple median that survives the spec/123 "no snap" rule).
+        deltas = sorted(int(round(p.offset.total_seconds())) for p in pairs)
+        offset_seconds = deltas[len(deltas) // 2]
 
     return CameraCalibration(
-        camera_id=camera_id, pairs=accepted, rejected_pairs=rejected,
-        tz_offset=tz_offset, warnings=warnings,
+        camera_id=camera_id,
+        offset_seconds=offset_seconds,
+        pairs=list(pairs),
     )
 
 
@@ -293,32 +262,28 @@ def correct_camera_time(
     """Top-level helper for callers that want a clean
     ``corrected = correct_camera_time(raw, calibration)`` line.
 
-    ``calibration=None`` is a no-op — useful for the reference camera
-    itself (which doesn't need correction) or for cameras the user
-    didn't calibrate (left as-is, with a caller-side warning).
-    """
+    ``calibration=None`` is a no-op."""
     if calibration is None:
         return camera_time
     return calibration.correct(camera_time)
 
 
-# ── Pair-picker snap heuristic (docs/03 §"Scope expansion #2") ───
+# ── Recognition-only helpers (PRESENTATION, not applied path) ─────────
 #
-# The Create-from-Past-Photos surface (the pair-picker UI) shows the
-# raw offset a ``CalibrationPair`` derives, then proposes the obvious
-# TZ-like value next to it. Real-world TZ offsets are quarter-hour
-# multiples: every whole hour −12…+14 plus :30 (India +5:30,
-# Newfoundland −3:30, etc.) and :45 (Nepal +5:45, Chatham +12:45).
-# Snapping to the nearest 15-minute multiple matches all of them.
+# spec/123 keeps the applied offset as the RAW measured delta. These
+# helpers exist solely so :mod:`core.clock_recognition` can group
+# candidate pairs by inferred zone in the recognition UI ("these all
+# suggest +5:45"). They never touch the offset that flows into the
+# calibration: :meth:`CandidatePair.to_calibration_pair` returns raw
+# timestamps; ``build_calibration_from_pair`` rounds the raw delta to
+# the second.
 
 
 def snap_to_tz_offset(raw: timedelta) -> timedelta:
     """Snap ``raw`` to the nearest 15-minute multiple — the granularity
-    of real-world UTC offsets. e.g. ``00:42:00 → 00:45:00`` (Nepal-ish);
-    ``05:03:00 → 05:00:00`` (whole hour); ``-02:58:30 → -03:00:00``.
-    Pure; no clamping (so a wildly-off pair returns a wildly-off snap,
-    which is on purpose — the caller / UI surfaces both raw and snap
-    so the user can see the snap was junk and reject it)."""
+    of real-world UTC offsets. Used by the recognition front end ONLY,
+    for clustering candidate pairs into "same suggested zone" piles
+    (spec/123 §2 — presentation, not applied path). Pure; no clamping."""
     minutes = raw.total_seconds() / 60.0
     snapped = round(minutes / 15.0) * 15
     return timedelta(minutes=snapped)
@@ -326,7 +291,7 @@ def snap_to_tz_offset(raw: timedelta) -> timedelta:
 
 def snap_disagreement(raw: timedelta, snapped: timedelta) -> timedelta:
     """Absolute distance between a raw pair-derived offset and its
-    TZ-snap. Useful for the UI to flag a suspicious pair: if the snap
-    moved by more than a few minutes the pair photos probably weren't
-    really simultaneous (someone clicked the wrong photo)."""
+    TZ-snap. Used by the recognition front end to filter pairs that
+    aren't plausibly simultaneous before clustering. Never feeds the
+    applied path (spec/123)."""
     return abs(raw - snapped)

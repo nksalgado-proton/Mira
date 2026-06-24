@@ -73,6 +73,13 @@ class CutDetailPage(QWidget):
     play_requested = pyqtSignal(str)        # cut_id — slice 8 wires
     export_requested = pyqtSignal(str)      # cut_id — slice 9 wires
     publish_requested = pyqtSignal(str)     # cut_id — spec/76 §B.3
+    # spec/117 — persistent post-export actions on a shipped Cut. The
+    # host resolves the export folder + ``.pte`` and either reveals the
+    # bundle in Explorer (Open folder) or launches PTE (Open in PTE).
+    # Both fire only when ``last_exported_at`` is set; the host gates
+    # PTE further on ``use_pte`` + ``pte_launch_available``.
+    open_folder_requested = pyqtSignal(str)
+    open_in_pte_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -189,6 +196,29 @@ class CutDetailPage(QWidget):
         self._publish_btn.setVisible(bool(show_export))
         disable_if_read_only(self._publish_btn)
         chrome.addWidget(self._publish_btn)
+        # spec/117 — persistent post-export actions. Hidden by default;
+        # :meth:`set_exported_actions` flips them on when the host
+        # resolved a shipped bundle. Read-only is fine: launching PTE
+        # / revealing a folder doesn't touch the store.
+        self._open_pte_btn = QPushButton(tr("Open in PTE"))
+        self._open_pte_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._open_pte_btn.setToolTip(tr(
+            "Reopen this exported Cut's slideshow.pte in PTE — no "
+            "re-export needed."))
+        self._open_pte_btn.clicked.connect(
+            lambda: self._cut_id
+            and self.open_in_pte_requested.emit(self._cut_id))
+        self._open_pte_btn.setVisible(False)
+        chrome.addWidget(self._open_pte_btn)
+        self._open_folder_btn = QPushButton(tr("Open folder"))
+        self._open_folder_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._open_folder_btn.setToolTip(tr(
+            "Reveal this exported Cut's bundle folder in Explorer."))
+        self._open_folder_btn.clicked.connect(
+            lambda: self._cut_id
+            and self.open_folder_requested.emit(self._cut_id))
+        self._open_folder_btn.setVisible(False)
+        chrome.addWidget(self._open_folder_btn)
         top_l.addLayout(chrome)
 
         outer.addWidget(top_band)
@@ -218,6 +248,22 @@ class CutDetailPage(QWidget):
         QShortcut(QKeySequence("F1"), self, activated=self._show_shortcuts)
 
     # ── content ──────────────────────────────────────────────────────
+
+    def set_exported_actions(
+        self, *, show_folder: bool, show_pte: bool,
+    ) -> None:
+        """spec/117 — toggle the persistent post-export action buttons.
+
+        The host resolves the bundle (via
+        :func:`mira.shared.exported_cut_actions.resolve_event_cut_location`
+        or its cross-event sibling) and the PTE gates (``use_pte`` +
+        :func:`mira.shared.pte_launch.pte_launch_available`), then
+        calls this with the booleans. A never-exported Cut shows
+        neither; a moved/deleted bundle shows folder-only (which
+        degrades to the parent ``Cuts/…``).
+        """
+        self._open_folder_btn.setVisible(bool(show_folder))
+        self._open_pte_btn.setVisible(bool(show_pte))
 
     def show_cut(self, eg, cut, *, separators_on: bool, aspect: str) -> None:
         """Build the flat show-order grid for one Cut: file tiles + a

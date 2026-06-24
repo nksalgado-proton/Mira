@@ -238,6 +238,28 @@ def _parse_duration_seconds(val) -> float:
         return 0.0
 
 
+def _pick_capture_timestamp(entry: dict) -> str:
+    """Walk the capture-time fallback chain and return the raw string.
+
+    Order: ``DateTimeOriginal`` (standard EXIF, local wall-clock) →
+    ``CreationDate`` (QuickTime local-with-TZ-trailer) → ``CreateDate``
+    → ``MediaCreateDate`` → ``TrackCreateDate``. The empty-string
+    fallback lets callers safely treat the absence as "no
+    timestamp"."""
+    chain = (
+        "DateTimeOriginal",
+        "CreationDate",
+        "CreateDate",
+        "MediaCreateDate",
+        "TrackCreateDate",
+    )
+    for field_name in chain:
+        value = entry.get(field_name)
+        if value:
+            return str(value)
+    return ""
+
+
 def _parse_timestamp(s: str) -> datetime | None:
     """Parse an EXIF / QuickTime timestamp string into a naive datetime.
 
@@ -430,29 +452,17 @@ def read_exif_batch(files: list[Path]) -> list[PhotoExif]:
     photos = []
     for entry in data:
         source = Path(entry.get('SourceFile', ''))
+        # The capture-time fallback chain (spec/123 reverts spec/122's
+        # UTC provenance flag — GoPro is just a camera with a known
+        # configured TZ, handled by the per-camera offset_seconds).
+        # ``CreationDate`` MUST come before ``CreateDate`` (Nelson
+        # 2026-05-28): GoPro / iOS MP4 write ``CreationDate`` as LOCAL
+        # wall-clock with TZ trailer (what the user actually sees) and
+        # ``CreateDate`` as the mvhd UTC value.
+        ts_raw = _pick_capture_timestamp(entry)
         photo = PhotoExif(
             path=source,
-            timestamp=_parse_timestamp(
-                entry.get('DateTimeOriginal', '')
-                # Nelson 2026-05-28: ``CreationDate`` MUST come before
-                # ``CreateDate`` in the fallback chain. GoPro / iOS
-                # MP4 write ``CreationDate`` as the LOCAL wall-clock
-                # with TZ (the recording-clock value the user actually
-                # sees and reasons about) and ``CreateDate`` as some
-                # internal value that can be wildly different (12+h
-                # offset observed on a Nepal HERO12 file). When the
-                # Adjust TZ engine reads via this fallback to compute
-                # its shift, ``CreateDate`` produced a delta-applied
-                # result that didn't match the user's intended
-                # SP-to-Nepal correction; preferring ``CreationDate``
-                # aligns the engine with the GoPro user's mental
-                # model. Same priority as the bucket_scanner chain
-                # (TIMESTAMP_TAGS in core/bucket_scanner.py).
-                or entry.get('CreationDate', '')
-                or entry.get('CreateDate', '')
-                # QuickTime fallbacks for GoPro / other video-only sources.
-                or entry.get('MediaCreateDate', '')
-                or entry.get('TrackCreateDate', '')),
+            timestamp=_parse_timestamp(ts_raw),
             model=str(entry.get('Model', '')),
             lens=str(entry.get('LensModel', '')).strip(),
             focal_length=_extract_focal(entry.get('FocalLength', '')),

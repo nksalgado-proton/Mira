@@ -69,10 +69,29 @@ class CrossEventCutDetailDialog(QDialog):
         title.setFont(f)
         top.addWidget(title)
         top.addStretch()
+        # spec/117 — persistent post-export actions on a shipped Cut.
+        # Same gates as the per-event surface: visible when
+        # ``last_exported_at`` is set; PTE further gated by ``use_pte``
+        # + ``pte_launch_available`` + a ``.pte`` found on disk.
+        self._open_pte_btn = ghost_button(tr("Open in PTE"))
+        self._open_pte_btn.setToolTip(tr(
+            "Reopen this exported Cut's slideshow.pte in PTE — no "
+            "re-export needed."))
+        self._open_pte_btn.clicked.connect(self._on_open_in_pte)
+        self._open_pte_btn.setVisible(False)
+        top.addWidget(self._open_pte_btn)
+        self._open_folder_btn = ghost_button(tr("Open folder"))
+        self._open_folder_btn.setToolTip(tr(
+            "Reveal this exported Cut's bundle folder in Explorer."))
+        self._open_folder_btn.clicked.connect(self._on_open_folder)
+        self._open_folder_btn.setVisible(False)
+        top.addWidget(self._open_folder_btn)
         close_btn = ghost_button(tr("Close"))
         close_btn.clicked.connect(self.accept)
         top.addWidget(close_btn)
         root.addLayout(top)
+
+        self._sync_exported_actions()
 
         meta = QLabel(tr("anchor: {anchor} · {n} members").format(
             anchor=self._cut_row.anchor_event_name,
@@ -103,6 +122,80 @@ class CrossEventCutDetailDialog(QDialog):
         body.addStretch()
         scroll.setWidget(host)
         root.addWidget(scroll, 1)
+
+    # ── spec/117 — persistent post-export actions ────────────────
+
+    def _sync_exported_actions(self) -> None:
+        """Flip the Open folder / Open in PTE buttons based on whether
+        the cross-event Cut shipped and the state of its bundle."""
+        from mira.shared.exported_cut_actions import is_exported
+        from mira.shared.pte_launch import pte_launch_available
+        if not is_exported(self._cut_row):
+            return
+        loc = self._resolve_location()
+        if loc is None:
+            return
+        self._open_folder_btn.setVisible(True)
+        settings = self._load_settings()
+        pte_available = (
+            loc.pte_available
+            and getattr(settings, "use_pte", False)
+            and pte_launch_available(
+                getattr(settings, "pte_path", "") if settings else ""))
+        self._open_pte_btn.setVisible(bool(pte_available))
+
+    def _resolve_location(self):
+        """Resolve the bundle via the cross-event resolver, fed
+        ``library_root`` + ``cuts_export_root`` from settings. Returns
+        ``None`` when the library root can't be resolved (offline
+        bootstrap)."""
+        from mira.paths import library_root as _library_root_from_paths
+        from mira.shared.exported_cut_actions import (
+            resolve_cross_event_cut_location,
+        )
+        root = _library_root_from_paths()
+        if root is None:
+            return None
+        settings = self._load_settings()
+        cuts_export_root = (
+            getattr(settings, "cuts_export_root", "") or ""
+            if settings else "")
+        return resolve_cross_event_cut_location(
+            cut_tag=self._cut_row.tag,
+            library_root=root,
+            cuts_export_root=cuts_export_root or None,
+        )
+
+    def _load_settings(self):
+        try:
+            return self._gw.settings.load()
+        except Exception:                                          # noqa: BLE001
+            return None
+
+    def _on_open_folder(self) -> None:
+        from mira.shared.pte_launch import reveal_in_explorer
+        loc = self._resolve_location()
+        if loc is None:
+            return
+        try:
+            reveal_in_explorer(loc.folder)
+        except OSError as exc:
+            log.warning("reveal_in_explorer failed: %s", exc)
+
+    def _on_open_in_pte(self) -> None:
+        from mira.shared.pte_launch import open_in_pte
+        loc = self._resolve_location()
+        if loc is None or loc.pte_file is None:
+            return
+        settings = self._load_settings()
+        pte_path = getattr(settings, "pte_path", "") if settings else ""
+        if not pte_path:
+            return
+        try:
+            from pathlib import Path
+            open_in_pte(Path(pte_path), loc.pte_file)
+        except OSError as exc:
+            log.warning("open_in_pte failed: %s", exc)
 
     def _fetch_member_groups(self) -> list:
         """Return ``[(event_id, [rows])]`` for the cut. Rows carry kind /

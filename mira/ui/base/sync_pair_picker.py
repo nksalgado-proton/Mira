@@ -60,7 +60,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.clock_calibration import CalibrationPair, snap_to_tz_offset
+from core.clock_calibration import CalibrationPair
 from core.exif_reader import read_exif_single
 from core.fresh_source import camera_id_for
 from mira.ui.i18n import tr  # ported into mira/ui (charter §4 step 7)
@@ -432,8 +432,9 @@ class SyncPairPickerDialog(QDialog):
              button enabled;
            * over tolerance → red verdict, button disabled.
         3. Both present + no ``configured_tz``:
-           * snap raw to nearest 15-min multiple;
-           * verdict shows "Snap +H:MM"; button enabled.
+           * verdict shows the raw delta + the "applied as-is" note;
+           * button enabled; final = raw (spec/123 source 3; spec/124
+             removed the bogus 15-min "pick a closer pair" warning).
         """
         cam_t = self._cam_panel.timestamp
         ref_t = self._ref_panel.timestamp
@@ -480,39 +481,21 @@ class SyncPairPickerDialog(QDialog):
                 self._use_btn.setEnabled(False)
                 self._final_offset = None
         else:
-            snapped = snap_to_tz_offset(raw)
-            snap_diff = abs(raw - snapped)
-            # If snap_diff is large the user likely picked photos
-            # that weren't taken at the same moment — the snap can
-            # silently push them into the wrong 15-min bucket. Warn
-            # loudly above ~5 minutes (Nelson 2026-05-22: "photos
-            # have to be within 15 minutes of each other, at most").
-            warn = snap_diff > timedelta(minutes=5)
-            verdict_html = (
+            # spec/123 — source 3 applies the RAW measured delta, never
+            # a snapped value. The Nepal pair (5h00m02s) lands as 18 002
+            # seconds, NOT 4:45 / 5:45. The raw delta IS the offset to
+            # apply at any magnitude (spec/124 removed the 15-min "pick a
+            # closer pair" warning — it was a snap-era leftover that
+            # fired on every real TZ offset, since those are hours).
+            self._verdict.setText(
                 tr(
                     "Δ raw: <b>{raw}</b><br>"
-                    "No timezone declared for this camera — snapping "
-                    "to nearest 15-min multiple.<br>"
-                    "Snap: <b>{snap}</b> · "
-                    "photos within <b>{diff}</b> of each other in real time"
+                    "No timezone declared for this camera — applying "
+                    "the measured offset as-is (no snapping)."
                 ).replace("{raw}", _fmt_offset(raw))
-                 .replace("{snap}", _fmt_offset(snapped))
-                 .replace("{diff}", _fmt_disagreement(snap_diff))
             )
-            if warn:
-                verdict_html += (
-                    "<br><span style='color:#d97706; font-weight:bold;'>"
-                    + tr(
-                        "⚠ The two photos are more than 5 minutes "
-                        "apart in real time. Pick a closer pair — "
-                        "the further apart they are, the greater the "
-                        "risk of snapping to the wrong timezone bucket."
-                    )
-                    + "</span>"
-                )
-            self._verdict.setText(verdict_html)
             self._use_btn.setEnabled(True)
-            self._final_offset = snapped
+            self._final_offset = raw
 
     # ── Result ─────────────────────────────────────────────────
 

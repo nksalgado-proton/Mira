@@ -80,7 +80,6 @@ from mira.ui.design import (
     confirm,
     ghost_button,
     line_input,
-    pill_toggle,
     primary_button,
     tinted_svg_pixmap,
 )
@@ -1726,7 +1725,9 @@ class NewRecipeDialog(QDialog):
         # without rebuilding the row. Populated in the runtime row
         # builder; readers tolerate ``None`` for surfaces that hide the
         # control (an empty vocabulary).
-        self._overlay_field_chips: Dict[str, QPushButton] = {}
+        # spec/119 — overlay field selectors are real QCheckBoxes; the
+        # legacy ``pill_toggle`` QPushButton path lit ambiguous tints.
+        self._overlay_field_chips: Dict[str, QCheckBox] = {}
 
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
@@ -1774,10 +1775,13 @@ class NewRecipeDialog(QDialog):
         # press signal; consumed on release.
         self._dragging_rule_index: Optional[int] = None
 
-        # Filter state. Pill-toggle chips + checkboxes drive these.
-        self._style_chips: Dict[str, QPushButton] = {}
-        self._camera_chips: Dict[str, QPushButton] = {}
-        self._lens_chips: Dict[str, QPushButton] = {}
+        # Filter state. spec/119 — the style / camera / lens selectors
+        # are real QCheckBoxes (Photos / Videos in the Media row always
+        # were); the legacy ``pill_toggle`` QPushButton path lit a soft
+        # tint that three spec/113 passes failed to make legible.
+        self._style_chips: Dict[str, QCheckBox] = {}
+        self._camera_chips: Dict[str, QCheckBox] = {}
+        self._lens_chips: Dict[str, QCheckBox] = {}
         self._photos_cb: Optional[QCheckBox] = None
         self._videos_cb: Optional[QCheckBox] = None
 
@@ -2636,6 +2640,14 @@ class NewRecipeDialog(QDialog):
         return host
 
     def _build_style_row(self) -> QHBoxLayout:
+        """spec/119 — style filters are real :class:`QCheckBox`es so the
+        active state is unmistakable. The retired ``#PillToggle`` /
+        ``#StyleChip`` path lit only a soft tint when checked (and three
+        spec/113-era passes failed to make it readable); a checkbox
+        carries the OS-native indicator. They reuse the dialog's
+        ``DaysTableCheck`` role so the row visually matches the Media
+        Photos / Videos checkboxes that have always been real
+        QCheckBoxes."""
         row = QHBoxLayout()
         row.setSpacing(8)
         label = QLabel(tr("Style"))
@@ -2643,9 +2655,9 @@ class NewRecipeDialog(QDialog):
         label.setMinimumWidth(64)
         row.addWidget(label)
         for style in self._ctx.available_styles:
-            chip = pill_toggle(
-                style, checked=(style in self._ctx.selected_styles))
-            chip.setObjectName("StyleChip")
+            chip = QCheckBox(style)
+            chip.setObjectName("DaysTableCheck")
+            chip.setChecked(style in self._ctx.selected_styles)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._style_chips[style] = chip
             row.addWidget(chip)
@@ -2673,6 +2685,9 @@ class NewRecipeDialog(QDialog):
         return row
 
     def _build_camera_row(self) -> QHBoxLayout:
+        """spec/119 — camera filter chips are real :class:`QCheckBox`es
+        for the same reason as the style row above. Same handler, same
+        keying — the read sites read ``.isChecked()`` unchanged."""
         row = QHBoxLayout()
         row.setSpacing(8)
         label = QLabel(tr("Camera"))
@@ -2680,9 +2695,9 @@ class NewRecipeDialog(QDialog):
         label.setMinimumWidth(64)
         row.addWidget(label)
         for cam in self._ctx.available_cameras:
-            chip = pill_toggle(
-                cam, checked=(cam in self._ctx.selected_cameras))
-            chip.setObjectName("CameraChip")
+            chip = QCheckBox(cam)
+            chip.setObjectName("DaysTableCheck")
+            chip.setChecked(cam in self._ctx.selected_cameras)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._camera_chips[cam] = chip
             row.addWidget(chip)
@@ -2690,6 +2705,7 @@ class NewRecipeDialog(QDialog):
         return row
 
     def _build_lens_row(self) -> QHBoxLayout:
+        """spec/119 — lens filter chips: see :meth:`_build_camera_row`."""
         row = QHBoxLayout()
         row.setSpacing(8)
         label = QLabel(tr("Lens"))
@@ -2697,9 +2713,9 @@ class NewRecipeDialog(QDialog):
         label.setMinimumWidth(64)
         row.addWidget(label)
         for lens in self._ctx.available_lenses:
-            chip = pill_toggle(
-                lens, checked=(lens in self._ctx.selected_lenses))
-            chip.setObjectName("LensChip")
+            chip = QCheckBox(lens)
+            chip.setObjectName("DaysTableCheck")
+            chip.setChecked(lens in self._ctx.selected_lenses)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._lens_chips[lens] = chip
             row.addWidget(chip)
@@ -3097,10 +3113,14 @@ class NewRecipeDialog(QDialog):
             self._on_overlay_mode_changed)
         ob.addWidget(self._overlay_mode_combo)
 
-        # Fields row — one chip per ``(key, label)`` pair. The chip
-        # shares the ``#PillToggle`` role with the style/camera/lens
-        # chips so the spec/113 strong-checked QSS lights the active
-        # cue with no extra styling here.
+        # Fields row — one :class:`QCheckBox` per ``(key, label)`` pair.
+        # spec/119: the old ``pill_toggle`` returned a checkable
+        # QPushButton whose object name we then overwrote to
+        # ``#OverlayFieldChip``, defeating the spec/113 ``#PillToggle:
+        # checked`` accent fill. A real checkbox carries an OS-native
+        # indicator; ambiguity is gone permanently. Shares
+        # ``DaysTableCheck`` with the Media row's Photos / Videos so the
+        # whole dialog reads one way.
         chips_row = QHBoxLayout()
         chips_row.setContentsMargins(0, 0, 0, 0)
         chips_row.setSpacing(6)
@@ -3109,9 +3129,9 @@ class NewRecipeDialog(QDialog):
                 key, label = entry[0], entry[1]
             except (TypeError, IndexError):
                 continue
-            chip = pill_toggle(
-                str(label), checked=(str(key) in self._overlay_fields))
-            chip.setObjectName("OverlayFieldChip")
+            chip = QCheckBox(str(label))
+            chip.setObjectName("DaysTableCheck")
+            chip.setChecked(str(key) in self._overlay_fields)
             chip.toggled.connect(self._on_overlay_field_toggled)
             self._overlay_field_chips[str(key)] = chip
             chips_row.addWidget(chip)

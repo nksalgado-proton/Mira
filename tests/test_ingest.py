@@ -125,7 +125,7 @@ def test_declared_offset_corrects_capture_time(nepal):
     # raw 08:00 + (5.75 − (−3.0)) = +8:45 → 16:45, same day.
     assert g9.capture_time_raw == "2026-03-10T08:00:00"
     assert g9.capture_time_corrected == "2026-03-10T16:45:00"
-    assert g9.tz_offset_minutes == 525
+    assert g9.tz_offset_seconds == 525 * 60
     # spec/52: tz_source enum aligned to camera_day_tz.source.
     assert g9.tz_source == "user_declared"
     assert g9.day_number == 1
@@ -140,7 +140,7 @@ def test_phone_passes_through_uncorrected(nepal):
     finally:
         eg.close()
     assert ip.capture_time_raw == ip.capture_time_corrected == "2026-03-10T18:30:00"
-    assert ip.tz_offset_minutes == 0
+    assert ip.tz_offset_seconds == 0
     assert ip.tz_source == "none"
     assert ip.day_number == 1
     assert "_phones/" in ip.origin_relpath
@@ -155,7 +155,7 @@ def test_pair_calibration_applies_and_is_tagged(nepal):
         eg.close()
     # +1h pair offset.
     assert pc.capture_time_corrected == "2026-03-10T13:00:00"
-    assert pc.tz_offset_minutes == 60
+    assert pc.tz_offset_seconds == 60 * 60
     assert pc.tz_source == "pair_picker"
     assert pc.day_number == 1
 

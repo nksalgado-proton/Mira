@@ -94,7 +94,7 @@ def test_record_offload_projects_manifest_into_items(seeded):
         # corrected = raw + 8:45; no bake — raw is preserved verbatim.
         assert p1.capture_time_raw == "2026-03-11T08:00:00"
         assert p1.capture_time_corrected == "2026-03-11T16:45:00"
-        assert p1.tz_offset_minutes == 525 and p1.day_number == 2
+        assert p1.tz_offset_seconds == 525 * 60 and p1.day_number == 2
         # The new camera row was added (insert-only-missing).
         cams = {c.camera_id for c in eg.cameras()}
         assert "G9_mkII" in cams
@@ -131,7 +131,7 @@ def test_record_offload_zero_offset_leaves_times_equal(seeded):
     try:
         i = next(x for x in eg.items() if Path(x.origin_relpath).name == "IMG.JPG")
         assert i.capture_time_raw == i.capture_time_corrected == "2026-03-10T09:00:00"
-        assert i.tz_offset_minutes == 0 and i.tz_source == "none"
+        assert i.tz_offset_seconds == 0 and i.tz_source == "none"
         phone = next(c for c in eg.cameras() if c.camera_id == "Phone")
         assert phone.is_phone is True
     finally:

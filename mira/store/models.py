@@ -52,8 +52,36 @@ class TripDay:
 class Camera:
     camera_id: str
     is_phone: bool = False
-    configured_tz_minutes: Optional[int] = None
-    applied_offset_minutes: Optional[int] = None
+    # spec/123 — clock offsets are integer SECONDS (was minutes).
+    # spec/127 — the canonical per-(camera, trip-TZ-segment) correction
+    # lives in :class:`CameraTzCorrection`; these columns stay as the
+    # single-segment summary (mirrored on save) so older read paths keep
+    # working without churn. A multi-segment trip mirrors the row for the
+    # predominant trip TZ here.
+    configured_tz_seconds: Optional[int] = None
+    applied_offset_seconds: Optional[int] = None
+    applied_at: Optional[str] = None
+
+
+@dataclass
+class CameraTzCorrection:
+    """spec/127 — per-(camera, trip-TZ-segment) correction.
+
+    ``trip_tz_seconds`` keys the segment (a set of plan days sharing one
+    ``trip_day.tz_minutes`` value, ×60). ``configured_tz_seconds`` set =
+    base came from a declared zone (spec/123 source 1); NULL = base came
+    from a measured pair / manual offset (spec/123 source 3). The spec/125
+    discriminator, now per segment — the dialog reads this verbatim and
+    NEVER back-derives a zone from the offset. ``nudge_seconds`` is the
+    fine ±MM:SS adjustment (default 0); ``applied_offset_seconds`` is the
+    total (base + nudge) actually fed to ``recompute_corrected_times`` —
+    denormalized for quick reconstruction."""
+
+    camera_id: str
+    trip_tz_seconds: int
+    configured_tz_seconds: Optional[int] = None
+    nudge_seconds: int = 0
+    applied_offset_seconds: int = 0
     applied_at: Optional[str] = None
 
 
@@ -94,7 +122,8 @@ class Item:
     parent_item_id: Optional[str] = None
     capture_time_raw: Optional[str] = None
     capture_time_corrected: Optional[str] = None
-    tz_offset_minutes: int = 0
+    # spec/123 — integer seconds (was minutes).
+    tz_offset_seconds: int = 0
     tz_source: str = "none"
     classification: Optional[str] = None
     classification_source: Optional[str] = None
@@ -170,6 +199,12 @@ class Adjustment:
     rotation: int = 0
     aspect_label: Optional[str] = None
     look_strength: float = 1.0
+    # spec/115 — per-image USER exposure in EV, added to the resolved
+    # ``Params.exposure`` AFTER the Look's strength scaling. Independent
+    # of both the Look and Strength so a user can nudge brightness in
+    # isolation. Clamped to [-2, +2] at the gateway seam (the v15→v16
+    # migration omits the CHECK on existing rows).
+    user_exposure: float = 0.0
     edit_exported: bool = False
 
 
@@ -411,6 +446,7 @@ class EventDocument:
     event: Event
     trip_days: List[TripDay] = field(default_factory=list)
     cameras: List[Camera] = field(default_factory=list)
+    camera_tz_corrections: List[CameraTzCorrection] = field(default_factory=list)
     camera_calibration_pairs: List[CameraCalibrationPair] = field(default_factory=list)
     camera_day_tz: List[CameraDayTz] = field(default_factory=list)
     items: List[Item] = field(default_factory=list)

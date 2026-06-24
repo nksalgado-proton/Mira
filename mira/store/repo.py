@@ -53,6 +53,8 @@ _REGISTRY: List[_TableInfo] = [
     _TableInfo(m.Event, "event", ("id",)),
     _TableInfo(m.TripDay, "trip_day", ("day_number",)),
     _TableInfo(m.Camera, "camera", ("camera_id",)),
+    _TableInfo(m.CameraTzCorrection, "camera_tz_correction",
+               ("camera_id", "trip_tz_seconds")),
     _TableInfo(m.CameraCalibrationPair, "camera_calibration_pair", ("id",)),
     _TableInfo(m.CameraDayTz, "camera_day_tz", ("camera_id", "day_number")),
     _TableInfo(m.Item, "item", ("id",)),
@@ -83,6 +85,7 @@ _BY_CLS: Dict[type, _TableInfo] = {info.cls: info for info in _REGISTRY}
 # (parents before children; FK checks are deferred to commit so this is for readability).
 _DOC_CLASSES: tuple = (
     m.Event, m.TripDay, m.Camera, m.Item, m.CameraCalibrationPair,
+    m.CameraTzCorrection,  # spec/127 — fk to camera, written after camera
     m.CameraDayTz,    # spec/45 Slice TZ-3 — fk to camera + trip_day, both already written above
     m.PhaseState, m.VideoMarker, m.VideoSegment, m.VideoSnapshot,
     m.Adjustment, m.VideoAdjustment,
@@ -257,6 +260,7 @@ class EventStore:
             m.Event: [doc.event],
             m.TripDay: doc.trip_days,
             m.Camera: doc.cameras,
+            m.CameraTzCorrection: doc.camera_tz_corrections,
             m.CameraCalibrationPair: doc.camera_calibration_pairs,
             m.CameraDayTz: doc.camera_day_tz,
             m.Item: doc.items,
@@ -293,6 +297,7 @@ class EventStore:
             event=events[0],
             trip_days=self.all(m.TripDay),
             cameras=self.all(m.Camera),
+            camera_tz_corrections=self.all(m.CameraTzCorrection),
             camera_calibration_pairs=self.all(m.CameraCalibrationPair),
             camera_day_tz=self.all(m.CameraDayTz),
             items=self.all(m.Item),

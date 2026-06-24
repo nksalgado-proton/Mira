@@ -62,9 +62,9 @@ def _seed_event(photos_base, *, name, eid):
             "INSERT INTO item (id, kind, provenance, origin_relpath, sha256, "
             "byte_size, materialized_at, materialized_phase, camera_id, "
             "day_number, capture_time_raw, capture_time_corrected, "
-            "tz_offset_minutes, tz_source, extras_json, created_at) "
+            "tz_offset_seconds, tz_source, extras_json, created_at) "
             "VALUES ('it-1', 'photo', 'captured', 'p.jpg', ?, 1, ?, 'ingest', "
-            "'cam-A', 1, ?, ?, -360, 'pair_picker', '{}', ?)",
+            "'cam-A', 1, ?, ?, -21600, 'pair_picker', '{}', ?)",
             ("a" * 64, NOW, "2026-04-01T10:00:00", "2026-04-01T04:00:00", NOW))
     store.close()
     return root

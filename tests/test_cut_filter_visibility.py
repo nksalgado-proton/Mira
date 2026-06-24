@@ -1,10 +1,14 @@
-"""Tests for spec/113 — active-filter visibility in the Cut dialog.
+"""Tests for spec/113 — active-filter visibility in the Cut dialog +
+spec/119's QCheckBox conversion of the filter selectors.
 
 Three contracts:
 
-* **Stronger active visual**: a checked style chip exposes its checked
-  state to QSS via ``isChecked()`` / the ``#PillToggle`` role, so the
-  redesign.qss role can paint the unmistakable accent fill.
+* **Stronger active visual (spec/119 finale)**: every filter selector
+  is a real :class:`QCheckBox` carrying the OS-native indicator. The
+  legacy ``pill_toggle`` QPushButton (object name later overwritten to
+  ``#StyleChip`` / ``#CameraChip`` / ``#LensChip``) silently defeated
+  spec/113's ``#PillToggle:checked`` accent rule — three rounds of
+  styling chased a selector that never matched these widgets.
 * **"Filters active" indicator**: the persistent notice appears iff any
   filter axis is non-default (style ∪ media-type ∪ hardware), reads
   "{n} filter(s) active — showing X of Y items", and quotes Y from a
@@ -100,21 +104,44 @@ def _show(dlg) -> None:
 # --------------------------------------------------------------------- #
 
 
-def test_style_chip_checked_state_drives_qss_role(qapp):
-    """spec/113 §2 — a checked style chip carries the ``isChecked``
-    flag the ``#PillToggle:checked`` role keys off. Pinning this so a
-    future refactor that swaps the chip widget can't break the visual
-    cue (the QSS rule depends on ``QAbstractButton.isChecked()``)."""
+def test_style_chip_is_a_real_qcheckbox(qapp):
+    """spec/119 — the style filters are real :class:`QCheckBox`es so
+    the active state is unmistakable. The legacy ``pill_toggle``
+    QPushButton path lit a soft tint three spec/113 passes failed to
+    make readable; an OS-native checkbox indicator settles it. The
+    object name reuses ``DaysTableCheck`` (the role the Media row's
+    Photos / Videos always carried) so the whole filter surface
+    reads one way."""
+    from PyQt6.QtWidgets import QCheckBox
     dlg, _ = _make_dialog(qapp)
     try:
         chip = dlg._style_chips["macro"]
+        assert isinstance(chip, QCheckBox)
         assert chip.isChecked() is False
         chip.setChecked(True)
         assert chip.isChecked() is True
-        # The chip's object name must be the role the QSS keys off.
-        # ``StyleChip`` overrides ``#PillToggle`` for nuance later; the
-        # active-fill QSS lives on the underlying ``#PillToggle`` role.
-        assert chip.objectName() in ("StyleChip", "PillToggle")
+        assert chip.objectName() == "DaysTableCheck"
+    finally:
+        dlg.deleteLater()
+
+
+def test_camera_and_lens_chips_are_real_qcheckboxes(qapp):
+    """spec/119 — the hardware filter rows (spec/90 §4) share the
+    legacy ``pill_toggle`` ambiguity. They convert in the same pass
+    so a single visual grammar runs through the dialog."""
+    from PyQt6.QtWidgets import QCheckBox
+    dlg, _ = _make_dialog(qapp, show_hardware=True)
+    try:
+        cam = dlg._camera_chips["G9"]
+        lens = dlg._lens_chips["35mm"]
+        for chip in (cam, lens):
+            assert isinstance(chip, QCheckBox)
+            assert chip.objectName() == "DaysTableCheck"
+        # Toggling round-trips through ``isChecked()`` exactly like
+        # the style chips do.
+        cam.setChecked(True)
+        lens.setChecked(True)
+        assert cam.isChecked() and lens.isChecked()
     finally:
         dlg.deleteLater()
 

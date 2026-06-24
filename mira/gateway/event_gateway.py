@@ -43,7 +43,7 @@ from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from core import collection_resolver, cut_budget, cut_names, recipe_resolver
 from core.video_segments import segment_bounds as derive_segment_bounds
@@ -1664,6 +1664,31 @@ class EventGateway:
         except (ValueError, TypeError):
             return "black"
         return style if style in ("black", "single", "multi") else "black"
+
+    def item_provenance(self, item_id: str):
+        """spec/134 — resolve a viewer-overlay :class:`FrameProvenance`
+        for a live ``item`` (the Picker / Editor source item, not a
+        lineage export row).
+
+        Thin wrapper over :func:`core.viewer_overlay.item_to_frame_provenance`
+        that handles the day / camera lookups, so the UI doesn't have
+        to. Returns an empty ``FrameProvenance`` when the item isn't
+        found (the composer omits empty fields, the overlay then
+        renders as hidden via ``set_html('')``)."""
+        from core import viewer_overlay
+        item = self.store.get(m.Item, item_id)
+        if item is None:
+            return viewer_overlay.FrameProvenance()
+        camera_label: Optional[str] = None
+        if item.camera_id:
+            cam = self.store.get(m.Camera, item.camera_id)
+            if cam is not None:
+                camera_label = cam.camera_id
+        day = None
+        if item.day_number is not None:
+            day = self.store.get(m.TripDay, item.day_number)
+        return viewer_overlay.item_to_frame_provenance(
+            item, camera_label=camera_label, day=day)
 
     def frame_provenance(self, export_relpath: str):
         """Resolve one Cut member's overlay provenance (spec/81 §3.1).
@@ -3546,7 +3571,7 @@ class EventGateway:
         self, camera_id: str, day_number: int,
     ) -> Optional[m.CameraDayTz]:
         """The declared TZ for one ``(camera, day)``, or ``None`` if no row.
-        The bake's read path: fall back to ``camera.applied_offset_minutes``
+        The bake's read path: fall back to ``camera.applied_offset_seconds``
         on ``None``."""
         return self.store.get(m.CameraDayTz, camera_id, day_number)
 
@@ -3708,6 +3733,82 @@ class EventGateway:
             self.store.upsert(camera)
             self._touch()
 
+    # ── spec/127 — per-(camera, trip-TZ-segment) correction store ────────
+
+    def tz_segments(self) -> "List":
+        """spec/127 §1.1 — derive trip-TZ segments from
+        ``trip_day.tz_minutes`` and the per-(camera, day) captured-items
+        presence. Returns a list of :class:`core.tz_segments.TzSegment`
+        sorted ascending by ``trip_tz_seconds``. The unified correction
+        dialog renders one section per segment; a single-segment trip
+        shows no segment chrome."""
+        from core.tz_segments import derive_segments
+
+        trip_days_tz: Dict[int, Optional[int]] = {
+            int(d.day_number): (None if d.tz_minutes is None else int(d.tz_minutes))
+            for d in self.trip_days()
+        }
+        # One (camera_id, day_number) row per distinct captured pair.
+        pairs = self.store.conn.execute(
+            "SELECT DISTINCT camera_id, day_number FROM item "
+            "WHERE provenance = 'captured' "
+            "AND camera_id IS NOT NULL AND day_number IS NOT NULL"
+        ).fetchall()
+        return derive_segments(
+            trip_days_tz,
+            camera_day_pairs=[(str(r[0]), int(r[1])) for r in pairs],
+        )
+
+    def camera_tz_corrections(
+        self, camera_id: Optional[str] = None,
+    ) -> List[m.CameraTzCorrection]:
+        """Read every persisted per-(camera, trip-TZ-segment) correction,
+        or just the rows for one camera. Returns rows sorted by
+        (camera_id, trip_tz_seconds) for deterministic ordering."""
+        if camera_id is None:
+            return self.store.all(m.CameraTzCorrection)
+        return self.store.query_by(
+            m.CameraTzCorrection, camera_id=camera_id)
+
+    def camera_tz_correction(
+        self, camera_id: str, trip_tz_seconds: int,
+    ) -> Optional[m.CameraTzCorrection]:
+        """Read the one correction row for ``(camera_id, trip_tz_seconds)``,
+        or ``None`` when the user hasn't recorded one yet (the dialog
+        renders that as the default "Clock was correct")."""
+        return self.store.get(
+            m.CameraTzCorrection, camera_id, int(trip_tz_seconds))
+
+    def save_camera_tz_correction(
+        self, correction: m.CameraTzCorrection,
+        *, mirror_to_camera: bool = True,
+    ) -> None:
+        """Upsert one ``camera_tz_correction`` row — the unified Camera
+        Clock Correction commit. Pair with
+        :meth:`recompute_corrected_times` (scoped to the segment's days)
+        so the items' corrected times follow.
+
+        ``mirror_to_camera`` mirrors the row onto the legacy single
+        per-camera ``camera.applied_offset_seconds`` /
+        ``configured_tz_seconds`` summary columns so older read paths
+        (the past-photos backfill, the v17 dialog still on the legacy
+        seed) keep working. For a multi-segment trip the caller decides
+        which segment "wins" the mirror — typically the segment with the
+        most plan days; we let the dialog do that and call us once."""
+        with self.store.transaction() as conn:
+            self.store.upsert(correction)
+            if mirror_to_camera:
+                conn.execute(
+                    "UPDATE camera SET applied_offset_seconds = ?, "
+                    "configured_tz_seconds = ?, applied_at = ? "
+                    "WHERE camera_id = ?",
+                    (int(correction.applied_offset_seconds),
+                     correction.configured_tz_seconds,
+                     correction.applied_at,
+                     correction.camera_id),
+                )
+            self._touch()
+
     def retime_day(self, day_number: int, new_tz_minutes: int) -> Dict[str, int]:
         """spec/57 §4.2 — the single-day TZ fix-up. The day's declared TZ
         changes from its current value to ``new_tz_minutes``; every captured
@@ -3723,7 +3824,9 @@ class EventGateway:
         day = self.store.get(m.TripDay, day_number)
         if day is None:
             raise ValueError(f"no trip day {day_number}")
-        delta_min = int(new_tz_minutes) - int(day.tz_minutes or 0)
+        # spec/123 — trip_day still stores tz_minutes (zones are whole
+        # minutes); convert the delta to seconds for item-level math.
+        delta_seconds = (int(new_tz_minutes) - int(day.tz_minutes or 0)) * 60
         by_date: Dict[str, int] = {}
         for d in sorted(self.trip_days(), key=lambda x: x.day_number):
             if d.date and d.date not in by_date:
@@ -3740,15 +3843,15 @@ class EventGateway:
                     raw_dt = datetime.fromisoformat(it.capture_time_raw)
                 except ValueError:
                     continue
-                new_offset = int(it.tz_offset_minutes or 0) + delta_min
-                corrected_dt = raw_dt + timedelta(minutes=new_offset)
+                new_offset = int(it.tz_offset_seconds or 0) + delta_seconds
+                corrected_dt = raw_dt + timedelta(seconds=new_offset)
                 new_day = by_date.get(corrected_dt.date().isoformat(),
                                       it.day_number)
                 if new_day != it.day_number:
                     moved += 1
                 conn.execute(
                     "UPDATE item SET capture_time_corrected = ?, "
-                    "tz_offset_minutes = ?, tz_source = ?, day_number = ? "
+                    "tz_offset_seconds = ?, tz_source = ?, day_number = ? "
                     "WHERE id = ?",
                     (corrected_dt.isoformat(), new_offset, "user_declared",
                      new_day, it.id),
@@ -3928,20 +4031,45 @@ class EventGateway:
             self._touch()
 
     def recompute_corrected_times(
-        self, camera_id: str, *, applied_offset_minutes: int,
+        self, camera_id: str, *, offset_seconds: int,
         day_number: Optional[int] = None,
+        day_numbers: Optional[Iterable[int]] = None,
     ) -> List[str]:
-        """Re-derive ``capture_time_corrected`` for a camera's items from a new applied
-        offset — the virtual-EXIF replacement for the legacy in-place EXIF re-bake (G5).
-        Shared by Camera-clocks (B1) and Adjust-TZ (B2).
+        """Re-derive ``capture_time_corrected`` for a camera's items from a new
+        applied offset (spec/123 — integer SECONDS) — the virtual-EXIF
+        replacement for the legacy in-place EXIF re-bake (G5). Shared by
+        Camera-clocks (B1) and Adjust-TZ (B2).
 
-        For each captured item of ``camera_id`` (optionally only those on ``day_number``):
-        ``corrected = raw + offset`` (raw never touched, G5); ``tz_offset_minutes`` ← the
-        new offset; ``tz_source`` ← ``'manual'``; ``day_number`` reassigned from the new
-        corrected date against the plan (smallest-day-number-wins on a duplicate date).
-        Items with no raw timestamp are skipped. Returns the affected item ids; downstream
-        marks are flagged ``derived_dirty`` (G4)."""
-        offset = timedelta(minutes=applied_offset_minutes)
+        For EVERY captured item of ``camera_id`` (photos AND videos —
+        optionally only those on ``day_number``, or restricted to a set of
+        ``day_numbers``): ``corrected = raw + offset`` (raw never touched,
+        G5); ``tz_offset_seconds`` ← the new offset; ``tz_source`` ←
+        ``'user_declared'``; ``day_number`` reassigned from the corrected
+        date against the plan (smallest-day-number-wins on a duplicate
+        date). On a corrected date with NO planned day, the item's
+        day_number is set to ``None`` (the natural / undated bucket) —
+        never silently kept at the stale pre-correction day.
+
+        spec/127 — pass ``day_numbers`` to scope a recompute to one
+        trip-TZ segment's days in a single transaction (the unified
+        correction dialog uses this so a camera spanning two segments
+        gets its right offset in each). Mutually exclusive with
+        ``day_number`` (a single int); passing both raises ``ValueError``.
+
+        Items with no raw timestamp are skipped. Returns the affected item
+        ids; downstream marks are flagged ``derived_dirty`` (G4)."""
+        if day_number is not None and day_numbers is not None:
+            raise ValueError(
+                "recompute_corrected_times: pass day_number OR day_numbers, "
+                "not both")
+        day_filter: Optional[Set[int]] = None
+        if day_numbers is not None:
+            day_filter = {int(d) for d in day_numbers}
+            if not day_filter:
+                # An empty set is "scope to nothing" — return without
+                # touching anything.
+                return []
+        offset = timedelta(seconds=offset_seconds)
         by_date: Dict[str, int] = {}
         for d in sorted(self.trip_days(), key=lambda x: x.day_number):
             if d.date and d.date not in by_date:
@@ -3955,6 +4083,8 @@ class EventGateway:
             for it in items:
                 if day_number is not None and it.day_number != day_number:
                     continue
+                if day_filter is not None and it.day_number not in day_filter:
+                    continue
                 if not it.capture_time_raw:
                     continue
                 try:
@@ -3963,14 +4093,19 @@ class EventGateway:
                     continue
                 corrected_dt = raw_dt + offset
                 new_corrected = corrected_dt.isoformat()
-                new_day = by_date.get(corrected_dt.date().isoformat(), it.day_number)
-                # spec/52: tz_source enum aligned to camera_day_tz.source.
-                # A manual recompute (the user dialed in an applied offset
-                # for one camera) is a user-declared offset.
+                # spec/123 — on a planned-date hit use that day; otherwise the
+                # item lands in the natural/undated bucket. NEVER silently
+                # keep the stale pre-correction day (was the GoPro
+                # zero-correction bug: items missed reassignment).
+                new_day = by_date.get(corrected_dt.date().isoformat())
+                # tz_source enum aligned to camera_day_tz.source. A manual
+                # recompute (the user dialed in an applied offset for one
+                # camera) is a user-declared offset.
                 self.store.conn.execute(
-                    "UPDATE item SET capture_time_corrected = ?, tz_offset_minutes = ?, "
+                    "UPDATE item SET capture_time_corrected = ?, tz_offset_seconds = ?, "
                     "tz_source = ?, day_number = ? WHERE id = ?",
-                    (new_corrected, applied_offset_minutes, "user_declared", new_day, it.id),
+                    (new_corrected, int(offset_seconds), "user_declared",
+                     new_day, it.id),
                 )
                 affected.append(it.id)
             self._touch()

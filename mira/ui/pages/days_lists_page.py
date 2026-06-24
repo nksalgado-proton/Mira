@@ -308,6 +308,11 @@ class DayRow(Card):
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # spec/131 — the row is a click target, so make it focus-able
+        # so the host's ``ensure_day_visible`` highlight (focus ring)
+        # actually paints on return from the Days Grid. StrongFocus
+        # also keeps Tab cycling sensible on this surface.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Mockup `.day{padding:14px 16px}` — quieter than the legacy 16/14.
         self.layout().setContentsMargins(16, 14, 16, 14)
         self.layout().setSpacing(8)
@@ -354,6 +359,14 @@ class DayRow(Card):
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.2)
         title.setFont(f)
         title.setMinimumWidth(0)
+        # Ignored horizontal policy bypasses QLabel's text-width
+        # minimumSizeHint — without it a long title pushes the whole
+        # row's minimum past the viewport and the spark on the right
+        # gets clipped off-screen (the QScrollArea has horizontal-
+        # scrolling OFF). Same trick the bar-row labels use.
+        title.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         title_block.addWidget(title, 1)
         sub_bits = [snapshot.date_iso]
         if snapshot.location:
@@ -362,6 +375,10 @@ class DayRow(Card):
         if sub_text:
             sub = QLabel(f"· {sub_text}")
             sub.setObjectName("Faint")
+            sub.setMinimumWidth(0)
+            sub.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
             title_block.addWidget(sub)
         top.addLayout(title_block, 1)
         # Per-row Pick all / Skip all — mockup `.mini` quiet buttons
@@ -477,18 +494,56 @@ class DayRow(Card):
             bar_row = QHBoxLayout()
             lab = QLabel(label)
             lab.setObjectName("DayRowBarLabel")
-            lab.setFixedWidth(60)
+            # spec/129 — was setFixedWidth(60); the fixed-width labels
+            # + fixed-width counts pinned every bar row above ~156px,
+            # so the center column couldn't yield and the right-side
+            # capture-distribution spark clipped when the dialog
+            # narrowed. Switch to shrinkable widths capped at the
+            # old visual budget. ``Ignored`` horizontal policy bypasses
+            # QLabel's ``minimumSizeHint`` (which is the text's font-
+            # metrics width); without it the layout can't go below
+            # the per-label text width and the bar-row floor stays
+            # near the old ~156px. With Ignored + min=0 + max=60 the
+            # label rides at its preferred width when the row is wide
+            # and gracefully clips its text when the row is narrow.
+            # The compression order — track first via its 24px floor,
+            # then label/count — leaves the spark fully visible at
+            # every reasonable width.
+            lab.setMinimumWidth(0)
+            lab.setMaximumWidth(60)
+            lab.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
             bar_row.addWidget(lab)
             bar = StageProgress()
             bar.setValue(pct)
             bar.setColorToken(token if count > 0 else None)
+            # Cap the track so the bars don't span the entire center
+            # column at wide layouts — Nelson 2026: bars were eating
+            # space the per-day capture-distribution spark needs to
+            # breathe. The 240px ceiling keeps each bar comfortably
+            # readable while leaving room beside the right-column
+            # spark; the Expanding policy still lets the track absorb
+            # leftover space up to the cap. Pairs with the title's
+            # Ignored policy above so the row's minimum drops below
+            # the viewport at narrow widths and the spark stays
+            # visible (the QScrollArea has horizontal scroll OFF).
+            bar.setMaximumWidth(240)
             bar_row.addWidget(bar, 1)
             count_label = QLabel(
                 f"{count} ({pct}%)"
                 if count > 0 else "—"
             )
             count_label.setObjectName("Faint" if count == 0 else "Sub")
-            count_label.setFixedWidth(96)
+            # spec/129 — same treatment as the label: was
+            # setFixedWidth(96). Ignored policy + min=0 + max=96 lets
+            # the count column give up width after the track, so the
+            # spark never clips.
+            count_label.setMinimumWidth(0)
+            count_label.setMaximumWidth(96)
+            count_label.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
             count_label.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -521,6 +576,11 @@ class DayRow(Card):
         meta_wrap.setFixedWidth(168)
         row.addWidget(meta_wrap)
 
+        # spec/129 — exposed for the layout test that pins the
+        # "bars compress, spark stays" contract. Not part of the
+        # public API.
+        self._center_layout = center
+        self._meta_wrap = meta_wrap
         self.layout().addLayout(row)
 
     def mousePressEvent(self, e) -> None:  # noqa: N802
@@ -569,6 +629,11 @@ class DaysListsPage(QWidget):
         # :meth:`set_phase_identity` for the Edit / Quick Sweep routes.
         self._identity_phase = "pick"
         self._identity: Optional[SurfaceIdentityHeader] = None
+        # spec/131 — the last day the user activated from THIS list.
+        # Hosts read it via :meth:`current_entry_anchor` as a fallback
+        # restore anchor when the Days Grid reports no current day
+        # (rare). The live restore path reads the grid's current day.
+        self._entry_anchor_day_number: Optional[int] = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -772,10 +837,59 @@ class DaysListsPage(QWidget):
         self,
         event_name: str,
         snapshots: list[DaySnapshot],
+        *,
+        anchor_day_number: Optional[int] = None,
     ) -> None:
+        """spec/131 — ``anchor_day_number``: after the day cards are
+        built, scroll so that ``DayRow`` is visible + give it focus
+        (highlight). Graceful when no row matches — falls through to
+        the default "top" landing."""
         self._event_name = event_name
         self._snapshots = list(snapshots)
         self._render()
+        if anchor_day_number is not None:
+            self.ensure_day_visible(anchor_day_number)
+
+    def ensure_day_visible(
+        self, day_number: int, *, select: bool = True,
+    ) -> bool:
+        """spec/131 — scroll the inner viewport so the ``DayRow`` for
+        ``day_number`` is visible. When ``select=True`` (default) the
+        row gets keyboard focus too (visible highlight ring). Returns
+        ``True`` when the row was found + the scroll/highlight applied;
+        ``False`` when no row matches (graceful — host should fall
+        through to the top landing)."""
+        row = self._find_day_row(day_number)
+        if row is None:
+            return False
+        try:
+            self._scroll.ensureWidgetVisible(row)
+            if select:
+                row.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            log.debug(
+                "DaysListsPage.ensure_day_visible: row %s gone",
+                day_number, exc_info=True)
+            return False
+        return True
+
+    def _find_day_row(self, day_number: int) -> Optional[DayRow]:
+        for i in range(self._rows.count()):
+            item = self._rows.itemAt(i)
+            w = item.widget() if item is not None else None
+            if isinstance(w, DayRow) and w._snapshot.day_number == day_number:
+                return w
+        return None
+
+    def current_entry_anchor(self) -> Optional[int]:
+        """spec/131 — last day the user activated from this list. Host
+        falls back to this when the Days Grid reports no current day."""
+        return self._entry_anchor_day_number
+
+    def _on_day_row_activated(self, day_number: int) -> None:
+        """spec/131 — store the entry anchor + forward the signal."""
+        self._entry_anchor_day_number = int(day_number)
+        self.day_activated.emit(int(day_number))
 
     def _render(self) -> None:
         self._sub.setText(
@@ -789,7 +903,10 @@ class DaysListsPage(QWidget):
                 w.deleteLater()
         for snap in self._snapshots:
             row = DayRow(snap, phase=self._identity_phase)
-            row.activated.connect(self.day_activated.emit)
+            # spec/131 — intercept activation to record the entry
+            # anchor (so the host has a fallback restore target if the
+            # grid later reports no current day).
+            row.activated.connect(self._on_day_row_activated)
             row.pick_all_requested.connect(self.day_pick_all_requested.emit)
             row.skip_all_requested.connect(self.day_skip_all_requested.emit)
             self._rows.addWidget(row)

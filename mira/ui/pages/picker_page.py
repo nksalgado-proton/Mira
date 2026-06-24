@@ -53,13 +53,10 @@ from PyQt6.QtWidgets import (
 
 from mira.gateway import Gateway
 from mira.picked import CullBucket, CullCluster, CullItem
-from mira.picked.exif_compare import (
-    caption_html,
-    exposure_for_chip,
-    file_size_text,
-    file_type_label,
-    source_chip_html,
-)
+# spec/134 retired the source-chip composition (caption_html / exposure_for_chip
+# / file_type_label / source_chip_html / file_size_text) from the Picker; the
+# overlay now goes through ``compose_overlay_lines`` (one vocabulary with cut
+# overlays). The legacy exif_compare module is still consumed by Quick Sweep.
 from mira.picked.status import (
     STATE_CANDIDATE,
     STATE_PICKED,
@@ -82,7 +79,7 @@ from mira.ui.i18n import tr
 from mira.ui.media.photo_cache import photo_cache
 from mira.ui.media.photo_overlay import PhotoExposureOverlay
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
-from mira.ui.pages.video_transport import VideoTransportBar
+from mira.ui.media.transport_bar import VideoWorkshopBar
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +175,16 @@ class PickerPage(QWidget):
         self._exported_set: set = set()
         self._watermark_enabled: bool = True
 
+        # spec/131 — last item id + day_number the user was on at the
+        # moment of close. ``_on_back`` captures these BEFORE
+        # ``_close_event`` clears ``_items`` / ``_day_number``, so the
+        # host's :sig:`closed` slot can read them via
+        # :meth:`last_item_id` / :meth:`last_day_number` to anchor the
+        # Days Grid back to where the user left off (the "report the
+        # last position" contract).
+        self._last_item_id: Optional[str] = None
+        self._last_day_number: Optional[int] = None
+
         self._build_ui()
 
     # ── UI assembly ────────────────────────────────────────────────────
@@ -249,15 +256,32 @@ class PickerPage(QWidget):
         # Only the transport widget INSIDE the row toggles: hidden on
         # photos, shown on videos. The compact_row QSS rule is
         # transparent + borderless so an empty slot is invisible.
-        self._transport_bar = VideoTransportBar()
+        # spec/130 §3 — Picker + Editor share one transport widget
+        # (VideoWorkshopBar in the shared mira.ui.media.transport_bar
+        # module). The Editor-specific marker / snapshot / segment-info
+        # signals stay unwired on the Picker — they're "harmless/unused
+        # on Picker" per the spec, and the Pick / Skip / Compare
+        # affordances stay on the Picker's own nav band.
+        self._transport_bar = VideoWorkshopBar()
         self._transport_bar.play_pause_requested.connect(
             self.viewport.video_toggle_play)
         self._transport_bar.seek_requested.connect(
             self.viewport.video_seek)
+        # The shared widget jumps to start / end via dedicated signals
+        # (the spec/130 unified surface keeps them); wire them so the
+        # Picker matches the Editor.
+        self._transport_bar.jump_start_requested.connect(
+            lambda: self.viewport.video_seek(0))
+        self._transport_bar.jump_end_requested.connect(
+            lambda: self.viewport.video_seek(
+                max(0, self._video_duration_ms - 1)))
         self._transport_bar.volume_changed.connect(
             self.viewport.video_set_volume)
+        # The shared widget emits speed as a float (1.0 / 1.5 / etc.);
+        # video_set_playback_rate takes a float directly so no parsing
+        # needed (the legacy VideoTransportBar emitted a str label).
         self._transport_bar.speed_changed.connect(
-            self._on_video_speed_changed)
+            self.viewport.video_set_playback_rate)
         # The viewport pushes timeline state out as we play.
         self.viewport.video_position_changed.connect(
             self._on_video_position)
@@ -265,7 +289,6 @@ class PickerPage(QWidget):
             self._on_video_duration)
         self.viewport.video_playing_changed.connect(
             self._transport_bar.set_playing)
-        self.viewport.video_error.connect(self._transport_bar.show_error)
         cr_layout = self._surface.compact_row.layout()
         cr_layout.setContentsMargins(12, 6, 12, 8)
         cr_layout.addWidget(self._transport_bar)
@@ -280,7 +303,8 @@ class PickerPage(QWidget):
         # the first video respects the slider's default position. The
         # speed selector defaults to 1× which matches the viewport's
         # default playback rate — no need to push.
-        self.viewport.video_set_volume(self._transport_bar.volume.value())
+        self.viewport.video_set_volume(
+            self._transport_bar.vol_slider.value())
         # Hide the transport widget; the row container stays visible
         # so the canvas geometry is invariant.
         self._transport_bar.setVisible(False)
@@ -860,32 +884,22 @@ class PickerPage(QWidget):
     # ── EXIF + AF resolution ───────────────────────────────────────────
 
     def _show_exposure_overlay(self) -> bool:
-        """spec/96 §2 — read the roaming Settings flag at call time so
-        a toggle in the Settings dialog applies on the next item show
-        without a relaunch. Defaults to True (preserves today's
-        behaviour) when the setting is missing or the load fails."""
+        """spec/96 §2 — legacy QuickSweep gate. spec/134 retired the
+        Picker's use of this flag; kept here for any external caller
+        that still polls the Picker for the legacy answer."""
         try:
             from mira.settings.repo import SettingsRepo
             return bool(SettingsRepo().load().show_exposure_overlay)
         except Exception:                                          # noqa: BLE001
             return True
 
-    @staticmethod
-    def _file_size_text_for(path: Path, store_item: Any = None) -> str:
-        """Filesystem stat → spec/96 chip-friendly size text. Falls
-        back to ``store_item.byte_size`` (post-ingest, persisted by
-        the gateway) when the live stat fails — the chip still shows
-        the size when the source file moved between ingest and now
-        (e.g., card pulled). Returns ``""`` when neither source
-        carries a value."""
-        try:
-            return file_size_text(path.stat().st_size)
-        except OSError:
-            if store_item is not None:
-                fallback = getattr(store_item, "byte_size", None)
-                if fallback:
-                    return file_size_text(fallback)
-            return ""
+    def _compose_viewer_overlay_html(self, item) -> str:
+        """spec/134 — build the overlay HTML for the current item via
+        the shared orchestration helper. Picker + Editor call the same
+        function so they paint identical text."""
+        from mira.ui.media.viewer_overlay import compose_viewer_overlay_html
+        return compose_viewer_overlay_html(
+            self._eg, getattr(item, "item_id", None))
 
     def _exif_for(self, path: Path):
         key = str(path)
@@ -1047,45 +1061,19 @@ class PickerPage(QWidget):
         eff = self._effective(item.item_id)
         self._sync_state_pill(eff)
 
-        # Exposure overlay ON the photo (spec/96 §2 — camera +
-        # shutter / aperture / ISO / focal + type + size). The
-        # roaming ``show_exposure_overlay`` setting gates the pill
-        # across both single views; default True preserves the
-        # historical behaviour.
-        if is_video or not self._show_exposure_overlay():
+        # Overlay ON the photo — spec/134 configurable Picker / Editor
+        # viewer overlay, driven by ``viewer_overlay_fields`` (a subset
+        # of cut_overlay's OVERLAY_FIELDS: when / where / how1 / how2).
+        # Each field is one line; empty selection (or no data for any
+        # selected field, or a video) → ``set_html('')`` hides the
+        # pill. Live re-read of the setting on each landing so the
+        # Settings dialog's apply path updates the overlay without a
+        # relaunch.
+        if is_video:
             self._expo_overlay.set_html("")
         else:
-            # Two sources merge: live EXIF (read off the file each
-            # time the chip refreshes — fast on the cache) AND the
-            # gateway's store Item (post-ingest, populated once
-            # with the EXIF reader's full pass + the user's edits).
-            # Some camera bodies' EXIF returns the Model tag but
-            # zeroes the FNumber / ExposureTime tags on a live re-
-            # read — the chip then shows camera but no exposure,
-            # which is the report Nelson hit 2026-06-22. The store
-            # Item has the post-ingest values, so we use it as the
-            # fallback per param via :func:`exposure_for_chip`.
-            exif = self._exif_for(item.path)
-            store_item = (
-                self._eg.item(item.item_id)
-                if self._eg is not None else None
-            )
-            camera = (
-                (store_item.camera_id or "") if (
-                    store_item is not None
-                    and getattr(store_item, "camera_id", None))
-                else (getattr(exif, "model", "")
-                      if exif is not None else "")
-            )
-            exposure_html = exposure_for_chip(exif, store_item)
-            type_label = file_type_label(item.path.suffix)
-            size_text = self._file_size_text_for(item.path, store_item)
-            self._expo_overlay.set_html(source_chip_html(
-                camera=camera,
-                type_label=type_label,
-                size_text=size_text,
-                exposure_html=exposure_html,
-            ))
+            self._expo_overlay.set_html(
+                self._compose_viewer_overlay_html(item))
 
         # AF — the viewport stores it for F10's inspection overlay.
         self.viewport.set_af_point(self._resolve_af(item.path))
@@ -1114,8 +1102,26 @@ class PickerPage(QWidget):
         self._video_duration_ms = 0
         if is_video:
             self._seed_video_metadata(item.path)
-            self._transport_bar.set_position(0, self._video_duration_ms)
-            self._transport_bar.set_playing(False)
+            self._transport_bar.set_duration(self._video_duration_ms)
+            self._transport_bar.set_position(0)
+            # spec/130 §2 — re-sync the bar's glyph to the viewport's
+            # CURRENT playback state at reveal time. The bar was hidden
+            # on the prior photo, so the next ``video_playing_changed``
+            # signal may not fire until the user toggles play (the
+            # auto-arm path can leave the player already playing); a
+            # stale ``set_playing(False)`` here would paint the play
+            # glyph while audio is already coming out of the speakers.
+            self._transport_bar.set_playing(
+                self.viewport.video_is_playing())
+            # spec/137 — the engine rate is sticky across clips
+            # (``_video_rate`` carries; ``_ensure_player`` re-applies),
+            # but the dropdown defaults to 1× on reveal. Push the
+            # engine truth so the indicator matches the audio coming
+            # out of the speakers. ``set_speed`` updates the combo
+            # under ``blockSignals`` so this sync doesn't re-emit
+            # ``speed_changed`` back into the engine.
+            self._transport_bar.set_speed(
+                self.viewport.video_playback_rate())
             self._transport_bar.setVisible(True)
             self._set_transport_band_hollow(False)   # video → boxed
         else:
@@ -1155,22 +1161,12 @@ class PickerPage(QWidget):
 
     def _on_video_position(self, pos_ms: int) -> None:
         self._video_pos_ms = max(0, int(pos_ms))
-        self._transport_bar.set_position(
-            self._video_pos_ms, self._video_duration_ms)
+        self._transport_bar.set_position(self._video_pos_ms)
 
     def _on_video_duration(self, dur_ms: int) -> None:
         self._video_duration_ms = max(0, int(dur_ms))
-        self._transport_bar.set_position(
-            self._video_pos_ms, self._video_duration_ms)
-
-    def _on_video_speed_changed(self, text: str) -> None:
-        """Parse the speed selector's "0.5×" / "1×" / "2×" labels and
-        push the rate to the viewport's media player."""
-        try:
-            rate = float(text.replace("×", "").strip())
-        except ValueError:
-            return
-        self.viewport.video_set_playback_rate(rate)
+        self._transport_bar.set_duration(self._video_duration_ms)
+        self._transport_bar.set_position(self._video_pos_ms)
 
     def _refresh_position_label(self) -> None:
         if not self._items:
@@ -1395,10 +1391,70 @@ class PickerPage(QWidget):
     def _on_back(self) -> None:
         self._save_cursor()
         self._film_timer.stop()
+        # spec/130 — Esc / Back leaves the viewer; stop the video player
+        # so audio doesn't bleed past the surface. Full shutdown_video
+        # (player.stop() + setSource(QUrl())) is cleaner than a pause —
+        # the next video re-arms anyway, and pause leaves the audio
+        # device held. shutdown_video is idempotent so the hideEvent
+        # belt-and-braces below can also call it.
+        self.viewport.shutdown_video()
         self.viewport.set_peaking_enabled(False)
+        # spec/131 — snapshot the current item id + day number BEFORE
+        # ``_close_event`` clears ``_items`` / ``_day_number``. The
+        # host's :sig:`closed` slot reads these via
+        # :meth:`last_item_id` / :meth:`last_day_number` to restore the
+        # Days Grid's scroll position + selection to where the user
+        # was when they hit Back (which may NOT be the entry item —
+        # they may have stepped through several frames).
+        self._last_item_id = self.current_item_id()
+        self._last_day_number = self.current_day_number()
         # Release the gateway when the user is done with this bucket.
         self._close_event()
         self.closed.emit()
+
+    # ── spec/131 — restore-anchor accessors ───────────────────────────
+
+    def current_item_id(self) -> Optional[str]:
+        """The item id at the live cursor; ``None`` when no items
+        loaded. Hosts that want the "last position" use
+        :meth:`last_item_id` instead — that survives ``_close_event``."""
+        if not self._items or not (0 <= self._index < len(self._items)):
+            return None
+        return getattr(self._items[self._index], "item_id", None)
+
+    def current_day_number(self) -> Optional[int]:
+        """The day the picker is currently on. The Picker doesn't
+        cross days during a single session (the bucket is the day's
+        items), so this stays at the value passed to ``open_to_item``."""
+        if not self._items:
+            return None
+        return int(self._day_number)
+
+    def last_item_id(self) -> Optional[str]:
+        """spec/131 — the item id at the moment of the most recent
+        ``_on_back``. Set even after ``_close_event`` has dropped the
+        live items list, so the host's ``closed``-signal slot can
+        anchor the Days Grid back to it."""
+        return self._last_item_id
+
+    def last_day_number(self) -> Optional[int]:
+        """spec/131 — the day number at the moment of the most recent
+        ``_on_back``. Used together with :meth:`last_item_id` when the
+        viewer crossed days (it doesn't today, but the contract is
+        future-proof)."""
+        return self._last_day_number
+
+    def hideEvent(self, event) -> None:                                 # noqa: N802
+        """spec/130 belt-and-braces — any path that hides the Picker
+        (programmatic navigation, page-stack swap, window close) stops
+        the video so audio never plays into an off-screen surface. The
+        explicit ``_on_back`` already calls this; ``hideEvent`` catches
+        the paths that bypass it."""
+        try:
+            self.viewport.shutdown_video()
+        except Exception:                                               # noqa: BLE001
+            log.exception("spec/130: shutdown_video on hideEvent failed")
+        super().hideEvent(event)
 
     def _save_cursor(self) -> None:
         if (self._eg is not None and self._bucket is not None

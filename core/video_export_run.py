@@ -245,9 +245,14 @@ def _process_frame(frame: np.ndarray, plan: ExportPlan) -> np.ndarray:
     if plan.has_colour:
         out = apply_params(out, plan.params)
     if plan.filter_recipe is not None:
+        # spec/116 §2 — videos have no per-frame AF metadata that
+        # rides cleanly through ffmpeg / decode, so v1 falls back to
+        # the frame-centre Spotlight anchor. ``center`` is wired
+        # explicitly to keep the contract visible: a future evolution
+        # could pass the source clip's first-frame AF point here.
         out = apply_filter(
             out, FilterRecipe.from_dict(plan.filter_recipe),
-            plan.filter_amount)
+            plan.filter_amount, center=(0.5, 0.5))
     if plan.crop_norm is not None or abs(plan.box_angle) > 1e-3:
         rect = plan.crop_norm if plan.crop_norm is not None else (0.0, 0.0, 1.0, 1.0)
         if abs(plan.box_angle) > 1e-3:

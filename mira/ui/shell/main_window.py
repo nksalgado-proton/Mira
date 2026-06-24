@@ -741,13 +741,14 @@ class MainWindow(QMainWindow):
             self._open_manage_days_for_event,
             surface=self._SURFACE_PER_EVENT, modification=True)
         collect_menu.addSeparator()
+        # spec/127 — one menu item, one handler. The old "Camera clocks…"
+        # (collapsed the trip to a single TZ) and "Adjust TZ…" (per-day
+        # delta matrix) were two takes on the same operation. The unified
+        # surface handles every trip-TZ segment + the fine nudge in one
+        # dialog.
         self._add_menu_action(
-            collect_menu, tr("&Camera clocks…"),
-            self._open_camera_clocks_for_event,
-            surface=self._SURFACE_PER_EVENT, modification=True)
-        self._add_menu_action(
-            collect_menu, tr("&Adjust TZ…"),
-            self._open_adjust_tz_for_event,
+            collect_menu, tr("&Camera Clock Correction…"),
+            self._open_camera_clock_correction_for_event,
             surface=self._SURFACE_PER_EVENT, modification=True)
         collect_menu.addSeparator()
         self._add_menu_action(
@@ -2804,13 +2805,21 @@ class MainWindow(QMainWindow):
     # is cheap (two GROUP BYs + one bucket_cache read per day) so the page
     # is rebuilt at every entry instead of stale-cached.
 
-    def _open_days_lists_for(self, event_id: str) -> None:
+    def _open_days_lists_for(
+        self, event_id: str,
+        *, anchor_day_number: Optional[int] = None,
+    ) -> None:
         """Build the per-day snapshots from the live gateway and route to
         the Days Lists dashboard. On a snapshot-build failure the user
         is left on Phases with a logged warning — the legacy fallback
         into the retired PickPage shell is gone (Surface 07 absorbed
         the engine into PickerPage and PickerPage opens per-item, not
-        per-event)."""
+        per-event).
+
+        spec/131 — ``anchor_day_number``: after the day cards build,
+        scroll so that row is visible + highlighted. Used by the
+        Days Grid back path so the list returns the user to the row
+        they last expanded (vs the default top landing)."""
         snapshots = self._build_day_snapshots(event_id)
         if snapshots is None:
             log.warning(
@@ -2835,7 +2844,8 @@ class MainWindow(QMainWindow):
                 snapshots,
                 default_state_for(self.gateway.settings, "pick"))
         event_name = self._lookup_event_name(event_id) or tr("Event")
-        self.days_lists_page.setEventForPreview(event_name, snapshots)
+        self.days_lists_page.setEventForPreview(
+            event_name, snapshots, anchor_day_number=anchor_day_number)
         # spec/71 — the shared Days Lists takes the host phase's chrome.
         # During a QS session it reads Collect/blue regardless of the
         # underlying Pick store; otherwise Edit when the Edit bridge is
@@ -3106,15 +3116,27 @@ class MainWindow(QMainWindow):
         page's event gateway (no-op in paths mode) so the next day-card
         click opens fresh. During a QS session the DaysListsPage carries
         the QS chrome already (setEventForPreview / gateway-built
-        snapshots) so we don't rebuild here."""
+        snapshots) so we don't rebuild here.
+
+        spec/131 — capture the grid's current day BEFORE we close it,
+        and thread it into the Days Lists rebuild so the list scrolls
+        to + highlights the row the user was last on (it may have used
+        prev/next-day inside the grid). Falls back to the list's own
+        entry anchor when the grid is in a fresh / unset state.
+        """
+        anchor_day = self.days_grid_page.current_day_number()
         self.days_grid_page.close_event()
         # Rebuild the day cards so decisions made in the grid show
         # immediately on return (BUGS.md B-004 — the list was stale until a
         # full round-trip to Phases). QS sessions carry their own snapshots,
         # so only the live (gateway) path rebuilds.
         if self._quick_sweep is None and self._current_event_id is not None:
-            self._open_days_lists_for(self._current_event_id)
+            self._open_days_lists_for(
+                self._current_event_id, anchor_day_number=anchor_day)
             return
+        # QS path — the page already carries the snapshots; just scroll.
+        if anchor_day is not None:
+            self.days_lists_page.ensure_day_visible(int(anchor_day))
         self.page_stack.show_page(self._DAYS_LISTS_PAGE_KEY)
 
     def _on_days_grid_step_day(self, delta: int) -> None:
@@ -3468,6 +3490,7 @@ class MainWindow(QMainWindow):
             return
 
         per_day_plans: list = []   # [(day_number, plan_dict)]
+        stale_cell_ids: list = []
         try:
             try:
                 ev_name = eg.event().name or tr("(unnamed event)")
@@ -3499,6 +3522,19 @@ class MainWindow(QMainWindow):
             finally:
                 scratch.close_event()
                 scratch.deleteLater()
+            # spec/118 §3 — collect stale render cells while ``eg`` is
+            # still open. The result is just a list of item ids so the
+            # downstream prompt + delete loop doesn't need to re-query.
+            from mira.ui.exported.staleness import is_cell_stale
+            for _, plan in per_day_plans:
+                for c in plan["render_cells"]:
+                    try:
+                        if is_cell_stale(eg, c.item_id):
+                            stale_cell_ids.append(c.item_id)
+                    except Exception:                              # noqa: BLE001
+                        log.exception(
+                            "Export now (all days): stale check for "
+                            "%s failed", c.item_id)
         finally:
             eg.close()
 
@@ -3521,10 +3557,30 @@ class MainWindow(QMainWindow):
             )
             return
 
-        title, body, primary = DaysGridPage._export_now_modal_text(
-            n_render, m_delete)
-        if not confirm(self, title, body, primary_text=primary):
-            return
+        # spec/118 §3 — when ≥1 cell across the run is edited-since-
+        # export, swap the plain confirm for the run-level Overwrite /
+        # Keep both ask. A run with no stale items is unchanged.
+        collision_policy = "unique"
+        if stale_cell_ids:
+            from mira.ui.exported.collision_dialog import (
+                ask_batch_collision_policy,
+            )
+            choice = ask_batch_collision_policy(
+                self,
+                n_render=n_render,
+                m_delete=m_delete,
+                n_stale=len(stale_cell_ids),
+                default=DaysGridPage._last_batch_collision,
+            )
+            if choice is None:
+                return
+            collision_policy = choice
+            DaysGridPage._last_batch_collision = choice
+        else:
+            title, body, primary = DaysGridPage._export_now_modal_text(
+                n_render, m_delete)
+            if not confirm(self, title, body, primary_text=primary):
+                return
 
         # Re-open the event so the delete sweep + per-day submits ride
         # one shared gateway. The DaysGridPage scratch above was
@@ -3572,21 +3628,59 @@ class MainWindow(QMainWindow):
                     )
                     eg.close()
                     return
+                # spec/118 §3 — under OVERRIDE, pin each stale cell's
+                # dest_dir to its existing lineage row's parent so the
+                # atomic replace lands at the EXACT existing path.
+                stale_id_set = set(stale_cell_ids)
                 for dn, plan in per_day_plans:
                     if not (plan["render_cells"]
                             or plan["render_segments"]
                             or plan["render_snapshots"]):
                         continue
                     day_labels = {dn: day_label_for(eg, dn)}
+                    render_cells = plan["render_cells"]
+                    if collision_policy == "override":
+                        from dataclasses import replace as _replace
+                        from pathlib import Path as _Path
+                        pinned: list = []
+                        for c in render_cells:
+                            if c.item_id not in stale_id_set:
+                                pinned.append(c)
+                                continue
+                            try:
+                                versions = eg.versions_for_item(c.item_id)
+                            except Exception:                          # noqa: BLE001
+                                log.exception(
+                                    "Export now (all days): versions "
+                                    "lookup failed for %s", c.item_id)
+                                pinned.append(c)
+                                continue
+                            existing = next(
+                                (v for v in versions
+                                 if (getattr(v, "provenance", "") or "")
+                                 == "mira_render"),
+                                None,
+                            )
+                            if existing is None:
+                                pinned.append(c)
+                                continue
+                            pinned.append(_replace(
+                                c,
+                                dest_dir_override=_Path(
+                                    existing.export_relpath
+                                ).parent.as_posix(),
+                            ))
+                        render_cells = pinned
                     try:
                         submit_export_batch(
                             eg, self.gateway.settings, batch_queue,
                             event_name=ev_name,
-                            cells=plan["render_cells"],
+                            cells=render_cells,
                             day_labels=day_labels,
                             parent_widget=self,
                             segment_rows=plan["render_segments"],
                             snapshot_cells=plan["render_snapshots"],
+                            collision=collision_policy,
                         )
                         batch_submitted = True
                     except Exception as exc:                       # noqa: BLE001
@@ -3798,97 +3892,36 @@ class MainWindow(QMainWindow):
                     "shutdown_video failed on %s — continuing",
                     surface_name)
 
-    def _open_camera_clocks_for_event(self) -> None:
-        """Plan page "Camera clocks" → the reused CameraClockDialog (Slice B1). Reads the
-        per-camera answers from the store's Camera rows, and on Save persists the new offset
-        via ``save_camera`` + re-derives the affected items' corrected times via
-        ``recompute_corrected_times`` (no EXIF bake — charter §3)."""
-        from collections import Counter
+    def _open_camera_clock_correction_for_event(self) -> None:
+        """spec/127 — the unified Camera Clock Correction handler.
 
-        from PyQt6.QtWidgets import QDialog, QMessageBox
+        Replaces the two old handlers (``_open_camera_clocks_for_event``
+        / ``_open_adjust_tz_for_event``) — same gateway primitive
+        (``recompute_corrected_times`` + a per-(camera, segment)
+        correction row), one menu item, one dialog with per-TZ-segment
+        sections and per-camera base + nudge. spec/126 ingest guard kept
+        verbatim."""
+        from PyQt6.QtWidgets import QMessageBox
 
-        from mira.store import models as m
-        from mira.ui.pages.camera_clock_dialog import CameraClockDialog
-
-        if self._current_event_id is None:
-            return
-        eg = self.gateway.open_event(self._current_event_id)
-        try:
-            cams = eg.cameras()
-            store_days = eg.trip_days()
-        finally:
-            eg.close()
-        cam_ids = sorted(c.camera_id for c in cams)
-        if not cam_ids:
-            QMessageBox.information(
-                self, tr("No cameras recorded yet"),
-                tr(
-                    "No camera clocks have been recorded for this event yet. They are saved "
-                    "the first time you cull a camera / phone / other source — then you can "
-                    "correct a wrong one here."
-                ),
-            )
-            return
-        offsets = [d.tz_minutes for d in store_days if d.tz_minutes is not None]
-        trip_tz = (Counter(offsets).most_common(1)[0][0] / 60.0) if offsets else 0.0
-        # Reconstruct the human answer per camera from its applied offset (applied = trip_tz
-        # − configured ⇒ configured = trip_tz − applied).
-        initial: dict[str, dict] = {}
-        for c in cams:
-            ao = c.applied_offset_minutes
-            if ao in (None, 0):
-                initial[c.camera_id] = {"correct": True, "configured_tz": None}
-            else:
-                initial[c.camera_id] = {
-                    "correct": False, "configured_tz": trip_tz - ao / 60.0}
-        dlg = CameraClockDialog(
-            cam_ids, default_trip_tz_hours=trip_tz, ask_trip_tz=False,
-            initial=initial, edit_mode=True, parent=self,
+        from mira.ui.pages.camera_clock_dialog import (
+            CameraClockCorrectionDialog,
         )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        answers = dlg.result_answers()
-        by_id = {c.camera_id: c for c in cams}
-        eg = self.gateway.open_event(self._current_event_id)
-        changed = False
-        try:
-            for cam_id, ans in answers.items():
-                if ans.get("correct", True):
-                    new_applied, new_cfg = 0, None
-                else:
-                    cfg = float(ans["configured_tz"])
-                    new_applied = round((trip_tz - cfg) * 60)
-                    new_cfg = round(cfg * 60)
-                existing = by_id.get(cam_id)
-                cur = (existing.applied_offset_minutes or 0) if existing else 0
-                if new_applied == cur:
-                    continue  # unchanged — skip the recompute
-                changed = True
-                cam_row = existing or m.Camera(camera_id=cam_id)
-                cam_row.configured_tz_minutes = new_cfg
-                cam_row.applied_offset_minutes = new_applied
-                cam_row.applied_at = eg._now()
-                eg.save_camera(cam_row)
-                eg.recompute_corrected_times(cam_id, applied_offset_minutes=new_applied)
-        finally:
-            eg.close()
-        if changed:
-            QMessageBox.information(
-                self, tr("Camera clocks saved"),
-                tr("Saved — the affected photos have been re-grouped with the corrected "
-                   "timezones."),
-            )
-        if self._current_event_id is not None:
-            self.phases_page.set_event(self._current_event_id)
-
-    def _open_adjust_tz_for_event(self) -> None:
-        """Plan page "Adjust TZ" → the ported AdjustEventTzDialog (Slice B2, gateway-native,
-        virtual-EXIF recompute). Refreshes the plan page on close."""
-        from mira.ui.pages.adjust_event_tz_dialog import AdjustEventTzDialog
 
         if self._current_event_id is None:
             return
-        dlg = AdjustEventTzDialog(self.gateway, self._current_event_id, self)
+        # spec/126 — ingest commits camera offsets + corrected times at
+        # the END of the background job; opening this dialog mid-ingest
+        # reads a half-written event.db and surfaces a silently-stale
+        # view that only a restart clears.
+        if self.is_ingesting(self._current_event_id):
+            QMessageBox.information(
+                self, tr("Still importing"),
+                tr("This event is still finishing import. "
+                   "Try again in a moment."),
+            )
+            return
+        dlg = CameraClockCorrectionDialog(
+            self.gateway, self._current_event_id, self)
         dlg.exec()
         if self._current_event_id is not None:
             self.phases_page.set_event(self._current_event_id)
@@ -5111,6 +5144,25 @@ class MainWindow(QMainWindow):
     def _mark_ingest_finished(self, event_id: str) -> None:
         self._ingesting_event_ids.discard(event_id)
         self._notify_ingest_in_progress_changed()
+        # spec/126 — once the background commit lands, refresh the
+        # current-event surfaces so the just-written camera offsets +
+        # corrected times appear without a restart. The guard at the top
+        # of the Camera Clocks / Adjust TZ handlers releases automatically
+        # (is_ingesting now False), and the phases page re-reads through
+        # a fresh open_event. Guarded on current event so background
+        # ingests on other events don't bounce the visible surface.
+        if self._current_event_id == event_id:
+            try:
+                self.phases_page.set_event(event_id)
+            except Exception:                                # noqa: BLE001
+                log.exception(
+                    "spec/126: phases_page.set_event refresh failed "
+                    "for %s", event_id)
+            try:
+                self.events_page.refresh()
+            except Exception:                                # noqa: BLE001
+                log.exception(
+                    "spec/126: events_page refresh failed")
 
     def _notify_ingest_in_progress_changed(self) -> None:
         """Push the current in-progress set to surfaces that filter on
@@ -5323,7 +5375,7 @@ class MainWindow(QMainWindow):
         TZ map from :meth:`_collect_run_tz_calibration`. Persisted into
         ``camera_day_tz`` rows AFTER the FK-parent ``camera`` and
         ``trip_day`` rows are upserted in this same transaction, and
-        used to set per-item ``tz_offset_minutes`` / ``tz_source``
+        used to set per-item ``tz_offset_seconds`` / ``tz_source``
         (spec/52 §13 — item TZ columns aligned to camera_day_tz).
 
         ``progress`` follows ``ingest_pipeline.ProgressCallback`` shape
@@ -5543,7 +5595,7 @@ class MainWindow(QMainWindow):
                             items_done, items_total,
                         )
                     kind = "video" if dest.suffix.lower() in VIDEO_EXTS else "photo"
-                    # tz_offset_minutes = corrected − raw (the shift baked
+                    # tz_offset_seconds = corrected − raw (the shift baked
                     # into capture_time_corrected this Collect). tz_source
                     # follows spec/52 §13: 'user_declared' for cameras with
                     # a calibrated TZ, 'phone_auto' for phone photos (their
@@ -5551,7 +5603,7 @@ class MainWindow(QMainWindow):
                     # we have no offset for.
                     if raw_dt is not None and corr_dt is not None:
                         tz_off = int(round(
-                            (corr_dt - raw_dt).total_seconds() / 60.0
+                            (corr_dt - raw_dt).total_seconds()
                         ))
                     else:
                         tz_off = 0
@@ -5578,7 +5630,7 @@ class MainWindow(QMainWindow):
                         capture_time_corrected=(
                             corr_dt.isoformat() if corr_dt else None
                         ),
-                        tz_offset_minutes=tz_off,
+                        tz_offset_seconds=tz_off,
                         tz_source=tz_src,
                         created_at=now,
                     ))
@@ -6811,18 +6863,40 @@ class MainWindow(QMainWindow):
         (refreshed). spec/70 Phase 3: when the bridge from the redesigned
         Days Grid is active, return to the Days Grid instead — the user
         entered the legacy Picker from there and expects to land back on
-        the surface they came from. The bridge flag is consumed here."""
+        the surface they came from. The bridge flag is consumed here.
+
+        spec/131 — when bridging back to the Days Grid, anchor the
+        scroll position + selection on the LAST item the Picker was
+        showing (it may have stepped through several items / day
+        boundaries). Reads ``picker_page.last_item_id()`` (captured by
+        ``_on_back`` BEFORE the event close cleared its state). The
+        Picker may also report a different ``last_day_number`` if it
+        crossed days — open the grid on that day instead of the one
+        we left.
+        """
         if self._days_grid_bridge_active:
             self._days_grid_bridge_active = False
+            # spec/131 — prefer the day the Picker is leaving from
+            # (handles a future cross-day Picker; today it stays on
+            # the entry day). Falls back to the grid's current day.
+            picker_day = self.picker_page.last_day_number()
             event_id = self.days_grid_page.current_event_id()
-            day_number = self.days_grid_page.current_day_number()
+            day_number = (
+                picker_day
+                if picker_day is not None
+                else self.days_grid_page.current_day_number()
+            )
+            anchor = self.picker_page.last_item_id()
             if event_id is not None:
                 title, date_iso = self._lookup_day_meta(event_id, day_number)
                 # Re-open to pull fresh phase_state into the cells so
                 # the user sees their Pick/Skip decisions reflected on
-                # the borders right away.
+                # the borders right away. spec/131 — pass the anchor
+                # so the grid scrolls + highlights the item the user
+                # was last on.
                 if self.days_grid_page.open_for_day(
                     event_id, day_number, title=title, date_iso=date_iso,
+                    anchor_item_id=anchor,
                 ):
                     self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
                     self.days_grid_page.setFocus()
@@ -7569,17 +7643,30 @@ class MainWindow(QMainWindow):
         from the grid; return them there (refreshed). Otherwise fall
         back to the activity dashboard. The Edit-phase flag stays on
         until the user navigates back out to Phases (so a Back-and-
-        re-open within the same day still routes to the Editor)."""
+        re-open within the same day still routes to the Editor).
+
+        spec/131 — when bridging back to the Days Grid, anchor the
+        scroll position + selection on the LAST item the Editor was
+        showing. Reads ``edit_page.last_item_id()`` / ``last_day_number()``
+        captured by ``_on_back`` before close cleared the page state.
+        """
         if self._days_grid_bridge_active:
             self._days_grid_bridge_active = False
+            editor_day = self.edit_page.last_day_number()
             event_id = self.days_grid_page.current_event_id()
-            day_number = self.days_grid_page.current_day_number()
+            day_number = (
+                editor_day
+                if editor_day is not None
+                else self.days_grid_page.current_day_number()
+            )
+            anchor = self.edit_page.last_item_id()
             if event_id is not None:
                 title, date_iso = self._lookup_day_meta(event_id, day_number)
                 grid_phase = "edit" if self._edit_phase_active else "pick"
                 if self.days_grid_page.open_for_day(
                     event_id, day_number,
                     title=title, date_iso=date_iso, phase=grid_phase,
+                    anchor_item_id=anchor,
                 ):
                     self.page_stack.show_page(self._DAYS_GRID_PAGE_KEY)
                     self.days_grid_page.setFocus()

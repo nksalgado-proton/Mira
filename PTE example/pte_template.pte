@@ -1,0 +1,336 @@
+﻿[Main]
+opt_scr_height=768
+opt_scr_width=1024
+filetype=Project file of PTE AV Studio
+CreationTool=PTE AV Studio Pro 11.021
+PteVersion=11.021 
+globalversion=1
+minorversion=34
+type=save
+PathToButtons=C:\Program Files\WnSoft\PTE AV Studio 11.0\Main\All\Buttons\
+DefDuration=5000
+opt_repeat=Close
+opt_manualshow=0
+opt_synchpermitcontrol=1
+opt_exitonmove=0
+opt_lockwheel=1
+opt_leftmouse=None
+opt_rightmouse=Next slide
+opt_hidecursor=2
+opt_hc2_hideinterval=3
+opt_fcp=1
+opt_nav_schema=Video style
+opt_hidenavbar=1
+opt_nav_hideinterval=3
+opt_nav_fadein=200
+opt_nav_hidefadeout=300
+opt_nav_viewscale=9
+opt_nav_usevideoscale=0
+opt_nav_offset=1.5
+opt_cp=Bottom
+opt_nav_hue=0
+opt_nav_wndbottom=1
+opt_nav_showbg=1
+opt_nav_videoexit=1
+AspectRatio=4-3
+opt_scr_full=1
+opt_scr_hidercolor=0
+opt_withoutborder=0
+opt_scr_caption=
+opt_scr_unsharpamount=0
+opt_bstyle=1
+opt_bfn=
+opt_bcolor=0
+opt_bcolor1=16711680
+opt_bcolor2=0
+opt_bcolorStyle=1
+opt_bsize=100
+opt_scrpercent=100
+opt_slidemode=0
+Comment_DefText=
+Comment_FontName=Arial
+Comment_FontStyle=
+Comment_FontColor=16777215
+Comment_LineHeight=4
+Comment_Align=Center
+Comment_LinesSpacing=0
+Comment_Offset=3
+Comment_Position=Top
+opt_useicon=0
+opt_iconfn1=
+opt_syncmode=1
+opt_pausewheninactive=1
+opt_logo=0
+opt_logo_fn=
+opt_logo_pos=7
+opt_logo_opacity=100
+opt_logo_offset=20
+opt_logo_size=30
+opt_EnableExpire=0
+opt_expireYear=2109
+opt_expireMonth=1
+opt_expireDay=1
+opt_ExpireText=Sorry, but trial period of this show has expired
+opt_expiredays=30
+opt_expireruns=10
+opt_useExpireDate=0
+opt_useExpireDays=0
+opt_useExpireRuns=0
+opt_usepass=0
+opt_Pass=
+opt_runapponexit=0
+opt_runapponexitfn=
+opt_runapponexitiflastslide=1
+opt_lockf1=0
+IsTemplate=0
+opt_exportaudiotracks=0
+opt_exportaudiotracksbitrate=256
+style_name=My style
+style_category=User styles
+style_author=
+style_useaspect=0
+style_guid=
+opt_prog_voicefolder=
+opt_locktrackofslides=0
+opt_exefn=
+opt_exezipfn=
+opt_scrfn=
+opt_macfolder=
+projectname=pte_template
+opt_newnavbuttons_count=3
+opt_newnavbutton1=home
+opt_newnavbutton2=pause
+opt_newnavbutton3=print
+opt_cpbuttons_def_count=4
+opt_cpbutton_def1=help
+opt_cpbutton_def2=exit
+opt_cpbutton_def3=backward
+opt_cpbutton_def4=forward
+Comment_ShadowEnable=1
+Comment_ShadowColor=0
+Comment_ShadowAngle=45
+Comment_ShadowDistance=1.5
+Comment_ShadowSize=16
+Comment_ShadowOpacity=59
+Comment_ShadowSpreadIndex=0
+opt_global_ShadowEnable=0
+opt_global_ShadowColor=0
+opt_global_ShadowAngle=45
+opt_global_ShadowDistance=1.5
+opt_global_ShadowSize=16
+opt_global_ShadowOpacity=59
+opt_global_ShadowSpreadIndex=0
+opt_vidmp4fn=
+opt_vidavifn=
+opt_vidhtml5fn=
+opt_vidmobilefn=
+ImagesFolder=D:\Photos\trips\2026 - Viagem à Costa Rica\04 Curated\
+Platform=Win
+object Music:Music
+  object Track0:TMusicTrack
+    object Item0:TMusicItem
+      GUID={D7B1DE23-80ED-4F27-8214-3D12D718E6CE}
+      FileName=D:\Photos\trips\2026 - Viagem à Costa Rica\04 Curated\Audio\short\2 - chill-travel-vlogs-432209.mp3
+      Duration=115435
+      FadeIn=3000
+      FadeOut=3000
+    end
+  end
+end
+ProjectFilePath=D:\Projetos_Nelson\Mira\PTE example\pte_template.pte
+object TheEffect:AnEffect
+  time=2000
+  object dissolve:dissolve
+    caption=dissolve
+    key=checked
+    checked=1
+    group=GroupBasic
+    stdidx=2
+  end
+end
+
+[Tracks]
+
+object VidClip_092845_gx010458:VideoClip
+  FileName=d:\photos\trips\2026 - viagem à costa rica\04 curated\short\dia 3 - cano island- mergulho, praia, etc. (14-04)\092845_gx010458.mp4
+  Duration=26143
+  StartVideoTime=0
+  StartPTETime=0
+  LoadFromDisk=0
+  Mute=0
+  ClipCaption=092845_gx010458
+  ClipGUID={5C578E54-BDB4-418D-8E09-50AB2BE6BDD3}
+  NotStoreImageFile=1
+  StartSlideIdx=12
+  MasterID={66A1213B-27F0-489D-BCC5-2B5C23C5F0A8}
+end
+object VidClip_134037_p1418066:VideoClip
+  FileName=d:\photos\trips\2026 - viagem à costa rica\04 curated\short\dia 9 - manuel antonio national park (20-04)\134037_p1418066.mp4
+  Duration=18886
+  StartVideoTime=0
+  StartPTETime=0
+  LoadFromDisk=0
+  Mute=0
+  ClipCaption=134037_p1418066
+  ClipGUID={B8F0E5F3-25BA-44D9-9A4B-EF6602ADFE68}
+  NotStoreImageFile=1
+  StartSlideIdx=78
+  MasterID={5FDD6DF5-B0FD-488F-BC28-A2936633DF2D}
+end
+[Effects]
+object global:group
+end
+object local:group
+end
+
+[Slide1]
+TemplateGuid=
+ShowPic=1
+DialogPause=0
+SlideID=
+Pers_Fon=0
+Pers_RunApp=0
+ScaleMode=1
+ScaleTimes=6000,2000,0
+KFSD=1
+RunAppFN=
+Pers_EndAction=
+LinkedAudio=
+StyleOptions=[{6F704CA1-6413-4110-BBBC-5FBFF88B0C69}]\n\n
+object Container:Root
+  object 083034_IMG_5649:Image
+    GUID={57F33BEE-2B25-49E0-94AF-C066D879B649}
+    FitMode=Cover
+    PosMode=Percent
+    CenterMode=Percent
+    DeltaTime1=0
+    DeltaTime2=0
+    TranspForClick=0
+    PerspectiveCorrection=0
+    ShadowEnable=1
+    ShadowSize=16
+    ShadowColor=0,0,0
+    ShadowOpacity=59
+    ShadowDistance=1.5
+    ShadowAngle=45
+    ShadowSpreadIndex=0
+    3DShadow=0
+    HideMode=0
+    ChildInvis=0
+    Action=
+    TreeNode=1
+    Antialiased=1
+    MipLodBias=-0.5
+    Filtering=Default
+    ImageName=D:\Photos\trips\2026 - Viagem à Costa Rica\04 Curated\Short\Dia 2 - Viagem para Drake Bay e chegada ao Corcovado National Park (13-04)\083034_IMG_5649.jpg
+    EnableBorder=0
+    EnableCrop=0
+    EnableAspect=0
+    BorderWidth=3
+    BorderColor=255,255,255,255
+    CropRect=0,0,0,0
+    AnimColumns=1
+    AnimRows=1
+    AnimInterval=100
+    object KeyPoint1:KeyPoint
+      Time=0
+      Origin=SlideBegin
+      Opacity=90
+      Angle=0
+      ScaleX=110
+      ScaleY=110
+      Position=0,0
+      CenterPos=0,0
+      AngleX=0
+      AngleY=0
+      ZPos=0
+      Blur=50
+    end
+    AnimRepCount=0
+    AnimOffset=0
+    AnimCount=1
+    ReplaceWithEffectBuffer=0
+    ImageIndex=1
+    Aspect=0
+  end
+  object 083034_IMG_5649:Image
+    GUID={4D7766F3-D8B6-4969-8E6C-79B71F0D4797}
+    FitMode=PlaceInto
+    PosMode=Percent
+    CenterMode=Percent
+    DeltaTime1=0
+    DeltaTime2=0
+    TranspForClick=0
+    PerspectiveCorrection=0
+    ShadowEnable=1
+    ShadowSize=16
+    ShadowColor=0,0,0
+    ShadowOpacity=59
+    ShadowDistance=1.5
+    ShadowAngle=45
+    ShadowSpreadIndex=0
+    3DShadow=0
+    HideMode=0
+    ChildInvis=0
+    Action=
+    Antialiased=1
+    MipLodBias=-0.5
+    Filtering=Default
+    ImageName=D:\Photos\trips\2026 - Viagem à Costa Rica\04 Curated\Short\Dia 2 - Viagem para Drake Bay e chegada ao Corcovado National Park (13-04)\083034_IMG_5649.jpg
+    EnableBorder=1
+    EnableCrop=0
+    EnableAspect=0
+    BorderWidth=1
+    BorderColor=255,255,255,255
+    CropRect=0,0,0,0
+    AnimColumns=1
+    AnimRows=1
+    AnimInterval=100
+    object KeyPoint1:KeyPoint
+      Time=0
+      Origin=SlideBegin
+      Opacity=100
+      Angle=0
+      ScaleX=85
+      ScaleY=85
+      Position=0,0
+      CenterPos=0,0
+      AngleX=0
+      AngleY=0
+      ZPos=0
+      grps=255
+    end
+    AnimRepCount=0
+    AnimOffset=0
+    AnimCount=1
+    ReplaceWithEffectBuffer=0
+    ImageIndex=1
+    Aspect=0
+    RestoreAlpha=
+    AnimEnable=
+    BlurMode=
+    NestedOpacity=
+    NestedColorisation=
+  end
+end
+object TheEffect:AnEffect
+  time=2000
+  smoothline=0.3499999940395355
+  ref=dissolve
+  checked=1
+end
+
+bstyle=0
+Picture=D:\Photos\trips\2026 - Viagem à Costa Rica\04 Curated\Short\Dia 2 - Viagem para Drake Bay e chegada ao Corcovado National Park (13-04)\083034_IMG_5649.jpg
+ref=default
+EffectParams=
+meta_FullTime=0
+bcolor=0
+bcolor1=16711680
+bcolor2=0
+bcolorStyle=1
+bsize=100
+bfn=
+[Times]
+opt_synchpos1=5000
+opt_slidescount=1

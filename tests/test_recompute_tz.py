@@ -33,6 +33,12 @@ def _item(item_id, camera_id, raw, day, **kw):
     )
 
 
+# spec/123 — recompute_corrected_times API: applied_offset_minutes →
+# offset_seconds (×60). This file's pre-spec/123 tests are kept for the
+# day-filter + retime_day shapes; the recompute return-value pin now lives
+# in test_recompute_seconds.py.
+
+
 def _make_event(gw, base):
     """Nepal-shaped: trip TZ +5:45 (345 min), 2 days; a G9 camera left on UTC−3 and a phone."""
     stamp = "2026-03-10T00:00:00"
@@ -74,14 +80,16 @@ def test_recompute_corrected_and_day(tmp_path):
 
     eg = gw.open_event("evt-1")
     try:
-        affected = eg.recompute_corrected_times("G9", applied_offset_minutes=525)  # +8h45
+        # spec/123 — offset_seconds = 525 minutes * 60 = 31_500 (+8h45).
+        affected = eg.recompute_corrected_times(
+            "G9", offset_seconds=31_500)
         assert set(affected) == {"a", "b"}
 
         a = eg.item("a")
         assert a.capture_time_raw == "2026-03-09T23:30:00", "raw NEVER mutated"
         assert a.capture_time_corrected == "2026-03-10T08:15:00"
         assert a.day_number == 1, "moved into Day 1 by the corrected date"
-        assert a.tz_offset_minutes == 525 and a.tz_source == "user_declared"
+        assert a.tz_offset_seconds == 31_500 and a.tz_source == "user_declared"
 
         b = eg.item("b")
         assert b.capture_time_corrected == "2026-03-11T04:45:00"
@@ -107,7 +115,7 @@ def test_recompute_day_filter(tmp_path):
     try:
         # Only G9 items on Day 1: "b" (day_number=1). "a" (day None) + "q" (no raw) excluded.
         affected = eg.recompute_corrected_times(
-            "G9", applied_offset_minutes=60, day_number=1)
+            "G9", offset_seconds=3600, day_number=1)
         assert affected == ["b"], affected
         assert eg.item("b").tz_source == "user_declared"
         assert eg.item("a").tz_source == "none"  # excluded by the day filter
@@ -121,17 +129,17 @@ def test_save_camera_replaces_or_inserts(tmp_path):
     _make_event(gw, base)
     eg = gw.open_event("evt-1")
     try:
-        # Update an existing camera's applied offset.
+        # Update an existing camera's applied offset (spec/123 — seconds).
         g9 = next(c for c in eg.cameras() if c.camera_id == "G9")
-        g9.applied_offset_minutes = 525
-        g9.configured_tz_minutes = -180
+        g9.applied_offset_seconds = 525 * 60
+        g9.configured_tz_seconds = -180 * 60
         eg.save_camera(g9)
         again = next(c for c in eg.cameras() if c.camera_id == "G9")
-        assert again.applied_offset_minutes == 525
-        assert again.configured_tz_minutes == -180
+        assert again.applied_offset_seconds == 525 * 60
+        assert again.configured_tz_seconds == -180 * 60
 
         # Insert a brand-new camera.
-        eg.save_camera(m.Camera(camera_id="GoPro", applied_offset_minutes=0))
+        eg.save_camera(m.Camera(camera_id="GoPro", applied_offset_seconds=0))
         assert any(c.camera_id == "GoPro" for c in eg.cameras())
     finally:
         eg.close()
@@ -151,10 +159,10 @@ def test_retime_day_shifts_and_moves_across_days(tmp_path):
         # Anchor the fixture: give day-1 items concrete corrected times.
         eg.store.conn.execute(
             "UPDATE item SET capture_time_corrected = '2026-03-10T23:50:00', "
-            "tz_offset_minutes = 0 WHERE id = 'b'")
+            "tz_offset_seconds = 0 WHERE id = 'b'")
         eg.store.conn.execute(
             "UPDATE item SET capture_time_corrected = '2026-03-10T12:00:00', "
-            "tz_offset_minutes = 0 WHERE id = 'p'")
+            "tz_offset_seconds = 0 WHERE id = 'p'")
         # Day 1 declared +5:45; the user fixes it to +6:45 (delta +60).
         out = eg.retime_day(1, 345 + 60)
         # Both day-1 items re-time ('b' raw 20:00 + 60min = 21:00, stays
@@ -163,7 +171,8 @@ def test_retime_day_shifts_and_moves_across_days(tmp_path):
         assert out["affected"] == 2
         b = eg.item("b")
         assert b.capture_time_corrected == "2026-03-10T21:00:00"
-        assert b.tz_offset_minutes == 60 and b.tz_source == "user_declared"
+        # spec/123 — delta is 60 MINUTES → 3600 seconds on the item.
+        assert b.tz_offset_seconds == 3600 and b.tz_source == "user_declared"
         day = eg.store.get(m.TripDay, 1)
         assert day.tz_minutes == 405
         # A second fix that pushes 'b' past midnight moves it to day 2.

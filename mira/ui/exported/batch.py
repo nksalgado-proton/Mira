@@ -59,6 +59,12 @@ class ExportCell:
     item_id: str
     path: Path
     day_number: Optional[int] = None
+    # spec/118 §3 — OVERRIDE path: pin this cell's dest_dir to the
+    # existing lineage row's parent so the atomic replace lands at the
+    # SAME ``export_relpath`` even if the day folder name has drifted
+    # since the last export. ``None`` falls back to ``day_labels`` (the
+    # default keep-both path, unchanged from spec/89 §5).
+    dest_dir_override: Optional[str] = None
 
 
 @dataclass
@@ -248,6 +254,7 @@ def submit_export_batch(
     parent_widget: QWidget,
     segment_rows: Optional[List[m.VideoSegment]] = None,
     snapshot_cells: Optional[List[SnapshotCell]] = None,
+    collision: str = "unique",
 ) -> bool:
     """Build the spec/60 manifest from ``cells`` and submit it through
     the app's :class:`BatchJobQueue` (spec/84 rename — the queue serves
@@ -358,7 +365,10 @@ def submit_export_batch(
         )
 
     for c in cells:
-        dest_dir = str(default_dest / day_labels.get(c.day_number, ""))
+        if c.dest_dir_override is not None:
+            dest_dir = str(event_root / c.dest_dir_override)
+        else:
+            dest_dir = str(default_dest / day_labels.get(c.day_number, ""))
         units.append(_photo_unit(c.item_id, c.path, dest_dir))
         source_by_unit_id[c.item_id] = c.path
 
@@ -427,8 +437,21 @@ def submit_export_batch(
         # when every render lane lost its sources mid-build.
         return True
 
+    # spec/118 §3 — caller picks the collision policy. "unique" stays
+    # the default (today's keep-both behaviour, "(2)" suffix); "override"
+    # atomically replaces the existing file in place so a re-edited
+    # export refreshes without forming a versions cluster + leaves Cut
+    # membership untouched (the file path / lineage row are reused).
+    from core.export_manifest import COLLISION_OVERRIDE, COLLISION_UNIQUE
+    norm_collision = (
+        COLLISION_OVERRIDE
+        if str(collision).lower() in (COLLISION_OVERRIDE, "override")
+        else COLLISION_UNIQUE
+    )
     manifest = ExportManifest(
-        units=tuple(units), clips=tuple(clip_units), collision="unique")
+        units=tuple(units), clips=tuple(clip_units),
+        collision=norm_collision,
+    )
     worker = BatchExportJob(manifest, source_by_unit_id)
     render_cells = list(cells) + list(snapshot_render_cells)
     clip_unit_lookup = {cu.unit_id: cu for cu in clip_units}

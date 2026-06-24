@@ -103,8 +103,12 @@ def _calibration_map(plan: IngestPlan) -> Dict[str, Optional[CameraCalibration]]
         elif cam.calibration is not None:
             out[cam.camera_id] = cam.calibration
         elif cam.configured_tz_hours is not None:
+            # spec/123 — source 1 (known TZ). spec/122's
+            # ``timestamps_are_utc`` UTC branch reverted.
             out[cam.camera_id] = build_calibration(
-                cam.camera_id, [], configured_tz=cam.configured_tz_hours, trip_tz=trip_tz
+                cam.camera_id, [],
+                configured_tz=cam.configured_tz_hours,
+                trip_tz=trip_tz,
             )
         else:
             out[cam.camera_id] = None
@@ -248,7 +252,7 @@ def run_ingest(
                 materialized_at=stamp, materialized_phase="ingest",
                 camera_id=camera_id,
                 capture_time_raw="", capture_time_corrected="", created_at=stamp,
-                tz_offset_minutes=0, tz_source="none", day_number=None,
+                tz_offset_seconds=0, tz_source="none", day_number=None,
                 duration_ms=dur_ms,
                 quarantine_status="no_timestamp", recovered_from_filename=False,
                 **_exif_facets(si),
@@ -275,9 +279,9 @@ def run_ingest(
         seen_dest_relpaths.add(dest.relative_to(plan.event_root).as_posix())
         sha, size = _copy_verify(si.path, dest, result)
 
-        offset_min = 0
+        offset_sec = 0
         if corrected is not None and raw_t is not None:
-            offset_min = round((corrected - raw_t).total_seconds() / 60)
+            offset_sec = round((corrected - raw_t).total_seconds())
 
         items.append(m.Item(
             id=uuid.uuid4().hex, kind=kind,
@@ -288,7 +292,7 @@ def run_ingest(
             capture_time_raw=raw_t.isoformat(),
             capture_time_corrected=(corrected or raw_t).isoformat(),
             created_at=stamp,
-            tz_offset_minutes=offset_min, tz_source=_tz_source(cal, recovered),
+            tz_offset_seconds=offset_sec, tz_source=_tz_source(cal, recovered),
             day_number=day_number, quarantine_status="ok",
             duration_ms=dur_ms,
             recovered_from_filename=recovered,
@@ -370,7 +374,7 @@ def _camera_rows(plan, cal_map, seen_camera_ids, stamp) -> List[m.Camera]:
         planned_ids.add(cam.camera_id)
         cal = cal_map.get(cam.camera_id)
         applied = (
-            round(cal.tz_offset.total_seconds() / 60)
+            round(cal.tz_offset.total_seconds())
             if cal is not None and cal.tz_offset is not None else None
         )
         # spec/52: m.Camera.is_reference retired (phone EXIF is the calibration
@@ -378,11 +382,11 @@ def _camera_rows(plan, cal_map, seen_camera_ids, stamp) -> List[m.Camera]:
         # for the pair-picker UI; it does not persist into event.db.
         rows.append(m.Camera(
             camera_id=cam.camera_id, is_phone=cam.is_phone,
-            configured_tz_minutes=(
-                round(cam.configured_tz_hours * 60)
+            configured_tz_seconds=(
+                round(cam.configured_tz_hours * 3600)
                 if cam.configured_tz_hours is not None else None
             ),
-            applied_offset_minutes=applied,
+            applied_offset_seconds=applied,
             applied_at=stamp if applied is not None else None,
         ))
     # Cameras seen in the scan but never answered for: a bare row so the FK holds.

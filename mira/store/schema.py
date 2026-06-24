@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 18
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -191,13 +191,40 @@ CREATE INDEX ix_trip_day_date ON trip_day(date);
 -- ===== camera (D) ==========================================================
 -- spec/52 retired the reference-camera concept (phone EXIF is the reference
 -- when present; pair-pick TZ calibration uses phone+camera photo pairs).
+-- spec/123 — offset columns are integer SECONDS (×60 conversion at v16→v17)
+-- so source 3 (measured pair raw delta) stays lossless.
 CREATE TABLE camera (
   camera_id              TEXT PRIMARY KEY,           -- 'Make+Model' business key
   is_phone               INTEGER NOT NULL DEFAULT 0 CHECK (is_phone IN (0,1)),
-  configured_tz_minutes  INTEGER,
-  applied_offset_minutes INTEGER,
+  -- spec/127 — the canonical per-(camera, trip-TZ-segment) correction
+  -- lives in camera_tz_correction. These columns persist as the
+  -- single-segment summary (mirrored on save) so older read paths keep
+  -- working; for a multi-segment trip they mirror the row for the
+  -- predominant trip TZ.
+  configured_tz_seconds  INTEGER,
+  applied_offset_seconds INTEGER,
   applied_at             TEXT
 );
+
+-- ===== camera_tz_correction (D) — per-(camera, trip-TZ-segment), spec/127 =====
+-- A trip-TZ segment = the set of plan days sharing one ``trip_day.tz_minutes``
+-- value. A normal trip = one segment; a TZ-crossing trip (e.g. Nepal +5:45 with
+-- a day at India +5:30) = two. ``configured_tz_seconds`` set => base came from
+-- a declared zone (spec/123 source 1); NULL => base came from a measured pair /
+-- manual offset (spec/123 source 3 — the spec/125 discriminator, now per
+-- segment). ``nudge_seconds`` is the fine ±MM:SS adjustment on top.
+-- ``applied_offset_seconds`` = base + nudge, denormalized for quick recompute.
+-- FK to camera cascades — drop the camera, drop its corrections.
+CREATE TABLE camera_tz_correction (
+  camera_id              TEXT NOT NULL REFERENCES camera(camera_id) ON DELETE CASCADE,
+  trip_tz_seconds        INTEGER NOT NULL,
+  configured_tz_seconds  INTEGER,
+  nudge_seconds          INTEGER NOT NULL DEFAULT 0,
+  applied_offset_seconds INTEGER NOT NULL DEFAULT 0,
+  applied_at             TEXT,
+  PRIMARY KEY (camera_id, trip_tz_seconds)
+);
+CREATE INDEX ix_camera_tz_correction_tz ON camera_tz_correction(trip_tz_seconds);
 
 -- ===== item (D) — the spine; ONE node per clip; file identity nullable ======
 CREATE TABLE item (
@@ -220,7 +247,7 @@ CREATE TABLE item (
   parent_item_id         TEXT REFERENCES item(id) ON DELETE CASCADE,   -- child → source video
   capture_time_raw       TEXT,                  -- virtual EXIF, NEVER mutated
   capture_time_corrected TEXT,                  -- derived = raw + offset; the sort key
-  tz_offset_minutes      INTEGER NOT NULL DEFAULT 0,
+  tz_offset_seconds      INTEGER NOT NULL DEFAULT 0,  -- spec/123: integer seconds (lossless)
   tz_source              TEXT NOT NULL DEFAULT 'none' CHECK (tz_source IN ('phone_auto','user_declared','pair_picker','none')),
   classification         TEXT,
   classification_source  TEXT CHECK (classification_source IN ('auto','user') OR classification_source IS NULL),
@@ -401,6 +428,11 @@ CREATE TABLE adjustment (
   -- survives session ends.
   look_strength REAL NOT NULL DEFAULT 1.0
                 CHECK (look_strength >= 0 AND look_strength <= 2),
+  -- spec/115 — per-image USER exposure (EV), added on top of the Look's
+  -- already-strength-scaled exposure. ±2 EV swing covers a one-stop
+  -- recovery in either direction; the slider's double-click resets to 0.
+  user_exposure REAL NOT NULL DEFAULT 0.0
+                CHECK (user_exposure >= -2 AND user_exposure <= 2),
   edit_exported INTEGER NOT NULL DEFAULT 0 CHECK (edit_exported IN (0,1)),
   CHECK ( (crop_x IS NULL) = (crop_y IS NULL)
       AND (crop_x IS NULL) = (crop_w IS NULL)
@@ -1320,6 +1352,151 @@ def _migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
         "ALTER TABLE cut ADD COLUMN aspect TEXT NOT NULL DEFAULT '16:9'")
 
 
+def _migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """spec/115 — independent Exposure slider. Adds
+    ``adjustment.user_exposure``: a per-image USER exposure (EV) that is
+    added to the resolved Look's exposure AFTER Strength scaling, so it
+    nudges brightness independently of both. Defaults to 0.0 so every
+    pre-spec/115 row renders identically.
+
+    SQLite refuses CHECK via ALTER TABLE — fresh installs get the full
+    ``CHECK (user_exposure BETWEEN -2 AND 2)`` in the DDL; migrated
+    rows are clamped at the gateway seam on save."""
+    conn.execute(
+        "ALTER TABLE adjustment ADD COLUMN user_exposure REAL NOT NULL "
+        "DEFAULT 0.0")
+
+
+def _migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """spec/123 — clock offset columns become integer SECONDS (lossless
+    ×60 conversion) so source 3 (measured pair raw delta to the nearest
+    second) doesn't lose precision through a minute-resolution column.
+
+    Renames:
+      camera.applied_offset_minutes → applied_offset_seconds
+      camera.configured_tz_minutes  → configured_tz_seconds
+      item.tz_offset_minutes        → tz_offset_seconds
+
+    Values are multiplied by 60 in place. ``trip_day.tz_minutes`` and
+    ``camera_day_tz.declared_tz_minutes`` stay in minutes (zones are
+    whole minutes; converted to seconds at read where needed).
+
+    Tolerant of test fixtures that build only a partial v16 schema —
+    each table's columns are checked first so a fixture missing the
+    ``camera`` or ``item`` table doesn't error here. Real event.db
+    files always have both."""
+    def _table_exists(name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+    def _column_exists(table: str, column: str) -> bool:
+        if not _table_exists(table):
+            return False
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        return column in cols
+
+    if _column_exists("camera", "applied_offset_minutes"):
+        conn.execute(
+            "ALTER TABLE camera RENAME COLUMN applied_offset_minutes "
+            "TO applied_offset_seconds")
+        conn.execute(
+            "UPDATE camera SET applied_offset_seconds = "
+            "applied_offset_seconds * 60 "
+            "WHERE applied_offset_seconds IS NOT NULL")
+    if _column_exists("camera", "configured_tz_minutes"):
+        conn.execute(
+            "ALTER TABLE camera RENAME COLUMN configured_tz_minutes "
+            "TO configured_tz_seconds")
+        conn.execute(
+            "UPDATE camera SET configured_tz_seconds = "
+            "configured_tz_seconds * 60 "
+            "WHERE configured_tz_seconds IS NOT NULL")
+    if _column_exists("item", "tz_offset_minutes"):
+        conn.execute(
+            "ALTER TABLE item RENAME COLUMN tz_offset_minutes "
+            "TO tz_offset_seconds")
+        conn.execute(
+            "UPDATE item SET tz_offset_seconds = tz_offset_seconds * 60")
+
+
+def _migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
+    """spec/127 — per-(camera, trip-TZ-segment) correction store.
+
+    Adds ``camera_tz_correction(camera_id, trip_tz_seconds,
+    configured_tz_seconds, nudge_seconds, applied_offset_seconds,
+    applied_at)`` PK (camera_id, trip_tz_seconds) + populates it from
+    the existing single per-camera ``applied_offset_seconds`` /
+    ``configured_tz_seconds`` columns, keyed by the event's predominant
+    ``trip_day.tz_minutes`` (×60). Cameras whose ``applied_offset_seconds``
+    is NULL or 0 get no row — the dialog reads "Correct" for them.
+
+    Tolerant of partial fixtures (some test stores don't build
+    ``trip_day``/``camera`` at all); each table is probed first so a
+    missing one doesn't error here. Real event.db files always have both.
+    """
+    def _table_exists(name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+    conn.execute(
+        """
+        CREATE TABLE camera_tz_correction (
+          camera_id              TEXT NOT NULL REFERENCES camera(camera_id) ON DELETE CASCADE,
+          trip_tz_seconds        INTEGER NOT NULL,
+          configured_tz_seconds  INTEGER,
+          nudge_seconds          INTEGER NOT NULL DEFAULT 0,
+          applied_offset_seconds INTEGER NOT NULL DEFAULT 0,
+          applied_at             TEXT,
+          PRIMARY KEY (camera_id, trip_tz_seconds)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX ix_camera_tz_correction_tz "
+        "ON camera_tz_correction(trip_tz_seconds)"
+    )
+
+    if not (_table_exists("camera") and _table_exists("trip_day")):
+        return
+
+    # Predominant trip TZ for the event = the most common non-NULL
+    # ``trip_day.tz_minutes`` value. Ties broken by smallest tz_minutes
+    # (deterministic across reruns; a real tie is improbable). Multi-TZ
+    # trips migrate every existing camera row into the predominant
+    # segment; the user fixes the second segment via the unified dialog.
+    tz_rows = conn.execute(
+        "SELECT tz_minutes FROM trip_day WHERE tz_minutes IS NOT NULL"
+    ).fetchall()
+    if not tz_rows:
+        return
+    from collections import Counter
+    counter: Counter = Counter(int(r[0]) for r in tz_rows)
+    # max() ties: pick the smallest tz for determinism.
+    most_common = sorted(
+        counter.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    trip_tz_seconds = int(most_common) * 60
+
+    cam_rows = conn.execute(
+        "SELECT camera_id, configured_tz_seconds, applied_offset_seconds, "
+        "applied_at FROM camera WHERE applied_offset_seconds IS NOT NULL "
+        "AND applied_offset_seconds <> 0"
+    ).fetchall()
+    for cam_id, cfg, applied, stamp in cam_rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO camera_tz_correction "
+            "(camera_id, trip_tz_seconds, configured_tz_seconds, "
+            " nudge_seconds, applied_offset_seconds, applied_at) "
+            "VALUES (?, ?, ?, 0, ?, ?)",
+            (cam_id, trip_tz_seconds, cfg, int(applied), stamp),
+        )
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1335,6 +1512,9 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v12_to_v13,
     _migrate_v13_to_v14,
     _migrate_v14_to_v15,
+    _migrate_v15_to_v16,
+    _migrate_v16_to_v17,
+    _migrate_v17_to_v18,
 ]
 
 

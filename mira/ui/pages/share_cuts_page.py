@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -1077,6 +1077,11 @@ class ShareCutsPage(QWidget):
         self.detail_page.export_requested.connect(self._on_export_cut)
         self.detail_page.play_requested.connect(self._on_play_cut)
         self.detail_page.publish_requested.connect(self._on_publish_cut)
+        # spec/117 — persistent post-export actions on the Cut detail.
+        self.detail_page.open_folder_requested.connect(
+            self._on_open_exported_folder)
+        self.detail_page.open_in_pte_requested.connect(
+            self._on_open_exported_in_pte)
         self._stack.addWidget(self.detail_page)
         # The #exported pool detail — flat grid of every shipped file
         # with multi-select + cascade-aware Delete (spec/61 §1.4 + the
@@ -1458,6 +1463,16 @@ class ShareCutsPage(QWidget):
         overlay_fields = getattr(prefill, "overlay_fields", None)
         if overlay_fields:
             ctx.overlay_fields = list(overlay_fields)
+        # spec/121 — re-seat the Cut's saved canvas aspect on the
+        # dialog context. The dialog reads ``ctx.aspect`` at construction
+        # (new_recipe_dialog.py: ``self._aspect = normalise(ctx.aspect)``
+        # + the combo's ``findData`` seed); a None / blank / unknown
+        # value normalises to the default 16:9 so the absent-field case
+        # behaves exactly like the pre-spec/121 default.
+        aspect = getattr(prefill, "aspect", None)
+        if aspect:
+            from core.cut_aspect import normalise as _normalise_aspect
+            ctx.aspect = _normalise_aspect(aspect)
 
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or
@@ -1842,6 +1857,11 @@ class ShareCutsPage(QWidget):
             # the SimpleNamespace forwards them as a list / Optional.
             overlay_mode=cut.overlay_mode,
             overlay_fields=eg.cut_overlay_fields(cut),
+            # spec/121 — the Cut's saved canvas aspect rides the
+            # prefill so re-opening the dialog shows the user's
+            # 4:3 / 3:2 / 1:1 choice instead of falling back to the
+            # NewRecipeContext default ("16:9").
+            aspect=cut.aspect,
         )
         kwargs = self._dialog_kwargs()
         kwargs["existing_cuts"] = [
@@ -1932,7 +1952,95 @@ class ShareCutsPage(QWidget):
             self._eg, cut,
             separators_on=self._separators_on(),
             aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")))
+        # spec/117 — flip the persistent Open folder / Open in PTE
+        # buttons based on whether the Cut shipped and the state of
+        # its on-disk bundle. Cheap to compute (one folder probe +
+        # one glob).
+        self._sync_exported_actions(cut)
         self._stack.setCurrentWidget(self.detail_page)
+
+    def _sync_exported_actions(self, cut) -> None:
+        """Push the per-event Cut's spec/117 button visibility into the
+        detail page. Never-exported Cuts get both off; an exported
+        Cut whose bundle is gone shows folder-only (which lands the
+        user on the parent ``Cuts/…``)."""
+        from mira.shared.exported_cut_actions import (
+            is_exported, resolve_event_cut_location,
+        )
+        from mira.shared.pte_launch import pte_launch_available
+        if not is_exported(cut):
+            self.detail_page.set_exported_actions(
+                show_folder=False, show_pte=False)
+            return
+        loc = self._resolve_event_cut_location(cut)
+        settings = self._settings()
+        pte_available = (
+            loc.pte_available
+            and getattr(settings, "use_pte", False)
+            and pte_launch_available(
+                getattr(settings, "pte_path", "") if settings else ""))
+        self.detail_page.set_exported_actions(
+            show_folder=True, show_pte=pte_available)
+
+    def _resolve_event_cut_location(self, cut):
+        """Re-run the same resolver the exporter used and probe disk.
+        Shared by ``_sync_exported_actions`` (visibility) and the
+        handlers (the actual reveal / launch)."""
+        from mira.paths import library_root as _library_root_from_paths
+        from mira.shared.exported_cut_actions import resolve_event_cut_location
+        eg = self._eg
+        try:
+            event_name = eg.event().name or "" if eg is not None else ""
+        except Exception:                                          # noqa: BLE001
+            event_name = ""
+        settings = self._settings()
+        cuts_export_root = (
+            getattr(settings, "cuts_export_root", "") or ""
+            if settings else "")
+        return resolve_event_cut_location(
+            cut=cut,
+            event_root=Path(eg.event_root) if eg is not None else Path("."),
+            event_name=event_name,
+            library_root=_library_root_from_paths(),
+            cuts_export_root=cuts_export_root or None,
+        )
+
+    def _on_open_exported_folder(self, cut_id: str) -> None:
+        """spec/117 — Reveal the exported Cut's bundle in Explorer.
+        Always available on an exported Cut; falls back to the parent
+        ``Cuts/…`` when the exact folder is gone."""
+        from mira.shared.pte_launch import reveal_in_explorer
+        cut = self._eg.cut(cut_id) if self._eg else None
+        if cut is None:
+            return
+        loc = self._resolve_event_cut_location(cut)
+        try:
+            reveal_in_explorer(loc.folder)
+        except OSError as exc:
+            log.warning("reveal_in_explorer failed: %s", exc)
+
+    def _on_open_exported_in_pte(self, cut_id: str) -> None:
+        """spec/117 — Relaunch the exported Cut in PTE without re-
+        exporting. Gated upstream by ``_sync_exported_actions`` — the
+        handler is only reachable when ``use_pte`` is on, the
+        executable resolves AND a ``.pte`` was found in the bundle."""
+        from mira.shared.pte_launch import open_in_pte
+        cut = self._eg.cut(cut_id) if self._eg else None
+        if cut is None:
+            return
+        loc = self._resolve_event_cut_location(cut)
+        if loc.pte_file is None:
+            log.warning("Open in PTE: no .pte resolved for %s", cut.tag)
+            return
+        settings = self._settings()
+        pte_path = getattr(settings, "pte_path", "") if settings else ""
+        if not pte_path:
+            log.warning("Open in PTE: pte_path is empty")
+            return
+        try:
+            open_in_pte(Path(pte_path), loc.pte_file)
+        except OSError as exc:
+            log.warning("open_in_pte failed: %s", exc)
 
     def _on_detail_back(self) -> None:
         self.refresh()
@@ -2282,12 +2390,262 @@ class ShareCutsPage(QWidget):
                 "The '{cat}' music folder is shorter than the show — add "
                 "more songs or pick another folder.").replace(
                 "{cat}", str(cut.music_category)))
+        # spec/107 — generate slideshow.pte when "I use PTE" is on. Best
+        # effort: a generator failure logs but never blocks the export
+        # summary the user came here for.
+        pte_file = self._generate_pte_if_enabled(cut, result.folder)
+
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.NoIcon)
         box.setWindowTitle(tr("Export Cut"))
         box.setText("\n".join(lines))
+        self._add_open_buttons(box, result.folder, pte_file)
         box.exec()
         self.refresh()
+
+    # ── spec/107 helpers ────────────────────────────────────────────
+
+    def _generate_pte_if_enabled(self, cut, folder: Path) -> Optional[Path]:
+        """When the "I use PTE" toggle is on, build the slideshow's
+        member list + audio tracks from the just-exported folder and
+        write ``slideshow.pte`` into it via :mod:`pte_project`.
+
+        Returns the written path (for the Open-in-PTE button), or
+        ``None`` when generation didn't run (toggle off) or failed
+        (logged; the export-complete summary still shows)."""
+        settings = self._settings()
+        if not getattr(settings, "use_pte", False):
+            return None
+        try:
+            return self._generate_pte_into_folder(cut, folder)
+        except Exception:  # noqa: BLE001
+            log.exception("PTE generation failed for cut %s", cut.tag)
+            return None
+
+    def _generate_pte_into_folder(self, cut, folder: Path) -> Optional[Path]:
+        """Walk the export folder's contents into a member list (sorted
+        by the `NNN_` prefix → chronological show order) and write
+        ``slideshow.pte``. Audio tracks come from ``folder/audio/``."""
+        from mira.paths import library_root as _library_root_from_paths
+        from mira.shared.pte_project import (
+            PteAudioTrack, PteMember,
+            generate_into_folder,
+        )
+        # spec/120 — build the basename → export_relpath lookup ONCE per
+        # generation, off the Cut's authoritative member list. Used by
+        # :meth:`_cut_overlay_text` to resolve a Cut-folder filename
+        # back to the lineage relpath ``frame_provenance`` keys on.
+        overlay_lookup = self._build_overlay_member_lookup(cut)
+        members: List[PteMember] = []
+        for entry in sorted(folder.iterdir(),
+                            key=lambda p: p.name.lower()):
+            if not entry.is_file():
+                continue
+            suffix = entry.suffix.lower()
+            if suffix in (".jpg", ".jpeg", ".png"):
+                members.append(PteMember(
+                    kind="photo", path=entry,
+                    overlay_text=self._cut_overlay_text(
+                        cut, entry, overlay_lookup),
+                ))
+            elif suffix == ".mp4":
+                members.append(PteMember(
+                    kind="video", path=entry,
+                    duration_ms=self._cut_video_duration_ms(cut, entry),
+                ))
+        if not members:
+            return None
+        audio_dir = folder / "audio"
+        tracks: List[PteAudioTrack] = []
+        if audio_dir.is_dir():
+            for track in sorted(audio_dir.iterdir(),
+                                key=lambda p: p.name.lower()):
+                if not track.is_file():
+                    continue
+                tracks.append(PteAudioTrack(
+                    path=track,
+                    duration_ms=self._probe_audio_ms(track),
+                ))
+        overlay_mode = (
+            getattr(cut, "overlay_mode", None) or "embedded")
+        aspect = getattr(cut, "aspect", None) or "16:9"
+        photo_seconds = float(getattr(cut, "photo_s", 6.0))
+        # spec/121 — the .pte takes the Cut's name. cut.tag is the
+        # same slug the export folder already uses, so it's filesystem-
+        # safe by construction; the slideshow_target helper falls back
+        # to "slideshow" when the stem is empty.
+        stem = (getattr(cut, "tag", None) or "").strip() or "slideshow"
+        return generate_into_folder(
+            folder, members, tracks,
+            aspect=aspect,
+            photo_seconds=photo_seconds,
+            library_root=_library_root_from_paths(),
+            overlay_mode=overlay_mode,
+            stem=stem,
+        )
+
+    def _build_overlay_member_lookup(self, cut) -> Dict[str, str]:
+        """spec/120 — return a ``{basename → export_relpath}`` map of
+        the Cut's authoritative member files.
+
+        The exporter writes each photo as ``NNN_<basename>``
+        (cut_export.py:460), so a Cut-folder filename's part after the
+        ``NNN_`` prefix is exactly ``Path(lineage.export_relpath).name``.
+        Re-using ``cut_member_files`` keeps this in lockstep with the
+        bytes the exporter just wrote — no disk re-derivation, no
+        risk of resolving against a stale member list.
+
+        Empty when the Cut has no members or the gateway can't be read
+        (which means no overlays — the caller falls back to ``None``
+        per photo)."""
+        eg = self._eg
+        if eg is None:
+            return {}
+        try:
+            rows = eg.cut_member_files(cut.id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "overlay lookup: cut_member_files failed for %s",
+                cut.tag)
+            return {}
+        out: Dict[str, str] = {}
+        for row in rows:
+            relpath = getattr(row, "export_relpath", None)
+            if not relpath:
+                continue
+            basename = Path(relpath).name
+            if not basename:
+                continue
+            # Same-basename collisions across different relpaths are
+            # rare (the export folder dedups, but the original lineage
+            # could share a name across two source dirs). First write
+            # wins — the basename → relpath map then matches the
+            # exporter's sequence order; downstream code that needs
+            # the SHA-grade disambiguation has the sequence prefix in
+            # the filename to lean on.
+            out.setdefault(basename, relpath)
+        return out
+
+    def _strip_seq_prefix(self, name: str) -> str:
+        """``007_IMG_1234.jpg`` → ``IMG_1234.jpg``. The exporter
+        prefixes every materialised member with ``NNN_`` so plain
+        filename sort = show order (cut_export.py:460); the overlay
+        lookup undoes the prefix to match the lineage basename."""
+        if "_" not in name:
+            return name
+        prefix, _, rest = name.partition("_")
+        return rest if prefix.isdigit() and rest else name
+
+    def _cut_overlay_text(
+        self, cut, photo: Path,
+        member_lookup: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Compose the embedded-overlay text for one photo via the
+        gateway's provenance resolver. Returns ``None`` when overlays
+        are off, when burn_in is selected (pixels already carry the
+        text), or when the file has no provenance data.
+
+        spec/120 — the resolver keys provenance off the lineage row's
+        ``export_relpath`` (e.g. ``Exported Media/IMG_1234.jpg``), not
+        off the Cut-folder path (``<tag>/007_IMG_1234.jpg``). Passing
+        the Cut-folder path silently missed every join → empty
+        provenance → empty text → PTE stripped every nested ``:Text``.
+        ``member_lookup`` (built once per generation) translates the
+        Cut-folder basename back to its lineage key; callers without
+        a lookup get the same one rebuilt on the fly (slow path —
+        used by single-photo callers / tests)."""
+        from core import cut_overlay
+        overlay_mode = (
+            getattr(cut, "overlay_mode", None) or "embedded")
+        if overlay_mode != "embedded":
+            return None
+        fields = list(self._eg.cut_overlay_fields(cut))
+        if not fields:
+            return None
+        lookup = (member_lookup if member_lookup is not None
+                  else self._build_overlay_member_lookup(cut))
+        if not lookup:
+            return None
+        stripped = self._strip_seq_prefix(photo.name)
+        export_relpath = lookup.get(stripped)
+        if not export_relpath:
+            # Separator / opener cards (``002_day1.jpg`` etc.) have no
+            # lineage row — correct outcome is no overlay.
+            return None
+        try:
+            prov = self._eg.frame_provenance(export_relpath)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "frame_provenance failed for %s", export_relpath)
+            return None
+        lines = cut_overlay.compose_overlay_lines(fields, prov)
+        return "\n".join(lines) if lines else None
+
+    def _cut_video_duration_ms(self, cut, video: Path) -> int:
+        """The clip length, in ms, for the `[Times]` block. The export
+        folder's filenames carry no duration, so the gateway is asked
+        for the source item's ``duration_ms``. Falls back to 0 when
+        the source is missing (the slide still plays — the cumulative
+        synchpos just skips ahead)."""
+        try:
+            # The export's filename is ``NNN_<sourcename>`` — strip the
+            # NNN_ prefix to match the source item's name.
+            stem = video.name.split("_", 1)[-1] if "_" in video.name else video.name
+            for it in self._eg.items():
+                if it.kind == "video" and Path(it.origin_relpath or "").name.lower() == stem.lower():
+                    return int(it.duration_ms or 0)
+        except Exception:  # noqa: BLE001
+            log.exception("video duration lookup failed for %s", video)
+        return 0
+
+    def _probe_audio_ms(self, track: Path) -> int:
+        """Get a soundtrack track's duration in ms. Mutagen handles
+        every format the audio library supports; a missing track or
+        an unreadable file returns 0 (PTE accepts 0 but the playlist
+        won't sync past it — a real failure is logged, not silent)."""
+        try:
+            import mutagen
+            audio = mutagen.File(track)
+            if audio is not None and audio.info is not None:
+                return int(round(audio.info.length * 1000))
+        except Exception:  # noqa: BLE001
+            log.exception("audio duration probe failed for %s", track)
+        return 0
+
+    def _add_open_buttons(self, box, folder: Path,
+                          pte_file: Optional[Path]) -> None:
+        """Add "Open folder" (always) + "Open in PTE" (when the toggle
+        is on, the executable resolves, and we generated a project)
+        buttons to ``box``. The buttons are wired to spawn from
+        :mod:`pte_launch` so this method stays Qt-shaped only."""
+        from PyQt6.QtWidgets import QMessageBox, QPushButton
+        from mira.shared.pte_launch import (
+            open_in_pte, pte_launch_available, reveal_in_explorer,
+        )
+        settings = self._settings()
+        open_folder_btn = box.addButton(
+            tr("Open folder"), QMessageBox.ButtonRole.ActionRole)
+
+        def _open_folder():
+            try:
+                reveal_in_explorer(folder)
+            except OSError as exc:
+                log.warning("reveal_in_explorer failed: %s", exc)
+
+        open_folder_btn.clicked.connect(_open_folder)
+        if (getattr(settings, "use_pte", False)
+                and pte_file is not None
+                and pte_launch_available(getattr(settings, "pte_path", ""))):
+            pte_btn = box.addButton(
+                tr("Open in PTE"), QMessageBox.ButtonRole.ActionRole)
+
+            def _open_pte():
+                try:
+                    open_in_pte(Path(settings.pte_path), pte_file)
+                except OSError as exc:
+                    log.warning("open_in_pte failed: %s", exc)
+            pte_btn.clicked.connect(_open_pte)
+        box.addButton(QMessageBox.StandardButton.Ok)
 
     def _on_rename_cut(self, cut_id: str) -> None:
         eg = self._eg
@@ -2355,6 +2713,10 @@ class ShareCutsPage(QWidget):
             photo_s=6.0,
             music_category=None,
             card_style="black",
+            # spec/121 — DCs carry no aspect; ``None`` keeps the dialog
+            # at its NewRecipeContext default ("16:9") for a new Cut
+            # pinned from this DC, mirroring the per-event edit path.
+            aspect=None,
         )
         kwargs = self._dialog_kwargs()
         draft = self._exec_edit_dialog(prefill, kwargs)

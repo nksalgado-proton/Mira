@@ -94,7 +94,14 @@ def develop_photo_array(
         return None
 
     try:
-        arr = decode_image(Path(source_path))
+        # spec/135 — decode at the largest reduced scale whose long
+        # edge stays ≥ max_long_edge so we don't pay full-res cost on
+        # a 6000-px JPEG only to immediately downsample. The exact
+        # final bound still happens in ``_downscale_if_huge`` below
+        # (decode may land somewhat above the target — e.g. ÷2 of a
+        # 6000-px source is 3000, then we land at 2400).
+        arr = decode_image(
+            Path(source_path), target_long_edge=int(max_long_edge or 0) or None)
     except Exception:                                              # noqa: BLE001
         log.warning(
             "preview-render: decode failed for %s", source_path,
@@ -134,9 +141,14 @@ def develop_photo_array(
         if creative_filter:
             recipe = resolve_filter_recipe(creative_filter, style_key)
             if recipe is not None:
+                # spec/116 §2 — anchor the Subject Spotlight at the
+                # photo's AF point. Best-effort: a missing brand
+                # profile / unreadable EXIF falls back to frame centre.
+                center = _af_center_for(source_path)
                 out = apply_filter(
                     out, FilterRecipe.from_dict(recipe),
-                    creative_filter_amount(creative_filter))
+                    creative_filter_amount(creative_filter),
+                    center=center)
         if crop is not None:
             if box_angle:
                 out = extract_rotated_crop(out, crop, box_angle)
@@ -147,6 +159,31 @@ def develop_photo_array(
         log.exception(
             "preview-render: pipeline failed for %s", source_path)
         return None
+
+
+def _af_center_for(source_path: Path) -> tuple[float, float]:
+    """spec/116 §2 — read the AF point from EXIF + brand profile and
+    return ``(cx, cy)`` in normalised image coords. ``(0.5, 0.5)`` on
+    any failure or missing AF data — never raises (the Spotlight
+    falls back to the frame centre)."""
+    try:
+        from core.brand_profile import match_brand_profile_for_photo
+        from core.exif_reader import read_exif_single
+        exif = read_exif_single(Path(source_path))
+        raw = getattr(exif, "raw", None) if exif is not None else None
+        if not raw:
+            return (0.5, 0.5)
+        prof = match_brand_profile_for_photo(raw)
+        if prof is None:
+            return (0.5, 0.5)
+        af = prof.read_af_point(raw)
+        if af is None:
+            return (0.5, 0.5)
+        return (float(af.cx), float(af.cy))
+    except Exception:                                              # noqa: BLE001
+        log.debug(
+            "preview-render: AF resolve failed for %s", source_path)
+        return (0.5, 0.5)
 
 
 __all__ = ["develop_photo_array"]

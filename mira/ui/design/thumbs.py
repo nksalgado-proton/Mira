@@ -119,6 +119,12 @@ class Thumb(QWidget):
                         Export-mode child cells (a clip / snapshot inside a
                         video cluster). Same top-left chip slot as the
                         cluster badge; never shown simultaneously with one.
+        edited_since_export
+                        bool (spec/118 §2) — adds an amber "Edited" chip
+                        in the top-right corner for stale exports (the
+                        on-disk Mira render no longer matches the live
+                        recipe). Loud and distinct from both the
+                        ship-intent border and the provenance wordmark.
     """
 
     clicked = pyqtSignal()
@@ -139,6 +145,7 @@ class Thumb(QWidget):
         stamp: str | None = None,
         origin: str | None = None,
         skipped_in_pick: bool = False,
+        edited_since_export: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -165,6 +172,11 @@ class Thumb(QWidget):
         # flips the "Exported" stamp into a destructive cue. See
         # :meth:`setExportDestructiveMode`.
         self._export_destructive_mode = False
+        # spec/118 §2 — loud "edited since export" badge: the on-disk
+        # export no longer matches the current edit. Painted as an amber
+        # corner flag, separate from the ship-intent border and the soft
+        # provenance wordmark.
+        self._edited_since_export = bool(edited_since_export)
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -209,6 +221,13 @@ class Thumb(QWidget):
         chip for Export-mode cells that are only in the pool because a
         ship row exists."""
         self._skipped_in_pick = bool(flag)
+        self.update()
+
+    def setEditedSinceExport(self, flag: bool) -> None:
+        """spec/118 §2 — loud "edited since export" badge. True paints
+        the corner flag on cells whose on-disk export no longer matches
+        the live recipe; False clears it."""
+        self._edited_since_export = bool(flag)
         self.update()
 
     def setExportDestructiveMode(self, flag: bool) -> None:
@@ -350,6 +369,7 @@ class Thumb(QWidget):
         self._paint_count_chip(painter, palette)
         self._paint_origin_strip(painter, palette)
         self._paint_skipped_in_pick(painter, palette)
+        self._paint_edited_since_export(painter, palette)
 
         painter.end()
 
@@ -425,6 +445,40 @@ class Thumb(QWidget):
         self._paint_chip(painter, chip_rect, bg, QColor(0, 0, 0, 70))
         painter.setPen(QColor("#08101c"))
         painter.drawText(chip_rect, int(Qt.AlignmentFlag.AlignCenter), label)
+
+    def _paint_edited_since_export(
+        self, painter: QPainter, palette: dict[str, str]
+    ) -> None:
+        """spec/118 §2 — distinctive amber "edited" badge top-right when
+        the on-disk export no longer matches the current edit. Loud
+        enough to be unmistakable; intentionally not the soft
+        provenance wordmark, and orthogonal to the ship-intent border.
+        Stacked LEFT of the visited eye chip when both apply so neither
+        chip hides the other."""
+        if not self._edited_since_export:
+            return
+        f = painter.font()
+        f.setPointSizeF(8.5)
+        f.setBold(True)
+        painter.setFont(f)
+        label = "Edited"
+        fm = painter.fontMetrics()
+        label_w = fm.horizontalAdvance(label)
+        pad_x = 8
+        chip_w = label_w + pad_x * 2
+        chip_h = 22
+        right_edge = self.width() - 8
+        if self._visited:
+            right_edge = self.width() - 36 - 4
+        chip_rect = QRectF(
+            right_edge - chip_w, 8, chip_w, chip_h,
+        )
+        bg = QColor(palette.get("amber", "#fbbf24"))
+        self._paint_chip(painter, chip_rect, bg, QColor(0, 0, 0, 90))
+        painter.setPen(QColor("#241a02"))
+        painter.drawText(
+            chip_rect, int(Qt.AlignmentFlag.AlignCenter), label,
+        )
 
     def _paint_visited(self, painter: QPainter, palette: dict[str, str]) -> None:
         if not self._visited:

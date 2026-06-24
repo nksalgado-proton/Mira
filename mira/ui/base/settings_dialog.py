@@ -353,6 +353,38 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "restart_required": False,
             },
+            # spec/107 — PTE AV Studio integration. The master toggle
+            # gates every PTE-specific surface; the path is what
+            # Open-in-PTE actually launches.
+            {
+                "key": "use_pte",
+                "label": "I use PTE AV Studio",
+                "widget": "checkbox",
+                "check_label": (
+                    "Generate slideshow.pte on Cut export and show the "
+                    "Open-in-PTE action"
+                ),
+                "tooltip": (
+                    "Master switch for the PTE AV Studio integration "
+                    "(spec/107). Off by default; non-PTE users never "
+                    "see any PTE-related controls. On enables the "
+                    "generator that writes slideshow.pte into the Cut "
+                    "export folder, and the Open-in-PTE button on "
+                    "the export summary."
+                ),
+                "restart_required": False,
+            },
+            {
+                "key": "pte_path",
+                "label": "PTE AV Studio",
+                "widget": "file",
+                "tooltip": (
+                    "Path to the PTE AV Studio executable (e.g. "
+                    "PicturesToExe.exe). The Open-in-PTE action "
+                    "spawns this with the generated .pte; leave blank "
+                    "to keep the action disabled."
+                ),
+            },
         ],
     },
     # spec/82 §G — Backups tab. ONE home for every cadence, count
@@ -679,21 +711,39 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "restart_required": False,
             },
-            # spec/96 §2 — the single-view exposure pill.
+            # spec/96 §2 — Quick Sweep's exposure pill (legacy gate; the
+            # Picker / Editor moved to viewer_overlay_fields per
+            # spec/134).
             {
                 "key": "show_exposure_overlay",
-                "label": "Exposure overlay",
+                "label": "Exposure overlay (Quick Sweep)",
                 "widget": "checkbox",
                 "check_label": (
-                    "Show the exposure pill over photos in the Picker "
-                    "and Quick Sweep"
+                    "Show the exposure pill over photos in Quick Sweep"
                 ),
                 "tooltip": (
                     "The pill at the bottom of single-photo views in "
-                    "the Picker and Quick Sweep shows the camera + "
-                    "shutter / aperture / ISO / focal length + file "
-                    "type and size. Turn off to hide it everywhere; "
-                    "the EXIF in the file is untouched. Defaults to on."
+                    "Quick Sweep shows the camera + shutter / aperture "
+                    "/ ISO / focal length + file type and size. Turn "
+                    "off to hide it; the EXIF in the file is untouched. "
+                    "Defaults to on. (Picker + Editor use the "
+                    "configurable Photo viewer overlay below.)"
+                ),
+                "restart_required": False,
+            },
+            # spec/134 — configurable photo-viewer overlay for the
+            # Picker + Editor. Reuses the cut-overlay vocabulary so
+            # Photos and Cuts speak one language.
+            {
+                "key": "viewer_overlay_fields",
+                "label": "Photo viewer overlay",
+                "widget": "overlay_fields",
+                "tooltip": (
+                    "Choose what to show over photos in the Picker and "
+                    "Editor. Each tick adds one line: When (date / time), "
+                    "Where (city / country), Camera (camera / lens / "
+                    "flash), Exposure (focal length / aperture / shutter "
+                    "/ ISO). Empty = overlay off. Defaults to Exposure."
                 ),
                 "restart_required": False,
             },
@@ -1251,6 +1301,8 @@ class SettingsDialog(QDialog):
             return self._build_spinbox(entry)
         if kind == "checkbox":
             return self._build_checkbox(entry)
+        if kind == "overlay_fields":
+            return self._build_overlay_fields(entry)
         if kind == "genre_pair":
             return self._build_genre_pair(entry)
         if kind == "tz_picker":
@@ -1355,6 +1407,54 @@ class SettingsDialog(QDialog):
                 if idx >= 0 and value[1] == value[0]:
                     idx = (idx + 1) % combo_b.count()
                 combo_b.setCurrentIndex(idx if idx >= 0 else 0)
+
+        return host, _read, _write
+
+    def _build_overlay_fields(
+        self, _entry: dict,
+    ) -> tuple[QWidget, Callable[[], Any], Callable[[Any], None]]:
+        """spec/134 — four checkboxes (When / Where / Camera /
+        Exposure) → ``list[str]`` of the selected OVERLAY_FIELDS keys
+        in canonical order. spec/119 multi-select pattern: real
+        ``QCheckBox`` ticks (not pill toggles), independent state,
+        read returns the canonical-order subset regardless of click
+        order."""
+        from core.cut_overlay import (
+            FIELD_HOW1, FIELD_HOW2, FIELD_WHEN, FIELD_WHERE,
+            OVERLAY_FIELDS,
+        )
+
+        # (key, label) pairs in canonical OVERLAY_FIELDS order so the
+        # row reads When / Where / Camera / Exposure left → right.
+        spec = (
+            (FIELD_WHEN, "When"),
+            (FIELD_WHERE, "Where"),
+            (FIELD_HOW1, "Camera"),
+            (FIELD_HOW2, "Exposure"),
+        )
+
+        host = QWidget()
+        layout = QHBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        checks: dict[str, QCheckBox] = {}
+        for key, label in spec:
+            cb = QCheckBox(tr(label))
+            cb.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            layout.addWidget(cb)
+            checks[key] = cb
+        layout.addStretch(1)
+
+        def _read() -> Any:
+            # Iterate OVERLAY_FIELDS (the canonical order), not the
+            # widget map's insertion — so the persisted list is stable
+            # regardless of how the user clicked through.
+            return [k for k in OVERLAY_FIELDS if checks[k].isChecked()]
+
+        def _write(value: Any) -> None:
+            chosen = set(value or [])
+            for key, cb in checks.items():
+                cb.setChecked(key in chosen)
 
         return host, _read, _write
 

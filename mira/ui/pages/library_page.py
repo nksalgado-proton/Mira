@@ -608,10 +608,130 @@ class LibraryPage(QWidget):
             extra_lines.append(tr(
                 "{n} original(s) could not be resolved and were skipped."
             ).replace("{n}", str(len(summary["missing_originals"]))))
-        QMessageBox.information(
-            self, tr("Export complete"),
-            "\n".join([line_one] + extra_lines))
+        # spec/107 — generate slideshow.pte when "I use PTE" is on. Same
+        # best-effort policy as the per-event flow: a failure logs but
+        # never blocks the summary.
+        pte_file = self._generate_pte_for_cross_event_cut(
+            cut_row, choices.target)
+        self._show_export_complete_box(
+            [line_one] + extra_lines, choices.target, pte_file)
         self.refresh()
+
+    # ── spec/107 cross-event helpers ─────────────────────────────────
+
+    def _generate_pte_for_cross_event_cut(self, cut_row,
+                                          folder: "Path") -> "Optional[Path]":
+        """When the master PTE toggle is on, walk the just-exported
+        cross-event folder + write ``slideshow.pte``. Mirrors the per-
+        event helper but reads the cross-event Cut's overlay / aspect /
+        photo_s from the library gateway."""
+        try:
+            settings = self._gateway.settings.load()
+        except Exception:  # noqa: BLE001
+            return None
+        if not getattr(settings, "use_pte", False):
+            return None
+        try:
+            from mira.shared.pte_project import (
+                PteAudioTrack, PteMember,
+                generate_into_folder,
+            )
+            from mira.paths import library_root as _library_root_from_paths
+            members = []
+            for entry in sorted(folder.iterdir(),
+                                key=lambda p: p.name.lower()):
+                if not entry.is_file():
+                    continue
+                suffix = entry.suffix.lower()
+                if suffix in (".jpg", ".jpeg", ".png"):
+                    members.append(PteMember(kind="photo", path=entry))
+                elif suffix == ".mp4":
+                    members.append(PteMember(
+                        kind="video", path=entry,
+                        duration_ms=0,
+                    ))
+            if not members:
+                return None
+            audio_dir = folder / "audio"
+            tracks = []
+            if audio_dir.is_dir():
+                import mutagen
+                for track in sorted(audio_dir.iterdir(),
+                                    key=lambda p: p.name.lower()):
+                    if not track.is_file():
+                        continue
+                    dur_ms = 0
+                    try:
+                        audio = mutagen.File(track)
+                        if audio is not None and audio.info is not None:
+                            dur_ms = int(round(audio.info.length * 1000))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    tracks.append(PteAudioTrack(
+                        path=track, duration_ms=dur_ms))
+            aspect = getattr(cut_row, "aspect", None) or "16:9"
+            photo_seconds = float(getattr(cut_row, "photo_s", 6.0))
+            overlay_mode = (
+                getattr(cut_row, "overlay_mode", None) or "embedded")
+            return generate_into_folder(
+                folder, members, tracks,
+                aspect=aspect,
+                photo_seconds=photo_seconds,
+                library_root=_library_root_from_paths(),
+                overlay_mode=overlay_mode,
+            )
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception(
+                "PTE generation failed for cross-event cut %s",
+                getattr(cut_row, "tag", "?"))
+            return None
+
+    def _show_export_complete_box(self, lines, folder: "Path",
+                                  pte_file: "Optional[Path]") -> None:
+        """Replace the plain Information popup with one that carries
+        Open-folder + Open-in-PTE action buttons (spec/107 Tier 1)."""
+        from PyQt6.QtWidgets import QMessageBox
+        from mira.shared.pte_launch import (
+            open_in_pte, pte_launch_available, reveal_in_explorer,
+        )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Export complete"))
+        box.setText("\n".join(lines))
+        try:
+            settings = self._gateway.settings.load()
+        except Exception:  # noqa: BLE001
+            settings = None
+        open_folder_btn = box.addButton(
+            tr("Open folder"), QMessageBox.ButtonRole.ActionRole)
+
+        def _open_folder():
+            try:
+                reveal_in_explorer(folder)
+            except OSError as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "reveal_in_explorer failed: %s", exc)
+        open_folder_btn.clicked.connect(_open_folder)
+        if (settings is not None
+                and getattr(settings, "use_pte", False)
+                and pte_file is not None
+                and pte_launch_available(
+                    getattr(settings, "pte_path", ""))):
+            pte_btn = box.addButton(
+                tr("Open in PTE"), QMessageBox.ButtonRole.ActionRole)
+
+            def _open_pte():
+                try:
+                    open_in_pte(Path(settings.pte_path), pte_file)
+                except OSError as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "open_in_pte failed: %s", exc)
+            pte_btn.clicked.connect(_open_pte)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _on_open_cut(self, cut_id: str) -> None:
         """Open the detail viewer (per-event grouping of members)."""

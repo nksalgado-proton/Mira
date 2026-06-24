@@ -248,6 +248,10 @@ class GridItem:
     # because it was picked in Pick. Renders a small "skipped in Pick"
     # indicator chip on the cell so the user knows why it's here.
     skipped_in_pick: bool = False
+    # spec/118 §2 — the on-disk Mira render's recipe no longer matches
+    # the live Adjustment. Drives the loud "Edited" badge on the cell;
+    # on a versions cluster cover, set whenever any member is stale.
+    edited_since_export: bool = False
     # Internal — populated only on the gateway path. Held so the
     # P/X/Space/C verbs can persist directly via the EventGateway and
     # so cluster covers can expand without a second lookup.
@@ -349,6 +353,11 @@ class DaysGridPage(QWidget):
     pick_all_requested = pyqtSignal()
     skip_all_requested = pyqtSignal()
     new_pass_requested = pyqtSignal()
+    # spec/118 §3 — last batch collision choice. Shared across pages so
+    # the run-level Overwrite / Keep both dialog can default to the
+    # user's previous pick. Reset only on app restart (intentional —
+    # a deliberate one-time pick should ride the rest of the session).
+    _last_batch_collision: str = "unique"
     # spec/70 / Nelson 2026-06-22 — standalone Quick Sweep footer fires
     # this so the host copies the kept set to the destination + finishes.
     quick_sweep_export_requested = pyqtSignal()
@@ -369,6 +378,16 @@ class DaysGridPage(QWidget):
         self._event_id: Optional[str] = None
         self._event_name: str = ""
         self._eg = None
+        # spec/63 slice 7 — event roots whose proxies we already
+        # kicked off (Nelson 2026). The whole-event seed is a one-
+        # shot "be proactive" call; firing it again on every day-
+        # switch makes the BatchProgressLine tick through "Creating
+        # previews — N left" each grid open, even when every proxy
+        # is already on disk. The set survives ``_close_event_
+        # internal`` so reopening ANY day of an already-seeded
+        # event (or returning to it after visiting another event)
+        # is a no-op for the lifetime of this DaysGridPage.
+        self._seeded_proxy_event_roots: set[Path] = set()
         # ``_phase`` is the **phase_state storage key** the grid reads
         # and writes (``"pick"`` or ``"edit"``). ``_export_mode`` is
         # the orthogonal UX flag the Export phase carries: shares the
@@ -415,6 +434,13 @@ class DaysGridPage(QWidget):
         # Counts displayed in the toolbar progress block.
         self._reviewed = 0
         self._total = 0
+
+        # spec/131 — the last item_id the user clicked on the grid.
+        # Hosts read this via :meth:`current_entry_anchor` as a
+        # fallback for restoring the grid's scroll position when a
+        # viewer reports no current item (rare). The live restore path
+        # uses the viewer's own last item id; this is the safety net.
+        self._entry_anchor_item_id: Optional[str] = None
 
         # spec/63 §4 Ctrl+Z = undo last decision. Plain phase-state
         # flips push lightweight entries (~80 bytes); Export-mode
@@ -658,6 +684,7 @@ class DaysGridPage(QWidget):
         date_iso: str = "",
         default_state: Optional[str] = None,
         phase: str = "pick",
+        anchor_item_id: Optional[str] = None,
     ) -> bool:
         """Open ``event_id`` and render its ``day_number`` grid.
 
@@ -758,7 +785,25 @@ class DaysGridPage(QWidget):
                 day_number)
             self._close_event_internal()
             return False
+        # spec/131 — restore the user's last position. The grid's
+        # ThumbGrid builds in chunks, so this may not scroll
+        # immediately; ``ensure_item_visible`` queues the request and
+        # the ``build_finished`` signal applies it once the target cell
+        # exists in the layout. Graceful when the item isn't on this
+        # day (returns False → no scroll → grid stays at top).
+        if anchor_item_id is not None:
+            self._grid.ensure_item_visible(anchor_item_id)
+            # Remember this as the entry anchor too — if the viewer
+            # later closes without reporting an item (rare), the host
+            # can fall back to this on the next restore.
+            self._entry_anchor_item_id = anchor_item_id
         return True
+
+    def current_entry_anchor(self) -> Optional[str]:
+        """spec/131 — the item id the host should treat as a fallback
+        restore anchor (the last item the user clicked on this grid).
+        ``None`` when nothing has been clicked yet this session."""
+        return self._entry_anchor_item_id
 
     def close_event(self) -> None:
         """Release any open event gateway. Idempotent."""
@@ -1330,6 +1375,12 @@ class DaysGridPage(QWidget):
         if rows:
             cover_path = event_root / rows[0].export_relpath
             cover_sha = None
+        # spec/118 §2 — cluster cover reads stale when ANY Mira-render
+        # member is stale. The user sees the loud "edited" cue at the
+        # day grid without drilling into the cluster first.
+        from mira.ui.exported.staleness import is_cluster_cover_stale
+        cover_stale = is_cluster_cover_stale(
+            self._eg, source_item.item_id)
         return GridItem(
             item_id=f"cluster:versions:{source_item.item_id}",
             item_kind="cluster",
@@ -1339,6 +1390,7 @@ class DaysGridPage(QWidget):
             exported=False,
             cluster_type="versions",
             cluster_count=len(members),
+            edited_since_export=cover_stale,
             _path=cover_path,
             _sha256=cover_sha,
             _cull_cluster=cluster,
@@ -1667,6 +1719,13 @@ class DaysGridPage(QWidget):
         # 2026-06-19: every cell read amber on the user's Alaska event
         # because every photo carried an Adjustment row).
         is_edit_grid = self._phase == "edit" and not self._export_mode
+        # spec/118 §2 — the loud "edited since export" badge fires only
+        # on the Export grid (or any surface that wants to honour the
+        # same truth). Resolved per-cell from the shared helper so the
+        # logic stays one source of truth across preview + grid +
+        # editor.
+        from mira.ui.exported.staleness import is_cell_stale
+        check_stale = bool(self._export_mode)
         out: list[GridItem] = []
         for cell in cells:
             if cell.is_cluster and cell.cluster is not None:
@@ -1684,6 +1743,10 @@ class DaysGridPage(QWidget):
             # unedited (green). Other grids keep the decision-state border.
             border_token = (
                 ("amber" if reasons else "green") if is_edit_grid else None)
+            stale = (
+                is_cell_stale(self._eg, cell.item_id)
+                if check_stale else False
+            )
             out.append(GridItem(
                 item_id=cell.item_id,
                 item_kind=cell.item_kind,
@@ -1693,6 +1756,7 @@ class DaysGridPage(QWidget):
                 edit_reasons=reasons,
                 border_token=border_token,
                 edit_tooltip=_edit_reason_tooltip(reasons),
+                edited_since_export=stale,
                 _path=path,
                 _sha256=getattr(it, "sha256", None) or None,
             ))
@@ -1938,6 +2002,7 @@ class DaysGridPage(QWidget):
                 origin="Mira",
                 _path=src_path,
             ))
+        from mira.ui.exported.staleness import is_lineage_row_stale
         for row in rows:
             path = Path(self._eg.event_root) / row.export_relpath if (
                 self._eg.event_root) else Path(row.export_relpath)
@@ -1949,6 +2014,7 @@ class DaysGridPage(QWidget):
                 exported=False,
                 origin=lineage_origin_label(
                     row.provenance, row.export_relpath),
+                edited_since_export=is_lineage_row_stale(self._eg, row),
                 _path=path,
             ))
         self._mode = "cluster"
@@ -2076,6 +2142,7 @@ class DaysGridPage(QWidget):
                 # spec/89 Slice 7 — Export-mode cells flip the
                 # "Exported" stamp into a destructive cue.
                 export_destructive_mode=bool(self._export_mode),
+                edited_since_export=item.edited_since_export,
                 payload=item.item_id,
                 focusable=True,
                 tooltip=item.edit_tooltip,
@@ -2137,6 +2204,9 @@ class DaysGridPage(QWidget):
         # photo or video, so the host's item_activated route opens the
         # editor for it.
         if self._phase == "edit" and not self._export_mode:
+            # spec/131 — Edit-phase border-click drills in too; remember
+            # the item for the host's fallback restore anchor.
+            self._entry_anchor_item_id = item.item_id
             self.item_activated.emit(item.item_id)
             return
         self._apply_verb_at_index(
@@ -2169,82 +2239,24 @@ class DaysGridPage(QWidget):
             # the toggle.
             self._open_export_preview(item)
             return
+        # spec/131 — remember which item the user dove into; the host
+        # uses this as a fallback restore anchor if the viewer reports
+        # no current item on close.
+        self._entry_anchor_item_id = item_id
         self.item_activated.emit(item_id)
 
     def _is_preview_item_stale(self, item) -> bool:
-        """spec/89 §11.3 polish — true when the focused cell has a Mira
-        render on disk whose recorded ``recipe_json`` no longer matches
-        what the live :class:`Adjustment` would emit. Drives the
-        "Adjustments changed — Export to refresh" chip in the preview
-        viewer.
+        """spec/89 §11.3 polish / spec/118 §2 — true when the focused
+        cell has a Mira render on disk whose recorded ``recipe_json`` no
+        longer matches what the live :class:`Adjustment` would emit.
+        Drives the "Adjustments changed — Export to refresh" chip in the
+        preview viewer AND the grid cell's loud "Edited" badge.
 
-        Third-party cells (no Mira render) never read stale: the file
-        IS the recipe; there's nothing to re-render against.
-        Versions sub-grid cells (item_id is a relpath) match on the
-        specific lineage row's recipe. Day-grid flat cells compare
-        against the newest Mira-render row for the source item.
-        """
-        if self._eg is None or self._eg.event_root is None:
-            return False
-        from mira.ui.exported.batch import recipe_for_item
-        import json as _json
-        # Resolve to the lineage row carrying the recipe snapshot.
-        target_row = None
-        iid = item.item_id
-        if isinstance(iid, str) and iid.startswith("Exported Media/"):
-            # Versions sub-grid: cell IS the lineage row.
-            try:
-                row = self._eg.store.conn.execute(
-                    "SELECT * FROM lineage WHERE export_relpath = ?",
-                    (iid,)).fetchone()
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "stale-check: row lookup failed for %s", iid)
-                return False
-            if row is None:
-                return False
-            provenance = (row["provenance"] or "")
-            if provenance != "mira_render":
-                return False
-            source_id = row["source_item_id"]
-            shipped_recipe_json = row["recipe_json"]
-        else:
-            # Day-grid flat / virtual Mira member: use the newest
-            # Mira-render version of the source item, if any.
-            source_id = (
-                iid.split(":", 1)[1] if isinstance(iid, str)
-                and iid.startswith("mira:") else iid
-            )
-            try:
-                versions = self._eg.versions_for_item(source_id)
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "stale-check: versions_for_item(%s) failed",
-                    source_id)
-                return False
-            mira_rows = [
-                v for v in versions
-                if (getattr(v, "provenance", "") or "") == "mira_render"
-            ]
-            if not mira_rows:
-                return False
-            target_row = mira_rows[0]
-            shipped_recipe_json = getattr(target_row, "recipe_json", None)
-        try:
-            shipped = (
-                _json.loads(shipped_recipe_json) if shipped_recipe_json
-                else {})
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "stale-check: recipe_json parse failed for %s", source_id)
-            return False
-        try:
-            current = recipe_for_item(self._eg, source_id)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "stale-check: recipe_for_item(%s) failed", source_id)
-            return False
-        return current != shipped
+        Thin wrapper over
+        :func:`mira.ui.exported.staleness.is_cell_stale` so the same
+        truth feeds preview + grid + the Editor's exported badge."""
+        from mira.ui.exported.staleness import is_cell_stale
+        return is_cell_stale(self._eg, item.item_id)
 
     def _preview_develop_kwargs(self, item, path) -> dict:
         """spec/89 §11.3 polish — decide whether the preview viewer
@@ -2617,8 +2629,12 @@ class DaysGridPage(QWidget):
             dlg.accept()
             return
 
-        # spec/89 §5.2 D6.C — re-render-ask when a Mira render already
-        # exists. Third-party-only history goes straight through.
+        # spec/118 §3 — when a Mira render already exists for this
+        # item, ask the LRC-style three-way: Overwrite (replace in
+        # place, same lineage row + path → any Cut containing it just
+        # sees fresh pixels) / Keep both (today's UNIQUE default; a
+        # "(2)" file lands as a new version → the Cut now shows BOTH
+        # until re-picked) / Cancel.
         try:
             versions = self._eg.versions_for_item(source_item_id)
         except Exception:                                          # noqa: BLE001
@@ -2630,17 +2646,20 @@ class DaysGridPage(QWidget):
             (getattr(v, "provenance", "") or "") == "mira_render"
             for v in versions
         )
+        collision = "unique"
+        existing_mira_row = next(
+            (v for v in versions
+             if (getattr(v, "provenance", "") or "") == "mira_render"),
+            None,
+        )
         if has_mira_render:
-            if not confirm(
-                self,
-                tr("An export already exists."),
-                tr(
-                    "Re-render with current settings? The previous "
-                    "render stays as an older version."
-                ),
-                primary_text=tr("Re-render"),
-            ):
+            from mira.ui.exported.collision_dialog import (
+                ask_overwrite_or_keep_both,
+            )
+            choice = ask_overwrite_or_keep_both(self)
+            if choice is None:
                 return
+            collision = choice
 
         batch_queue = getattr(self.window(), "batch_queue", None)
         if batch_queue is None:
@@ -2655,9 +2674,20 @@ class DaysGridPage(QWidget):
 
         day_number = getattr(src_item, "day_number", None) or self._day_number
         day_labels = {day_number: day_label_for(self._eg, day_number)}
+        # spec/118 §3 — OVERRIDE must land at the EXACT existing
+        # ``export_relpath`` so the lineage row upserts in place and
+        # any Cut referencing it keeps its membership (the file's
+        # identity is unchanged). Pin via ``dest_dir_override`` to the
+        # existing row's parent, robust against trip-day description
+        # drift since the last export.
+        dest_override = None
+        if collision == "override" and existing_mira_row is not None:
+            dest_override = Path(
+                existing_mira_row.export_relpath).parent.as_posix()
         cell = ExportCell(
             item_id=source_item_id, path=source_path,
             day_number=day_number,
+            dest_dir_override=dest_override,
         )
         try:
             submit_export_batch(
@@ -2666,6 +2696,7 @@ class DaysGridPage(QWidget):
                 cells=[cell],
                 day_labels=day_labels,
                 parent_widget=self,
+                collision=collision,
             )
         except Exception as exc:                                   # noqa: BLE001
             log.exception("Export this: submit failed for %s",
@@ -3129,8 +3160,16 @@ class DaysGridPage(QWidget):
         member already carries its type stamp (``"clip"`` →
         :class:`VideoSegment`, ``"snapshot"`` → :class:`SnapshotCell`).
         The walker reverses to a :class:`VideoSegment` / at_ms via the
-        gateway so segments + snapshots ship in their own lanes."""
+        gateway so segments + snapshots ship in their own lanes.
+
+        **spec/118 §3** — re-edited items that already have a Mira
+        render on disk are RE-INCLUDED in the run (not skipped by the
+        ``already_shipped`` filter) so the batch can offer the
+        Overwrite / Keep both choice. The eventual write policy is
+        picked at the run-confirm layer; this method only widens the
+        pool."""
         from mira.ui.exported.batch import ExportCell, SnapshotCell
+        from mira.ui.exported.staleness import is_cell_stale
 
         already_shipped: set = set()
         try:
@@ -3253,7 +3292,11 @@ class DaysGridPage(QWidget):
                 continue
             if it.state != STATE_PICKED:
                 continue
-            if it.item_id in already_shipped:
+            stale = bool(it.edited_since_export)
+            # spec/118 §3 — already-shipped items normally drop out
+            # here. Re-edited items (stale) re-enter so the run-level
+            # Overwrite / Keep both prompt can apply.
+            if it.item_id in already_shipped and not stale:
                 continue
             if it._path is None and it._sha256 is None:
                 continue
@@ -3264,12 +3307,66 @@ class DaysGridPage(QWidget):
             )
             if not src or not Path(src).is_file():
                 continue
+            # If we're re-shipping a stale item, source must always be
+            # the ORIGINAL photo, not the on-disk export. ``it._path``
+            # on a flat cell already points at the source; defensive
+            # re-resolve here in case a future caller bound the cell
+            # path to the rendered file by mistake.
+            if stale:
+                src_item = self._eg.item(it.item_id)
+                if src_item is not None and src_item.origin_relpath:
+                    src = event_root / src_item.origin_relpath
             photo_cells.append(ExportCell(
                 item_id=it.item_id,
                 path=Path(src),
                 day_number=self._day_number,
             ))
         return photo_cells, segment_rows, snapshot_cells
+
+    def _render_cell_is_stale(self, cell) -> bool:
+        """spec/118 §3 — is this batch ExportCell an edited-since-export
+        case (i.e. an item that already has a Mira render on disk whose
+        recipe has since diverged)? Drives the run-level Overwrite /
+        Keep both prompt; cells that are NOT stale pass through the
+        legacy keep-both path unchanged."""
+        if self._eg is None:
+            return False
+        try:
+            from mira.ui.exported.staleness import is_cell_stale
+            return is_cell_stale(self._eg, cell.item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: _render_cell_is_stale(%s) failed",
+                cell.item_id)
+            return False
+
+    def _cell_with_override_dest(self, cell):
+        """spec/118 §3 — return ``cell`` annotated with
+        ``dest_dir_override`` pointing at the existing lineage row's
+        parent. Idempotent for cells with no existing Mira row (they
+        just keep ``day_labels`` routing)."""
+        if self._eg is None:
+            return cell
+        try:
+            versions = self._eg.versions_for_item(cell.item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: versions_for_item(%s) failed",
+                cell.item_id)
+            return cell
+        existing = next(
+            (v for v in versions
+             if (getattr(v, "provenance", "") or "") == "mira_render"),
+            None,
+        )
+        if existing is None:
+            return cell
+        from dataclasses import replace
+        return replace(
+            cell,
+            dest_dir_override=Path(
+                existing.export_relpath).parent.as_posix(),
+        )
 
     def _collect_delete_relpaths(self) -> list:
         """spec/89 §5.1 step 2 — the "Delete M files" pool for an Export
@@ -3431,9 +3528,35 @@ class DaysGridPage(QWidget):
             )
             return
 
-        title, body, primary = self._export_now_modal_text(n_render, m_delete)
-        if not confirm(self, title, body, primary_text=primary):
-            return
+        # spec/118 §3 — when the run includes ≥1 edited-since-export
+        # item, replace the plain confirm with the run-level Overwrite
+        # / Keep both ask. A run with no stale items keeps the original
+        # confirm so the existing UX is unchanged.
+        stale_cells = [
+            c for c in plan["render_cells"]
+            if self._render_cell_is_stale(c)
+        ]
+        collision_policy = "unique"
+        if stale_cells:
+            from mira.ui.exported.collision_dialog import (
+                ask_batch_collision_policy,
+            )
+            choice = ask_batch_collision_policy(
+                self,
+                n_render=n_render,
+                m_delete=m_delete,
+                n_stale=len(stale_cells),
+                default=DaysGridPage._last_batch_collision,
+            )
+            if choice is None:
+                return
+            collision_policy = choice
+            DaysGridPage._last_batch_collision = choice
+        else:
+            title, body, primary = self._export_now_modal_text(
+                n_render, m_delete)
+            if not confirm(self, title, body, primary_text=primary):
+                return
 
         # spec/89 §5.1 step 2 — delete first so the cascading Cut-
         # membership cleanup lands before any fresh rows arrive. The
@@ -3454,15 +3577,27 @@ class DaysGridPage(QWidget):
         if n_render > 0:
             day_labels = {self._day_number: day_label_for(
                 self._eg, self._day_number)}
+            # spec/118 §3 — under OVERRIDE, pin each stale cell's
+            # dest_dir to the existing lineage row's parent so the
+            # atomic replace lands at the EXACT existing
+            # ``export_relpath`` (keeps the Cut's frame identity stable
+            # even if the day folder has been renamed since the last
+            # export).
+            render_cells = plan["render_cells"]
+            if collision_policy == "override":
+                render_cells = [
+                    self._cell_with_override_dest(c) for c in render_cells
+                ]
             try:
                 submit_export_batch(
                     self._eg, self.gateway.settings, batch_queue,
                     event_name=self._event_name,
-                    cells=plan["render_cells"],
+                    cells=render_cells,
                     day_labels=day_labels,
                     parent_widget=self,
                     segment_rows=plan["render_segments"],
                     snapshot_cells=plan["render_snapshots"],
+                    collision=collision_policy,
                 )
             except Exception as exc:                               # noqa: BLE001
                 log.exception("DaysGridPage: export submit failed")
@@ -3676,22 +3811,47 @@ class DaysGridPage(QWidget):
     # ── Whole-event proxy seeding (spec/63 slice 7) ────────────────────
 
     def _seed_proxies_for_event(self) -> None:
-        """Queue every photo item for the background proxy builder so
+        """Queue MISSING photo proxies for the background builder so
         the screen-copy tier fills quietly while the user is on the
-        grid. One SQL pass + a deque append — milliseconds. The builds
-        themselves run on the builder thread."""
+        grid. Two passes vs the naive version (Nelson 2026):
+
+        1. **Memoise per event root.** A second call for the same
+           event (e.g. switching between days) is a no-op — the first
+           call already queued everything. Survives ``_close_event_
+           internal``; reset by an event-root change.
+        2. **Filter out already-cached items.** ``resolve_proxy`` is
+           a stat + tiny JSON read per item (~0.1 ms each on warm
+           disk); skipping cached items here means the
+           ``BatchProgressLine``'s "Creating previews — N left"
+           counter only reflects ACTUAL work to do, not a flicker
+           through every item the builder would short-circuit
+           anyway.
+
+        Builds themselves still run on the builder thread; this is
+        the seed boundary only."""
         if self._eg is None:
             return
         try:
+            from core.photo_proxy_cache import resolve_proxy
             from mira.ui.media.photo_cache import photo_cache
             event_root = Path(self._eg.event_root) if self._eg.event_root else None
             if event_root is None:
                 return
-            pairs = [
-                (event_root / it.origin_relpath, it.sha256)
-                for it in self._eg.items(kind="photo")
-                if it.origin_relpath and it.sha256
-            ]
+            if event_root in self._seeded_proxy_event_roots:
+                return
+            self._seeded_proxy_event_roots.add(event_root)
+            pairs: list[tuple[Path, str]] = []
+            for it in self._eg.items(kind="photo"):
+                if not it.origin_relpath or not it.sha256:
+                    continue
+                source_path = event_root / it.origin_relpath
+                try:
+                    if resolve_proxy(
+                            event_root, it.sha256, source_path) is not None:
+                        continue        # already cached → no work to queue
+                except Exception:                                  # noqa: BLE001
+                    pass                # fall through and queue it
+                pairs.append((source_path, it.sha256))
             if pairs:
                 photo_cache().seed_proxies(event_root, pairs)
         except Exception:                                          # noqa: BLE001

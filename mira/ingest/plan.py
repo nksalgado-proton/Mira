@@ -120,7 +120,8 @@ def plan_from_reconcile(
             cal = (
                 build_calibration(
                     ci.camera_id, pairs,
-                    configured_tz=float(ci.configured_tz), trip_tz=float(tz))
+                    configured_tz=float(ci.configured_tz),
+                    trip_tz=float(tz))
                 if pairs else None
             )
             cameras.append(CameraPlan(

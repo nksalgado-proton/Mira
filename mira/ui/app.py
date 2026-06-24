@@ -692,6 +692,33 @@ def main(argv: list[str] | None = None) -> int:
     # changes the setting via the dialog.
     apply_font_scale(app, getattr(settings, "font_scale", 1.0))
 
+    # spec/136 — startup splash: build the pixmap + show the splash
+    # BEFORE MainWindow() so it covers the ~2 s construction window
+    # (which also masks the stray-top-level boot flicker). Sourcing is
+    # time-boxed; the bundled mark is the fallback on no closed events
+    # / no exports / proxy miss / timeout / opt-out. Display duration =
+    # build time only — no artificial minimum.
+    from mira.gateway.gateway import Gateway as _Gateway
+    from mira.ui.shell.splash import (
+        build_splash_pixmap,
+        finish_startup_splash,
+        show_startup_splash,
+    )
+    _splash_gateway = _Gateway()
+    try:
+        _splash_pixmap = build_splash_pixmap(
+            _splash_gateway,
+            bundled_fallback=_icon_path,
+            photo_enabled=bool(getattr(settings, "startup_photo_splash", True)),
+        )
+    except Exception:                                              # noqa: BLE001
+        log.exception("startup splash: build_splash_pixmap failed")
+        _splash_pixmap = None
+    _splash = (
+        show_startup_splash(app, _splash_pixmap)
+        if _splash_pixmap is not None else None
+    )
+
     from mira.ui.shell.main_window import MainWindow
 
     window = MainWindow()
@@ -704,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
     _startup_reconcile_global_items(window.gateway)
 
     window.show()
+    finish_startup_splash(_splash, window)
 
     # First-run wizard auto-show. Without it, every photo classifies as
     # General — the wizard generates the per-user scenarios that feed the

@@ -1,6 +1,17 @@
 # spec/88 — Camera-clock calibration by recognition (propose-and-confirm sync pairs)
 
-**Status:** design draft, 2026-06-18. Replaces the *front end* of the
+**Status:** design draft, 2026-06-18. SUPERSEDED by
+[spec/123](123-time-correction-rewrite.md) (Nelson 2026-06-23) for the
+**applied-offset path**: the 15-minute snap (`snap_to_tz_offset` /
+`snap_disagreement`) was wrong for non-clean offsets — the Nepal pair
+(5h00m02s measured) sat in no zone at all from Kathmandu, and snapping
+invented 4:45 / 5:45. spec/123 makes the applied offset the **raw
+measured delta** (rounded to the second, never snapped). The
+recognition front end may still *present* near-simultaneous candidates
+to help the user pick a pair, but the offset that flows into the
+calibration is the raw delta.
+
+Replaces the *front end* of the
 camera-clock calibration flow — the user no longer constructs a sync pair by
 hand; the app proposes candidate pairs and the user only confirms one. The
 calibration *math* (`core/clock_calibration.py`) is reused unchanged.

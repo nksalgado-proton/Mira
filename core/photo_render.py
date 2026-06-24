@@ -373,7 +373,8 @@ def apply_crop_norm(
 
 @dataclass(frozen=True)
 class FilterRecipe:
-    """One creative filter's transform (spec/55 §2 anatomy).
+    """One creative filter's transform (spec/55 §2 anatomy + spec/116
+    additions).
 
     * ``params``     — tonal/color components reusing the existing
       engine vocabulary (contrast, saturation, vibrance, …).
@@ -389,6 +390,36 @@ class FilterRecipe:
       (cloud drama, feather/chitin texture). Luminance-only, so no
       edge color fringing.
     * ``vignette``   — corner darkening in [0, 1] (subject-drawing).
+    * ``spotlight``  — radial subject-pop in [0, 1] (spec/116). Anchors
+      at the ``center`` kwarg of :func:`apply_filter` (the photo's AF
+      point) — inside the radius gets a local-contrast + slight
+      exposure lift; outside is darkened + desaturated. 0 = no-op.
+    * ``spotlight_radius`` — inner radius (0..1, default ~0.6) of the
+      Spotlight mask, in units of the half-diagonal. Tunes how much of
+      the frame is "the subject" before background falloff begins.
+    * ``dehaze``     — local contrast + saturation weighted to flat
+      regions, plus a black-point pull, in [-1, 1]. +0.5 cuts a hazy
+      frame; -0.5 adds atmosphere. 0 = no-op.
+    * ``deglare``    — specular-hotspot tamer in [0, 1] (spec/118
+      component). Soft glare mask = high-luminance AND low-saturation
+      (the optical signature of specular reflections), gaussian-
+      smoothed. Inside the mask, scaled by ``deglare``: luminance is
+      pulled down, chroma is re-injected from the surrounding non-
+      glare ring (so a blown forehead gets skin tone back, not a grey
+      blob), and low-frequency texture is borrowed back. Fully clipped
+      255 regions are unrecoverable — this stage softens them, never
+      reconstructs detail. 0 = no-op.
+    * ``deglare_subject_only`` — when True (default), the glare mask
+      is multiplied by the §2 radial subject mask anchored at the
+      ``center`` kwarg with the recipe's ``spotlight_radius`` so only
+      the subject's glare is touched (preserves rim lights / window
+      sparkles in the background). False = frame-wide tamer.
+    * ``glow``       — Orton-style screen-blended bloom in [0, 1].
+      Brightened-and-blurred copy laid over the frame at this strength.
+      0 = no-op.
+    * ``grain``      — luminance-masked monochrome gaussian noise in
+      [0, 1]. Strongest in mid-tones; clean highlights/shadows. 0 =
+      no-op.
     """
 
     params: Params = Params()
@@ -399,9 +430,21 @@ class FilterRecipe:
     fade: float = 0.0
     clarity: float = 0.0
     vignette: float = 0.0
+    spotlight: float = 0.0
+    spotlight_radius: float = 0.6
+    dehaze: float = 0.0
+    deglare: float = 0.0
+    deglare_subject_only: bool = True
+    glow: float = 0.0
+    grain: float = 0.0
 
     @property
     def is_identity(self) -> bool:
+        # ``spotlight_radius`` doesn't count toward identity on its own —
+        # only the *strength* (``spotlight``) controls whether the stage
+        # runs. A default-radius / zero-strength filter is identity.
+        # ``deglare_subject_only`` is a mode flag; only ``deglare > 0``
+        # decides whether the stage runs.
         return (
             self.params.is_identity and self.bw_mix is None
             and self.tint == (1.0, 1.0, 1.0)
@@ -409,6 +452,11 @@ class FilterRecipe:
             and self.split_highlights == (1.0, 1.0, 1.0)
             and self.fade == 0.0 and self.clarity == 0.0
             and self.vignette == 0.0
+            and self.spotlight == 0.0
+            and self.dehaze == 0.0
+            and self.deglare == 0.0
+            and self.glow == 0.0
+            and self.grain == 0.0
         )
 
     @classmethod
@@ -421,6 +469,9 @@ class FilterRecipe:
         known = {
             "bw_mix", "tint", "split_shadows", "split_highlights",
             "fade", "clarity", "vignette",
+            "spotlight", "spotlight_radius",
+            "dehaze", "deglare", "deglare_subject_only",
+            "glow", "grain",
         }
         unknown = set(d) - known
         if unknown:
@@ -428,7 +479,58 @@ class FilterRecipe:
         for k in ("bw_mix", "tint", "split_shadows", "split_highlights"):
             if k in d and d[k] is not None:
                 d[k] = tuple(float(v) for v in d[k])
+        if "deglare_subject_only" in d:
+            d["deglare_subject_only"] = bool(d["deglare_subject_only"])
         return cls(params=params, **d)
+
+    def to_dict(self) -> dict:
+        """The inverse of :meth:`from_dict` — emit a plain-dict form
+        ready for re-hydration. Identity-valued components are
+        omitted to keep the serialised shape lean (a default
+        FilterRecipe round-trips to ``{}``)."""
+        out: dict = {}
+        if not self.params.is_identity:
+            # Params dataclass; round-trip via its dataclass fields so
+            # we don't ship the full default vector.
+            from dataclasses import fields as _fields
+            p_default = Params()
+            p_diff = {
+                f.name: getattr(self.params, f.name)
+                for f in _fields(Params)
+                if getattr(self.params, f.name) != getattr(p_default, f.name)
+            }
+            if p_diff:
+                out["params"] = p_diff
+        if self.bw_mix is not None:
+            out["bw_mix"] = tuple(float(v) for v in self.bw_mix)
+        if self.tint != (1.0, 1.0, 1.0):
+            out["tint"] = tuple(float(v) for v in self.tint)
+        if self.split_shadows != (1.0, 1.0, 1.0):
+            out["split_shadows"] = tuple(float(v) for v in self.split_shadows)
+        if self.split_highlights != (1.0, 1.0, 1.0):
+            out["split_highlights"] = tuple(
+                float(v) for v in self.split_highlights)
+        if self.fade != 0.0:
+            out["fade"] = float(self.fade)
+        if self.clarity != 0.0:
+            out["clarity"] = float(self.clarity)
+        if self.vignette != 0.0:
+            out["vignette"] = float(self.vignette)
+        if self.spotlight != 0.0:
+            out["spotlight"] = float(self.spotlight)
+            if self.spotlight_radius != 0.6:
+                out["spotlight_radius"] = float(self.spotlight_radius)
+        if self.dehaze != 0.0:
+            out["dehaze"] = float(self.dehaze)
+        if self.deglare != 0.0:
+            out["deglare"] = float(self.deglare)
+            if not self.deglare_subject_only:
+                out["deglare_subject_only"] = False
+        if self.glow != 0.0:
+            out["glow"] = float(self.glow)
+        if self.grain != 0.0:
+            out["grain"] = float(self.grain)
+        return out
 
 
 def _luminance_f32(work: np.ndarray) -> np.ndarray:
@@ -438,24 +540,71 @@ def _luminance_f32(work: np.ndarray) -> np.ndarray:
             + 0.0722 * work[..., 2])
 
 
+def _clarity_delta(work: np.ndarray, strength: float) -> np.ndarray:
+    """The spec/55 clarity primitive: per-luminance unsharp delta at a
+    frame-proportional radius. Returned as a ``(H, W)`` float32 delta
+    the caller adds to its RGB channels — spec/116 reuses this inside
+    Spotlight (local-contrast pop) without re-deriving the math."""
+    h, w_px = work.shape[:2]
+    sigma = max(2.0, 0.015 * min(h, w_px))
+    lum = _luminance_f32(work)
+    blurred = gaussian_filter(lum, sigma=sigma)
+    return (lum - blurred) * float(strength)
+
+
+def _radial_mask(
+    h: int, w_px: int, *,
+    center: tuple[float, float], radius: float,
+) -> np.ndarray:
+    """A smooth radial mask in [0, 1] centred at ``center`` (normalised
+    image coords, 0..1, origin top-left) with inner-plateau radius
+    ``radius`` (in units of the half-diagonal of the frame). Falloff is
+    a smoothstep (3t² − 2t³) for an aesthetic edge, going to 0 by the
+    outer edge of the frame. Used by the Spotlight stage; could be
+    re-used by future radial vignettes."""
+    yy = (np.arange(h, dtype=np.float32) / max(h - 1, 1) - center[1])
+    xx = (np.arange(w_px, dtype=np.float32) / max(w_px - 1, 1)
+          - center[0])
+    # Aspect-correct radius: the frame's half-diagonal is the unit.
+    yy = yy * (h / max(min(h, w_px), 1))
+    xx = xx * (w_px / max(min(h, w_px), 1))
+    r = np.sqrt(yy[:, np.newaxis] ** 2 + xx[np.newaxis, :] ** 2)
+    # Map distance to mask: 1 inside ``radius``, smoothstep to 0 by 1.0.
+    inner = max(0.0, float(radius))
+    outer = max(inner + 1e-3, 1.0)
+    t = np.clip((r - inner) / (outer - inner), 0.0, 1.0)
+    return 1.0 - (3.0 * t * t - 2.0 * t * t * t)
+
+
 def apply_filter(
     img: np.ndarray, recipe: FilterRecipe, amount: float = 1.0,
+    *, center: tuple[float, float] = (0.5, 0.5),
 ) -> np.ndarray:
     """Apply a creative filter to a uint8 RGB image (the spec/54 §8
     pipeline stage AFTER the Look's Params). Returns a new uint8
     array; no-op (copy) for the identity recipe or ``amount == 0``.
 
-    Stage order: params → bw_mix → tint → split-tone → fade →
-    clarity → vignette. Tonal components first so the color stages
-    operate on the filter's intended base; fade near the end so the
-    matte lift survives the contrast moves; vignette last (spatial,
-    multiplicative).
+    Stage order (spec/55 + spec/116 + spec/118): params → bw_mix →
+    tint → split-tone → dehaze → deglare → fade → clarity → glow →
+    spotlight → vignette → grain. Tonal components first so the color
+    stages operate on the filter's intended base; de-glare runs EARLY
+    (before clarity/glow re-touch highlights) so the hotspot's been
+    softened before subsequent local-contrast / bloom stages amplify
+    it again; fade near the end so the matte lift survives the
+    contrast moves; spatial stages (glow, spotlight, vignette) then;
+    texture (grain) last so the noise isn't blurred away by a
+    subsequent stage.
 
     ``amount`` is the spec/54 §4.1 calibration trim mapped to 0..2:
     the result is BLENDED between the input (0) and the full recipe
     (1), and extrapolated past it above 1 — every component scales
     uniformly (half a B&W is a semi-desaturation, half a vignette is
-    a lighter vignette)."""
+    a lighter vignette).
+
+    ``center`` is the Spotlight's anchor in normalised image coords
+    (spec/116 §2). The render call sites pass the photo's AF point
+    here; ``(0.5, 0.5)`` (frame centre) is the contractual fallback
+    when no AF point is available — never an error."""
     amount = float(amount)
     if recipe.is_identity or amount == 0.0:
         return img.copy()
@@ -489,6 +638,113 @@ def apply_filter(
         work = work * (1.0 + (sh - 1.0) * sh_mask) \
                     * (1.0 + (hi - 1.0) * hi_mask)
 
+    if recipe.dehaze != 0.0:
+        # spec/116 — dehaze approximation (NOT a physical dark-channel
+        # model; honest about that). Three coordinated moves:
+        #   1. Pull the black point (positive) / lift it (negative) —
+        #      removes / adds the milky baseline of a hazy frame.
+        #   2. Local-contrast lift (unsharp on luminance), weighted by
+        #      the inverse local luminance variance so flat (hazy)
+        #      regions get more help than already-detailed areas.
+        #   3. Saturation bump on the same flat-region weighting so
+        #      washed-out distant colour pops without over-juicing
+        #      already-vivid foreground.
+        k = float(np.clip(recipe.dehaze, -1.0, 1.0))
+        # 1. Black point.
+        black_pull = 0.08 * k
+        work = (work - black_pull) / max(1.0 - black_pull, 1e-3)
+        # 2. Local-contrast lift weighted by flatness.
+        lum = _luminance_f32(work)
+        # Use a SMALLER blur radius than clarity — dehaze targets a
+        # finer micro-contrast scale.
+        h, w_px = work.shape[:2]
+        sigma_d = max(1.5, 0.008 * min(h, w_px))
+        blurred = gaussian_filter(lum, sigma=sigma_d)
+        # Flatness ≈ 1 - normalized local variance of luminance; cheap
+        # proxy = the absolute residual after the blur.
+        flatness = np.clip(
+            1.0 - np.abs(lum - blurred) * 6.0, 0.0, 1.0)
+        delta = (lum - blurred) * (0.6 * k)
+        work = work + (delta * flatness)[..., np.newaxis]
+        # 3. Flat-weighted saturation (positive k → boost, negative →
+        # mute).
+        sat_lum = _luminance_f32(work)[..., np.newaxis]
+        work = sat_lum + (work - sat_lum) * (1.0 + 0.4 * k * flatness[..., np.newaxis])
+
+    if recipe.deglare != 0.0:
+        # spec/118 — specular-hotspot tamer. Fully clipped (255)
+        # regions are unrecoverable; this softens them, it does not
+        # reconstruct lost detail. Three coordinated moves inside the
+        # mask, all scaled by the strength ``g``:
+        #   1. Pull luminance down so the hotspot stops dominating the
+        #      tone.
+        #   2. Re-inject chroma sampled from the surrounding non-glare
+        #      ring — restores skin / fabric colour to a blown patch
+        #      instead of leaving a grey blob.
+        #   3. Borrow low-frequency texture from the same ring so the
+        #      patch isn't perfectly flat.
+        # The mask is the intersection of (a) high luminance and (b)
+        # low saturation (the optical signature of specular reflections
+        # — a sunlit forehead reads as nearly-white, not as a colour
+        # cast). Gaussian-smoothed so the boundary doesn't read as a
+        # ring. When ``deglare_subject_only`` (default), multiply by
+        # the §2 subject radial mask so background sparkles / rim
+        # lights / window highlights are preserved.
+        g = float(np.clip(recipe.deglare, 0.0, 1.0))
+        h, w_px = work.shape[:2]
+        rgb_max = np.max(work, axis=2)
+        rgb_min = np.min(work, axis=2)
+        # HSV-style saturation; 0 when grey, 1 when fully saturated.
+        sat = np.where(
+            rgb_max > 1e-6, (rgb_max - rgb_min) / np.maximum(rgb_max, 1e-6),
+            0.0).astype(np.float32)
+        # High-luminance band: smooth ramp 0..1 between 0.78 and 0.96
+        # so partly-clipped patches respond at near-full strength while
+        # ordinary highlights are mostly spared.
+        lum = _luminance_f32(work)
+        lum_mask = np.clip((lum - 0.78) / max(0.96 - 0.78, 1e-3), 0.0, 1.0)
+        # Low-saturation band: smooth ramp 1..0 between 0.05 and 0.30
+        # so a desaturated patch reads as glare and a colourful one is
+        # left alone.
+        sat_mask = np.clip(
+            1.0 - (sat - 0.05) / max(0.30 - 0.05, 1e-3), 0.0, 1.0)
+        glare = lum_mask * sat_mask
+        # Smooth the mask edge so the recovery doesn't read as a ring.
+        sigma_m = max(1.5, 0.006 * min(h, w_px))
+        glare = gaussian_filter(glare, sigma=sigma_m)
+        if recipe.deglare_subject_only:
+            subject_mask = _radial_mask(
+                h, w_px, center=center,
+                radius=recipe.spotlight_radius)
+            glare = glare * subject_mask
+        # 1. Luminance pull-down inside the mask.
+        lum_pull = 0.18 * g
+        m3 = glare[..., np.newaxis]
+        work = work * (1.0 - lum_pull * m3)
+        # Sample the surrounding non-glare ring once for both chroma
+        # and low-frequency-texture borrows. Sigma must be wider than
+        # the mask so the blur reaches OUTSIDE the glare patch.
+        sigma_ring = max(6.0, 0.030 * min(h, w_px))
+        ring = np.empty_like(work)
+        for c in range(3):
+            ring[..., c] = gaussian_filter(work[..., c], sigma=sigma_ring)
+        # 2. Chroma re-injection. Use the ring's chroma (its colour
+        # relative to its own luminance) and add it to the in-mask
+        # pixels' luminance — so the recovered patch carries the
+        # local tone, not whatever cast leaked into the white.
+        ring_lum = _luminance_f32(ring)
+        ring_chroma = ring - ring_lum[..., np.newaxis]
+        chroma_strength = 0.85 * g
+        in_lum = _luminance_f32(work)[..., np.newaxis]
+        chroma_target = in_lum + ring_chroma
+        work = work + (chroma_target - work) * (chroma_strength * m3)
+        # 3. Low-frequency texture borrow. Blend toward the ring's
+        # smoothed RGB (a much milder move — keeps the patch from
+        # reading perfectly flat without painting over what little
+        # texture survived).
+        texture_strength = 0.20 * g
+        work = work + (ring - work) * (texture_strength * m3)
+
     if recipe.fade != 0.0:
         f = float(np.clip(recipe.fade, 0.0, 0.25))
         work = f + work * (1.0 - f)
@@ -498,12 +754,51 @@ def apply_filter(
         # frame (texture/cloud scale) — per-channel unsharp at this
         # radius would fringe colors. Sigma floors at 2 px so tiny
         # thumbnails still respond.
-        h, w_px = work.shape[:2]
-        sigma = max(2.0, 0.015 * min(h, w_px))
-        lum = _luminance_f32(work)
-        blurred = gaussian_filter(lum, sigma=sigma)
-        delta = (lum - blurred) * float(recipe.clarity)
+        delta = _clarity_delta(work, recipe.clarity)
         work = work + delta[..., np.newaxis]
+
+    if recipe.glow != 0.0:
+        # spec/116 — Orton-style bloom. Brightened-and-blurred copy
+        # screen-blended over the original at strength ``glow``.
+        # Sigma is frame-proportional so a 4K frame and a thumbnail
+        # produce visually-matching bloom radii.
+        g = float(np.clip(recipe.glow, 0.0, 1.0))
+        h, w_px = work.shape[:2]
+        sigma_g = max(3.0, 0.025 * min(h, w_px))
+        # Brighten the source for the bloom layer — pull dark midtones
+        # up via a gentle gamma so highlights bloom more than shadows.
+        bright = np.clip(work, 0.0, 1.0) ** 0.7
+        blurred = np.empty_like(bright)
+        for c in range(3):
+            blurred[..., c] = gaussian_filter(bright[..., c], sigma=sigma_g)
+        # Screen blend ``A`` over ``B``: ``1 - (1 - A)(1 - B)``.
+        a = np.clip(work, 0.0, 1.0)
+        screen = 1.0 - (1.0 - a) * (1.0 - blurred)
+        work = work + (screen - work) * g
+
+    if recipe.spotlight != 0.0:
+        # spec/116 — radial subject-pop. ``center`` is the AF anchor;
+        # the mask is high near the centre, low at the corners. Inside:
+        # clarity-style local contrast + a small exposure lift. Outside:
+        # darken + desaturate toward luminance.
+        s = float(np.clip(recipe.spotlight, 0.0, 1.0))
+        h, w_px = work.shape[:2]
+        mask = _radial_mask(
+            h, w_px, center=center, radius=recipe.spotlight_radius)
+        m = mask[..., np.newaxis]
+        # Inside: local contrast + small exposure lift.
+        inner_clarity = 0.55 * s
+        clarity_delta = _clarity_delta(work, inner_clarity)
+        work = work + (clarity_delta * mask)[..., np.newaxis]
+        exposure_lift = 0.12 * s
+        work = work * (1.0 + exposure_lift * m)
+        # Outside: darken + desaturate toward luminance.
+        bg = (1.0 - mask)[..., np.newaxis]
+        bg_darken = 0.18 * s
+        work = work * (1.0 - bg_darken * bg)
+        bg_desat = 0.55 * s
+        lum3 = _luminance_f32(work)[..., np.newaxis]
+        work = lum3 + (work - lum3) * (1.0 - bg_desat * bg)
 
     if recipe.vignette != 0.0:
         h, w_px = work.shape[:2]
@@ -515,6 +810,24 @@ def apply_filter(
         t = np.clip((r - 0.55) / 0.65, 0.0, 1.0)
         mask = 1.0 - float(np.clip(recipe.vignette, 0.0, 1.0)) * (t * t)
         work = work * mask[..., np.newaxis]
+
+    if recipe.grain != 0.0:
+        # spec/116 — luminance-masked monochrome film grain. Noise is
+        # strongest in the midtones (where film grain reads strongest)
+        # and tapers at the clean ends. Reproducible per-render so the
+        # output isn't visually unstable on re-renders — seed from
+        # frame dimensions (the AF center isn't a stable seed if the
+        # user crops). The noise is monochrome to read as grain rather
+        # than as chroma sparkle.
+        g = float(np.clip(recipe.grain, 0.0, 1.0))
+        h, w_px = work.shape[:2]
+        rng = np.random.default_rng(int(h * 131071 + w_px))
+        noise = rng.standard_normal((h, w_px), dtype=np.float32)
+        # Midtone-weighted mask: 4*L*(1-L) peaks at L=0.5.
+        lum = np.clip(_luminance_f32(work), 0.0, 1.0)
+        mid_mask = 4.0 * lum * (1.0 - lum)
+        amplitude = 0.12 * g
+        work = work + (noise * mid_mask * amplitude)[..., np.newaxis]
 
     if amount != 1.0:
         # Calibration blend: lerp from the unfiltered input (0) through

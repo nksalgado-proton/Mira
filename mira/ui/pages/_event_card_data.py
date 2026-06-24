@@ -78,52 +78,39 @@ _SAMPLE_PIXMAP_CAP = 12
 def _sample_pixmap_paths(eg, collected) -> list:
     """Resolve the photo-cycler source list for the closed tile.
 
-    Order of preference (spec/75 §6.2):
-      1. Exported keepers — the ``Exported Media`` survivors.
-      2. Picked photos — the green decisions even if not yet exported.
-      3. Any capture — last-resort so a brand-new closed event with no
-         decisions yet still gets a photo cycler instead of the empty
-         placeholder.
+    spec/132 — the closed event's carousel must show **only** exported
+    photos. The legacy 3-tier fallback (Exported → Picked → any capture)
+    let the closed card display frames the user never chose to export,
+    defeating the point of a closed event's "highlight reel". Empty
+    exported returns empty; the closed tile renders a neutral
+    placeholder (PhotoCycler's built-in "no photos" path) instead of
+    parading un-chosen captures.
+
+    Performance: rendering reaches for the export thumb cache
+    (``core.photo_thumb_cache``, already populated via
+    ``queue_export_thumb`` at export time). If a frame must decode from
+    the full ``Exported Media/`` JPEG the carousel just cycles slower —
+    correctness over speed, per spec/132 §2.
 
     Returns absolute :class:`Path` instances. Capped at
     ``_SAMPLE_PIXMAP_CAP`` so the events list keeps a bounded memory
     footprint as closed events accumulate.
+
+    ``collected`` is preserved in the signature so existing callers
+    don't break, but the value is ignored (the any-capture fallback
+    was retired with spec/132).
     """
+    del collected  # spec/132 — any-capture fallback retired
     if eg.event_root is None:
         return []
     try:
-        exported = [
+        return [
             eg.event_root / lin.export_relpath
             for lin in eg.exported_files()[:_SAMPLE_PIXMAP_CAP]
             if lin.export_relpath
         ]
     except Exception:                                          # noqa: BLE001
         log.exception("exported_files() failed for sample paths")
-        exported = []
-    if exported:
-        return exported
-    try:
-        picked_items = eg.items(
-            kind="photo", phase="pick", state="picked"
-        )[:_SAMPLE_PIXMAP_CAP]
-        picked_paths = [
-            eg.event_root / it.relpath
-            for it in picked_items
-            if getattr(it, "relpath", None)
-        ]
-    except Exception:                                          # noqa: BLE001
-        log.exception("picked-fallback failed for sample paths")
-        picked_paths = []
-    if picked_paths:
-        return picked_paths
-    try:
-        return [
-            eg.event_root / it.relpath
-            for it in (collected or [])[:_SAMPLE_PIXMAP_CAP]
-            if getattr(it, "relpath", None)
-        ]
-    except Exception:                                          # noqa: BLE001
-        log.exception("any-capture fallback failed for sample paths")
         return []
 
 
@@ -193,8 +180,9 @@ def _populate_body_data(
     except Exception:                                          # noqa: BLE001
         log.exception("days_with_captures failed for %s", base.event_id)
 
-    # PhotoCycler source list (spec/75 §6.2 — Exported → Picked → any
-    # capture). Closed tiles read this; open tiles ignore it.
+    # PhotoCycler source list (spec/75 §6.2, narrowed by spec/132 to
+    # exported-only — never the picked-but-not-exported or any-capture
+    # fallback). Closed tiles read this; open tiles ignore it.
     base.sample_pixmap_paths = _sample_pixmap_paths(eg, collected)
 
     counts: Counter = Counter()

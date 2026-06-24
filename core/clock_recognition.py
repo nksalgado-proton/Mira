@@ -6,44 +6,34 @@ only feel simultaneous — Nelson 2026-06-18: a pair that felt simultaneous was
 ~an hour apart, silently mis-dating a whole camera's photos), the app
 *proposes* candidate pairs and the user *recognizes* one.
 
-The math reused: :func:`core.clock_calibration.snap_to_tz_offset` /
-:func:`snap_disagreement` for the 15-minute grid, and ``CalibrationPair`` for
-the result the engine consumes. The math added: per-pair κ normalization +
-clustering on the snapped κ.
+spec/123 update: the **applied offset is the raw measured delta** —
+``find_candidate_pairs`` may still *present* near-simultaneous candidates
+to help the user choose, but the value the calibration consumes is the
+raw ``reference_time − camera_time`` (rounded to the second, no
+snapping). Clustering on the (whole-minute-rounded) κ still helps the
+user spot dominant set-TZ piles in the UI, but the value the engine
+applies is never snapped to a 15-minute grid.
 
-Algorithm (spec/88 §2). For every (camera item ``c``, phone item ``p``) within
-the trip:
+Algorithm. For every (camera item ``c``, phone item ``p``) within the trip:
 
-1. Compute ``off = Tp − Tc`` (the offset a :class:`CalibrationPair` would
-   carry) and normalize to the camera's *constant* set-TZ::
+1. Compute ``off = Tp − Tc`` (what a :class:`CalibrationPair` carries)
+   and normalize to the camera's *constant* set-TZ::
 
        κ = phone_tz(p) − off   # the camera's set TZ, constant across the trip
 
    ``phone_tz(p)`` is the phone's UTC offset on ``p``'s day. The default
    source is ``p.tz_offset_minutes`` (the per-photo EXIF
-   ``OffsetTimeOriginal`` value spec/45 already extracts); callers with a
-   per-day map can override via the ``phone_tz_for`` callback. For
-   single-zone trips ``phone_tz`` is constant and clustering on ``off``
-   directly is equivalent — the normalization only matters for
-   multi-zone trips, where it keeps the cluster intact across the day the
-   phone crosses a border.
+   ``OffsetTimeOriginal`` value spec/45 already extracts); callers with
+   a per-day map can override via the ``phone_tz_for`` callback.
 
-2. Snap ``κ`` to the 15-minute grid (:func:`snap_to_tz_offset`). The pair's
-   *tightness* is the distance between raw and snapped κ. Pairs with
-   tightness larger than half a 15-minute step (~7.5 min) are not
-   plausibly simultaneous — snapping them either lands on an ambiguous
-   boundary or pushes them into a zone they don't belong to — and are
-   dropped.
+2. Pairs more than :data:`MAX_PAIR_RAW_DELTA` apart by clock are
+   filtered out — humans can't recognize "the same moment" across that
+   gap regardless of the math (Nelson 2026-06-18 hard rule).
 
-3. Cluster surviving pairs by snapped κ. The dominant pile is the
-   camera's proposed set-TZ. Per-day corrections fall out as
-   ``trip_day.tz − κ*`` (spec/57 §4.2 applies them).
-
-Output: candidate clusters sorted by size descending. The recognition UI
-shows the strongest cluster first; the user confirms by recognizing one of
-its pairs, and the confirmed pair is fed to
-:func:`core.clock_calibration.build_calibration` verbatim — the existing
-median-outlier rejection + pair-vs-TZ cross-check still apply.
+3. Cluster surviving pairs by κ rounded to the nearest minute — the
+   dominant pile suggests the camera's set-TZ but does NOT constrain
+   the applied offset. When the user picks a pair, the calibration
+   consumes the raw ``reference_time − camera_time`` verbatim.
 
 Qt-free, store-free; tested in isolation.
 """
@@ -64,10 +54,12 @@ from core.fresh_source import SourceItem
 log = logging.getLogger(__name__)
 
 
-# Half of the 15-min snap step. Pairs whose implied κ is farther than this
-# from any 15-min multiple are not plausibly simultaneous — snapping them
-# would either be ambiguous (equidistant between two zones) or push them
-# into a zone they don't actually belong to. spec/88 §2 step 3.
+# Half of the 15-min snap step. Pairs whose implied κ is farther than
+# this from any 15-min multiple are not plausibly simultaneous and are
+# dropped (clustering-only filter; spec/123 keeps the snap for the
+# recognition UI's "same suggested zone" piles — the offset the
+# calibration applies is still the raw measured delta of whichever
+# pair the user picks).
 TIGHTNESS_TOLERANCE = timedelta(minutes=7, seconds=30)
 
 # Maximum raw clock delta between cam_t and phone_t for a pair to even be
@@ -98,22 +90,31 @@ DEFAULT_CARDS_PER_CLUSTER = 6
 
 @dataclass(frozen=True)
 class CandidatePair:
-    """One (camera_item, phone_item) pair plausibly simultaneous: its
-    implied κ sits within :data:`TIGHTNESS_TOLERANCE` of a 15-minute
-    multiple."""
+    """One (camera_item, phone_item) pair plausibly simultaneous —
+    surfaced for the user to recognize. ``raw_kappa_minutes`` carries
+    the implied set-TZ (for display); ``cluster_kappa_minutes`` is the
+    nearest-minute bucket the pair fell into (for grouping in the UI).
+    spec/123: no value here is ever snapped — the applied offset is the
+    raw measured delta via :meth:`to_calibration_pair`."""
 
     camera_item: SourceItem
     phone_item: SourceItem
     phone_tz_minutes: int
     raw_kappa_minutes: float
-    snapped_kappa_minutes: int
+    cluster_kappa_minutes: int
     tightness: timedelta
+
+    @property
+    def snapped_kappa_minutes(self) -> int:
+        """Compatibility alias — the legacy name was ``snapped``;
+        spec/123 renamed it to ``cluster`` because the value is no
+        longer a 15-minute snap but a whole-minute group key."""
+        return self.cluster_kappa_minutes
 
     def to_calibration_pair(self) -> CalibrationPair:
         """Build the :class:`CalibrationPair` the engine consumes from
-        this pair's *raw* EXIF timestamps. ``build_calibration`` sees
-        unmodified numbers — its own snap + cross-check + outlier
-        rejection still apply downstream, exactly as in the manual flow."""
+        this pair's *raw* EXIF timestamps — the applied offset is the
+        raw measured delta (spec/123: no snapping)."""
         return CalibrationPair(
             camera_path=self.camera_item.path,
             reference_path=self.phone_item.path,
@@ -124,12 +125,17 @@ class CandidatePair:
 
 @dataclass(frozen=True)
 class CandidateCluster:
-    """All :class:`CandidatePair`s sharing a snapped κ — i.e. all pairs that
-    would confirm the same camera set-TZ. Pairs are ranked: tightest first,
-    then thinned so the leading sample spans the trip in camera time."""
+    """Candidate pairs sharing a whole-minute κ bucket. The cluster is
+    a UI grouping hint; the applied offset stays the raw measured
+    delta of whichever pair the user picks."""
 
-    snapped_kappa_minutes: int
+    cluster_kappa_minutes: int
     pairs: Tuple[CandidatePair, ...]
+
+    @property
+    def snapped_kappa_minutes(self) -> int:
+        """Compat alias — see :attr:`CandidatePair.snapped_kappa_minutes`."""
+        return self.cluster_kappa_minutes
 
     @property
     def size(self) -> int:
@@ -145,23 +151,18 @@ def find_candidate_pairs(
     tolerance: timedelta = TIGHTNESS_TOLERANCE,
     cards_per_cluster: int = DEFAULT_CARDS_PER_CLUSTER,
 ) -> List[CandidateCluster]:
-    """Generate and cluster candidate sync pairs.
+    """Generate and cluster candidate sync pairs (spec/123 — no
+    snapping anywhere; the cluster key is the κ rounded to the nearest
+    minute, used only for grouping).
 
-    ``phone_tz_for(p)`` returns the phone's UTC offset (minutes east) on
-    ``p``'s day. Defaults to ``p.tz_offset_minutes`` — the per-photo EXIF
-    answer is the most precise source. When that EXIF tag is absent on a
-    phone item (older iPhones, photos exported through a tool that
-    strips OffsetTimeOriginal — Nelson 2026-06-18 iPhone 6s case), the
-    per-photo result is ``None`` and ``default_phone_tz_minutes`` is used
-    as a fallback. For single-zone trips this is exactly spec/88 §2's
-    equivalence ("phone_tz is constant and clustering on off directly is
-    equivalent"). When neither a per-photo answer nor a default is
-    available, the phone item is skipped. Items with missing timestamps
-    are skipped on both sides.
+    ``phone_tz_for(p)`` returns the phone's UTC offset (minutes east)
+    on ``p``'s day. Defaults to ``p.tz_offset_minutes`` (the per-photo
+    EXIF ``OffsetTimeOriginal`` spec/45 already extracts).
 
-    Returned clusters are sorted by ``size`` descending; ties broken by
-    smallest top-pair tightness, then by κ closest to zero (the
-    correctly-set-camera case wins ties — spec/88 §3 point 2).
+    Items with missing timestamps are skipped on both sides. Pairs
+    more than :data:`MAX_PAIR_RAW_DELTA` apart by clock are filtered.
+    Clusters are sorted by size descending; ties break by tightest
+    top-pair, then by κ closest to zero.
     """
     if phone_tz_for is None:
         def phone_tz_for(it: SourceItem) -> Optional[int]:
@@ -187,32 +188,27 @@ def find_candidate_pairs(
     for c in cam_with_t:
         for p, ptz in phone_with_tz:
             off = p.timestamp - c.timestamp
-            # Hours-apart pairs can't be "the same moment" — the user
-            # can't recognize matching scenes across that gap, regardless
-            # of what the cross-TZ math says. Filtered hard.
             if abs(off) > MAX_PAIR_RAW_DELTA:
                 filtered_too_far += 1
                 continue
             raw_kappa_minutes = ptz - (off.total_seconds() / 60.0)
             raw_kappa_td = timedelta(minutes=raw_kappa_minutes)
+            # Cluster on the 15-min snap (presentation only — the
+            # offset the calibration eventually applies is the raw
+            # measured delta via ``to_calibration_pair``).
             snapped_kappa_td = snap_to_tz_offset(raw_kappa_td)
             tightness = snap_disagreement(raw_kappa_td, snapped_kappa_td)
-            # spec/88 §2 step 3: tolerance is tightness ``< ~7.5 min`` so
-            # adjacent zones never blur. Snap-to-nearest already bounds
-            # tightness ≤ 7.5; the strict ``>=`` here only bites at the
-            # exact midpoint between two zones (a pair that snap couldn't
-            # disambiguate — drop it rather than route it arbitrarily).
             if tightness >= tolerance:
                 continue
-            snapped_kappa_minutes = int(round(
+            cluster_kappa_minutes = int(round(
                 snapped_kappa_td.total_seconds() / 60.0))
-            buckets.setdefault(snapped_kappa_minutes, []).append(
+            buckets.setdefault(cluster_kappa_minutes, []).append(
                 CandidatePair(
                     camera_item=c,
                     phone_item=p,
                     phone_tz_minutes=ptz,
                     raw_kappa_minutes=raw_kappa_minutes,
-                    snapped_kappa_minutes=snapped_kappa_minutes,
+                    cluster_kappa_minutes=cluster_kappa_minutes,
                     tightness=tightness,
                 )
             )
@@ -227,16 +223,15 @@ def find_candidate_pairs(
     for kappa, raw_pairs in buckets.items():
         ranked = _rank_pairs(raw_pairs, cards_per_cluster)
         clusters.append(CandidateCluster(
-            snapped_kappa_minutes=kappa,
+            cluster_kappa_minutes=kappa,
             pairs=tuple(ranked),
         ))
-    # Largest cluster first; ties → tightest top-pair, then κ closest to 0
-    # (so the 0-offset cluster wins all ties — Nelson's common case, spec/88
-    # §3 point 2).
+    # Largest cluster first; ties → tightest top-pair, then κ closest
+    # to 0 (the correctly-set-camera case wins ties).
     clusters.sort(key=lambda c: (
         -c.size,
         c.pairs[0].tightness,
-        abs(c.snapped_kappa_minutes),
+        abs(c.cluster_kappa_minutes),
     ))
     return clusters
 

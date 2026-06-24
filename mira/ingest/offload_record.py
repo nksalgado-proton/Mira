@@ -60,11 +60,11 @@ def record_offload(
         day_number = rec.day_number if (rec.day_number and rec.day_number > 0) else None
 
         corrected = raw
-        tz_minutes = 0
+        tz_seconds = 0
         if raw and offset_hours:
             try:
                 corrected = (datetime.fromisoformat(raw) + timedelta(hours=offset_hours)).isoformat()
-                tz_minutes = round(offset_hours * 60)
+                tz_seconds = round(offset_hours * 3600)
             except ValueError:
                 corrected = raw  # unparseable → store raw unchanged
 
@@ -76,7 +76,7 @@ def record_offload(
             camera_id=camera_id,
             capture_time_raw=raw or "", capture_time_corrected=corrected or "",
             created_at=stamp,
-            tz_offset_minutes=tz_minutes,
+            tz_offset_seconds=tz_seconds,
             tz_source=("user_declared" if (raw and offset_hours) else "none"),
             day_number=day_number,
             quarantine_status="no_timestamp" if quarantined else "ok",
@@ -86,7 +86,7 @@ def record_offload(
     camera = m.Camera(
         camera_id=camera_id,
         is_phone=(bucket == CAPTURED_PHONES_SUBDIR),
-        applied_offset_minutes=(round(offset_hours * 60) if offset_hours else None),
+        applied_offset_seconds=(round(offset_hours * 3600) if offset_hours else None),
         applied_at=(stamp if offset_hours else None),
     )
 

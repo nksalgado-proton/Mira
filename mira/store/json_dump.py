@@ -83,6 +83,7 @@ def to_json(doc: m.EventDocument) -> Dict[str, Any]:
         "event": asdict(doc.event),
         "trip_days": [asdict(x) for x in doc.trip_days],
         "cameras": [asdict(x) for x in doc.cameras],
+        "camera_tz_corrections": [asdict(x) for x in doc.camera_tz_corrections],
         "camera_calibration_pairs": [asdict(x) for x in doc.camera_calibration_pairs],
         "camera_day_tz": [asdict(x) for x in doc.camera_day_tz],
         "items": items_json,
@@ -125,6 +126,10 @@ def from_json(data: Dict[str, Any]) -> m.EventDocument:
 
     doc.trip_days = [_build(m.TripDay, x) for x in data.get("trip_days", [])]
     doc.cameras = [_build(m.Camera, x) for x in data.get("cameras", [])]
+    doc.camera_tz_corrections = [
+        _build(m.CameraTzCorrection, x)
+        for x in data.get("camera_tz_corrections", [])
+    ]
     doc.camera_calibration_pairs = [
         _build(m.CameraCalibrationPair, x) for x in data.get("camera_calibration_pairs", [])
     ]

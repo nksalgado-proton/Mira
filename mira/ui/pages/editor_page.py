@@ -155,6 +155,15 @@ class EditorPage(QWidget):
         self._exported_set: set = set()
         self._watermark_enabled: bool = True
 
+        # spec/131 — last item id + day_number the user was on at the
+        # moment of close. ``_on_back`` captures these BEFORE
+        # ``_close_event`` clears ``_items`` / ``_day_number``, so the
+        # host's :sig:`closed` slot can anchor the Days Grid back to
+        # where the user left off via :meth:`last_item_id` /
+        # :meth:`last_day_number`.
+        self._last_item_id: Optional[str] = None
+        self._last_day_number: Optional[int] = None
+
         # ── Video workshop state (spec/56 §1 + spec/59 §4-§5) ─────────
         # The current source video's workshop model: markers, segment
         # rows + their backing items, snapshots, derived bounds. Loaded
@@ -945,6 +954,9 @@ class EditorPage(QWidget):
             self._settle.stop()
             self._cached_path = None
             self._viewport.set_exported_watermark(False)
+            # spec/134 — videos have no viewer overlay (the workshop
+            # bar owns the canvas chrome).
+            self._surface.set_viewer_overlay_html("")
             self._load_video_workshop(ci)
         else:
             # The standard photo branch — develop the working copy on
@@ -962,11 +974,28 @@ class EditorPage(QWidget):
                 # hidden until set_state re-syncs it for the landed photo.
                 if self._surface._crop_overlay is not None:
                     self._surface._crop_overlay.setVisible(False)
+            # spec/134 — push the configurable viewer overlay (When /
+            # Where / Camera / Exposure) for this photo. Shares the
+            # orchestration helper with the Picker so both surfaces
+            # paint identical text from the same setting + item.
+            from mira.ui.media.viewer_overlay import (
+                compose_viewer_overlay_html,
+            )
+            self._surface.set_viewer_overlay_html(
+                compose_viewer_overlay_html(
+                    self._eg, getattr(ci, "item_id", None)))
             # spec/59 §8 / spec/66 §1.2 — the diagonal "Exported" overlay.
+            # spec/118 §2 — once an exported item is re-edited, the
+            # Edit-view's "exported" badge no longer reads as a clean
+            # exported state: suppress the watermark until the user
+            # runs an export (the Export grid surfaces the loud "edited
+            # since export" cue so the state isn't hidden).
+            from mira.ui.exported.staleness import is_cell_stale
             shipped = (
                 ci is not None
                 and self._watermark_enabled
                 and ci.item_id in self._exported_set
+                and not is_cell_stale(self._eg, ci.item_id)
             )
             self._viewport.set_exported_watermark(shipped)
             self._settle.start()
@@ -1098,6 +1127,11 @@ class EditorPage(QWidget):
             float(getattr(adj, "look_strength", 1.0))
             if adj is not None else 1.0
         )
+        # spec/115 §2 — per-image user exposure (EV), clamped on read
+        # so a migrated row with a wild value still loads safely.
+        user_exposure = max(-2.0, min(2.0,
+            float(getattr(adj, "user_exposure", 0.0) or 0.0)
+            if adj is not None else 0.0))
         if style != result.style:
             # The router style moved between request and delivery
             # (defensive: cannot happen while tools are greyed). Re-prep.
@@ -1118,11 +1152,48 @@ class EditorPage(QWidget):
             style=style, aspect_label=aspect, rotation=rotation,
             creative_filter=creative_filter,
             look_strength=look_strength,
+            user_exposure=user_exposure,
         )
         # spec/58 §2 — the STYLE combo's classification badge follows
         # the ITEM's stored classification (not Adjustment.style).
         self._surface.set_classification_badge(cls_source, cls_confidence)
+        # spec/116 §2 — the Subject Spotlight anchors at the photo's
+        # AF point. Best-effort: a brand profile + EXIF read produces
+        # the normalised AfPoint; anything that goes wrong falls back
+        # to ``None`` and the surface uses the frame centre.
+        self._surface.set_af_point(self._resolve_af_point(ci.path))
         self._surface.set_tools_enabled(True)
+
+    def _resolve_af_point_center(self, path) -> tuple[float, float]:
+        """spec/116 §2 — AF point as a ``(cx, cy)`` tuple for callers
+        that need the bare normalised coords (e.g. the F10 lens render
+        path); ``(0.5, 0.5)`` on miss. Mirrors :meth:`_resolve_af_point`'s
+        best-effort contract."""
+        af = self._resolve_af_point(path)
+        if af is None:
+            return (0.5, 0.5)
+        return (float(af.cx), float(af.cy))
+
+    def _resolve_af_point(self, path):
+        """spec/116 §2 — read the photo's AF point from EXIF via the
+        brand profile, return ``None`` on miss or any failure. Best-
+        effort: a missing brand profile, a non-photo path, or an EXIF
+        read error all collapse to ``None`` so the surface falls back
+        to the frame-centre Spotlight anchor."""
+        try:
+            from core.brand_profile import match_brand_profile_for_photo
+            from core.exif_reader import read_exif_single
+            exif = read_exif_single(Path(path))
+            raw = getattr(exif, "raw", None) if exif is not None else None
+            if not raw:
+                return None
+            prof = match_brand_profile_for_photo(raw)
+            if prof is None:
+                return None
+            return prof.read_af_point(raw)
+        except Exception:                                          # noqa: BLE001
+            log.debug("AF point resolve failed for %s", path)
+            return None
 
     def _on_prep_failed(self, path) -> None:
         ci = self._current_item()
@@ -1274,7 +1345,7 @@ class EditorPage(QWidget):
 
     def _persist_choice(self) -> None:
         """Write the current CHOICE (style / look / creative_filter /
-        look_strength) to the item's Adjustment row."""
+        look_strength / user_exposure) to the item's Adjustment row."""
         if (self._cached_path is None
                 or self._eg is None or not self._items):
             return
@@ -1290,6 +1361,10 @@ class EditorPage(QWidget):
             # CHECK on existing rows).
             adj.look_strength = max(0.0, min(2.0, float(
                 getattr(state, "look_strength", 1.0))))
+            # spec/115 — same belt-and-braces clamp for the new column
+            # (v15→v16 migration also omits the CHECK).
+            adj.user_exposure = max(-2.0, min(2.0, float(
+                getattr(state, "user_exposure", 0.0))))
             self._eg.save_adjustment(adj)
         except Exception:                                          # noqa: BLE001
             log.exception("persist failed for %s", ci.item_id)
@@ -1363,6 +1438,8 @@ class EditorPage(QWidget):
             adj.creative_filter = state.creative_filter
             adj.look_strength = max(0.0, min(2.0, float(
                 getattr(state, "look_strength", 1.0))))
+            adj.user_exposure = max(-2.0, min(2.0, float(
+                getattr(state, "user_exposure", 0.0))))
         elif kind == "crop":
             rect = self._surface._crop_norm
             if rect is not None:
@@ -1561,9 +1638,22 @@ class EditorPage(QWidget):
             if creative_filter:
                 recipe = resolve_filter_recipe(creative_filter, style_key)
                 if recipe is not None:
+                    # spec/116 §2 — Subject Spotlight anchors at the
+                    # AF point when this lens render targets a still
+                    # snapshot; segments fall back to the frame centre
+                    # (video has no per-frame AF metadata here).
+                    if kind == "snapshot":
+                        ci = self._current_item()
+                        path = ci.path if ci is not None else None
+                        center = (
+                            self._resolve_af_point_center(path)
+                            if path is not None else (0.5, 0.5))
+                    else:
+                        center = (0.5, 0.5)
                     out = apply_filter(
                         out, FilterRecipe.from_dict(recipe),
-                        creative_filter_amount(creative_filter))
+                        creative_filter_amount(creative_filter),
+                        center=center)
             if crop is not None:
                 if box_angle:
                     out = extract_rotated_crop(out, crop, box_angle)
@@ -1699,8 +1789,65 @@ class EditorPage(QWidget):
                     self._bucket.bucket_key, self._phase, self._index)
             except Exception:                                      # noqa: BLE001
                 log.exception("failed to save bucket cursor")
+        # spec/130 — Esc / Back leaves the Editor; stop the video player
+        # so audio doesn't bleed past the surface. Same shape as the
+        # Picker. shutdown_video is idempotent so the hideEvent
+        # belt-and-braces below can also call it.
+        try:
+            self._viewport.shutdown_video()
+        except Exception:                                          # noqa: BLE001
+            log.exception("spec/130: shutdown_video on back failed")
+        # spec/131 — snapshot the live item id + day BEFORE
+        # ``_close_event`` clears ``_items`` / ``_day_number``. The
+        # host's :sig:`closed` slot reads these via
+        # :meth:`last_item_id` / :meth:`last_day_number` to anchor the
+        # Days Grid back to the user's last position.
+        self._last_item_id = self.current_item_id()
+        self._last_day_number = self.current_day_number()
         self._close_event()
         self.closed.emit()
+
+    # ── spec/131 — restore-anchor accessors ───────────────────────────
+
+    def current_item_id(self) -> Optional[str]:
+        """The item id at the live cursor; ``None`` when nothing
+        loaded. Hosts that want the "last position" after close use
+        :meth:`last_item_id` instead (this clears with
+        ``_close_event``)."""
+        if not self._items or not (0 <= self._index < len(self._items)):
+            return None
+        return getattr(self._items[self._index], "item_id", None)
+
+    def current_day_number(self) -> Optional[int]:
+        """The day the editor is currently on; ``None`` when nothing
+        loaded."""
+        if not self._items:
+            return None
+        return int(self._day_number)
+
+    def last_item_id(self) -> Optional[str]:
+        """spec/131 — the item id at the moment of the most recent
+        ``_on_back``. Set even after ``_close_event`` has dropped the
+        live items list, so the host's ``closed``-signal slot can
+        anchor the Days Grid back to it."""
+        return self._last_item_id
+
+    def last_day_number(self) -> Optional[int]:
+        """spec/131 — the day number at the moment of the most recent
+        ``_on_back``."""
+        return self._last_day_number
+
+    def hideEvent(self, event) -> None:                                 # noqa: N802
+        """spec/130 belt-and-braces — any path that hides the Editor
+        (programmatic navigation, page-stack swap, window close) stops
+        the video so audio never plays into an off-screen surface.
+        ``_on_back`` already calls this; ``hideEvent`` catches paths
+        that bypass it."""
+        try:
+            self._viewport.shutdown_video()
+        except Exception:                                               # noqa: BLE001
+            log.exception("spec/130: shutdown_video on hideEvent failed")
+        super().hideEvent(event)
 
     # ── Keyboard ───────────────────────────────────────────────────────
 
@@ -1855,7 +2002,21 @@ class EditorPage(QWidget):
         # Reset transport state for the new clip.
         self._video_pos_ms = 0
         self._workshop_bar.set_position(0)
-        self._workshop_bar.set_playing(False)
+        # spec/130 §2 — push the viewport's CURRENT playback state at
+        # reveal so the play/pause glyph isn't stuck on the stale
+        # default. The hardcoded ``set_playing(False)`` here would paint
+        # the play glyph while the auto-armed player is already running.
+        self._workshop_bar.set_playing(self._viewport.video_is_playing())
+        # spec/137 — sticky-rate engine, sync the dropdown to its
+        # truth at reveal (a clip after a 2× clip still plays at 2×,
+        # but the combo defaults to 1× without this push). The
+        # per-segment ``vadj.speed`` push in
+        # :meth:`_bind_panel_to_selection` runs after this and wins
+        # when the selection carries a persisted speed — both calls
+        # use ``set_speed`` which blocks signals, so neither echoes
+        # back into the engine.
+        self._workshop_bar.set_speed(
+            self._viewport.video_playback_rate())
         self._workshop_bar.set_duration(self._video_duration_ms)
         # Show the workshop in place; the canvas above keeps geometry
         # by virtue of the host's fixed height.
@@ -2128,6 +2289,7 @@ class EditorPage(QWidget):
                     style=style, aspect_label=aspect, rotation=rotation,
                     creative_filter=creative_filter,
                     look_strength=1.0,
+                    user_exposure=0.0,
                 )
                 volume_pct = int(round((vadj.audio_volume if vadj else 1.0) * 100))
                 volume_pct = max(0, min(200, volume_pct))   # the schema goes to 2.0
@@ -2143,11 +2305,17 @@ class EditorPage(QWidget):
                 rotation = int(getattr(adj, "rotation", 0) or 0) if adj else 0
                 look_strength = float(
                     getattr(adj, "look_strength", 1.0)) if adj else 1.0
+                # spec/115 — same belt-and-braces clamp on read so a
+                # migrated row with a wild value still loads safely.
+                user_exposure = max(-2.0, min(2.0,
+                    float(getattr(adj, "user_exposure", 0.0) or 0.0)
+                    if adj else 0.0))
                 self._surface.set_state(
                     look=look, crop_norm=crop, box_angle=angle or 0.0,
                     style=style, aspect_label=aspect, rotation=rotation,
                     creative_filter=creative_filter,
                     look_strength=look_strength,
+                    user_exposure=user_exposure,
                 )
         finally:
             self._suppress_persist = False

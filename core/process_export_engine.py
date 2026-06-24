@@ -124,6 +124,31 @@ def _count_total(
     return total
 
 
+def _af_center_for(source_path: Path) -> tuple[float, float]:
+    """spec/116 §2 — read the AF point from EXIF + brand profile and
+    return ``(cx, cy)`` in normalised image coords. ``(0.5, 0.5)`` on
+    any failure or missing AF data — never raises (the Subject
+    Spotlight falls back to the frame centre)."""
+    try:
+        from core.brand_profile import match_brand_profile_for_photo
+        from core.exif_reader import read_exif_single
+        exif = read_exif_single(Path(source_path))
+        raw = getattr(exif, "raw", None) if exif is not None else None
+        if not raw:
+            return (0.5, 0.5)
+        prof = match_brand_profile_for_photo(raw)
+        if prof is None:
+            return (0.5, 0.5)
+        af = prof.read_af_point(raw)
+        if af is None:
+            return (0.5, 0.5)
+        return (float(af.cx), float(af.cy))
+    except Exception:                                              # noqa: BLE001
+        log.debug(
+            "process-export: AF resolve failed for %s", source_path)
+        return (0.5, 0.5)
+
+
 def _apply_crop_tilt_np(arr: np.ndarray, angle_degrees: float) -> np.ndarray:
     """numpy → PIL → rotate(expand=False) → numpy (task #117).
 
@@ -207,9 +232,14 @@ def _render_one(
         recipe = resolve_filter_recipe(
             key, look_choice.get("style") or style)
         if recipe is not None:
+            # spec/116 §2 — the Subject Spotlight anchors at the
+            # photo's AF point. ``_af_center_for`` reads EXIF + brand
+            # profile; missing data falls back to the frame centre.
+            center = _af_center_for(src)
             out = apply_filter(
                 out, FilterRecipe.from_dict(recipe),
-                creative_filter_amount(key))
+                creative_filter_amount(key),
+                center=center)
 
     # Crop. ``crop_angle`` is the Box Rotation (docs/25 §4): the crop
     # box spins about its own centre, and the output is the box content

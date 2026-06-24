@@ -106,14 +106,21 @@ class _Row:
 class AdjustmentGrid(QWidget):
     """An aligned panel of adjustment sliders.
 
-    Emits :pyattr:`valueChanged` ``(key, value)`` on any user-driven
-    change (drag, field edit, reset). Programmatic
-    :meth:`set_value` / :meth:`set_values` default to **not** emitting
-    so photo-load / AUTO-repopulate don't echo back into the render
-    loop.
+    Emits :pyattr:`valueChanged` ``(key, value)`` on every user-driven
+    tick — the *live* value, suitable for updating a numeric label but
+    NOT for re-rendering the frame. Programmatic :meth:`set_value` /
+    :meth:`set_values` default to **not** emitting so photo-load / AUTO-
+    repopulate don't echo back into the render loop.
+
+    Emits :pyattr:`valueCommitted` ``(key, value)`` when a value
+    *settles*: when a drag ends (``QSlider.sliderReleased``), when the
+    typed field commits (``editingFinished``), and on reset. Hosts that
+    render-on-release wire to ``valueCommitted`` so a slow tone render
+    runs once per gesture instead of per drag-tick (spec/115 §1).
     """
 
     valueChanged = pyqtSignal(str, float)
+    valueCommitted = pyqtSignal(str, float)
 
     def __init__(
         self,
@@ -263,6 +270,12 @@ class AdjustmentGrid(QWidget):
 
         slider.valueChanged.connect(
             lambda tick, key=spec.key: self._on_slider(key, tick))
+        # spec/115 — committed values (release / field / reset) drive
+        # the host's render; live ``valueChanged`` only updates the
+        # label. ``sliderReleased`` doesn't carry the value — read it
+        # from the row at fire time.
+        slider.sliderReleased.connect(
+            lambda key=spec.key: self._on_slider_released(key))
         field.editingFinished.connect(
             lambda key=spec.key: self._on_field(key))
         reset.clicked.connect(lambda _=False, key=spec.key: self.reset(key))
@@ -312,14 +325,20 @@ class AdjustmentGrid(QWidget):
 
     def reset(self, key: str) -> None:
         """Reset one row to its configured default (emits — it is a
-        user action)."""
+        user action). Both :pyattr:`valueChanged` (live) and
+        :pyattr:`valueCommitted` (settled) fire, so render-on-release
+        hosts re-render the frame from a reset just as they do from a
+        slider release."""
         r = self._rows.get(key)
         if r is not None:
             self.set_value(key, r.spec.default, emit=True)
+            self.valueCommitted.emit(key, r.value)
 
     def reset_all(self, *, emit: bool = True) -> None:
         for k, r in self._rows.items():
             self.set_value(k, r.spec.default, emit=emit)
+            if emit:
+                self.valueCommitted.emit(k, r.value)
 
     def set_row_visible(self, key: str, visible: bool) -> None:
         """Show/hide a single parameter row (label · slider · value field ·
@@ -366,6 +385,15 @@ class AdjustmentGrid(QWidget):
         raw = r.spec.minimum + (tick / float(_TICKS)) * span
         self.set_value(key, raw, emit=True)
 
+    def _on_slider_released(self, key: str) -> None:
+        """Drag ended — emit :pyattr:`valueCommitted` so render-on-
+        release hosts re-render the frame (spec/115 §1). The live
+        ``valueChanged`` already updated the label."""
+        r = self._rows.get(key)
+        if r is None:
+            return
+        self.valueCommitted.emit(key, r.value)
+
     def _on_field(self, key: str) -> None:
         r = self._rows[key]
         if r.guard:
@@ -379,6 +407,8 @@ class AdjustmentGrid(QWidget):
             self._apply_to_widgets(r)        # reject garbage, restore
             return
         self.set_value(key, raw, emit=True)
+        # spec/115 — committing the typed value is a settled change.
+        self.valueCommitted.emit(key, r.value)
 
 
 __all__ = ["AdjustmentGrid", "AdjustmentSpec"]

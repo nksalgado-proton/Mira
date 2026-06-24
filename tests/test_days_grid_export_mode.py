@@ -1520,11 +1520,26 @@ def test_export_now_run_deletes_red_intent_versions(
 def test_export_now_no_op_when_nothing_to_do(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
     """Empty plan (no green renders, no red files) shows an info dialog
-    and skips the confirm + run entirely."""
-    # Mark every keeper as already shipped so the render set is empty.
+    and skips the confirm + run entirely.
+
+    spec/118 §3 — to keep the render set empty under the new "re-include
+    stale items" rule, each ship's recipe must match the live
+    Adjustment so no cell reads stale."""
+    # Mark every keeper as already shipped with a recipe matching the
+    # live Adjustment (look="original") so nothing reads stale.
     _, eg = store_and_gateway
     for iid in ("x1", "x2", "x3", "x4"):
-        _ship_one(eg, event_dir, iid)
+        ship = event_dir / "Exported Media" / "Dia 1"
+        ship.mkdir(parents=True, exist_ok=True)
+        dest = ship / f"{iid}.jpg"
+        dest.write_bytes(b"\xff\xd8\xff\xd9")
+        eg.record_lineage(m.Lineage(
+            export_relpath=f"Exported Media/Dia 1/{iid}.jpg",
+            phase="edit", source_kind="item",
+            source_item_id=iid,
+            recipe_json='{"look": "original"}',
+            exported_at="t"))
+        eg.set_edit_exported(iid, True)
     seen: list = []
     monkeypatch.setattr(
         "mira.ui.pages.days_grid_page.show_info",
@@ -1547,9 +1562,10 @@ def test_export_now_no_op_when_nothing_to_do(
 
 def test_export_this_re_render_ask_fires_when_mira_render_exists(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
-    """spec/89 §5.2 D6.C — "Export this" on an item that already has a
-    Mira-render version asks "An export already exists. Re-render with
-    current settings?" before submitting. Cancel skips the submit."""
+    """spec/118 §3 — "Export this" on an item that already has a
+    Mira-render version asks the LRC-style three-way Overwrite / Keep
+    both / Cancel via :func:`ask_overwrite_or_keep_both` before
+    submitting. Cancel skips the submit."""
     _, eg = store_and_gateway
     rel = "Exported Media/Dia 1/x2.jpg"
     eg.record_lineage(m.Lineage(
@@ -1565,11 +1581,13 @@ def test_export_this_re_render_ask_fires_when_mira_render_exists(
 
     captured: list = []
 
-    def _capture_confirm(parent, title, body, primary_text=None):
-        captured.append((title, body, primary_text))
-        return False                          # Cancel — skip submit
+    def _capture_choice(parent):
+        captured.append(parent)
+        return None                           # Cancel — skip submit
     monkeypatch.setattr(
-        "mira.ui.pages.days_grid_page.confirm", _capture_confirm)
+        "mira.ui.exported.collision_dialog."
+        "ask_overwrite_or_keep_both",
+        _capture_choice)
     submitted: list = []
     monkeypatch.setattr(
         "mira.ui.exported.batch.submit_export_batch",
@@ -1594,10 +1612,8 @@ def test_export_this_re_render_ask_fires_when_mira_render_exists(
     dlg = _StubDialog()
     page._on_preview_export_this(dlg, "x2")
 
-    assert len(captured) == 1
-    title, _body, primary = captured[0]
-    assert "already exists" in title.lower()
-    assert primary == "Re-render"
+    assert len(captured) == 1, (
+        "the three-way collision dialog must be the only ask")
     assert submitted == []                    # cancelled before submit
     assert not dlg.accepted                   # dialog stays open on cancel
     page.close_event()

@@ -113,11 +113,20 @@ def test_from_dict_round_trip_and_unknown_keys():
 # ── Resolution layer (photo_auto ⇄ generated data module) ─────────
 
 
-def test_available_filters_is_the_locked_nine():
+def test_available_filters_is_the_locked_nine_plus_spec_116():
+    """spec/55's nine + spec/116's four + spec/118's de-glare, in
+    render order (the new entries sit at the tail). The order matters
+    — the Editor's picker reads it; established filters keep their
+    existing slots."""
     from core.photo_auto import available_filters
     assert available_filters() == (
+        # spec/55 — the original nine.
         "vivid", "bw", "sepia", "faded", "golden", "cinema",
-        "bleach", "dramatic", "crisp")
+        "bleach", "dramatic", "crisp",
+        # spec/116 — the four additions.
+        "subject_pop", "dehaze", "dreamy_glow", "film_grain",
+        # spec/118 — specular-hotspot tamer.
+        "deglare")
 
 
 def test_resolve_filter_recipe_none_and_unknown():
@@ -144,11 +153,25 @@ def test_crisp_style_overrides_differ():
 
 
 def test_every_locked_recipe_is_distinct_and_applies():
-    """All nine produce a non-identity, mutually-renderable result on
-    a real-ish gradient — the engine-level floor under the eyeball's
-    'identity' judgement."""
+    """All nine (+ spec/116's four + spec/118's de-glare) produce a
+    non-identity, mutually-renderable result on a real-ish gradient
+    with a synthetic glare patch — the engine-level floor under the
+    eyeball's 'identity' judgement. The glare patch (a small bright
+    + low-saturation disc) gives the de-glare stage something to bite
+    on; the gradient surround keeps the other filters' behaviour
+    unchanged."""
     from core.photo_auto import available_filters, resolve_filter_recipe
-    img = _gradient()
+    img = _gradient().copy()
+    # Add a synthetic specular hotspot at the centre — high-luminance,
+    # low-saturation, the exact pattern de-glare is designed to tame.
+    h, w = img.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    r = np.sqrt((yy - h / 2.0) ** 2 + (xx - w / 2.0) ** 2)
+    m = np.clip(1.0 - r / 6.0, 0.0, 1.0)[..., None]
+    glare = np.array([245, 247, 246], dtype=np.float32)
+    img = np.clip(
+        img.astype(np.float32) * (1.0 - m) + glare * m, 0, 255
+    ).astype(np.uint8)
     outs = {}
     for key in available_filters():
         recipe = FilterRecipe.from_dict(resolve_filter_recipe(key))
@@ -160,6 +183,32 @@ def test_every_locked_recipe_is_distinct_and_applies():
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
             assert not np.array_equal(outs[a], outs[b]), (a, b)
+
+
+def test_spec_116_named_filters_hydrate_and_carry_their_strength():
+    """spec/116 §3 — Subject Pop / Dehaze / Dreamy Glow / Film Grain
+    appear in the registry, hydrate cleanly, and carry a non-zero
+    value on the headline component each one is built around."""
+    from core.photo_auto import resolve_filter_recipe
+    pop = FilterRecipe.from_dict(resolve_filter_recipe("subject_pop"))
+    assert pop.spotlight > 0.0
+    dh = FilterRecipe.from_dict(resolve_filter_recipe("dehaze"))
+    assert dh.dehaze > 0.0
+    glow = FilterRecipe.from_dict(resolve_filter_recipe("dreamy_glow"))
+    assert glow.glow > 0.0
+    grain = FilterRecipe.from_dict(resolve_filter_recipe("film_grain"))
+    assert grain.grain > 0.0
+
+
+def test_spec_116_named_filters_have_display_names():
+    """The Editor's filter combo reads :func:`filter_display_name`;
+    every new key has a tr-wrapped human label so the picker isn't
+    showing internal identifiers."""
+    from mira.ui.edited.look_grid import filter_display_name
+    for key in ("subject_pop", "dehaze", "dreamy_glow", "film_grain"):
+        label = filter_display_name(key)
+        assert label != key, key
+        assert label.strip() != "", key
 
 
 # ── Calibration trims (spec/54 §4.1 — the Settings knobs) ─────────

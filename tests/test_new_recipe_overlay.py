@@ -399,3 +399,100 @@ def test_composition_schema_unchanged_when_overlay_untouched(qapp):
         assert "overlay_fields" not in pres
     finally:
         dlg.deleteLater()
+
+
+# --------------------------------------------------------------------- #
+# 7. spec/119 — overlay field selectors are real QCheckBoxes
+# --------------------------------------------------------------------- #
+
+
+def test_overlay_field_chips_are_qcheckboxes(qapp):
+    """spec/119 — the overlay-field selectors carry an OS-native
+    checkbox indicator instead of the legacy ``pill_toggle``
+    QPushButton (whose ``#OverlayFieldChip`` object name overrode
+    ``#PillToggle`` and silently defeated spec/113's accent-fill
+    QSS). The role reuses ``DaysTableCheck`` so the box matches the
+    dialog's other real checkboxes."""
+    from PyQt6.QtWidgets import QCheckBox
+    dlg = _dialog(qapp)
+    try:
+        for key, chip in dlg._overlay_field_chips.items():
+            assert isinstance(chip, QCheckBox), key
+            assert chip.objectName() == "DaysTableCheck", key
+    finally:
+        dlg.deleteLater()
+
+
+def test_overlay_fields_keep_canonical_order_regardless_of_click_order(qapp):
+    """``_on_overlay_field_toggled`` rebuilds the list from
+    :data:`core.cut_overlay.OVERLAY_FIELDS`, not click order. Click
+    the chips out of order — the composition still reads in the
+    canonical sequence."""
+    dlg = _dialog(qapp)
+    try:
+        dlg._overlay_mode_combo.setCurrentIndex(1)        # Embedded
+        # Click in REVERSE-canonical order so a click-order bug would
+        # show up as the inverse list.
+        dlg._overlay_field_chips[cut_overlay.FIELD_HOW2].setChecked(True)
+        dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
+        dlg._overlay_field_chips[cut_overlay.FIELD_WHEN].setChecked(True)
+        pres = dlg.composition()["presentation"]
+        # Canonical order: WHEN < WHERE < HOW1 < HOW2.
+        assert pres["overlay_fields"] == [
+            cut_overlay.FIELD_WHEN,
+            cut_overlay.FIELD_WHERE,
+            cut_overlay.FIELD_HOW2,
+        ]
+    finally:
+        dlg.deleteLater()
+
+
+def test_mode_off_disables_field_checkboxes_keeping_their_checks(qapp):
+    """spec/119 + spec/114 — flipping the mode to Off must DISABLE the
+    field checkboxes (visibly grey) but keep their checked state, so
+    flipping back to Embedded restores the user's picks instantly.
+    The chip-as-QCheckBox conversion preserves this gesture verbatim."""
+    dlg = _dialog(qapp)
+    try:
+        dlg._overlay_mode_combo.setCurrentIndex(1)        # Embedded
+        dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
+        dlg._overlay_field_chips[cut_overlay.FIELD_HOW1].setChecked(True)
+        # Enabled in Embedded.
+        for chip in dlg._overlay_field_chips.values():
+            assert chip.isEnabled() is True
+        # Off → disabled, but checks ride.
+        dlg._overlay_mode_combo.setCurrentIndex(0)
+        for key, chip in dlg._overlay_field_chips.items():
+            assert chip.isEnabled() is False, key
+        assert dlg._overlay_field_chips[
+            cut_overlay.FIELD_WHERE].isChecked() is True
+        assert dlg._overlay_field_chips[
+            cut_overlay.FIELD_HOW1].isChecked() is True
+        # Flip back — re-enabled, still checked, composition surfaces
+        # the original picks.
+        dlg._overlay_mode_combo.setCurrentIndex(1)
+        for chip in dlg._overlay_field_chips.values():
+            assert chip.isEnabled() is True
+        pres = dlg.composition()["presentation"]
+        assert pres["overlay_mode"] == "embedded"
+        assert pres["overlay_fields"] == [
+            cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1]
+    finally:
+        dlg.deleteLater()
+
+
+def test_prefill_pre_checks_the_right_field_checkboxes(qapp):
+    """spec/119 — Edit-mode prefill: the saved overlay_fields land on
+    the matching QCheckboxes with their ``isChecked()`` flag set so
+    the user sees the OS-native indicator on entry (no more "did I
+    select that?" guessing the spec/113 cycles tried to fix)."""
+    dlg = _dialog(
+        qapp, overlay_mode="embedded",
+        overlay_fields=[cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1])
+    try:
+        for key, chip in dlg._overlay_field_chips.items():
+            want = key in (cut_overlay.FIELD_WHERE,
+                           cut_overlay.FIELD_HOW1)
+            assert chip.isChecked() is want, key
+    finally:
+        dlg.deleteLater()

@@ -163,6 +163,22 @@ class Settings:
         "Cuts/ folder on the same volume as each event (keeps "
         "hardlinks).", "")
 
+    # spec/107 — PTE AV Studio integration. ``use_pte`` is the master
+    # toggle gating ALL PTE UI (off by default — non-PTE users never
+    # see it). ``pte_path`` is the executable; resolved at launch time
+    # so a relocated install of PTE just needs the path corrected.
+    # When both are set, exporting a Cut writes ``slideshow.pte`` into
+    # the export folder (spec/107 §3) and the export-complete summary
+    # offers an "Open in PTE" button.
+    use_pte: bool = _u(
+        "Master switch for the PTE AV Studio integration. Off (default) "
+        "hides every PTE-specific control; on enables the .pte "
+        "generator on Cut export and the Open-in-PTE launch action.",
+        False)
+    pte_path: str = _u(
+        "Path to the PTE AV Studio executable (e.g. PicturesToExe.exe). "
+        "Required for the Open-in-PTE action.", "")
+
     # ── Tooling (user) ────────────────────────────────────────────────────
     tool_preferences: Dict[str, str] = _u(
         "Preferred external tool per processing step.",
@@ -239,11 +255,35 @@ class Settings:
     # aperture · ISO · focal · type · size). Viewing preference, NOT
     # hardware-bound, so it lives in the roaming Settings (contrast
     # spec/95's machine-local display_quality). Default ON preserves
-    # today's Picker / Quick Sweep behaviour.
+    # today's Picker / Quick Sweep behaviour. spec/134 retired this
+    # as the Picker / Editor gate (those now read viewer_overlay_fields);
+    # Quick Sweep continues to honour it for backwards-compat.
     show_exposure_overlay: bool = _u(
         "Show the exposure pill (camera · shutter · aperture · ISO · "
-        "focal length · file type · size) over photos in the Picker "
-        "and Quick Sweep single views.", True)
+        "focal length · file type · size) over photos in Quick Sweep "
+        "single views. (Picker / Editor use viewer_overlay_fields.)",
+        True)
+    # spec/134 — configurable photo-viewer overlay. Reuses the cut
+    # overlay vocabulary (core.cut_overlay.OVERLAY_FIELDS): When /
+    # Where / Camera (how1) / Exposure (how2). The Picker + Editor
+    # photo views compose their pill from the selected fields via
+    # ``compose_overlay_lines``. Default ``["how2"]`` (exposure only)
+    # so today's behaviour is unchanged until the user opts in;
+    # ``[]`` hides the overlay.
+    viewer_overlay_fields: List[str] = _u(
+        "Fields to show on the Picker / Editor photo overlay. Pick any "
+        "subset of When / Where / Camera / Exposure (the cut-overlay "
+        "vocabulary). Empty = overlay off.",
+        default_factory=lambda: ["how2"])
+    # spec/136 — startup splash sourced from a random exported photo of
+    # a random closed event (or the bundled mark when none / opt-out).
+    # Off → the bundled mark splash; the splash itself still covers the
+    # ~2 s MainWindow construction window so the boot flicker stays
+    # masked even when the user opts out of the photo source.
+    startup_photo_splash: bool = _u(
+        "Show a recent photo on startup (a random exported frame from "
+        "a random closed event). Off → the bundled Mira mark.",
+        True)
     # ── Tone calibration trims (spec/54 §4.1 + spec/55, Nelson
     # 2026-06-10). Field-calibration knobs: -100..100, 0 = the shipped
     # recipe exactly. The Edit surface stays zero-slider (its thesis);

@@ -130,4 +130,26 @@ FILTER_RECIPES = {
             'wildlife': {'clarity': 0.4, 'vignette': 0.15, 'tint': (1.04, 1.0, 0.94), 'params': {'vibrance': 14.0, 'blacks': -6.0}},
         },
     },
+    # spec/116 — four new creative filters built from the engine
+    # primitives. Each ships a single coherent effect (the new
+    # component's strength) plus a small supporting move where it
+    # serves the look. AF-point anchoring is handled at the call
+    # sites — the recipe doesn't carry a centre.
+    'subject_pop': {
+        "base": {'spotlight': 0.6, 'spotlight_radius': 0.55},
+    },
+    'dehaze': {
+        "base": {'dehaze': 0.5, 'params': {'contrast': 4.0}},
+    },
+    'dreamy_glow': {
+        "base": {'glow': 0.5, 'fade': 0.06, 'params': {'saturation': -8.0}},
+    },
+    'film_grain': {
+        "base": {'grain': 0.5, 'params': {'contrast': 6.0, 'saturation': -10.0}},
+    },
+    # spec/118 — specular-hotspot tamer. Defaults to subject-only so
+    # background sparkles + rim lights survive the recovery.
+    'deglare': {
+        "base": {'deglare': 0.5, 'deglare_subject_only': True},
+    },
 }

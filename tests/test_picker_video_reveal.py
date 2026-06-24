@@ -1,13 +1,14 @@
 """Pins the unified Picker's video reveal (spec/70 row 11 folded into
-07, Nelson 2026-06-15).
+07, Nelson 2026-06-15; spec/130 unification 2026-06-23).
 
 Contract:
 
-* PickerPage embeds the :class:`VideoTransportBar` inside the
-  ``BasePickSurface.compact_row`` slot. The slot itself stays VISIBLE
-  on every item (the canvas position is invariant under photo↔video
-  sweeps — Nelson: "the line where the transport buttons are placed
-  has to exist (empty) when photos are displayed").
+* PickerPage embeds the shared :class:`VideoWorkshopBar` (spec/130 —
+  one transport widget backs both the Picker and the Editor) inside
+  the ``BasePickSurface.compact_row`` slot. The slot itself stays
+  VISIBLE on every item (the canvas position is invariant under
+  photo↔video sweeps — Nelson: "the line where the transport
+  buttons are placed has to exist (empty) when photos are displayed").
 * The transport-bar widget INSIDE the slot is the toggle: shown when
   the viewport lands on a ``kind == "video"`` item (the "few transport
   buttons appear" moment), hidden on photos.
@@ -26,8 +27,8 @@ import pytest
 from mira.gateway import EventsIndex, Gateway
 from mira.settings.repo import SettingsRepo
 from mira.ui.media.photo_viewport import ViewportItem
+from mira.ui.media.transport_bar import VideoWorkshopBar
 from mira.ui.pages.picker_page import PickerPage
-from mira.ui.pages.video_transport import VideoTransportBar
 
 
 @pytest.fixture()
@@ -101,15 +102,16 @@ def test_compact_row_reserved_height_is_constant_across_kinds(page, tmp_path):
     assert cr.maximumHeight() == reserved
 
 
-def test_transport_bar_is_planted_in_compact_row(page):
-    """The unified Picker owns one VideoTransportBar widget — the same
-    catalogued ``#VideoTransport`` strip the standalone surface used."""
-    assert isinstance(page._transport_bar, VideoTransportBar)
+def test_transport_bar_is_the_shared_widget_planted_in_compact_row(page):
+    """spec/130 — the Picker uses the shared :class:`VideoWorkshopBar`
+    (moved to ``mira.ui.media.transport_bar``), the same widget the
+    Editor uses on surface 12. The strip carries the canonical
+    TransportButton-role play/pause button."""
+    assert isinstance(page._transport_bar, VideoWorkshopBar)
     bars = [
-        c for c in page._surface.compact_row.findChildren(VideoTransportBar)
+        c for c in page._surface.compact_row.findChildren(VideoWorkshopBar)
     ]
     assert bars == [page._transport_bar]
-    # The strip carries the canonical Play / Pause TransportButton.
     assert page._transport_bar.play_btn.objectName() == "TransportButton"
 
 
@@ -140,60 +142,44 @@ def test_transport_hides_on_photo_landing(page, tmp_path):
 
 
 def test_volume_slider_pushes_into_the_viewport(page):
-    """The volume slider was emitting into the void before this fix —
-    pin that it now drives ``viewport.video_set_volume``."""
-    page._transport_bar.volume.setValue(42)
+    """The volume slider drives ``viewport.video_set_volume``. spec/130
+    moved the slider attribute name to ``vol_slider`` (the shared
+    widget's name)."""
+    page._transport_bar.vol_slider.setValue(42)
     # Viewport cached the rate as 0..1.0; 42 → 0.42.
     assert abs(page.viewport._video_volume - 0.42) < 1e-3
 
 
 def test_speed_selector_pushes_into_the_viewport(page):
     """Same pin for the speed selector — drives
-    ``viewport.video_set_playback_rate``."""
-    page._transport_bar.speed.setCurrentText("2×")
+    ``viewport.video_set_playback_rate``. spec/130 — the shared
+    widget's combo is named ``speed_combo`` and emits a float."""
+    page._transport_bar.speed_combo.setCurrentText("2×")
     assert abs(page.viewport._video_rate - 2.0) < 1e-3
-    page._transport_bar.speed.setCurrentText("0.5×")
+    page._transport_bar.speed_combo.setCurrentText("0.5×")
     assert abs(page.viewport._video_rate - 0.5) < 1e-3
 
 
-def test_prev_button_seeks_to_start(page):
-    """Nelson 2026-06-15 Fix B — ◀| jumps the playhead to frame 0
-    (reuses ``seek_requested`` so the host's existing wiring covers it)."""
+def test_jump_start_button_seeks_to_zero(page):
+    """spec/130 — the shared widget's ⏮ Start button fires
+    ``jump_start_requested``; the Picker wires it to
+    ``viewport.video_seek(0)``."""
     seeks: list[int] = []
-    page._transport_bar.seek_requested.connect(seeks.append)
-    # Duration must be set first or the button is a deliberate no-op
-    # only for the END jump — start jump fires unconditionally.
-    page._transport_bar.set_position(5_000, 30_000)
-    page._transport_bar.prev_frame.click()
+    page.viewport.video_seek = seeks.append        # type: ignore[assignment]
+    page._transport_bar.start_btn.click()
     assert seeks == [0]
 
 
-def test_next_button_seeks_to_end_when_duration_known(page):
-    """|▶ snaps to the last frame — duration must be reported first."""
+def test_jump_end_button_seeks_to_duration(page):
+    """spec/130 — the shared widget's End ⏭ button fires
+    ``jump_end_requested``; the Picker wires it to
+    ``viewport.video_seek(duration - 1)``. The host respects the
+    cached ``_video_duration_ms`` (matches the Editor)."""
     seeks: list[int] = []
-    page._transport_bar.seek_requested.connect(seeks.append)
-    page._transport_bar.set_position(1_000, 30_000)
-    page._transport_bar.next_frame.click()
-    assert seeks == [30_000]
-
-
-def test_next_button_is_a_no_op_until_duration_arrives(page):
-    """Without a known duration the end-jump is a deliberate no-op —
-    emitting 0 again would be misleading and steal the user's intent."""
-    seeks: list[int] = []
-    page._transport_bar.seek_requested.connect(seeks.append)
-    # Duration defaults to 0; clicking |▶ should NOT fire.
-    page._transport_bar.next_frame.click()
-    assert seeks == []
-
-
-def test_frame_step_path_is_retired(page):
-    """Fix B retires the frame-step path entirely — no signal, no host
-    handler, no fps probe. The pin enforces that future edits can't
-    quietly resurrect it."""
-    assert not hasattr(page._transport_bar, "frame_step_requested")
-    assert not hasattr(page, "_on_video_frame_step")
-    assert not hasattr(page, "_frame_ms")
+    page.viewport.video_seek = seeks.append        # type: ignore[assignment]
+    page._video_duration_ms = 30_000
+    page._transport_bar.end_btn.click()
+    assert seeks == [29_999]
 
 
 # --------------------------------------------------------------------- #
@@ -391,145 +377,6 @@ def test_video_widget_geometry_resyncs_when_poster_lands_after_arming(
         assert geom.height() == 666                      # 1184 * 9/16
     finally:
         vp.deleteLater()
-
-
-def test_mute_button_is_a_real_button_not_a_label(page):
-    """Nelson 2026-06-15 — the 🔊 emoji label was inert AND ugly.
-    The replacement is a real QPushButton (role ``#VideoMuteToggle``)
-    with the line-icon SVG glyphs + the canonical clickable
-    affordances (cursor + hover/pressed/disabled in QSS)."""
-    from PyQt6.QtWidgets import QPushButton
-    btn = page._transport_bar.mute_btn
-    assert isinstance(btn, QPushButton)
-    assert btn.objectName() == "VideoMuteToggle"
-    assert btn.cursor().shape().name == "PointingHandCursor"
-
-
-def test_mute_button_toggles_volume_zero_and_restores(page):
-    """Click once → slider snaps to 0 (and the viewport's cached
-    volume follows). Click again → slider restores to the previous
-    non-zero value, viewport rebounds."""
-    bar = page._transport_bar
-    bar.volume.setValue(70)
-    assert page.viewport._video_volume == pytest.approx(0.70, abs=1e-3)
-    bar.mute_btn.click()
-    assert bar.volume.value() == 0
-    assert page.viewport._video_volume == pytest.approx(0.0, abs=1e-3)
-    bar.mute_btn.click()
-    assert bar.volume.value() == 70
-    assert page.viewport._video_volume == pytest.approx(0.70, abs=1e-3)
-
-
-def test_mute_button_default_restores_to_80_from_a_fresh_zero(page):
-    """If the slider starts at 0 (never been touched), clicking unmute
-    must still go somewhere sensible — 80 is the seed default the bar
-    was constructed with."""
-    bar = page._transport_bar
-    bar.volume.setValue(0)
-    assert bar.volume.value() == 0
-    bar.mute_btn.click()
-    # 80 is the seed; the slider should snap to it on unmute.
-    assert bar.volume.value() == 80
-
-
-def test_mute_button_dynamic_property_reflects_state(page):
-    """The dynamic ``muted`` property drives the QSS dimmed look —
-    pin that it flips with the volume."""
-    bar = page._transport_bar
-    bar.volume.setValue(60)
-    assert bar.mute_btn.property("muted") is False
-    bar.volume.setValue(0)
-    assert bar.mute_btn.property("muted") is True
-
-
-def test_mute_button_icon_swaps_between_volume_glyphs(page):
-    """Nelson 2026-06-15 line-icon sweep: the mute toggle's icon must
-    swap between GLYPH_VOLUME and GLYPH_VOLUME_MUTED as the slider
-    crosses zero — and the pixmaps come from the shared
-    ``tinted_svg_pixmap`` cache (one recipe everywhere).
-
-    ``QPixmap.cacheKey()`` is NOT a stable equality probe after the
-    spec/77 §10.4 HiDPI fix — ``QIcon.pixmap(size)`` synthesises a new
-    QPixmap on every call rather than handing back the source. Compare
-    by image content (``toImage()``), which captures the same intent
-    (same SVG, same size, same tint colour) without depending on
-    QIcon's caching internals.
-    """
-    from PyQt6.QtGui import QColor
-    from mira.ui.design import (
-        GLYPH_VOLUME, GLYPH_VOLUME_MUTED, tinted_svg_pixmap,
-    )
-    from mira.ui.palette import PALETTE
-    bar = page._transport_bar
-    # Active (unmuted): icon image == ink-tinted GLYPH_VOLUME.
-    bar.volume.setValue(60)
-    expected_active = tinted_svg_pixmap(
-        GLYPH_VOLUME, 18, QColor(PALETTE["dark"]["ink"]))
-    actual_active = bar.mute_btn.icon().pixmap(18, 18)
-    assert actual_active.toImage() == expected_active.toImage()
-    # Muted: icon image == ink_soft-tinted GLYPH_VOLUME_MUTED.
-    bar.volume.setValue(0)
-    expected_muted = tinted_svg_pixmap(
-        GLYPH_VOLUME_MUTED, 18, QColor(PALETTE["dark"]["ink_soft"]))
-    actual_muted = bar.mute_btn.icon().pixmap(18, 18)
-    assert actual_muted.toImage() == expected_muted.toImage()
-
-
-def test_transport_icons_retint_on_palette_change(qapp, page):
-    """A QEvent.PaletteChange (fired by ``apply_theme`` on theme
-    toggle) re-renders every transport icon at the new ink token —
-    the "white emoji disappears on light" bug is dead, every icon
-    follows the theme.
-
-    Compares by ``toImage()`` rather than ``cacheKey()``: the spec/77
-    §10.4 HiDPI rework means ``QIcon.pixmap(size)`` synthesises a fresh
-    QPixmap on every call, so cacheKey equality no longer survives —
-    but the rendered image bytes still match the expected tint.
-    """
-    from PyQt6.QtCore import QEvent
-    from PyQt6.QtGui import QColor
-    from mira.ui.design import GLYPH_TO_START, tinted_svg_pixmap
-    from mira.ui.palette import PALETTE
-    bar = page._transport_bar
-    # Capture the dark-theme prev_frame icon.
-    dark_img = bar.prev_frame.icon().pixmap(16, 16).toImage()
-    expected_dark = tinted_svg_pixmap(
-        GLYPH_TO_START, 16, QColor(PALETTE["dark"]["ink"]))
-    assert dark_img == expected_dark.toImage()
-    # Flip the app's theme property + send the PaletteChange — that's
-    # the path apply_theme triggers.
-    qapp.setProperty("theme", "light")
-    try:
-        qapp.sendEvent(bar, QEvent(QEvent.Type.PaletteChange))
-        light_img = bar.prev_frame.icon().pixmap(16, 16).toImage()
-        expected_light = tinted_svg_pixmap(
-            GLYPH_TO_START, 16, QColor(PALETTE["light"]["ink"]))
-        assert light_img == expected_light.toImage()
-        # Different theme → different image bytes from the dark one.
-        assert light_img != dark_img
-    finally:
-        qapp.setProperty("theme", "dark")
-        qapp.sendEvent(bar, QEvent(QEvent.Type.PaletteChange))
-
-
-def test_scrubber_click_jumps_the_position(qapp, page):
-    """The legacy QSlider behaviour is page-step toward the click — the
-    custom mousePressEvent overrides it to jump on click (a media
-    scrubber must seek to where you point)."""
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtGui import QMouseEvent
-    page.show()
-    scrubber = page._transport_bar.scrubber
-    scrubber.resize(300, scrubber.height())
-    # A click at ~75% of the groove should land near value 750.
-    point = QPoint(int(scrubber.width() * 0.75), scrubber.height() // 2)
-    press = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress, point.toPointF(),
-        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier)
-    scrubber.mousePressEvent(press)
-    # Allow ~30 either side for handle-offset / style metrics.
-    assert 700 < scrubber.value() < 800
 
 
 def test_exif_prefetch_skips_video_items(page, tmp_path, monkeypatch):

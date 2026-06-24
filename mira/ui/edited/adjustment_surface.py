@@ -92,7 +92,13 @@ log = logging.getLogger(__name__)
 # float32 is ~3 s; downsampled to 1280-px-wide it's ~50 ms, interactive).
 # Full-res is reserved for the Preview toggle (F10) + export.
 PREVIEW_MAX_WIDTH = 1280
-RENDER_DEBOUNCE_MS = 40
+# spec/115 §1 — debounce timer for the keyboard / field / programmatic
+# paths (any change that DIDN'T end on a ``sliderReleased`` so the
+# release path can't render for it). Raised from 40 → 150 ms: 40 ms
+# meant "blinked", so a held arrow key triggered repeated blocking
+# whole-frame tone renders; 150 ms means "settled". Drag renders are
+# render-on-release, not debounced — see :meth:`_install_drag_gating`.
+RENDER_DEBOUNCE_MS = 150
 
 # The genres the A-router is calibrated for (core.photo_looks_data.ROUTER
 # + the legacy fallback). Changing it re-routes the Natural correction.
@@ -153,6 +159,10 @@ class SurfaceState(NamedTuple):
     # authored, 0.0 = identity, 2.0 = exaggerated. Default 1.0 keeps
     # legacy hosts that don't pass a value rendering identically.
     look_strength: float = 1.0
+    # spec/115 §2 — independent user exposure (EV) added to
+    # ``Params.exposure`` AFTER the Look's strength scaling. Default
+    # 0.0 = no nudge. Range −2..+2 stops, clamped on read.
+    user_exposure: float = 0.0
 
 
 class AdjustmentSurface(QWidget):
@@ -196,12 +206,37 @@ class AdjustmentSurface(QWidget):
         # Nelson 2026-06-13 Look Strength slider — multiplier on the
         # final Look Params. The slider lives under the Look group.
         self._look_strength = 1.0
+        # spec/115 §2 — independent user exposure (EV). Added to the
+        # resolved ``Params.exposure`` after Strength scales the Look,
+        # so a user nudge sits on top of (rather than scaling with)
+        # the Look. 0.0 = no nudge, ±2 EV swing covers a one-stop
+        # recovery in either direction.
+        self._user_exposure = 0.0
+        # spec/116 §2 — the photo's AF point (the Subject Spotlight's
+        # subject anchor) in normalised image coords. ``None`` falls
+        # back to the frame centre at render time. The host pushes it
+        # via :meth:`set_af_point` when the item lands.
+        self._af_point: Optional[tuple[float, float]] = None
         self._comparing = False
         self._preview_full = False
         # Guard: while loading state into the widgets, suppress the
         # render/persist signal storm (the value setters would otherwise
         # each fire ``changed``).
         self._loading = False
+        # spec/115 §1 — render-on-release state machine. ``_dragging``
+        # is True between ``sliderPressed`` and ``sliderReleased`` on
+        # ANY direct slider (Strength, Exposure) or any tone-grid
+        # slider: while dragging, ``valueChanged`` updates the numeric
+        # label only — no render. The release path drives
+        # :meth:`render_now`; the debounce timer catches keyboard /
+        # field / programmatic changes (no release fires for those).
+        self._dragging = False
+        # spec/115 §1 — early-out for ``render_now``: skip the whole-
+        # frame tone math when the resolved Params + crop + comparing
+        # state would produce the same output as the last render. Keeps
+        # the post-release debounce render (the one that fires when the
+        # 150 ms timer expires after a release already rendered) cheap.
+        self._last_rendered_signature: Optional[tuple] = None
 
         self._crop_overlay: Optional[CropOverlay] = None
         self._build_ui()
@@ -209,7 +244,11 @@ class AdjustmentSurface(QWidget):
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(RENDER_DEBOUNCE_MS)
-        self._render_timer.timeout.connect(self.render_now)
+        # spec/115 §1 — the timer fires the render AND a ``changed``
+        # emit so the host persists keyboard / field changes too. The
+        # bare ``render_now`` wiring it carried before never persisted
+        # those because it skipped the surface's own commit path.
+        self._render_timer.timeout.connect(self._on_render_timer)
 
         photo_host = self._display.photo_area_widget()
         self._crop_overlay = CropOverlay(photo_host)
@@ -219,6 +258,15 @@ class AdjustmentSurface(QWidget):
         self._crop_overlay.angle_changed.connect(self._on_overlay_angle)
         self._display.photo_geometry_changed.connect(
             self._sync_crop_overlay_geometry)
+
+        # spec/134 — the configurable viewer overlay (When / Where /
+        # Camera / Exposure). Picker + Editor share one widget so the
+        # pill reads the same on both surfaces. Parented to the
+        # viewport (mirrors how PickerPage parents its own); the host
+        # pushes content via :meth:`set_viewer_overlay_html` on every
+        # item landing.
+        from mira.ui.media.photo_overlay import PhotoExposureOverlay
+        self._viewer_overlay = PhotoExposureOverlay(self._display)
 
     # ── Construction ─────────────────────────────────────────────────
 
@@ -265,6 +313,14 @@ class AdjustmentSurface(QWidget):
         reparented into a ``BaseEditSurface``'s ``tools_panel`` region by
         the host."""
         return self._tools_widget
+
+    def set_viewer_overlay_html(self, html: str) -> None:
+        """spec/134 — push the composed viewer-overlay HTML to the pill.
+        Empty string hides it. The Editor's host (EditorPage) calls
+        this on every item landing with the output of
+        :func:`mira.ui.media.viewer_overlay.compose_viewer_overlay_html`,
+        so Picker + Editor paint identical text."""
+        self._viewer_overlay.set_html(html or "")
 
     def _build_tools(self) -> QWidget:
         host = QWidget()
@@ -372,6 +428,12 @@ class AdjustmentSurface(QWidget):
             "effect. Double-click to snap back to 1.0."))
         self._strength_slider.valueChanged.connect(
             self._on_strength_changed)
+        # spec/115 §1 — render-on-release. Pressed → enter drag; live
+        # ``valueChanged`` updates the label only. Released → leave
+        # drag, stop the keyboard-debounce, fire one render.
+        self._strength_slider.sliderPressed.connect(self._on_drag_pressed)
+        self._strength_slider.sliderReleased.connect(
+            self._on_drag_released)
         self._strength_slider.mouseDoubleClickEvent = (
             self._strength_double_click)
         strength_row.addWidget(self._strength_slider, stretch=1)
@@ -384,28 +446,140 @@ class AdjustmentSurface(QWidget):
         col.addLayout(strength_row)
         self._sync_strength_widgets()
 
+        # ── Exposure slider (spec/115 §2) ────────────────────────────
+        # Independent per-image EV nudge. Lives BESIDE Strength in the
+        # same Look group, but is NOT scaled by Strength and is NOT a
+        # property of the Look — it adds to ``Params.exposure`` after
+        # the Look has been resolved (in :meth:`_params_for_look`).
+        # Slider ticks are 1/100 EV (range -200..+200 → -2..+2 EV);
+        # default 0.0, tick mark at 0 (the centre), double-click resets.
+        exposure_row = QHBoxLayout()
+        exposure_row.setSpacing(8)
+        self._exposure_label = QLabel(tr("Exposure"))
+        self._exposure_label.setObjectName("UserExposureLabel")
+        exposure_row.addWidget(self._exposure_label)
+        self._exposure_slider = QSlider(Qt.Orientation.Horizontal)
+        self._exposure_slider.setObjectName("UserExposureSlider")
+        self._exposure_slider.setRange(-200, 200)
+        self._exposure_slider.setValue(0)
+        self._exposure_slider.setSingleStep(5)             # 0.05 EV
+        self._exposure_slider.setPageStep(25)              # 0.25 EV
+        self._exposure_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._exposure_slider.setTickInterval(200)         # tick at 0 EV
+        self._exposure_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._exposure_slider.setToolTip(tr(
+            "Per-image exposure nudge in EV stops (−2..+2). Adds on "
+            "top of the Look — independent of both the Look and "
+            "Strength. Double-click to reset to 0."))
+        self._exposure_slider.valueChanged.connect(
+            self._on_exposure_changed)
+        self._exposure_slider.sliderPressed.connect(self._on_drag_pressed)
+        self._exposure_slider.sliderReleased.connect(
+            self._on_drag_released)
+        self._exposure_slider.mouseDoubleClickEvent = (
+            self._exposure_double_click)
+        exposure_row.addWidget(self._exposure_slider, stretch=1)
+        self._exposure_value = QLabel("0.00 EV")
+        self._exposure_value.setObjectName("UserExposureValue")
+        self._exposure_value.setMinimumWidth(56)
+        self._exposure_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        exposure_row.addWidget(self._exposure_value)
+        col.addLayout(exposure_row)
+        self._sync_exposure_widgets()
+
         col.addStretch(1)
 
         box.setMinimumHeight(box.minimumSizeHint().height())
         return box
 
     def _on_strength_changed(self, raw: int) -> None:
-        """Slider value → ``self._look_strength`` (live re-resolve on
-        every tick). Suppressed while ``set_state`` is loading."""
+        """Slider tick → ``self._look_strength``. Live label update only;
+        the render fires on slider release (mid-drag) or after a settling
+        debounce (keyboard / field / programmatic). Suppressed while
+        ``set_state`` is loading.
+
+        spec/115 §1 — the previous behaviour re-resolved + restarted the
+        debounce on EVERY tick, which combined with a 40 ms timer and a
+        synchronous whole-frame render meant a drag = a stream of
+        blocking renders (the felt sluggishness)."""
         s = float(raw) / 100.0
         self._look_strength = s
         self._sync_strength_value_label()
         if self._loading:
             return
-        # Live re-resolve via the existing debounced render seam.
-        self._render_timer.start()
-        self.changed.emit("tone")
+        self._note_value_changed()
 
     def _strength_double_click(self, ev) -> None:
         """Double-click anywhere on the slider → snap to 1.0
-        (the default; the Look as authored)."""
+        (the default; the Look as authored). Double-click is a SETTLED
+        change — render immediately rather than wait for a debounce."""
         self._strength_slider.setValue(100)
         ev.accept()
+        # The setValue above fires valueChanged; force a release-shaped
+        # render NOW so the user sees the snap-back take effect.
+        self._render_timer.stop()
+        self.render_now()
+
+    def _on_exposure_changed(self, raw: int) -> None:
+        """Slider tick → ``self._user_exposure`` (EV, range −2..+2).
+        Live label update only; same render-on-release / debounce
+        rules as the Strength slider (spec/115 §1)."""
+        ev_val = float(raw) / 100.0
+        self._user_exposure = ev_val
+        self._sync_exposure_value_label()
+        if self._loading:
+            return
+        self._note_value_changed()
+
+    def _exposure_double_click(self, ev) -> None:
+        """Double-click anywhere on the slider → snap to 0 EV (no
+        nudge)."""
+        self._exposure_slider.setValue(0)
+        ev.accept()
+        self._render_timer.stop()
+        self.render_now()
+
+    # ── Render-on-release state machine (spec/115 §1) ────────────────
+
+    def _on_drag_pressed(self) -> None:
+        """A slider grab started. While ``_dragging`` is True the live
+        ``valueChanged`` handlers update the label only — they do NOT
+        (re)start the debounce. The render happens on release."""
+        self._dragging = True
+        self._render_timer.stop()
+
+    def _on_drag_released(self) -> None:
+        """Drag ended — stop the debounce (which the keyboard path
+        might have armed earlier; releasing supersedes it) and render
+        ONCE. ``changed`` fires with the ``"tone"`` kind so the host
+        persists the new look_strength / user_exposure."""
+        self._dragging = False
+        self._render_timer.stop()
+        if self._loading:
+            return
+        self.render_now()
+        self.changed.emit("tone")
+
+    def _note_value_changed(self) -> None:
+        """A direct-slider tick fired. Only arm the debounce when NOT
+        currently dragging (drag end has its own render path). The
+        ``changed`` emit happens at commit time (release / debounce
+        timeout) so the host doesn't persist every tick either."""
+        if self._dragging:
+            return
+        # Keyboard / field / programmatic — debounce so a held arrow
+        # key doesn't fire a render per repeat.
+        self._render_timer.start()
+
+    def _on_render_timer(self) -> None:
+        """Debounce timer expired — render now and emit one ``changed``.
+        Only fires for the keyboard / field / programmatic path; drag
+        endings stop the timer in :meth:`_on_drag_released`."""
+        if self._loading:
+            return
+        self.render_now()
+        self.changed.emit("tone")
 
     def _sync_strength_widgets(self) -> None:
         """Reflect the current strength on the slider + value label,
@@ -425,6 +599,28 @@ class AdjustmentSurface(QWidget):
 
     def _sync_strength_value_label(self) -> None:
         self._strength_value.setText(f"{self._look_strength:.2f}")
+
+    def _sync_exposure_widgets(self) -> None:
+        """Reflect the current ``_user_exposure`` on the slider + value
+        label without firing valueChanged. Unlike Strength, Exposure
+        STAYS ENABLED on Original — a user can nudge brightness on
+        any photo, Look or no Look."""
+        self._exposure_slider.blockSignals(True)
+        try:
+            self._exposure_slider.setValue(
+                int(round(self._user_exposure * 100)))
+        finally:
+            self._exposure_slider.blockSignals(False)
+        self._sync_exposure_value_label()
+
+    def _sync_exposure_value_label(self) -> None:
+        # Always carry a sign so 0.00 doesn't read as "−0.00" / "+0.00"
+        # randomly; use a small format that fits the 56-px field.
+        ev = self._user_exposure
+        if ev == 0.0:
+            self._exposure_value.setText("0.00 EV")
+        else:
+            self._exposure_value.setText(f"{ev:+.2f} EV")
 
     def _build_style_group(self) -> QWidget:
         """The STYLE box — what is this photo? Re-routes the Natural."""
@@ -656,6 +852,7 @@ class AdjustmentSurface(QWidget):
         rotation: int = 0,
         creative_filter: Optional[str] = None,
         look_strength: float = 1.0,
+        user_exposure: float = 0.0,
     ) -> None:
         """Push a saved CHOICE into the widgets (no ``changed`` emitted)
         and render. ``rotation`` carries the per-item 90° image rotation
@@ -663,7 +860,9 @@ class AdjustmentSurface(QWidget):
         slot (stored, not yet rendered — the filter set is pending);
         ``look_strength`` is the Nelson 2026-06-13 slider (0..2 clamped
         — the gateway seam is the canonical clamp, but a stale row
-        with a wild value still loads safely)."""
+        with a wild value still loads safely); ``user_exposure`` is the
+        spec/115 per-image EV nudge (−2..+2 clamped — same belt-and-
+        braces shape)."""
         with self._suppress():
             self._style = style or "general"
             self._style_combo.blockSignals(True)
@@ -679,8 +878,11 @@ class AdjustmentSurface(QWidget):
             self._look = look if look in available_looks() else "original"
             self._creative_filter = creative_filter
             self._look_strength = max(0.0, min(2.0, float(look_strength)))
+            self._user_exposure = max(
+                -2.0, min(2.0, float(user_exposure or 0.0)))
             self._sync_look_buttons()
             self._sync_strength_widgets()
+            self._sync_exposure_widgets()
             self._sync_filter_combo()
             self._crop_norm = crop_norm
             self._box_angle = box_angle or 0.0
@@ -688,6 +890,12 @@ class AdjustmentSurface(QWidget):
             if self._crop_overlay is not None:
                 self._crop_overlay.set_rect(crop_norm)
                 self._crop_overlay.set_box_angle(self._box_angle)
+        # spec/115 — re-loading state is an explicit re-render: drop the
+        # signature cache so the early-out in render_now never blocks a
+        # fresh load. (Same item with the same params would otherwise
+        # silently no-op; harmless for tone but breaks a reload that
+        # changed e.g. rotation+filter without touching tone Params.)
+        self._last_rendered_signature = None
         self.render_now()
         self._sync_crop_overlay_geometry()
 
@@ -702,7 +910,38 @@ class AdjustmentSurface(QWidget):
             aspect_label=self._aspect_label,
             creative_filter=self._creative_filter,
             look_strength=self._look_strength,
+            user_exposure=self._user_exposure,
         )
+
+    def set_af_point(self, af) -> None:
+        """spec/116 §2 — set the Subject-Spotlight anchor for the
+        loaded photo. Accepts an :class:`AfPoint` (Mira's normalised
+        AF box), a bare ``(cx, cy)`` tuple, or ``None`` (frame-centre
+        fallback). The render path consumes it on the next
+        :meth:`render_now`."""
+        if af is None:
+            self._af_point = None
+        elif hasattr(af, "cx") and hasattr(af, "cy"):
+            self._af_point = (float(af.cx), float(af.cy))
+        else:
+            cx, cy = af                        # (cx, cy) tuple
+            self._af_point = (float(cx), float(cy))
+        # The signature snapshot includes the anchor; invalidate so
+        # the next render runs even when no other field changed.
+        self._last_rendered_signature = None
+
+    def _spotlight_center(self) -> tuple[float, float]:
+        """The Subject-Spotlight anchor for the current frame: the
+        AF point if set, else the frame centre — never raises (spec/116
+        §2 fallback contract)."""
+        if self._af_point is None:
+            return (0.5, 0.5)
+        cx, cy = self._af_point
+        # Clamp so a stray out-of-range value can't crash the radial
+        # mask (defensive — brand profiles compute in [0,1] already).
+        cx = max(0.0, min(1.0, cx))
+        cy = max(0.0, min(1.0, cy))
+        return (cx, cy)
 
     def set_classification_badge(
         self, source: Optional[str], confidence: Optional[float],
@@ -768,9 +1007,19 @@ class AdjustmentSurface(QWidget):
         rotation FIRST (so crop+overlay land on the rotated frame),
         then tone, then crop. ``_rotation`` is the per-item 90° image
         rotation (independent from ``_box_angle``, which only spins the
-        crop overlay)."""
+        crop overlay).
+
+        spec/115 §1 — early-out when the resolved Params + the rest of
+        the render signature would produce the same pixmap as the last
+        call. Keeps the post-release debounce render (which fires when
+        the keyboard-path timer expires AFTER a drag already rendered)
+        cheap, without breaking the explicit re-render callers
+        (Compare/Preview/aspect/rotate stamp a fresh signature)."""
         base = self._full_array if self._preview_full else self._preview_array
         if base is None:
+            return
+        signature = self._render_signature()
+        if signature is not None and signature == self._last_rendered_signature:
             return
         # The render runs ON the UI thread and can lag visibly (tone +
         # filter math over the whole frame). Honest UI during the freeze
@@ -800,7 +1049,8 @@ class AdjustmentSurface(QWidget):
                         if recipe is not None:
                             out = apply_filter(
                                 out, FilterRecipe.from_dict(recipe),
-                                creative_filter_amount(self._creative_filter))
+                                creative_filter_amount(self._creative_filter),
+                                center=self._spotlight_center())
                     except Exception:                      # noqa: BLE001
                         log.exception("apply_filter failed")
             if self._preview_full:
@@ -814,6 +1064,7 @@ class AdjustmentSurface(QWidget):
                         out = np.ascontiguousarray(
                             apply_crop_norm(out, crop))
             self._display.set_rendered_pixmap(_array_to_pixmap(out))
+            self._last_rendered_signature = signature
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -847,7 +1098,8 @@ class AdjustmentSurface(QWidget):
                 if recipe is not None:
                     out = apply_filter(
                         out, FilterRecipe.from_dict(recipe),
-                        creative_filter_amount(self._creative_filter))
+                        creative_filter_amount(self._creative_filter),
+                        center=self._spotlight_center())
             except Exception:                          # noqa: BLE001
                 log.exception("apply_filter failed")
         h, w = out.shape[:2]
@@ -885,10 +1137,52 @@ class AdjustmentSurface(QWidget):
         """Compile the current choice to engine Params — the cached
         Natural plus the chosen Look's bias (spec/54 §3.2). Strength
         scales the WHOLE composed Look at the seam (Nelson 2026-06-13).
-        Creative filters will extend this once the filter engine lands."""
-        return look_params_from_natural(
+        Creative filters will extend this once the filter engine lands.
+
+        spec/115 §2 — the per-image USER exposure is added to
+        ``Params.exposure`` AFTER the Look has been strength-scaled.
+        That's why it lives here (the only seam that returns the final
+        Params for the engine) and not as an extra ``.scaled()``
+        argument: it should NOT scale with Strength, and it should NOT
+        scale with the Look's own ``exposure`` baseline. A nudge sits
+        on top, period."""
+        params = look_params_from_natural(
             self._natural_params, self._look,
             strength=self._look_strength)
+        if self._user_exposure:
+            from dataclasses import replace
+            params = replace(
+                params,
+                exposure=params.exposure + float(self._user_exposure),
+            )
+        return params
+
+    def _render_signature(self) -> Optional[tuple]:
+        """A hashable snapshot of every input that influences
+        :meth:`render_now`'s output. ``None`` while comparing (the
+        render path becomes "show the original" and skips tone — early-
+        out via the signature would block the toggle from re-painting).
+        Used purely as a cheap guard against redundant renders; the
+        actual render code remains the source of truth."""
+        if self._comparing:
+            return None
+        params = self._params_for_look()
+        crop_norm = self._crop_norm if self._crop_norm is not None else None
+        return (
+            "preview" if not self._preview_full else "full",
+            int(self._rotation or 0),
+            self._look,
+            self._creative_filter,
+            self._style,
+            self._aspect_label,
+            tuple(crop_norm) if crop_norm is not None else None,
+            float(self._box_angle or 0.0),
+            float(params.exposure), float(params.contrast),
+            float(params.highlights), float(params.shadows),
+            float(params.whites), float(params.blacks),
+            float(params.sharpness), float(params.saturation),
+            float(params.vibrance),
+        )
 
     def _style_for_auto(self) -> Optional[str]:
         return self._style if self._style and self._style != "general" else None
@@ -1013,14 +1307,21 @@ class AdjustmentSurface(QWidget):
             self._look = "original"
             self._creative_filter = None
             self._look_strength = 1.0
+            self._user_exposure = 0.0
             self._sync_look_buttons()
             self._sync_filter_combo()
+            self._sync_exposure_widgets()
             self._crop_norm = None
             self._box_angle = 0.0
             self._rotation = 0
             if self._crop_overlay is not None:
                 self._crop_overlay.set_rect(None)
                 self._crop_overlay.set_box_angle(0.0)
+        # spec/115 §1 — Reset must always re-render, even when the
+        # outgoing Params happen to equal the incoming (e.g. on a
+        # pristine photo). Drop the signature cache so the early-out
+        # never blocks a deliberate reset.
+        self._last_rendered_signature = None
         self.render_now()
         self._sync_crop_overlay_geometry()
         self.changed.emit("reset")

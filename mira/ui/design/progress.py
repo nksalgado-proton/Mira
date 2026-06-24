@@ -39,6 +39,12 @@ class StageProgress(QWidget):
         self._state: str | None = None
         self._color_token: str | None = None
         self.setMinimumHeight(_BAR_HEIGHT + 4)
+        # spec/129 — let the track visibly compress under width pressure
+        # but never zero out. The DayRow status-bar column is the
+        # compressible element when the Days list narrows; the track is
+        # the first thing to give up width (then label/count). Without a
+        # tiny floor the painter can degenerate to invisible.
+        self.setMinimumWidth(24)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )

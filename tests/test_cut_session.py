@@ -120,16 +120,21 @@ def test_session_never_touches_phase_state(gw):
 
 
 def test_totals_and_zone_follow_picks(gw):
-    s = CutSession.from_draft(gw, _draft(target_s=48, max_s=90))
+    s = CutSession.from_draft(gw, _draft(target_s=60, max_s=90))
     s.set_state("Exported Media/e2.jpg", True)      # day 1 photo
     s.set_state("Exported Media/e3a.jpg", True)     # day 2 photo
     t = s.totals()
     assert (t.photo_count, t.video_count, t.separator_count) == (2, 0, 2)
-    # (2 photos + 2 separators) × 6 s = 24 s → green under the 48 s target
-    assert s.show_seconds() == 24.0 and s.zone() == "green"
+    # spec/152 §3 — (2 photos + 2 separators + 1 opener) × 6 s = 30 s.
+    # Green under the 60 s target.
+    assert s.show_seconds() == 30.0 and s.zone() == "green"
     s.set_state("Exported Media/v1.mp4", True)      # +30 s of clip, no new day
-    assert s.show_seconds() == 54.0
-    assert s.zone() == "amber"                    # past target, under max
+    # 30 + 30 = 60 s — right at the target, still green.
+    assert s.show_seconds() == 60.0
+    assert s.zone() == "green"
+    # Bump the target down so the same picked set lands amber.
+    s.target_s = 48
+    assert s.zone() == "amber"
 
 
 def test_separators_off_zeroes_the_cards(gw):
@@ -137,6 +142,7 @@ def test_separators_off_zeroes_the_cards(gw):
     s.separators_on = False
     s.set_state("Exported Media/e2.jpg", True)
     assert s.totals().separator_count == 0
+    # spec/152 §3 — no separators → no opener either. 1 photo × 6 s = 6 s.
     assert s.show_seconds() == 6.0
 
 

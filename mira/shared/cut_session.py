@@ -294,11 +294,60 @@ class CutSession:
             video_ms_total=video_ms,
         )
 
-    def show_seconds(self) -> float:
-        return self.totals().seconds(self.photo_s)
+    def show_seconds(self, transition_s: float = 0.0) -> float:
+        """spec/152 §3 — the show's projected wall time. Adds
+        ``transition_s`` to every non-video slide slot and counts an
+        opener when ``separators_on`` (the opener card always rides
+        with separators in the rehearsal / export). When the caller
+        doesn't have a global default to inject, ``transition_s`` falls
+        back to the per-session ``transition_ms`` (the user's per-Cut
+        override) or 0 — picker hosts pass an effective value so the
+        bar matches the rehearsal."""
+        totals = self.totals()
+        if self.separators_on:
+            from dataclasses import replace as _replace
+            totals = _replace(totals, opener_count=1)
+        # ``transition_s`` overrides the per-session value when the
+        # host wants to factor the Settings global default in.
+        if transition_s <= 0.0 and self.transition_ms is not None:
+            transition_s = max(0.0, float(self.transition_ms) / 1000.0)
+        return totals.seconds(self.photo_s, transition_s)
 
-    def zone(self) -> str:
-        return cut_budget.zone(self.show_seconds(), self.target_s, self.max_s)
+    def pool_seconds(self, transition_s: float = 0.0) -> float:
+        """spec/152 §3 — show length for the FULL pool (every
+        :class:`SessionFile`, regardless of pick state). The picker's
+        budget bar anchors its scale to this value so the user can
+        SEE the consumption (``show_seconds``) shrink as they unpick
+        items past the target — the scale doesn't shrink with them.
+        Matches the value the New / Adjust Cut dialog displays before
+        any selections are made (= "all the media making the cut").
+        """
+        photos = videos = video_ms = 0
+        days = set()
+        for f in self.files:
+            if f.kind == "video":
+                videos += 1
+                video_ms += f.duration_ms
+            else:
+                photos += 1
+            if f.day_number is not None:
+                days.add(f.day_number)
+        from dataclasses import replace as _replace
+        totals = cut_budget.ShowTotals(
+            photo_count=photos,
+            video_count=videos,
+            separator_count=len(days) if self.separators_on else 0,
+            video_ms_total=video_ms,
+        )
+        if self.separators_on:
+            totals = _replace(totals, opener_count=1)
+        if transition_s <= 0.0 and self.transition_ms is not None:
+            transition_s = max(0.0, float(self.transition_ms) / 1000.0)
+        return totals.seconds(self.photo_s, transition_s)
+
+    def zone(self, transition_s: float = 0.0) -> str:
+        return cut_budget.zone(
+            self.show_seconds(transition_s), self.target_s, self.max_s)
 
     # ── the one persistence moment ───────────────────────────────────
 

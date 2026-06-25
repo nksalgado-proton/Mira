@@ -272,11 +272,18 @@ class CrossEventCutSession:
             video_ms_total=video_ms,
         )
 
-    def show_seconds(self) -> float:
-        return self.totals().seconds(self.photo_s)
+    def show_seconds(self, transition_s: float = 0.0) -> float:
+        """spec/152 §3 — mirror of :meth:`CutSession.show_seconds` so
+        the cross-event picker reads the same wall time the per-event
+        flow does. Cross-event Cuts have no separators today, so
+        opener_count stays 0; ``transition_s`` is the global default
+        the host injects (cross-event Cuts have no per-Cut override
+        yet)."""
+        return self.totals().seconds(self.photo_s, transition_s)
 
-    def zone(self) -> str:
-        return cut_budget.zone(self.show_seconds(), self.target_s, self.max_s)
+    def zone(self, transition_s: float = 0.0) -> str:
+        return cut_budget.zone(
+            self.show_seconds(transition_s), self.target_s, self.max_s)
 
     # ── the one persistence moment ─────────────────────────────────────── #
 

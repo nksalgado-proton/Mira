@@ -65,6 +65,93 @@ def _fmt_mmss(seconds: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+class _CutBudgetBar(QWidget):
+    """spec/61 §2 step 5 + Nelson 2026-06-25 — the budget bar with
+    OVER-CEILING headroom + a visible TARGET tick.
+
+    The pre-152 implementation was a QProgressBar capped at max_s, so
+    a Cut over budget stayed pinned at 100 % full and the user had no
+    visual feedback as they unpicked items to come back into range.
+    This widget renders:
+
+    * a filled rectangle for ``picked_seconds`` against a scale of
+      ``max(picked_seconds, target_s * 1.1)`` — so the user can see
+      the fill SHRINK as they shed items past the target;
+    * a vertical tick at ``target_s`` clearly marked on the scale,
+      labelled in the limit caption.
+
+    Zone colour rides on the ``zone`` property (green / amber / red),
+    matching the legacy QSS hook so the existing theme rules keep
+    working. The widget paints its own fill + track + tick to keep the
+    QSS contract simple — colour and border come from QSS variables
+    parsed via ``palette()``."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CutBudgetBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMaximumHeight(14)
+        self.setMinimumHeight(10)
+        self._scale_max: int = 1
+        self._value: int = 0
+        self._target: Optional[int] = None
+        self._max_hard: Optional[int] = None
+
+    def set_state(
+        self, *,
+        scale_max: int,
+        value: int,
+        target: Optional[int],
+        max_hard: Optional[int],
+    ) -> None:
+        self._scale_max = max(1, int(scale_max))
+        self._value = max(0, int(value))
+        self._target = int(target) if target else None
+        self._max_hard = int(max_hard) if max_hard else None
+        self.update()
+
+    def paintEvent(self, ev) -> None:  # noqa: N802
+        from PyQt6.QtGui import QPainter, QColor, QPen
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            r = self.rect()
+            # Track (background) — semi-transparent neutral fill so the
+            # QSS background-color of the parent ``CutBudgetBar``
+            # selector still drives the look. Filled portion uses the
+            # foreground role so theme contrast is preserved.
+            pal = self.palette()
+            track_col = QColor(pal.color(pal.ColorRole.Mid))
+            track_col.setAlpha(110)
+            p.fillRect(r, track_col)
+            # Filled portion.
+            fill_w = int(r.width() * (self._value / float(self._scale_max)))
+            fill_col = QColor(pal.color(pal.ColorRole.Highlight))
+            p.fillRect(0, 0, fill_w, r.height(), fill_col)
+            # Target tick — bright vertical line + 1 px shadow so it
+            # reads against any fill colour underneath.
+            if self._target is not None:
+                tx = int(r.width() * (self._target / float(self._scale_max)))
+                tx = max(0, min(r.width() - 1, tx))
+                p.setPen(QPen(QColor(0, 0, 0, 200), 1))
+                p.drawLine(tx + 1, 0, tx + 1, r.height())
+                p.setPen(QPen(QColor(255, 255, 255, 240), 2))
+                p.drawLine(tx, 0, tx, r.height())
+            # Hard-max tick — fainter, dashed (signals "you shouldn't
+            # go past here"). Only drawn when distinct from
+            # ``scale_max`` (i.e. the user IS past max and the scale
+            # has stretched beyond it).
+            if (self._max_hard is not None
+                    and self._max_hard < self._scale_max):
+                mx = int(r.width() * (self._max_hard / float(self._scale_max)))
+                mx = max(0, min(r.width() - 1, mx))
+                pen = QPen(QColor(255, 80, 80, 240), 1, Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawLine(mx, 0, mx, r.height())
+        finally:
+            p.end()
+
+
 class CutBudgetLine(QWidget):
     """The live minutes budget (spec/61 §2 step 5) — Nelson eyeball
     round 3: the subtle top-bar text was never SEEN, so this is now an
@@ -76,7 +163,6 @@ class CutBudgetLine(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        from PyQt6.QtWidgets import QProgressBar
         self.setObjectName("CutBudgetLine")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         row = QHBoxLayout(self)
@@ -89,16 +175,20 @@ class CutBudgetLine(QWidget):
             "per-photo seconds, clips at their real length — against "
             "this Cut's target and max."))
         row.addWidget(self._label)
-        self._bar = QProgressBar()
-        self._bar.setObjectName("CutBudgetBar")
-        self._bar.setTextVisible(False)
-        self._bar.setMaximumHeight(14)
+        self._bar = _CutBudgetBar()
         self._bar.setToolTip(self._label.toolTip())
         row.addWidget(self._bar, stretch=1)
         self._limit = QLabel("")
         self._limit.setObjectName("CutBudgetLabel")
         self._limit.setToolTip(tr("This Cut's target — max."))
         row.addWidget(self._limit)
+        # Resolved transition seconds (per-Cut override or global
+        # Settings default). The host page sets this once at session
+        # construction; refresh uses it to compute show_seconds.
+        self._transition_s: float = 0.0
+
+    def set_transition_s(self, transition_s: float) -> None:
+        self._transition_s = max(0.0, float(transition_s))
 
     def _repolish(self, w) -> None:
         w.style().unpolish(w)
@@ -107,31 +197,53 @@ class CutBudgetLine(QWidget):
     def refresh(self, session: CutSession) -> None:
         totals = session.totals()
         picked = totals.photo_count + totals.video_count
+        show_s = int(session.show_seconds(self._transition_s))
         text = tr("{n} picked · {len}").replace("{n}", str(picked)).replace(
-            "{len}", _fmt_mmss(session.show_seconds()))
+            "{len}", _fmt_mmss(show_s))
         if totals.separator_count:
             text += tr(" · {d} card(s)").replace(
                 "{d}", str(totals.separator_count))
         self._label.setText(text)
 
-        # The bar fills against the budget: 0 → max (or target when no
-        # max). A Cut with no limit shows numbers only.
-        ceiling = session.max_s or session.target_s
-        if ceiling:
+        # spec/61 §2 step 5 + Nelson 2026-06-25 — anchor the bar's
+        # scale to ``pool_seconds`` (the show length if EVERY item in
+        # the pool were picked — same value the New/Adjust dialog
+        # shows before any selections), with a floor of
+        # ``target_s × 1.1``. The fill itself is the live ``show_s``
+        # — picked-only — so the user can SEE consumption shrink as
+        # they unpick items past the target. The target tick stays
+        # anchored at target_s on the scale; a hard-max dashed tick
+        # marks max_s when the bar has stretched past it.
+        target_s = session.target_s
+        max_s = session.max_s
+        if target_s or max_s:
             self._bar.setVisible(True)
-            self._bar.setMaximum(int(ceiling))
-            self._bar.setValue(min(int(session.show_seconds()), int(ceiling)))
+            pool_s = int(session.pool_seconds(self._transition_s))
+            candidates = [pool_s]
+            if target_s:
+                candidates.append(int(round(float(target_s) * 1.1)))
+            if max_s:
+                candidates.append(int(max_s))
+            scale_max = max(candidates) or 1
+            self._bar.set_state(
+                scale_max=scale_max, value=show_s,
+                target=target_s, max_hard=max_s,
+            )
             limit_bits = []
-            if session.target_s:
-                limit_bits.append(_fmt_mmss(session.target_s))
-            if session.max_s:
-                limit_bits.append(_fmt_mmss(session.max_s))
-            self._limit.setText(" — ".join(limit_bits))
+            if target_s:
+                limit_bits.append(
+                    tr("target {t}").replace(
+                        "{t}", _fmt_mmss(int(target_s))))
+            if max_s:
+                limit_bits.append(
+                    tr("max {m}").replace(
+                        "{m}", _fmt_mmss(int(max_s))))
+            self._limit.setText(" · ".join(limit_bits))
         else:
             self._bar.setVisible(False)
             self._limit.setText(tr("no limit"))
 
-        zone = session.zone()
+        zone = session.zone(self._transition_s)
         if self.property("zone") != zone:
             self.setProperty("zone", zone)
             # Repolish the CHILDREN too — descendant QSS rules keyed on a
@@ -490,6 +602,12 @@ class CutSessionPage(QWidget):
         # The budget strip — its own full-width row inside the top band
         # so the dense-tier cap reads as one block.
         self._budget = CutBudgetLine()
+        # spec/152 §3 — resolve the EFFECTIVE transition seconds once
+        # (per-Cut override > global Settings default > 0). The bar
+        # uses this whenever it computes show_seconds, so the picker
+        # surface agrees with the rehearsal / PTE total.
+        self._budget.set_transition_s(
+            self._effective_transition_s(session))
         top_l.addWidget(self._budget)
 
         outer.addWidget(top_band)
@@ -576,6 +694,25 @@ class CutSessionPage(QWidget):
             self._stack.setCurrentIndex(0)
 
     # ── data helpers ─────────────────────────────────────────────────
+
+    def _effective_transition_s(self, session: CutSession) -> float:
+        """spec/152 §3 — resolve the picker's effective transition
+        duration: per-Cut override on the session > the global
+        ``Settings.default_transition_ms`` > 0. The gateway exposes a
+        ``settings`` attribute (the umbrella repo) that loads to a
+        Settings dataclass; we coerce defensively so a stubbed-out
+        gateway (mocks / tests) still produces a sane fallback."""
+        if session.transition_ms is not None:
+            return max(0.0, float(session.transition_ms) / 1000.0)
+        repo = getattr(self._gw, "settings", None)
+        if repo is None:
+            return 0.0
+        try:
+            settings = repo.load() if hasattr(repo, "load") else repo
+            raw = getattr(settings, "default_transition_ms", 0)
+            return max(0.0, float(raw) / 1000.0)
+        except Exception:                                          # noqa: BLE001
+            return 0.0
 
     def _load_day_labels(self) -> Dict[int, str]:
         labels: Dict[int, str] = {}

@@ -324,6 +324,15 @@ def _start_encode(
     cmd += _video_encoder_args()
     if want_audio:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
+    # spec/150 §3 — end the muxed clip on the SHORTEST stream (the
+    # video, mapped first). AAC priming/padding + frame-boundary
+    # rounding makes the audio container run tens of ms past the
+    # last video frame; without ``-shortest`` every player holds
+    # that last frame until audio ends. Safe on the no-audio path
+    # (one stream — no-op) and on the numpy-pipe path (video is
+    # ``pipe:0`` and bounded by frames pushed; audio comes from the
+    # second input and is trimmed by ``-ss``/``-t``).
+    cmd += ["-shortest"]
     cmd += ["-movflags", "+faststart", str(output_path)]
     return subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, **_no_window())
@@ -356,6 +365,11 @@ def _run_ffmpeg_only(
     cmd += _video_encoder_args()
     if plan.include_audio:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
+    # spec/150 §3 — end the muxed clip on the shortest stream (see
+    # the matching note in ``_start_encode``). Safe on the ``-an``
+    # path (single video stream — no-op) and on the with-audio path
+    # (cuts the AAC tail to the last video frame).
+    cmd += ["-shortest"]
     cmd += ["-movflags", "+faststart", str(output_path)]
 
     if progress is not None and not progress(0, 1):

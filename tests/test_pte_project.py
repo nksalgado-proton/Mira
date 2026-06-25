@@ -300,16 +300,19 @@ def test_off_mode_strips_every_nested_text(skel, members):
 
 
 def test_times_block_cumulative_with_clip_length_videos(output):
-    """spec/107 §0 — photo slides count for the Cut's per-slide ms;
-    video slides count for the clip's own Duration (+ the transition
-    time on both)."""
+    """spec/107 §0 + spec/150 §1 — photo slides count for the Cut's
+    per-slide ms PLUS the transition time; video slides count for
+    the clip's own Duration with NO transition added (the incoming
+    slide's dissolve overlaps the clip's tail instead of waiting on
+    a frozen last frame). Realigns with ``core.cut_budget`` and
+    spec/61 ("clips at their TRUE length")."""
     times = _section(output, "Times")
     # 6.0s photo + 2.0s transition = 8000.
     assert "opt_synchpos1=8000" in times
-    # + 13267 (clip) + 2000 = 23267.
-    assert "opt_synchpos2=23267" in times
-    # + 6000 + 2000 = 31267.
-    assert "opt_synchpos3=31267" in times
+    # + 13267 (clip, no transition) = 21267.
+    assert "opt_synchpos2=21267" in times
+    # + 6000 photo + 2000 transition = 29267.
+    assert "opt_synchpos3=29267" in times
     assert "opt_slidescount=3" in times
 
 

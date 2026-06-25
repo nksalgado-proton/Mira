@@ -200,6 +200,51 @@ def test_no_duration_zero_anywhere_in_video_pte(skel):
     )
 
 
+# ── Transition padding (spec/150 §1) ───────────────────────────────
+
+
+def test_video_times_slot_excludes_transition(skel):
+    """spec/150 §1 — a video slide's [Times] cumulative advances by
+    exactly ``clip_ms`` even when ``transition_ms > 0``. The old
+    behaviour added ``transition_ms`` (default 2000) on top, so PTE
+    held the frozen last frame for ~2 s before the next dissolve. The
+    incoming slide's dissolve must overlap the clip's tail instead.
+    Photo-tier transition behaviour is independently pinned: a photo
+    slot still advances by ``photo_ms + transition_ms``."""
+    out = generate(
+        skel,
+        [
+            PteMember(kind="photo", path=Path("C:/cut/001_p.jpg")),
+            PteMember(kind="video", path=Path("C:/cut/002_clip.mp4"),
+                      duration_ms=10000),
+        ],
+        audio_tracks=[],
+        aspect="16:9", photo_seconds=6.0,
+        project_path=Path("C:/cut/slideshow.pte"),
+        images_folder=Path("C:/cut"),
+        overlay_mode=OVERLAY_OFF,
+        transition_ms=2000,
+    )
+    times = _section(out, "Times")
+    # photo slot = 6000 + 2000 = 8000 (transition still added — pinned).
+    # video slot = clip_ms = 10000 (transition NOT added — the fix).
+    # synchpos1 = 8000, synchpos2 = 18000 (NOT 20000).
+    assert "opt_synchpos1=8000" in times, (
+        "spec/150 §1 must NOT change photo-tier transition behaviour: a "
+        f"photo slot is still photo_ms + transition_ms; got {times!r}"
+    )
+    assert "opt_synchpos2=18000" in times, (
+        "spec/150 §1: a video slide's [Times] cumulative must advance by "
+        f"exactly clip_ms (no transition padding); got {times!r}"
+    )
+    # Negative pin — the old behaviour (photo cumulative + clip + transition)
+    # would have written 20000 here.
+    assert "opt_synchpos2=20000" not in times, (
+        "spec/150 §1: video slide must NOT carry transition_ms padding on "
+        f"top of clip_ms; got {times!r}"
+    )
+
+
 # ── Photos-only regression: unchanged ──────────────────────────────
 
 

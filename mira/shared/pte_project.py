@@ -769,7 +769,14 @@ def generate(
             clip_ms = _safe_video_duration_ms(
                 int(m.duration_ms), path=m.path)
             body = _set_slide_video_paths(body, path_s, clip_ms)
-            slide_durations_ms.append(clip_ms + int(transition_ms))
+            # spec/150 §1 — the [Times] slot for a video slide is the
+            # clip's own length, with NO transition padding added.
+            # Padding would hold the frozen last frame for transition_ms
+            # before the next dissolve. Letting the incoming slide's
+            # dissolve overlap the clip's tail keeps motion running and
+            # also realigns with core/cut_budget.py and spec/61 ("clips
+            # at their TRUE length").
+            slide_durations_ms.append(clip_ms)
             video_clips.append(_build_video_clip(
                 clip_guid=clip_guid, master_id=cover_guid,
                 video_path=path_s, duration_ms=clip_ms,

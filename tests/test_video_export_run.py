@@ -110,6 +110,126 @@ def test_atempo_chain():
     assert _atempo_chain(0.25) == ["atempo=0.5", "atempo=0.5"]
 
 
+# ── spec/150 §3 — ``-shortest`` keeps the muxed clip ending on the
+#    last video frame. Without it, AAC priming/padding makes the audio
+#    container run tens of ms longer than video, and every player
+#    holds the frozen last frame until audio ends. Pin the flag in
+#    BOTH encode-command builders (numpy-pipe + fast-path).
+
+from pathlib import Path
+
+from core.video_export_run import _run_ffmpeg_only, _start_encode
+
+
+class _CapturingPopen:
+    """Stand-in for ``subprocess.Popen`` — records the cmd list and
+    presents the minimal surface ``_start_encode`` /
+    ``_run_ffmpeg_only`` use (``stdin``, ``stderr``, ``wait``,
+    ``poll``, ``kill``, ``returncode``). Lets the test assert flags
+    without spinning up ffmpeg."""
+
+    last_cmd: list = []
+
+    def __init__(self, cmd, **kwargs):
+        type(self).last_cmd = list(cmd)
+        self.stdin = None
+        self.stdout = None
+        # ``_run_ffmpeg_only`` reads stderr on a non-zero exit; provide
+        # a tiny stand-in so the no-op path doesn't AttributeError.
+        self.stderr = type("Stderr", (), {"read": lambda self_: b""})()
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def _assert_shortest_before_output(cmd: list, output_path: Path) -> None:
+    """``-shortest`` is an output option (per ffmpeg convention) and
+    must appear after all input/filter flags and before the output
+    path. Together with ``-map 0:v`` (where present), this keeps the
+    video stream as the duration authority."""
+    assert "-shortest" in cmd, (
+        f"spec/150 §3: encode cmd must include -shortest; got {cmd!r}"
+    )
+    shortest_pos = cmd.index("-shortest")
+    out_pos = cmd.index(str(output_path))
+    assert shortest_pos < out_pos, (
+        "spec/150 §3: -shortest must appear before the output path "
+        f"(found at idx {shortest_pos}, output at {out_pos}); "
+        f"cmd={cmd!r}"
+    )
+
+
+def test_start_encode_includes_shortest_with_audio(tmp_path, monkeypatch):
+    """``_start_encode`` (numpy-pipe encode) emits ``-shortest`` when
+    audio is mapped — this is the path the bug actually shows in."""
+    out = tmp_path / "audio.mp4"
+    monkeypatch.setattr(
+        "core.video_export_run.subprocess.Popen", _CapturingPopen)
+    _start_encode(
+        Path("ignored.mp4"), out, _plan(include_audio=True),
+        out_w=320, out_h=240, in_s=0.0, dur_s=1.0)
+    _assert_shortest_before_output(_CapturingPopen.last_cmd, out)
+    # Sanity-check the audio mapping is intact (video first, then
+    # audio from the second input).
+    cmd = _CapturingPopen.last_cmd
+    assert ["-map", "0:v"] == cmd[cmd.index("-map"):cmd.index("-map") + 2], (
+        f"spec/150 §3: -map 0:v must remain first; cmd={cmd!r}"
+    )
+
+
+def test_start_encode_includes_shortest_without_audio(tmp_path, monkeypatch):
+    """The no-audio path (``-an``) — single video stream — must also
+    pass ``-shortest`` so the command shape is uniform. With only one
+    stream the flag is a no-op, which is what we want (no surprises
+    on muted clips)."""
+    out = tmp_path / "muted.mp4"
+    monkeypatch.setattr(
+        "core.video_export_run.subprocess.Popen", _CapturingPopen)
+    _start_encode(
+        Path("ignored.mp4"), out, _plan(include_audio=False),
+        out_w=320, out_h=240, in_s=0.0, dur_s=1.0)
+    _assert_shortest_before_output(_CapturingPopen.last_cmd, out)
+    assert "-an" in _CapturingPopen.last_cmd
+
+
+def test_run_ffmpeg_only_includes_shortest_with_audio(
+        src, tmp_path, monkeypatch):
+    """``_run_ffmpeg_only`` (single-pass fast path) emits ``-shortest``
+    when audio is included. ``_make_test_video`` produces a silent
+    clip, but the cmd builder is what we're pinning — the audio
+    branch path is selected by ``plan.include_audio``, not by the
+    source actually carrying audio."""
+    out = tmp_path / "fast_audio.mp4"
+    monkeypatch.setattr(
+        "core.video_export_run.subprocess.Popen", _CapturingPopen)
+    _run_ffmpeg_only(
+        src, out, _plan(include_audio=True),
+        in_s=0.0, dur_s=1.0, decode_vf=[],
+        progress=None, on_file_fraction=None, timeout=60.0)
+    _assert_shortest_before_output(_CapturingPopen.last_cmd, out)
+
+
+def test_run_ffmpeg_only_includes_shortest_without_audio(
+        src, tmp_path, monkeypatch):
+    """Same uniformity guarantee for the muted fast path."""
+    out = tmp_path / "fast_muted.mp4"
+    monkeypatch.setattr(
+        "core.video_export_run.subprocess.Popen", _CapturingPopen)
+    _run_ffmpeg_only(
+        src, out, _plan(include_audio=False),
+        in_s=0.0, dur_s=1.0, decode_vf=[],
+        progress=None, on_file_fraction=None, timeout=60.0)
+    _assert_shortest_before_output(_CapturingPopen.last_cmd, out)
+    assert "-an" in _CapturingPopen.last_cmd
+
+
 # ── Encoder detection — probe + cache live in core.encoder_ladder
 #    (spec/60 §4); video_export_run delegates. Same contract, broader
 #    coverage (NVENC → QSV → AMF → libx264) in test_encoder_ladder.

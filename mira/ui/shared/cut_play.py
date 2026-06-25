@@ -60,6 +60,15 @@ log = logging.getLogger(__name__)
 #: feeling like a stall.
 _VIDEO_SWAP_TIMEOUT_MS = 750
 
+#: spec/150 §2 — slack added to the END-of-clip watchdog. EndOfMedia
+#: is the primary advance path; on Windows it lags the last visible
+#: frame by a few hundred ms to ~1 s. The watchdog fires
+#: ``duration_ms / rate + slack`` after the clip starts, only if
+#: EndOfMedia hasn't already advanced. 150 ms is comfortably past
+#: the QMediaPlayer scheduling jitter without holding a freeze the
+#: user can notice.
+_VIDEO_END_SLACK_MS = 150
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Timeline scrubber (internal)
@@ -361,6 +370,13 @@ class CutPlayerDialog(QDialog):
         # is connected to; ``_video_swap_timer`` is the watchdog.
         self._pending_video_sink = None
         self._video_swap_timer: Optional[QTimer] = None
+        # spec/150 §2 — END-of-clip watchdog. Symmetric to the swap
+        # watchdog above. ``_video_end_timer`` is the single-shot timer
+        # armed at the start of a video entry; ``_video_end_armed_for_index``
+        # is the entry index the timer is bound to, so a late timer
+        # fire after EndOfMedia already advanced is a no-op.
+        self._video_end_timer: Optional[QTimer] = None
+        self._video_end_armed_for_index: int = -1
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -676,7 +692,10 @@ class CutPlayerDialog(QDialog):
 
     def _reset_video_swap_state(self) -> None:
         """Tear down any pending one-shot frame handler / watchdog
-        from a previous clip (the swap is per-clip)."""
+        from a previous clip (the swap is per-clip). Also stops the
+        spec/150 §2 END-of-clip watchdog — the two are siblings:
+        a video → photo (or video → next-video) transition retires
+        both per-clip helpers in one move."""
         if self._video_swap_timer is not None:
             try:
                 self._video_swap_timer.stop()
@@ -690,6 +709,7 @@ class CutPlayerDialog(QDialog):
             except (TypeError, RuntimeError):
                 pass
             self._pending_video_sink = None
+        self._stop_video_end_watchdog()
 
     def _on_first_video_frame(self, frame) -> None:
         """spec/140 §1 — one-shot: on the first VALID frame the
@@ -733,9 +753,14 @@ class CutPlayerDialog(QDialog):
     def _on_video_status(self, status) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            # spec/150 §2 — primary advance path. Tear the end
+            # watchdog down before advancing so a late timer fire
+            # can't double-advance the show.
+            self._stop_video_end_watchdog()
             self.advance()
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
             log.warning("rehearsal: invalid media, skipping")
+            self._stop_video_end_watchdog()
             self.advance()
 
     # ── music ────────────────────────────────────────────────────────
@@ -763,6 +788,12 @@ class CutPlayerDialog(QDialog):
                 self._player.pause()
             if self._music is not None:
                 self._music.pause()
+            # spec/150 §2 — stop the end-of-clip watchdog while paused
+            # (otherwise it would fire after wall-clock duration even
+            # though the player hasn't reached the end of the clip).
+            # Resume re-arms via ``_apply_video_rate`` with the new
+            # remaining time.
+            self._stop_video_end_watchdog()
         else:
             kind, payload = self._entries[self._index]
             if kind == "file" and getattr(payload, "kind", "") == "video":
@@ -1069,6 +1100,77 @@ class CutPlayerDialog(QDialog):
             log.exception(
                 "setPlaybackRate(%s) failed on the cut player",
                 self._video_rate)
+        # spec/150 §2 — (re-)arm the end-of-clip watchdog. This is
+        # called from ``_show_video`` (fresh clip — position is 0,
+        # interval = duration / rate + slack), ``_on_video_rate_changed``
+        # (live rate change — interval reflects remaining time at the
+        # new rate), and ``_toggle_pause`` on resume (interval reflects
+        # remaining time from the paused position). All three paths
+        # converge here so the watchdog never gets out of step with
+        # the rate.
+        self._arm_video_end_watchdog()
+
+    def _arm_video_end_watchdog(self) -> None:
+        """spec/150 §2 — start a single-shot timer that calls
+        :meth:`advance` if ``EndOfMedia`` hasn't fired by
+        ``(duration_ms − position) / rate + slack``. Skipped when:
+          * the show is paused (watchdog re-arms on resume);
+          * the current entry isn't a video file;
+          * the entry's ``duration_ms`` is 0/unknown — we rely on
+            EndOfMedia alone in that case rather than guessing.
+        Replaces any prior arming first (idempotent)."""
+        self._stop_video_end_watchdog()
+        if self._paused:
+            return
+        if not (0 <= self._index < len(self._entries)):
+            return
+        kind, payload = self._entries[self._index]
+        if kind != "file" or getattr(payload, "kind", "") != "video":
+            return
+        duration_ms = int(getattr(payload, "duration_ms", 0) or 0)
+        if duration_ms <= 0:
+            return
+        pos = 0
+        if self._player is not None:
+            try:
+                pos = int(self._player.position())
+            except Exception:                                          # noqa: BLE001
+                pos = 0
+        remaining = max(0, duration_ms - pos)
+        rate = self._video_rate if self._video_rate > 0 else 1.0
+        interval_ms = int(remaining / rate) + _VIDEO_END_SLACK_MS
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_video_end_watchdog)
+        timer.start(interval_ms)
+        self._video_end_timer = timer
+        self._video_end_armed_for_index = self._index
+
+    def _stop_video_end_watchdog(self) -> None:
+        """Tear down the end-of-clip watchdog. Idempotent."""
+        if self._video_end_timer is not None:
+            try:
+                self._video_end_timer.stop()
+            except Exception:                                          # noqa: BLE001
+                pass
+            self._video_end_timer = None
+        self._video_end_armed_for_index = -1
+
+    def _on_video_end_watchdog(self) -> None:
+        """spec/150 §2 — fires only when EndOfMedia is late or absent.
+        Idempotent against EndOfMedia arriving first: if the index has
+        moved off the entry we armed for, EndOfMedia (or a manual
+        step) already advanced — do nothing."""
+        armed_for = self._video_end_armed_for_index
+        self._video_end_timer = None
+        self._video_end_armed_for_index = -1
+        if self._index != armed_for:
+            return
+        log.debug(
+            "cut play: end-of-clip watchdog fired before EndOfMedia "
+            "for entry %d — advancing",
+            self._index)
+        self.advance()
 
     def _on_scrubber_seeked(self, index: int, _ms_offset: int) -> None:
         # Snap to the entry's start — seeking inside a clip is for v2.

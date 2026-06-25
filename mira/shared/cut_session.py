@@ -183,6 +183,9 @@ class CutSession:
     music_category: Optional[str]
     files: Tuple[SessionFile, ...]
     source_dc_id: Optional[str] = None
+    # spec/152 §3 — per-Cut crossfade transition (ms). ``None`` defers
+    # to ``Settings.default_transition_ms`` at read time.
+    transition_ms: Optional[int] = None
     separators_on: bool = True
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
@@ -313,6 +316,9 @@ class CutSession:
                 expr_snapshot=expr_list,
                 target_s=self.target_s, max_s=self.max_s,
                 photo_s=self.photo_s,
+                # spec/152 §3 — persist the per-Cut transition value
+                # the dialog captured (None = defer to Settings).
+                transition_ms=self.transition_ms,
                 default_state=(
                     "picked" if self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
                     else "skipped"),
@@ -337,6 +343,8 @@ class CutSession:
                 expr_snapshot_json=json.dumps(expr_list),
                 target_s=self.target_s, max_s=self.max_s,
                 photo_s=self.photo_s,
+                # spec/152 §3 — same as create_cut above.
+                transition_ms=self.transition_ms,
                 default_state=(
                     "picked" if self.pin_mode in (PIN_KEEP_ALL, PIN_WEED_OUT)
                     else "skipped"),
@@ -381,6 +389,9 @@ class CutSession:
             source_dc_id=getattr(draft, "source_dc_id", None),
             target_s=draft.target_s, max_s=draft.max_s,
             photo_s=draft.photo_s,
+            # spec/152 §3 — carry the per-Cut transition through to
+            # commit. Drafts with None defer to the global default.
+            transition_ms=getattr(draft, "transition_ms", None),
             music_category=draft.music_category,
             files=tuple(files),
             separators_on=seps,
@@ -544,6 +555,9 @@ class CutSession:
             source_dc_id=cut.source_dc_id,
             target_s=cut.target_s, max_s=cut.max_s,
             photo_s=cut.photo_s,
+            # spec/152 §3 — re-entering a Cut surfaces its stored
+            # per-Cut transition (if any) in the dialog.
+            transition_ms=getattr(cut, "transition_ms", None),
             music_category=cut.music_category,
             files=tuple(files),
             separators_on=seps,

@@ -2792,6 +2792,9 @@ class EventGateway:
         target_s: Optional[int] = None,
         max_s: Optional[int] = None,
         photo_s: float = 6.0,
+        # spec/152 §3 — per-Cut crossfade transition (ms); None means
+        # "fall back to Settings.default_transition_ms" at read time.
+        transition_ms: Optional[int] = None,
         default_state: str = "skipped",
         music_category: Optional[str] = None,
         separators: bool = True,
@@ -2846,6 +2849,7 @@ class EventGateway:
             source_dc_kind=source_dc_kind,
             expr_snapshot_json=json.dumps([list(t) for t in expr_snapshot]),
             target_s=target_s, max_s=max_s, photo_s=photo_s,
+            transition_ms=transition_ms,
             default_state=default_state,
             music_category=music_category,
             separators=separators,
@@ -2922,7 +2926,9 @@ class EventGateway:
                    "separators", "overlay_fields_json", "overlay_mode",
                    "extras_json",
                    # spec/111 — slideshow canvas aspect.
-                   "aspect"}
+                   "aspect",
+                   # spec/152 §3 — per-Cut crossfade transition (ms).
+                   "transition_ms"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown cut fields: {sorted(unknown)}")

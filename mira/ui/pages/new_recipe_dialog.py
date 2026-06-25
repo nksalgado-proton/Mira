@@ -265,6 +265,14 @@ class NewRecipeContext:
     # *show*, not the event). Defaults to the most common aspect; the
     # Adjust prefill drops in the existing Cut's value.
     aspect: str = "16:9"
+    # spec/152 §3 — per-Cut crossfade transition between consecutive
+    # slides (ms). ``transition_ms == None`` means "the user hasn't
+    # overridden the global default on this Cut yet"; the dialog
+    # seeds the spinbox from ``default_transition_ms`` and only emits
+    # a value when the user actually changes it. Host wires
+    # ``default_transition_ms`` from ``Settings.default_transition_ms``.
+    transition_ms: Optional[int] = None
+    default_transition_ms: int = 2000
 
     # spec/106 — music / soundtrack picker. ``music_categories`` is
     # the mood-folder list the share-cuts page builds via
@@ -1709,6 +1717,24 @@ class NewRecipeDialog(QDialog):
         self._target_minutes: int = max(1, int(ctx.target_minutes))
         self._max_minutes: int = max(1, int(ctx.max_minutes))
         self._per_photo_seconds: float = max(0.1, float(ctx.per_photo_seconds))
+        # spec/152 §3 — per-Cut crossfade transition state. Seeded
+        # from the Cut's stored value when present (Adjust), otherwise
+        # from the global Settings default. ``_transition_user_set``
+        # remembers whether the user actually changed the spinbox so
+        # the round-trip can omit the field on emit when the value
+        # still matches the global default — keeps "I never overrode"
+        # Cuts NULL in the DB.
+        self._default_transition_ms: int = max(
+            0, int(round(float(ctx.default_transition_ms or 0))))
+        self._transition_ms: int = (
+            int(round(float(ctx.transition_ms)))
+            if isinstance(ctx.transition_ms, (int, float))
+            else self._default_transition_ms
+        )
+        self._transition_user_set: bool = (
+            ctx.transition_ms is not None
+            and int(round(float(ctx.transition_ms))) != self._default_transition_ms
+        )
         self._has_budget: bool = bool(ctx.has_budget)
         self._is_editing: bool = bool(ctx.is_editing)
         # spec/111 — aspect state. Normalised through the canonical list
@@ -3025,6 +3051,31 @@ class NewRecipeDialog(QDialog):
         pv.addWidget(self._per_photo_spin)
         row.addWidget(pp_box)
 
+        # spec/152 §3 — crossfade transition between consecutive
+        # slides. Sibling to the per-photo seconds (both belong to
+        # the *show*'s timing). 0 reverts to hard cuts. The dialog
+        # seeds the spinbox from the Cut's stored value or — for a
+        # new Cut — the global Settings default.
+        tr_box = QWidget()
+        tv = QVBoxLayout(tr_box)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(2)
+        tv.addWidget(QLabel(tr("Transition (ms)")))
+        self._transition_spin = QSpinBox()
+        self._transition_spin.setObjectName("RuntimeTransitionSpin")
+        self._transition_spin.setRange(0, 10000)
+        self._transition_spin.setSingleStep(100)
+        self._transition_spin.setValue(int(self._transition_ms))
+        self._transition_spin.setSuffix(" ms")
+        self._transition_spin.setToolTip(tr(
+            "Crossfade between consecutive slides. Counted in the "
+            "show length so the audio playlist + PTE total match the "
+            "rehearsal wall time. 0 = no transition (hard cuts)."))
+        self._transition_spin.valueChanged.connect(
+            self._on_transition_changed)
+        tv.addWidget(self._transition_spin)
+        row.addWidget(tr_box)
+
         # spec/111 — aspect picker. Sibling to the per-photo duration:
         # both belong to the *show*, not the event. Drives the
         # separator / opener card dimensions on export AND the PTE
@@ -3300,6 +3351,17 @@ class NewRecipeDialog(QDialog):
 
     def _on_per_photo_changed(self, value: float) -> None:
         self._per_photo_seconds = float(value)
+        self._refresh_metrics_from_state()
+
+    def _on_transition_changed(self, value: int) -> None:
+        """spec/152 §3 — track the user's per-Cut transition. We mark
+        ``_transition_user_set`` so the presentation emit knows whether
+        to include the field (the round-trip omits it when the value
+        still matches the global default, keeping unaffected Cuts NULL
+        in the DB)."""
+        self._transition_ms = int(value)
+        self._transition_user_set = (
+            int(value) != int(self._default_transition_ms))
         self._refresh_metrics_from_state()
 
     def _on_aspect_changed(self, _index: int) -> None:
@@ -4593,6 +4655,12 @@ class NewRecipeDialog(QDialog):
         if self._overlay_mode in ("embedded", "burn_in"):
             out["overlay_mode"] = self._overlay_mode
             out["overlay_fields"] = list(self._overlay_fields)
+        # spec/152 §3 — emit transition_ms ONLY when the user actually
+        # overrode the global default. Omitting it (the common case)
+        # lets the gateway store NULL so a future global-default tweak
+        # still reaches Cuts the user never customised.
+        if self._transition_user_set:
+            out["transition_ms"] = int(self._transition_ms)
         return out
 
     @staticmethod

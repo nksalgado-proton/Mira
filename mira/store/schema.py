@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -552,6 +552,12 @@ CREATE TABLE cut (
   target_s            INTEGER CHECK (target_s IS NULL OR target_s > 0),
   max_s               INTEGER CHECK (max_s IS NULL OR max_s > 0),
   photo_s             REAL NOT NULL DEFAULT 6.0 CHECK (photo_s > 0),
+  -- spec/152 §3 — per-Cut crossfade transition between consecutive
+  -- slides, in ms. NULL = fall back to Settings.default_transition_ms
+  -- at read time (the New / Adjust dialog seeds the field with the
+  -- global default but persists the user's actual choice; a NULL
+  -- column means the user never overrode the global).
+  transition_ms       INTEGER CHECK (transition_ms IS NULL OR transition_ms >= 0),
   default_state       TEXT NOT NULL DEFAULT 'skipped' CHECK (default_state IN ('picked','skipped')),
   music_category      TEXT,
   separators          INTEGER NOT NULL DEFAULT 1 CHECK (separators IN (0,1)),
@@ -1506,6 +1512,25 @@ def _migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
+    """spec/152 §3 — per-Cut crossfade transition_ms.
+
+    The Phase 1 fix gave the global setting
+    (``Settings.default_transition_ms``) a single read site at the
+    callers; users wanted per-Cut overrides next to ``photo_s`` in
+    the New / Adjust dialog. Add a nullable ``transition_ms`` column
+    so an unset Cut keeps falling back to the global default at read
+    time and only Cuts the user explicitly tuned carry a non-NULL
+    value. Additive only — every existing row stays NULL and
+    behaves identically to its pre-152 self when the global default
+    matches the legacy ``DEFAULT_TRANSITION_MS = 2000``.
+    """
+    conn.execute(
+        "ALTER TABLE cut ADD COLUMN transition_ms INTEGER "
+        "CHECK (transition_ms IS NULL OR transition_ms >= 0)"
+    )
+
+
 def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
     """spec/144 — record the clip-segment's TRUE on-disk duration on the
     lineage row.
@@ -1546,6 +1571,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v16_to_v17,
     _migrate_v17_to_v18,
     _migrate_v18_to_v19,
+    _migrate_v19_to_v20,
 ]
 
 

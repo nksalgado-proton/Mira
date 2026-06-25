@@ -219,6 +219,10 @@ def recipe_to_cut_draft(recipe: um.Recipe) -> CutDraft:
     max_s = _opt_int(presentation.get("max_s"))
     photo_s = _opt_float(
         presentation.get("photo_s"), default=_DEFAULT_PHOTO_S)
+    # spec/152 §3 — per-Cut transition (ms). ``None`` (dialog omitted
+    # it OR explicitly emitted ``None``) means "defer to
+    # Settings.default_transition_ms at read time".
+    transition_ms = _opt_int(presentation.get("transition_ms"))
     music_category = _opt_str(presentation.get("music_category"))
     card_style = presentation.get("card_style") or _DEFAULT_CARD_STYLE
     if card_style not in ("black", "single", "multi"):
@@ -254,6 +258,7 @@ def recipe_to_cut_draft(recipe: um.Recipe) -> CutDraft:
         target_s=target_s,
         max_s=max_s,
         photo_s=photo_s,
+        transition_ms=transition_ms,
         music_category=music_category,
         separators=separators,
         overlay_fields=overlay_fields,
@@ -337,6 +342,12 @@ def cut_draft_to_recipe_composition(draft: CutDraft) -> dict:
         presentation["overlay_fields"] = list(draft.overlay_fields)
     if draft.overlay_mode:
         presentation["overlay_mode"] = draft.overlay_mode
+    # spec/152 §3 — emit transition_ms only when the draft carried an
+    # explicit value (``None`` = defer to the global default at read
+    # time). Keeps Recipes round-trip-lossless without polluting them
+    # with the global default when the user never overrode it.
+    if getattr(draft, "transition_ms", None) is not None:
+        presentation["transition_ms"] = int(draft.transition_ms)
     composition["presentation"] = presentation
     return composition
 
@@ -572,6 +583,12 @@ def cross_event_cut_draft_to_recipe_composition(
         presentation["overlay_fields"] = list(draft.overlay_fields)
     if draft.overlay_mode:
         presentation["overlay_mode"] = draft.overlay_mode
+    # spec/152 §3 — emit transition_ms only when the draft carried an
+    # explicit value (``None`` = defer to the global default at read
+    # time). Keeps Recipes round-trip-lossless without polluting them
+    # with the global default when the user never overrode it.
+    if getattr(draft, "transition_ms", None) is not None:
+        presentation["transition_ms"] = int(draft.transition_ms)
     composition["presentation"] = presentation
     return composition
 

@@ -75,6 +75,11 @@ class CutDraft:
     target_s: Optional[int] = None
     max_s: Optional[int] = None
     photo_s: float = 6.0
+    #: spec/152 §3 — per-Cut crossfade transition (ms). ``None`` =
+    #: defer to ``Settings.default_transition_ms``. The New / Adjust
+    #: dialog seeds the spinbox from the global default but only
+    #: writes here when the user actually overrode it.
+    transition_ms: Optional[int] = None
     music_category: Optional[str] = None
     separators: bool = True
     overlay_fields: Tuple[str, ...] = ()

@@ -292,6 +292,12 @@ class Cut:
     target_s: Optional[int] = None
     max_s: Optional[int] = None
     photo_s: float = 6.0
+    # spec/152 §3 — per-Cut crossfade transition (ms). ``None`` means
+    # "use Settings.default_transition_ms"; the Cut dialog seeds the
+    # spinbox with the global value but only persists it here when
+    # the user actually changes it, so future global tweaks still
+    # reach the cuts that never overrode.
+    transition_ms: Optional[int] = None
     default_state: str = "skipped"
     music_category: Optional[str] = None
     separators: bool = True

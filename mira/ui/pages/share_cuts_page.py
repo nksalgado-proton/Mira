@@ -1233,20 +1233,28 @@ class ShareCutsPage(QWidget):
     def _separators_on(self) -> bool:
         return bool(getattr(self._settings(), "use_separators", True))
 
-    def _transition_s(self) -> float:
-        """spec/152 §3 — global crossfade transition duration as
-        seconds. Falls back to 2.0 (matches
-        ``pte_project.DEFAULT_TRANSITION_MS``) when the setting is
-        missing on a stale Settings JSON (or 0 when explicitly off)."""
+    def _transition_s(self, cut=None) -> float:
+        """spec/152 §3 — crossfade transition duration as seconds.
+        Prefers the per-Cut override when ``cut.transition_ms`` is
+        set; otherwise falls back to ``Settings.default_transition_ms``;
+        ultimate fallback is 2.0 (matches the historical
+        ``pte_project.DEFAULT_TRANSITION_MS``)."""
+        per_cut = getattr(cut, "transition_ms", None) if cut else None
+        if isinstance(per_cut, (int, float)):
+            return max(0.0, float(per_cut) / 1000.0)
         raw = getattr(self._settings(), "default_transition_ms", 2000)
         try:
             return max(0.0, float(raw) / 1000.0)
         except (TypeError, ValueError):
             return 2.0
 
-    def _transition_ms(self) -> int:
+    def _transition_ms(self, cut=None) -> int:
         """spec/152 §3 — same value as ``_transition_s`` but in ms,
-        for callers that pass it straight to ``pte_project.generate``."""
+        for callers that pass it straight to ``pte_project.generate``
+        or the audio playlist."""
+        per_cut = getattr(cut, "transition_ms", None) if cut else None
+        if isinstance(per_cut, (int, float)):
+            return max(0, int(round(float(per_cut))))
         raw = getattr(self._settings(), "default_transition_ms", 2000)
         try:
             return max(0, int(round(float(raw))))
@@ -1431,6 +1439,13 @@ class ShareCutsPage(QWidget):
             # editing. The card-style picker keeps its 'black'
             # default for new Cuts.
             separators=bool(kwargs.get("separators_on", True)),
+            # spec/152 §3 — global transition default. The dialog
+            # seeds its spinbox from this value; the Adjust prefill
+            # overrides ``transition_ms`` when the Cut has its own
+            # stored value.
+            default_transition_ms=max(0, int(round(float(
+                getattr(self._settings(), "default_transition_ms", 2000)
+                or 0)))),
         )
         # Default selection — start the Source from #exported so the
         # user composes from there (matches the legacy New Cut default).
@@ -1537,6 +1552,14 @@ class ShareCutsPage(QWidget):
             isinstance(target_s, (int, float))
             or isinstance(max_s, (int, float))
         )
+        # spec/152 §3 — seed the transition spinbox from the Cut's
+        # stored value when present. ``None`` (the user never overrode
+        # the global on this Cut) falls through to ``ctx.default_
+        # transition_ms`` already set during ``_build_new_recipe_
+        # context``.
+        prefill_transition = getattr(prefill, "transition_ms", None)
+        if isinstance(prefill_transition, (int, float)):
+            ctx.transition_ms = max(0, int(round(float(prefill_transition))))
         # spec/106 — pre-select the cut's current music category in the
         # restored combo. ``None``/``""`` means the cut had no
         # soundtrack; the combo defaults to its "No music" entry.
@@ -2335,7 +2358,7 @@ class ShareCutsPage(QWidget):
                 separator_count=totals.separator_count if sep_on else 0,
                 opener_count=1 if sep_on else 0,
             )
-            transition_s = self._transition_s()
+            transition_s = self._transition_s(cut)
             music = audio_library.build_playlist(
                 tracks, totals.seconds(cut.photo_s, transition_s))
         # spec/111 — the Cut carries the slideshow canvas aspect; the
@@ -2666,9 +2689,10 @@ class ShareCutsPage(QWidget):
                 include_originals=choices.include_originals,
                 copy_mode=choices.copy_mode,
                 overwrite_existing=choices.overwrite_existing,
-                # spec/152 §3 — thread the transition time so the
-                # audio playlist is built to the same total PTE shows.
-                transition_ms=self._transition_ms(),
+                # spec/152 §3 — per-Cut transition value (falls back
+                # to Settings.default_transition_ms when the Cut has
+                # none) so the audio playlist matches the show length.
+                transition_ms=self._transition_ms(cut),
             )
         except Exception:  # noqa: BLE001 — disk-level surprises surface honestly
             log.exception("export failed for cut %s", cut_id)
@@ -2829,11 +2853,12 @@ class ShareCutsPage(QWidget):
             photo_seconds=photo_seconds,
             library_root=_library_root_from_paths(),
             overlay_mode=overlay_mode,
-            # spec/152 §3 — thread the user-configured transition time
-            # through to PTE so its [Times] cumulative agrees with the
-            # show length cut_budget reports + the audio playlist runs
-            # to (no more cut-off audio at the end of a PTE show).
-            transition_ms=self._transition_ms(),
+            # spec/152 §3 — per-Cut transition (falls back to the
+            # global Settings default when the Cut has none) so PTE's
+            # [Times] cumulative agrees with the show-length budget +
+            # the audio playlist runs to (no more cut-off audio at the
+            # end of a PTE show).
+            transition_ms=self._transition_ms(cut),
             stem=stem,
             overwrite=overwrite,
         )

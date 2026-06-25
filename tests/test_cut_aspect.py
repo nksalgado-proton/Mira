@@ -206,6 +206,9 @@ def test_per_event_migration_adds_aspect_column_to_legacy_db(tmp_path):
             # spec/144 v18→v19 — strip lineage.duration_ms so the
             # ALTER on the way back up doesn't collide.
             conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
+            # spec/152 v19→v20 — strip cut.transition_ms so the ADD
+            # COLUMN on the way back up doesn't collide.
+            conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
             # spec/127 v17→v18 — drop the per-(camera, trip-TZ)
             # correction table so the v17→v18 CREATE TABLE doesn't
             # collide on the way back up.

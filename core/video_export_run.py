@@ -26,6 +26,7 @@ speed and audio.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import logging
 import os
 import subprocess
@@ -103,6 +104,21 @@ def export_processed_clip(
     src_h = int(meta.display_height or meta.height or 0)
     if src_w <= 0 or src_h <= 0:
         raise RuntimeError(f"Could not probe dimensions for {video_path.name}")
+
+    # spec/150 §6 — use the source's actual fps for the encoder's
+    # rawvideo input rate. ``core/edit_export_walker.py`` hardcodes
+    # ``src_fps = 30.0`` as a hint (it's gateway-only and can't probe
+    # without touching ffmpeg from the UI thread). For any source not
+    # at exactly 30 fps the encoder labels the decoded frames at the
+    # wrong rate — a 24 fps source comes out 20 % short, a 60 fps
+    # source comes out at half speed. We re-probe here regardless,
+    # and fall back to the plan's hint when ``probe_video`` couldn't
+    # read a frame rate.
+    if meta.fps > 0 and abs(meta.fps - plan.src_fps) > 1e-3:
+        log.info(
+            "video export: overriding plan src_fps %.3f with probed "
+            "%.3f for %s", plan.src_fps, meta.fps, video_path.name)
+        plan = dataclasses.replace(plan, src_fps=float(meta.fps))
 
     in_s = plan.in_ms / 1000.0
     dur_s = plan.duration_ms / 1000.0

@@ -1,4 +1,4 @@
-# 150 — The end-of-clip pause: PTE freezes the last frame · cut-play waits on EndOfMedia · exported mp4 carries an audio tail
+# 150 — The end-of-clip pause: PTE freezes the last frame · cut-play waits on EndOfMedia · exported mp4 carries an audio tail · encoder mislabels source fps
 
 **Status: PROPOSED (Nelson 2026-06-25). When a video plays inside a Cut — both
 the in-app rehearsal AND a generated PTE show — the clip's last frame freezes
@@ -176,3 +176,97 @@ unchanged — we only stop padding video slides with hold time).
 - **C:** unit-assert both encode command builders include `-shortest`; if an
   integration clip is available, `ffprobe` the exported mp4 and assert the
   audio and video stream durations match within one frame.
+
+## 6. Addendum — Cause D (encoder mislabels source fps)
+
+**Discovered 2026-06-25 after A/B/C landed: the user re-played exported
+clips directly in Windows Media Player and saw a multi-second image
+freeze before the file ends. The source clips played cleanly; only
+Mira's re-encoded versions had the freeze, and only on SOME clips.
+That points at the export pipeline itself, not the container tail
+that C addressed.**
+
+`core/edit_export_walker.py:154` hardcodes `src_fps = 30.0` and leaves
+a comment promising the runner re-probes at render time:
+
+```python
+# Source fps — probe_video would touch ffmpeg, deliberately
+# NOT done here (the walker is gateway-only and called inside
+# the UI thread); the runner re-probes at render time, the
+# plan's src_fps is a hint only.
+src_fps = 30.0
+```
+
+`core/video_export_run.py:export_processed_clip` DOES call
+`probe_video(video_path)` (line ~101), but only consumes
+`display_width` / `display_height`. `meta.fps` is thrown away. The
+encoder's rawvideo input then runs at the unverified hint:
+
+```python
+"-s", f"{out_w}x{out_h}", "-r", f"{plan.src_fps:g}",
+"-i", "pipe:0",
+```
+
+For any source not at exactly 30 fps the decoded-frame count and the
+encoder's assigned PTS don't agree:
+
+| Source fps | Decoded frames per dur_s | Encoder writes them at | Output video duration |
+|---|---|---|---|
+| 24 | dur_s × 24 | 30 fps | dur_s × 0.80 |
+| 25 (PAL) | dur_s × 25 | 30 fps | dur_s × 0.833 |
+| 29.97 (NTSC) | dur_s × 29.97 | 30 fps | dur_s × 0.999 (sub-frame) |
+| 30 | dur_s × 30 | 30 fps | dur_s × 1.0 (no bug) |
+| 60 | dur_s × 60 | 30 fps | dur_s × 2.0 (slow motion, audio cut short) |
+
+A 24 fps source produces an output video stream that's 20 % shorter
+than the trimmed audio. WITHOUT the §3 `-shortest` fix the muxed clip
+holds the last video frame for that 20 % gap → the freeze the user
+reported. WITH `-shortest` the muxed clip ends with the (shortened)
+video and 20 % of the audio is lost — a different bug, but still
+wrong. A 60 fps source comes out at half speed; once `-shortest`
+lands it loses the latter half of the visible action instead. Both
+need cause D fixed before §3's `-shortest` lands cleanly.
+
+### Why only some clips show it
+
+This only hits the **numpy-pipe path** (`_run_pipe` →
+`_start_encode`). The fast path (`_run_ffmpeg_only`) is a single
+ffmpeg invocation with no `-r` and inherits the source's natural rate
+through ffmpeg's stream-copy heuristics, so duration is preserved
+regardless of camera fps. The numpy-pipe path engages whenever a
+clip has any colour or crop / Box-Rotation adjustment
+(`plan.has_colour or plan.has_crop` in `export_processed_clip`).
+"Sometimes but not all clips" matches: graded clips hit the bug,
+trim-only / mute-only / speed-only / stabilise-only clips don't.
+
+### Fix D — use the probed source fps
+
+`export_processed_clip` already probes the source for dimensions. After
+the probe, replace the plan's `src_fps` with the probed value (falling
+back to the hint when the probe couldn't read a rate). One line via
+`dataclasses.replace`:
+
+```python
+meta = probe_video(video_path)
+...
+if meta.fps > 0:
+    plan = dataclasses.replace(plan, src_fps=float(meta.fps))
+```
+
+The walker's hardcoded 30.0 stays as the fall-back hint — it's only
+used when `probe_video` returns `fps == 0` (parse failed). The plan
+remains frozen everywhere else; we just rebind to a corrected copy
+once.
+
+### Tests
+
+- 24 fps source via `_make_test_video(... fps=24)`, exported through
+  the numpy-pipe path (a tiny `Params(exposure=0.1)` trips
+  `has_colour`). Assert output duration ≈ source duration. Before the
+  fix this came out ~80 % of source duration (which under §3's
+  `-shortest` also shortens the audio — strictly worse, hence why D
+  needs to land alongside C).
+- Same for 60 fps to pin the over-rate side: output ≈ source, not 2 ×.
+- Add a `src_fps` probe assertion: after `probe_video` returns a
+  non-zero fps the runner's `plan.src_fps` reflects it (i.e., the
+  walker's hint is overridden).

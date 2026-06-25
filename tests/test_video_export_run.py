@@ -230,6 +230,71 @@ def test_run_ffmpeg_only_includes_shortest_without_audio(
     assert "-an" in _CapturingPopen.last_cmd
 
 
+# ── spec/150 §6 — encoder uses the SOURCE's actual fps, not the
+#    walker's hardcoded 30.0 hint. The numpy-pipe path
+#    (_run_pipe → _start_encode) mislabels frames at 30 fps for any
+#    source not at exactly 30 fps; visible as a multi-second freeze
+#    at the end of an exported 24 fps clip (or slow motion for 60 fps).
+
+
+def test_24fps_source_preserves_duration_through_numpy_pipe(tmp_path):
+    """spec/150 §6 — a 24 fps source exported through the numpy-pipe
+    path (any colour adjustment trips ``has_colour``) must produce a
+    clip whose duration matches the source. Before the fix the
+    encoder labelled frames at 30 fps regardless → output was ~80 %
+    of source duration (the rest filled by the audio tail, visible
+    as a frozen last frame in any player)."""
+    src = _make_test_video(
+        tmp_path / "src24.mp4", duration_s=1.0, color="green",
+        size="320x240", fps=24)
+    out = tmp_path / "out24.mp4"
+    # Numpy-pipe path: any colour adjustment flips ``has_colour``.
+    export_processed_clip(src, out, _plan(params=Params(exposure=0.1)))
+    meta = probe_video(out)
+    # 1.0s source must produce ~1.0s output. Before the fix this came
+    # out at ~800ms (24/30 of 1000ms) with a frozen tail.
+    assert 900 <= meta.duration_ms <= 1100, (
+        f"spec/150 §6: 24fps source exported through numpy-pipe must "
+        f"preserve source duration; got {meta.duration_ms}ms "
+        f"(expected ~1000ms; ~800ms = pre-fix mislabelling)"
+    )
+
+
+def test_60fps_source_preserves_duration_through_numpy_pipe(tmp_path):
+    """spec/150 §6 — a 60 fps source must export at 60 fps. Before
+    the fix the encoder labelled frames at 30 fps → output was 2 × the
+    source duration (slow motion); with the §3 ``-shortest`` fix the
+    audio side bounded the muxed clip to 1s, losing half the visible
+    action."""
+    src = _make_test_video(
+        tmp_path / "src60.mp4", duration_s=1.0, color="red",
+        size="320x240", fps=60)
+    out = tmp_path / "out60.mp4"
+    export_processed_clip(src, out, _plan(params=Params(exposure=0.1)))
+    meta = probe_video(out)
+    assert 900 <= meta.duration_ms <= 1100, (
+        f"spec/150 §6: 60fps source exported through numpy-pipe must "
+        f"preserve source duration; got {meta.duration_ms}ms "
+        f"(expected ~1000ms; ~2000ms = pre-fix mislabelling)"
+    )
+
+
+def test_30fps_source_unaffected_by_fps_override(tmp_path):
+    """spec/150 §6 — the override is a no-op for 30 fps sources (the
+    common case). Pin this so we don't accidentally regress the
+    happy path while fixing the off-rate cases."""
+    src = _make_test_video(
+        tmp_path / "src30.mp4", duration_s=1.0, color="blue",
+        size="320x240", fps=30)
+    out = tmp_path / "out30.mp4"
+    export_processed_clip(src, out, _plan(params=Params(exposure=0.1)))
+    meta = probe_video(out)
+    assert 900 <= meta.duration_ms <= 1100, (
+        f"spec/150 §6: 30fps source must still export at ~1000ms "
+        f"after the fps-override fix; got {meta.duration_ms}ms"
+    )
+
+
 # ── Encoder detection — probe + cache live in core.encoder_ladder
 #    (spec/60 §4); video_export_run delegates. Same contract, broader
 #    coverage (NVENC → QSV → AMF → libx264) in test_encoder_ladder.

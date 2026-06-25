@@ -746,7 +746,10 @@ class CutSessionPage(QWidget):
             state=state,
             payload=f.export_relpath,
             cluster_type="video" if is_video else None,
-            cluster_count=1 if is_video else 0,
+            # cluster_count=0 keeps the "×N" count chip hidden; the
+            # spec/144 video badge alone signals the kind (Nelson
+            # 2026-06-25 — ×1 was confused with a "1× speed" tag).
+            cluster_count=0,
         )
 
     # ── days level ───────────────────────────────────────────────────

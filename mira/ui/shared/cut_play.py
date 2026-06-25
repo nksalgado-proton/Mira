@@ -527,6 +527,25 @@ class CutPlayerDialog(QDialog):
             self._capture_outgoing_pixmap()
             if self._index >= 0 else None
         )
+        # spec/152 Phase 2 — when the outgoing entry is a video,
+        # FREEZE its last frame on the photo widget BEFORE we stop
+        # the player. Otherwise the QVideoWidget paints opaque black
+        # immediately on ``stop()`` and the user sees that black
+        # while the next entry's setup runs. The frozen still on the
+        # photo widget acts as a guaranteed visual fallback even when
+        # the crossfade overlay can't be constructed (e.g. the cache
+        # listener never observed a frame on some Qt backend).
+        coming_from_video = (
+            self._video_widget is not None
+            and self._video_widget.isVisible()
+        )
+        if (coming_from_video and outgoing_pm is not None
+                and not outgoing_pm.isNull()):
+            self._raw_pixmap = QPixmap(outgoing_pm)
+            self._photo.show()
+            self._fit_current()
+            self._video_widget.hide()
+            self._stack_layout.setCurrentWidget(self._photo)
         # spec/152 Phase 2 — show the overlay with the captured frame
         # IMMEDIATELY, before the new entry's paint reaches the user.
         # Without this the new photo / video paints fully (because the
@@ -536,6 +555,12 @@ class CutPlayerDialog(QDialog):
         # on any video transition.
         if outgoing_pm is not None and not outgoing_pm.isNull():
             self._show_transition_overlay(outgoing_pm)
+            # Force a synchronous paint so the overlay actually covers
+            # the canvas before the next-entry setup runs; without this
+            # Qt may defer the show() paint to the next event-loop tick
+            # and the user briefly sees the new entry's geometry.
+            if self._transition_overlay is not None:
+                self._transition_overlay.repaint()
         self._timer.stop()
         if self._player is not None:
             self._player.stop()

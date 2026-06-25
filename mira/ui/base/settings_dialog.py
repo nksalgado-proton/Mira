@@ -946,6 +946,24 @@ SETTINGS_SCHEMA: list[dict] = [
                 "min": 0.5, "max": 600.0, "step": 0.5,
                 "decimals": 1, "suffix": " min",
             },
+            # spec/152 §3 — global crossfade transition between Cut
+            # slides. Same value drives the in-app Play crossfade, the
+            # PTE [Times] cumulative, and the show-length budget the
+            # audio playlist is built to. ``0`` reverts to hard cuts.
+            {
+                "key": "default_transition_ms",
+                "label": "Crossfade transition between slides",
+                "widget": "spinbox",
+                "tooltip": (
+                    "How long the crossfade between consecutive Cut "
+                    "slides lasts. Counted in the show length so the "
+                    "audio playlist and the generated PTE end at the "
+                    "same time the slideshow does. Default 2000 ms; "
+                    "0 = hard cuts (no transition)."
+                ),
+                "min": 0, "max": 10000, "step": 100,
+                "decimals": 0, "suffix": " ms",
+            },
         ],
     },
     {

@@ -29,6 +29,7 @@ import collections
 import dataclasses
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -104,6 +105,30 @@ def export_processed_clip(
     src_h = int(meta.display_height or meta.height or 0)
     if src_w <= 0 or src_h <= 0:
         raise RuntimeError(f"Could not probe dimensions for {video_path.name}")
+
+    # spec/151 §1 — entire source, no edits at all → hardlink (or
+    # copy across volumes). The output IS the source byte-for-byte;
+    # no decoder, no encoder, no fps work needed. Microseconds wall
+    # time on the hardlink path.
+    if _is_full_source_passthrough(plan, int(meta.duration_ms or 0)):
+        return _passthrough_copy(
+            video_path, output_path,
+            progress=progress, on_file_fraction=on_file_fraction)
+
+    # spec/151 §2 — identity except for the trim window → ``ffmpeg
+    # -c copy`` slice. Demux + remux at file-copy speed, no encoder.
+    # The in-point snaps to the nearest preceding keyframe (drift
+    # accepted per Nelson 2026-06-25 — see spec/151 §2 trade-off).
+    if _is_trim_only_segment(plan):
+        in_s_quick = plan.in_ms / 1000.0
+        dur_s_quick = plan.duration_ms / 1000.0
+        if dur_s_quick <= 0:
+            raise ValueError("Export plan has non-positive duration")
+        return _stream_copy(
+            video_path, output_path,
+            in_s=in_s_quick, dur_s=dur_s_quick,
+            progress=progress, on_file_fraction=on_file_fraction,
+            timeout=timeout)
 
     # spec/150 §6 — use the source's actual fps for the encoder's
     # rawvideo input rate. ``core/edit_export_walker.py`` hardcodes
@@ -423,6 +448,146 @@ def _run_ffmpeg_only(
     log.info("exported processed clip (fast path) %s [%d,%d]ms -> %s",
              video_path.name, plan.in_ms, plan.out_ms, output_path)
     return output_path
+
+
+# ── spec/151 §1 + §2 — passthrough / stream-copy when the plan
+#    doesn't actually need an encoder ────────────────────────────────
+
+
+def _is_identity_apart_from_trim(plan: ExportPlan) -> bool:
+    """The shared predicate for spec/151 §1 and §2: the plan is the
+    identity in EVERY axis except the trim window (which §1 also
+    checks against the source duration). Audio is included at unit
+    volume with no fade; no colour, crop, speed, stabilise, or
+    creative filter."""
+    return (
+        not plan.has_colour
+        and not plan.has_crop
+        and abs(plan.speed - 1.0) < 1e-6
+        and not plan.stabilise_on
+        and bool(plan.include_audio)
+        and abs(plan.audio_volume - 1.0) < 1e-6
+        and int(plan.audio_fade_ms) == 0
+        and plan.filter_recipe is None
+    )
+
+
+def _is_full_source_passthrough(
+    plan: ExportPlan, src_duration_ms: int,
+) -> bool:
+    """spec/151 §1 — entire source, no edits at all. The output is
+    the source byte-for-byte. ``src_duration_ms`` is the probed
+    container duration; we accept a small (≤ 50 ms) tail tolerance
+    so a fixture whose ``out_ms`` was clamped to the container's
+    reported length still qualifies."""
+    if not _is_identity_apart_from_trim(plan):
+        return False
+    if plan.in_ms != 0:
+        return False
+    # Allow a small slack for the out_ms vs probed duration mismatch
+    # (probe is parsed from ffmpeg -i; some sources report slightly
+    # different durations from what the source carries).
+    return plan.out_ms >= max(0, int(src_duration_ms) - 50)
+
+
+def _is_trim_only_segment(plan: ExportPlan) -> bool:
+    """spec/151 §2 — identity in every axis except the trim window.
+    Stream-copyable; the keyframe-drift trade-off (in-point snaps to
+    the nearest preceding keyframe) is the documented cost per
+    Nelson 2026-06-25 decision."""
+    return _is_identity_apart_from_trim(plan)
+
+
+def _passthrough_copy(
+    source: Path, output: Path,
+    progress: Optional[ProgressCb],
+    on_file_fraction: Optional[FileFractionCb],
+) -> Path:
+    """spec/151 §1 helper — hardlink the source to the output, falling
+    back to ``shutil.copy2`` when the link fails (most commonly a
+    cross-volume target on Windows). Progress / fraction sinks see a
+    single 0 → 1 transition; the operation is effectively atomic."""
+    if progress is not None and not progress(0, 1):
+        raise _Cancelled()
+    # The runner is the only caller; the output_path is freshly
+    # resolved by the batch's name reserver. If something stale is
+    # already there (a previous half-done export), clear it so
+    # ``os.link`` doesn't FileExistsError.
+    if output.exists():
+        try:
+            output.unlink()
+        except OSError:
+            pass
+    try:
+        os.link(source, output)
+        log.info("exported processed clip (passthrough/hardlink) %s -> %s",
+                 source.name, output)
+    except OSError:
+        # Cross-volume / filesystem refused the link → byte copy.
+        shutil.copy2(source, output)
+        log.info("exported processed clip (passthrough/copy) %s -> %s",
+                 source.name, output)
+    if progress is not None:
+        progress(1, 1)
+    if on_file_fraction is not None:
+        try:
+            on_file_fraction(1.0)
+        except Exception:                                          # noqa: BLE001
+            pass
+    return output
+
+
+def _stream_copy(
+    source: Path, output: Path, *,
+    in_s: float, dur_s: float,
+    progress: Optional[ProgressCb],
+    on_file_fraction: Optional[FileFractionCb],
+    timeout: float,
+) -> Path:
+    """spec/151 §2 helper — ``ffmpeg -c copy`` slice. ``-ss`` before
+    ``-i`` is the input seek (fast, keyframe-snapping); ``-t`` is the
+    output duration cap (exact). No encoder runs; the source bytes
+    are demuxed and remuxed verbatim. Progress is polled at 100 ms
+    intervals so the user can cancel a long stream copy."""
+    cmd = [
+        _FFMPEG_EXE, "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{in_s:.3f}", "-i", str(source), "-t", f"{dur_s:.3f}",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+    if progress is not None and not progress(0, 1):
+        raise _Cancelled()
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        **_no_window())
+    while True:
+        try:
+            proc.wait(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if progress is not None and not progress(0, 1):
+                proc.kill()
+                proc.wait()
+                output.unlink(missing_ok=True)
+                raise _Cancelled()
+    if proc.returncode != 0:
+        err = proc.stderr.read() if proc.stderr else b""
+        raise RuntimeError(
+            f"FFmpeg stream-copy failed for {source.name}: "
+            f"{err.decode('utf-8', 'replace')[:500]}")
+    if progress is not None:
+        progress(1, 1)
+    if on_file_fraction is not None:
+        try:
+            on_file_fraction(1.0)
+        except Exception:                                          # noqa: BLE001
+            pass
+    log.info(
+        "exported processed clip (stream copy) %s [%d,%d]ms -> %s",
+        source.name, int(in_s * 1000), int((in_s + dur_s) * 1000),
+        output)
+    return output
 
 
 def _video_encoder_args() -> list[str]:

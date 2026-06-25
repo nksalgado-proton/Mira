@@ -295,6 +295,163 @@ def test_30fps_source_unaffected_by_fps_override(tmp_path):
     )
 
 
+# ── spec/151 §1 + §2 — predicates + passthrough / stream-copy ──────
+
+
+from core.video_export_run import (
+    _is_full_source_passthrough,
+    _is_identity_apart_from_trim,
+    _is_trim_only_segment,
+)
+
+
+def test_identity_plan_recognised_as_identity_apart_from_trim():
+    """spec/151 — the base predicate accepts a plan that's identity
+    in every axis except (possibly) the trim window."""
+    assert _is_identity_apart_from_trim(_plan()) is True
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(params=Params(exposure=0.1)),       # colour
+    dict(crop_norm=(0.0, 0.0, 0.5, 0.5)),    # crop
+    dict(box_angle=15.0),                     # rotation
+    dict(speed=2.0),                          # speed
+    dict(stabilise=0.5),                      # stabilise
+    dict(include_audio=False),                # muted
+    dict(audio_volume=0.5),                   # gain
+    dict(audio_fade_ms=200),                  # fade
+])
+def test_identity_predicate_rejects_any_real_edit(kwargs):
+    """spec/151 — any single non-identity field disqualifies the
+    plan from the passthrough / stream-copy paths."""
+    assert _is_identity_apart_from_trim(_plan(**kwargs)) is False
+
+
+def test_full_source_passthrough_predicate_matches_full_trim():
+    """spec/151 §1 — full-source predicate requires in_ms=0 AND
+    out_ms covering the source duration."""
+    plan = _plan(in_ms=0, out_ms=1000)
+    assert _is_full_source_passthrough(plan, 1000) is True
+    # Tail tolerance: out_ms within 50 ms below the source still
+    # qualifies (handles probe rounding).
+    assert _is_full_source_passthrough(plan, 1040) is True
+
+
+def test_full_source_passthrough_predicate_rejects_trim():
+    """A non-zero in_ms or short out_ms must drop out of §1 and
+    fall into §2 instead."""
+    assert _is_full_source_passthrough(
+        _plan(in_ms=200, out_ms=1000), 1000) is False
+    assert _is_full_source_passthrough(
+        _plan(in_ms=0, out_ms=500), 1000) is False
+
+
+def test_trim_only_predicate_matches_identity_with_any_trim():
+    """spec/151 §2 — trim-only predicate is independent of the trim
+    window; it just enforces identity on every other axis."""
+    assert _is_trim_only_segment(_plan(in_ms=200, out_ms=700)) is True
+    assert _is_trim_only_segment(_plan(in_ms=0, out_ms=1000)) is True
+
+
+# ── spec/151 §1 integration: hardlink (or copy) the source ─────────
+
+
+def test_full_source_passthrough_produces_byte_identical_output(
+        src, tmp_path):
+    """spec/151 §1 — exporting an unedited full-source clip writes
+    the source bytes verbatim. Byte-for-byte equality is the
+    correctness contract."""
+    out = tmp_path / "passthrough.mp4"
+    export_processed_clip(src, out, _plan())
+    assert out.exists() and out.stat().st_size > 0
+    assert out.read_bytes() == src.read_bytes(), (
+        "spec/151 §1: passthrough output must equal the source "
+        "byte-for-byte"
+    )
+
+
+def test_full_source_passthrough_uses_hardlink_when_possible(
+        src, tmp_path):
+    """spec/151 §1 — on a same-volume target, the passthrough path
+    creates a hardlink rather than a separate copy. Verified via the
+    inode link count (POSIX) / nlink (Windows). When the test runs
+    on a filesystem that doesn't support hardlinks, the fallback
+    ``shutil.copy2`` still produces equal bytes — that case is
+    covered by ``test_full_source_passthrough_produces_byte_identical_output``."""
+    out = tmp_path / "passthrough_link.mp4"
+    export_processed_clip(src, out, _plan())
+    src_stat = src.stat()
+    out_stat = out.stat()
+    if src_stat.st_nlink > 1:
+        # Hardlink succeeded: both paths share the same inode count.
+        assert out_stat.st_nlink == src_stat.st_nlink
+    else:
+        # Filesystem refused; the fallback copy still matches bytes.
+        assert out.read_bytes() == src.read_bytes()
+
+
+# ── spec/151 §2 integration: stream copy the slice ─────────────────
+
+
+def test_trim_only_stream_copy_produces_valid_clip(src, tmp_path):
+    """spec/151 §2 — exporting a trim-only plan slices via ``-c copy``
+    and produces a valid mp4 whose duration matches the trim window
+    (within the documented keyframe-drift tolerance)."""
+    out = tmp_path / "trim_copy.mp4"
+    # 1.0 s source → trim to [0.3, 0.8] = 0.5 s window. Stream copy
+    # may snap the in-point to a preceding keyframe; tolerate that.
+    export_processed_clip(src, out, _plan(in_ms=300, out_ms=800))
+    assert out.exists() and out.stat().st_size > 0
+    meta = probe_video(out)
+    # The realised duration is at least the trim window (500 ms) and
+    # at most window + keyframe interval (~ a couple of seconds in
+    # the worst case for phone footage; here the test source is
+    # tightly authored so a generous upper bound suffices).
+    assert 400 <= meta.duration_ms <= 1100, (
+        f"spec/151 §2: stream-copy slice should be ~500 ms (drift "
+        f"allowed up to one keyframe interval); got {meta.duration_ms}ms"
+    )
+
+
+def test_trim_only_stream_copy_skips_encoder_args(tmp_path, monkeypatch):
+    """spec/151 §2 — the stream-copy command builder must NOT
+    include the encoder ladder args (``-c:v …``, ``-c:a …``). It's
+    a remux, not a re-encode. Tests ``_stream_copy`` directly with a
+    captured Popen so probe_video isn't pulled in."""
+    from core.video_export_run import _stream_copy
+
+    captured = {"cmd": None}
+
+    class _FakeStreamCopyPopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            self.stdout = None
+            self.stderr = type("E", (), {"read": lambda self_: b""})()
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(
+        "core.video_export_run.subprocess.Popen", _FakeStreamCopyPopen)
+    _stream_copy(
+        Path("ignored_src.mp4"), tmp_path / "ignored_out.mp4",
+        in_s=0.2, dur_s=0.5,
+        progress=None, on_file_fraction=None, timeout=60.0)
+
+    cmd = captured["cmd"] or []
+    assert "-c" in cmd and "copy" in cmd, (
+        f"spec/151 §2: stream copy must pass ``-c copy``; got {cmd!r}"
+    )
+    # No re-encode arguments allowed on the stream-copy path.
+    assert "-c:v" not in cmd and "libx264" not in cmd
+    assert "h264_nvenc" not in cmd
+    assert "-c:a" not in cmd and "aac" not in cmd
+
+
 # ── Encoder detection — probe + cache live in core.encoder_ladder
 #    (spec/60 §4); video_export_run delegates. Same contract, broader
 #    coverage (NVENC → QSV → AMF → libx264) in test_encoder_ladder.

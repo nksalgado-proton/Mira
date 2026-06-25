@@ -37,7 +37,8 @@ from typing import Optional
 
 from core import audio_library
 from mira.shared.cut_export import (
-    _dedup_filename, _place, write_audio_playlist,
+    _clear_folder_contents, _dedup_filename, _fresh_folder, _place,
+    write_audio_playlist,
 )
 
 log = logging.getLogger(__name__)
@@ -200,6 +201,7 @@ def export_cross_event_cut(
     target: Path,
     include_originals: bool = False,
     copy_mode: bool = False,
+    overwrite_existing: bool = True,
     audio_root: Optional[str] = None,
     audio_tracks: Optional[list] = None,
     rng=None,
@@ -240,6 +242,15 @@ def export_cross_event_cut(
     the block; ``None`` leaves ``audio/`` absent (parity with the
     per-event behaviour for category-less Cuts).
 
+    spec/148 — ``overwrite_existing`` mirrors the per-event flag:
+    ``True`` (the default — preserves today's per-file-overwrite
+    semantics so callers and tests that re-export to the same target
+    keep working) materialises into ``target`` directly, clearing any
+    prior bundle first so stale members can't linger; ``False`` runs
+    ``target`` through :func:`mira.shared.cut_export._fresh_folder`
+    so a re-export lands at ``<tag> (2)/`` and the old folder stays
+    untouched.
+
     spec/111 — ``opener_writer`` / ``separator_writer`` are the same
     injected card renderers the per-event exporter accepts. The host
     builds them at the Cut's aspect (``cut.aspect`` → canvas WxH via
@@ -254,12 +265,24 @@ def export_cross_event_cut(
     run at all (cut gone from mira.db, target unwritable). Per-member
     errors fall under ``missing``."""
     target = Path(target)
-    if not target.exists():
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise CrossEventExportError(
-                f"could not create target {target}: {exc}") from exc
+    if overwrite_existing:
+        # spec/148 Overwrite — write into target; clear any prior
+        # bundle so a smaller re-export can't leave orphan members
+        # behind. The per-file unlink/relink loop below still handles
+        # in-flight collisions inside this run.
+        if target.exists():
+            _clear_folder_contents(target)
+    else:
+        # spec/148 Keep both — never touch an existing bundle; the
+        # re-export lands at ``<tag> (2)/`` so the user's prior PTE
+        # project stays addressable by its current absolute paths.
+        if target.exists():
+            target = _fresh_folder(target)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CrossEventExportError(
+            f"could not create target {target}: {exc}") from exc
 
     lg = gateway.library_gateway()
     cut = lg.cross_event_cut(cut_id)
@@ -454,6 +477,11 @@ def export_cross_event_cut(
         # spec/111 — separator + opener slides rendered. 0 when no
         # writer was wired; non-zero when the host opted in.
         "separators": separators,
+        # spec/148 — the actual folder written to. Identical to the
+        # caller's ``target`` under Overwrite; ``<tag> (2)/`` etc. when
+        # Keep-both disambiguated. UI reads this back for the
+        # export-complete summary + Open-folder action.
+        "folder": target,
     }
 
 

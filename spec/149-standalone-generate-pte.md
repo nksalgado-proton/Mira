@@ -1,17 +1,19 @@
 # 149 — Standalone "Generate PTE" for an exported Cut folder (+ Open-in-PTE auto-generates)
 
-**Status: PROPOSED (Nelson 2026-06-23, design agreed). The `.pte` is created
-**only** as a side effect of a Cut export, and only when the `use_pte` flag
-is set (`share_cuts_page._generate_pte_if_enabled` after `export_cut`;
-`library_page:614` for cross-event). The "Open in PTE" action (spec/117)
-only **launches an existing** `.pte` — if none is found it no-ops with a
-warning; it never generates. So there's no way to (re)create a `.pte` for an
-existing exported folder without a **full re-export** (which spawns another
-`(2)/` folder). Add a standalone **"Generate PTE"** action that writes the
-`.pte` into an already-exported Cut folder — no media re-materialisation —
-and have **Open in PTE auto-generate** when the `.pte` is missing. Touches
-`mira/ui/pages/share_cuts_page.py` (+ the cut detail page / `library_page`).
-Reuses the existing `_generate_pte_into_folder` / `pte_project`.**
+**Status: IMPLEMENTED (Nelson 2026-06-25). The new
+`mira.shared.cut_pte_generation.generate_pte_for_folder` scans an exported
+Cut folder, builds the member list + audio tracks from the files there,
+and writes ``<stem>.pte`` (overwrite=True) via the existing
+`pte_project.generate_into_folder` — no media re-materialisation. Surfaces:
+the cut detail page (`CutDetailPage`) and the cross-event Cut detail dialog
+(`CrossEventCutDetailDialog`) gained a **Generate PTE** button next to the
+spec/117 Open folder / Open in PTE buttons. **Open in PTE** in both
+surfaces now auto-generates when `pte_file` is `None` but `use_pte` is on
+and the folder exists — one click, no re-export. Tests:
+`tests/test_generate_pte_standalone.py` (data layer: media + audio walk,
+rename self-heals paths, no media re-write) and
+`tests/test_open_in_pte_autogenerate.py` (handler dispatch: auto-generate
+when missing, skip when `use_pte` off, per-event + cross-event).**
 
 ## 1. The gap
 

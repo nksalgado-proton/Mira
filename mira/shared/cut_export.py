@@ -23,8 +23,12 @@ it lands is a re-confirmed default.
     members are copies, not links.
 In-app Play draws overlays live (the play path, not here).
 
-Export is a SNAPSHOT: the Cut stays live; a name collision on disk gets a
-``(2)``-style disambiguator instead of touching the old folder. Stamps
+Export is a SNAPSHOT: the Cut stays live; by default a name collision on
+disk gets a ``(2)``-style disambiguator instead of touching the old folder
+(spec/148 Keep both). Pass ``overwrite_existing=True`` (spec/148 Overwrite)
+to materialise straight into the existing ``<tag>/`` — its contents are
+cleared first so the bundle is a clean replacement and the generated
+``.pte`` carries correct ``<tag>/`` paths from the start. Stamps
 ``last_exported_at`` when done.
 
 No Qt imports here (charter invariant 8 posture for the data layer).
@@ -97,6 +101,22 @@ def _fresh_folder(base: Path) -> Path:
         if not candidate.exists():
             return candidate
         n += 1
+
+
+def _clear_folder_contents(folder: Path) -> None:
+    """spec/148 Overwrite — empty ``folder`` in place so an Overwrite
+    export lands on a clean slate without dropping the folder itself
+    (Windows file handles, watchers, the FS volume identity all stay).
+    Files are unlinked one by one; subdirectories (``audio/``,
+    ``Original Media/`` from prior runs) are rmtree'd recursively."""
+    for child in folder.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            try:
+                child.unlink()
+            except IsADirectoryError:                              # noqa: PERF203
+                shutil.rmtree(child)
 
 
 def _link_or_copy(src: Path, dst: Path) -> bool:
@@ -373,6 +393,7 @@ def export_cut(
     iptc_writer: Optional[IptcWriter] = None,
     include_originals: bool = False,
     copy_mode: bool = False,
+    overwrite_existing: bool = False,
     original_resolver: Optional[OriginalResolver] = None,
     rng=None,
 ) -> ExportResult:
@@ -402,13 +423,30 @@ def export_cut(
     originals AND audio (the show is then independent of the source
     event's lifecycle). Default ``False`` hardlinks with a copy
     fallback on cross-volume OSError. Overlay burn-in members stay
-    copies regardless (rendered)."""
+    copies regardless (rendered).
+
+    spec/148 — ``overwrite_existing=True`` materialises into ``base``
+    even when it already exists (its prior contents are cleared first),
+    so the new bundle's ``.pte`` carries correct ``<tag>/`` paths and
+    folders stop accumulating ``(2)`` siblings. ``False`` (the default)
+    keeps the snapshot behaviour: ``_fresh_folder`` disambiguates to
+    ``<tag> (2)/``, the old bundle untouched. The UI confirms the
+    destructive replace before passing ``True``; the data layer trusts
+    the flag."""
     event_root = Path(event_root)
     files = files_from_lineage(gateway, gateway.cut_member_files(cut.id))
     if separators_on is None:
         separators_on = bool(getattr(cut, "separators", True))
     base = Path(target) if target is not None else default_target(event_root, cut.tag)
-    dest = _fresh_folder(base)
+    if overwrite_existing:
+        # spec/148 — write into base; clear any prior bundle so the
+        # new export is a clean replacement (no leftover members from
+        # a smaller prior version).
+        dest = base
+        if dest.exists():
+            _clear_folder_contents(dest)
+    else:
+        dest = _fresh_folder(base)
     dest.mkdir(parents=True, exist_ok=True)
     result = ExportResult(folder=dest)
 

@@ -1,18 +1,17 @@
 # 148 — Cut export: Overwrite vs Keep-both (stop accumulating `(2)` folders)
 
-**Status: PROPOSED (Nelson 2026-06-23, design agreed). Re-exporting a Cut to
-the same destination never overwrites — `export_cut` runs the target through
-`_fresh_folder` (cut_export.py:89), so `Cuts/<tag>/` becomes
-`Cuts/<tag> (2)/`, `(3)`, … The old folder is left untouched (safe — never
-clobbers a project the user has edited in PTE), but re-exports **accumulate**
-folders, and the manual "delete old + rename new" workaround **breaks the
-`.pte`** (its baked absolute paths still point at `<tag> (2)/`). Add an
-**Overwrite vs Keep-both** choice on Cut export — Overwrite writes straight
-into `<tag>/` (replacing the prior bundle, `.pte` paths correct from the
-start); Keep-both is today's `(2)` behaviour. Mirrors the media-level
-spec/118 choice. Touches `mira/shared/cut_export.py` (target resolution),
-`mira/shared/pte_project.py` (already has an `overwrite` flag), and the
-export dialog/handlers (`share_cuts_page` / `library_page`).**
+**Status: IMPLEMENTED (Nelson 2026-06-25). `export_cut` /
+`export_cross_event_cut` now accept `overwrite_existing`; the
+`_ExportTargetDialog` carries the Overwrite vs Keep-both radio (default
+tracks the user's last choice via the new app-tier setting
+`cut_export_overwrite_default`); the per-event + cross-event handlers
+confirm before replacing a non-empty existing folder and persist the radio
+choice. `pte_project.generate_into_folder(overwrite=True)` is threaded
+through so the project filename + baked absolute paths land at
+`<stem>.pte` / `<tag>/` directly under Overwrite. Tests:
+`tests/test_cut_export_overwrite.py` (data layer + PTE paths) and
+`tests/test_cut_export_overwrite_confirm.py` (page-level prompt + Cancel
++ persistence).**
 
 ## 1. The bug / friction
 

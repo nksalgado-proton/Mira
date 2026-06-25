@@ -162,6 +162,18 @@ class Settings:
         "Root for exported Cuts, as <root>/<event>/<cut>. Blank = a "
         "Cuts/ folder on the same volume as each event (keeps "
         "hardlinks).", "")
+    # spec/148 — Overwrite vs Keep-both is offered on every Cut export.
+    # The dialog defaults to the user's last choice so a power user who
+    # always overwrites doesn't keep flipping the radio. False = Keep
+    # both (today's folder-disambiguation behaviour); True = Overwrite
+    # (write into <tag>/, clearing the prior bundle). App-tier — it is
+    # a sticky UI preference, not a value worth surfacing in the
+    # Settings dialog.
+    cut_export_overwrite_default: bool = _a(
+        "Last choice the user made for the Cut export Overwrite vs "
+        "Keep-both option (spec/148). True = Overwrite, False = Keep "
+        "both. The dialog pre-selects this value on the next export.",
+        False)
 
     # spec/107 — PTE AV Studio integration. ``use_pte`` is the master
     # toggle gating ALL PTE UI (off by default — non-PTE users never

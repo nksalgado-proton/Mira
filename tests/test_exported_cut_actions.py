@@ -390,11 +390,14 @@ def test_share_cuts_page_open_in_pte_handler_calls_launcher(
     assert captured == [(fake_pte, target / "slideshow.pte")]
 
 
-def test_share_cuts_page_open_in_pte_handler_skips_when_no_pte_found(
+def test_share_cuts_page_open_in_pte_handler_skips_when_use_pte_off(
         tmp_path, monkeypatch, fake_pte):
-    """Bundle exists but has no ``.pte`` (legacy export). The PTE
-    handler bails silently — Explorer isn't a fallback here (that's
-    Open folder's job)."""
+    """Bundle exists but has no ``.pte`` AND ``use_pte`` is off. The
+    handler bails silently — auto-generation (spec/149 §2.B) needs
+    ``use_pte`` on to run, and without a project the launcher has
+    nothing to open. (When ``use_pte=True`` the contract flips to
+    auto-generate; ``tests/test_open_in_pte_autogenerate.py`` covers
+    that path.)"""
     from mira.ui.pages import share_cuts_page as scp
     library_root, event_root, cut, target = _setup_event_layout(
         tmp_path, with_pte=False)
@@ -404,9 +407,11 @@ def test_share_cuts_page_open_in_pte_handler_skips_when_no_pte_found(
         lambda exe, project: captured.append((exe, project)))
     page = _make_minimal_share_page(
         scp, monkeypatch, tmp_path, cut, event_root, library_root,
-        use_pte=True, pte_path=str(fake_pte))
+        use_pte=False, pte_path=str(fake_pte))
     page._on_open_exported_in_pte(cut.tag)
     assert captured == []
+    # Nothing was written into the folder either.
+    assert not list(target.glob("*.pte"))
 
 
 # ── Helpers ──────────────────────────────────────────────────────

@@ -80,6 +80,12 @@ class CutDetailPage(QWidget):
     # PTE further on ``use_pte`` + ``pte_launch_available``.
     open_folder_requested = pyqtSignal(str)
     open_in_pte_requested = pyqtSignal(str)
+    # spec/149 — standalone Generate PTE. The host scans the resolved
+    # export folder, rebuilds the member list from the files there, and
+    # writes a fresh ``.pte`` (no media re-materialisation). Gated on
+    # ``use_pte`` + ``folder_exists`` (independent of ``pte_path`` —
+    # generating doesn't need a launcher).
+    generate_pte_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -210,6 +216,23 @@ class CutDetailPage(QWidget):
             and self.open_in_pte_requested.emit(self._cut_id))
         self._open_pte_btn.setVisible(False)
         chrome.addWidget(self._open_pte_btn)
+        # spec/149 — Generate PTE writes a fresh slideshow.pte into the
+        # exported folder using the files already there. Visible when
+        # ``use_pte`` is on AND the folder still exists (independent of
+        # whether the launcher path resolves — generating doesn't need
+        # one). Covers the rename-broke-the-pte / use_pte-was-off /
+        # deleted-pte cases without a full re-export.
+        self._generate_pte_btn = QPushButton(tr("Generate PTE"))
+        self._generate_pte_btn.setCursor(
+            QCursor(Qt.CursorShape.PointingHandCursor))
+        self._generate_pte_btn.setToolTip(tr(
+            "Rewrite slideshow.pte for this exported folder using the "
+            "files there (no media re-export)."))
+        self._generate_pte_btn.clicked.connect(
+            lambda: self._cut_id
+            and self.generate_pte_requested.emit(self._cut_id))
+        self._generate_pte_btn.setVisible(False)
+        chrome.addWidget(self._generate_pte_btn)
         self._open_folder_btn = QPushButton(tr("Open folder"))
         self._open_folder_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._open_folder_btn.setToolTip(tr(
@@ -251,19 +274,27 @@ class CutDetailPage(QWidget):
 
     def set_exported_actions(
         self, *, show_folder: bool, show_pte: bool,
+        show_generate: bool = False,
     ) -> None:
-        """spec/117 — toggle the persistent post-export action buttons.
+        """spec/117 + spec/149 — toggle the persistent post-export
+        action buttons.
 
         The host resolves the bundle (via
         :func:`mira.shared.exported_cut_actions.resolve_event_cut_location`
         or its cross-event sibling) and the PTE gates (``use_pte`` +
         :func:`mira.shared.pte_launch.pte_launch_available`), then
         calls this with the booleans. A never-exported Cut shows
-        neither; a moved/deleted bundle shows folder-only (which
+        none; a moved/deleted bundle shows folder-only (which
         degrades to the parent ``Cuts/…``).
+
+        spec/149 — ``show_generate`` (default False for back-compat)
+        flips the standalone Generate PTE action. The host gates it on
+        ``use_pte`` + folder-exists; the launcher path is irrelevant
+        here (writing the .pte is independent of opening it).
         """
         self._open_folder_btn.setVisible(bool(show_folder))
         self._open_pte_btn.setVisible(bool(show_pte))
+        self._generate_pte_btn.setVisible(bool(show_generate))
 
     def show_cut(self, eg, cut, *, separators_on: bool, aspect: str) -> None:
         """Build the flat show-order grid for one Cut: file tiles + a

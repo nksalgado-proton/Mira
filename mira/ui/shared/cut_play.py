@@ -143,6 +143,23 @@ class _Scrubber(QWidget):
     # ── paint ────────────────────────────────────────────────────────
 
     def paintEvent(self, ev) -> None:  # noqa: N802
+        """Draw the scrubber track + markers + playhead.
+
+        spec/89 §12.6 — guarded against the Qt zombie case (same class
+        as the documented ThumbGrid teardown crash): if a queued paint
+        event fires after the underlying C++ widget has been destroyed
+        (a leaked widget swept up by Python's garbage collector while
+        the QApplication is still alive), every Qt call here raises
+        ``RuntimeError: wrapped C/C++ object … has been deleted``.
+        Swallow + log; the live-widget path is unchanged."""
+        try:
+            self._paint(ev)
+        except RuntimeError:
+            log.debug(
+                "_Scrubber.paintEvent: widget already deleted — dropping "
+                "paint", exc_info=True)
+
+    def _paint(self, ev) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = self.rect()

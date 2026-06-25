@@ -69,10 +69,14 @@ class CrossEventCutDetailDialog(QDialog):
         title.setFont(f)
         top.addWidget(title)
         top.addStretch()
-        # spec/117 — persistent post-export actions on a shipped Cut.
-        # Same gates as the per-event surface: visible when
-        # ``last_exported_at`` is set; PTE further gated by ``use_pte``
-        # + ``pte_launch_available`` + a ``.pte`` found on disk.
+        # spec/117 + spec/149 — persistent post-export actions on a
+        # shipped Cut. Same gates as the per-event surface (visible when
+        # ``last_exported_at`` is set); Open in PTE additionally needs
+        # ``use_pte`` + ``pte_launch_available`` + folder-exists (the
+        # .pte itself is no longer required — :meth:`_on_open_in_pte`
+        # auto-generates when missing per spec/149 §2.B). Generate PTE
+        # needs ``use_pte`` + folder-exists (the launcher path is
+        # irrelevant when only writing).
         self._open_pte_btn = ghost_button(tr("Open in PTE"))
         self._open_pte_btn.setToolTip(tr(
             "Reopen this exported Cut's slideshow.pte in PTE — no "
@@ -80,6 +84,14 @@ class CrossEventCutDetailDialog(QDialog):
         self._open_pte_btn.clicked.connect(self._on_open_in_pte)
         self._open_pte_btn.setVisible(False)
         top.addWidget(self._open_pte_btn)
+        # spec/149 — standalone Generate PTE for the cross-event surface.
+        self._generate_pte_btn = ghost_button(tr("Generate PTE"))
+        self._generate_pte_btn.setToolTip(tr(
+            "Rewrite slideshow.pte for this exported folder using the "
+            "files there (no media re-export)."))
+        self._generate_pte_btn.clicked.connect(self._on_generate_pte)
+        self._generate_pte_btn.setVisible(False)
+        top.addWidget(self._generate_pte_btn)
         self._open_folder_btn = ghost_button(tr("Open folder"))
         self._open_folder_btn.setToolTip(tr(
             "Reveal this exported Cut's bundle folder in Explorer."))
@@ -126,8 +138,14 @@ class CrossEventCutDetailDialog(QDialog):
     # ── spec/117 — persistent post-export actions ────────────────
 
     def _sync_exported_actions(self) -> None:
-        """Flip the Open folder / Open in PTE buttons based on whether
-        the cross-event Cut shipped and the state of its bundle."""
+        """Flip the Open folder / Open in PTE / Generate PTE buttons
+        based on whether the cross-event Cut shipped and the state of
+        its bundle.
+
+        spec/149 — Open in PTE no longer requires a ``.pte`` on disk;
+        the handler auto-generates when missing. Generate PTE shows
+        when ``use_pte`` is on AND the folder exists (independent of
+        the launcher path)."""
         from mira.shared.exported_cut_actions import is_exported
         from mira.shared.pte_launch import pte_launch_available
         if not is_exported(self._cut_row):
@@ -137,12 +155,18 @@ class CrossEventCutDetailDialog(QDialog):
             return
         self._open_folder_btn.setVisible(True)
         settings = self._load_settings()
-        pte_available = (
-            loc.pte_available
-            and getattr(settings, "use_pte", False)
-            and pte_launch_available(
-                getattr(settings, "pte_path", "") if settings else ""))
+        use_pte = bool(getattr(settings, "use_pte", False)) if settings else False
+        pte_path_ok = pte_launch_available(
+            getattr(settings, "pte_path", "") if settings else "")
+        # spec/149 §2.B — Open in PTE: drop the .pte presence gate,
+        # auto-generate covers it. Still need a real folder + working
+        # launcher.
+        pte_available = use_pte and pte_path_ok and loc.folder_exists
         self._open_pte_btn.setVisible(bool(pte_available))
+        # spec/149 §2.A — Generate PTE: write into the existing folder,
+        # launcher irrelevant.
+        self._generate_pte_btn.setVisible(
+            bool(use_pte and loc.folder_exists))
 
     def _resolve_location(self):
         """Resolve the bundle via the cross-event resolver, fed
@@ -183,19 +207,90 @@ class CrossEventCutDetailDialog(QDialog):
             log.warning("reveal_in_explorer failed: %s", exc)
 
     def _on_open_in_pte(self) -> None:
+        """spec/149 §2.B — auto-generate the ``.pte`` when missing, then
+        launch. Mirrors the per-event flow."""
         from mira.shared.pte_launch import open_in_pte
         loc = self._resolve_location()
-        if loc is None or loc.pte_file is None:
+        if loc is None:
             return
         settings = self._load_settings()
         pte_path = getattr(settings, "pte_path", "") if settings else ""
         if not pte_path:
             return
+        pte_file = loc.pte_file
+        if pte_file is None:
+            use_pte = bool(getattr(settings, "use_pte", False)) if settings else False
+            if use_pte and loc.folder_exists:
+                pte_file = self._generate_pte_into_folder(loc.folder)
+        if pte_file is None:
+            log.warning(
+                "Open in PTE: no .pte for cross-event %s",
+                getattr(self._cut_row, "tag", "?"))
+            return
         try:
             from pathlib import Path
-            open_in_pte(Path(pte_path), loc.pte_file)
+            open_in_pte(Path(pte_path), pte_file)
         except OSError as exc:
             log.warning("open_in_pte failed: %s", exc)
+
+    def _on_generate_pte(self) -> None:
+        """spec/149 §2.A — write a fresh ``.pte`` into the resolved
+        cross-event folder using the files already there. No media
+        re-materialisation. Hidden upstream when ``use_pte`` is off
+        or the folder is gone, so the handler trusts the call site."""
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtWidgets import QMessageBox
+        loc = self._resolve_location()
+        if loc is None or not loc.folder_exists:
+            log.warning(
+                "Generate PTE: bundle folder missing for cross-event %s",
+                getattr(self._cut_row, "tag", "?"))
+            return
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            pte_file = self._generate_pte_into_folder(loc.folder)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.NoIcon)
+        box.setWindowTitle(tr("Generate PTE"))
+        if pte_file is None:
+            box.setText(tr(
+                "Mira couldn't write the .pte — the export folder has "
+                "no media to wrap in a project, or the generator failed. "
+                "See the log for details."))
+        else:
+            box.setText(tr(
+                "Wrote {file}.").replace("{file}", str(pte_file)))
+        box.exec()
+        # A fresh .pte may unlock the launcher button — re-sync.
+        self._sync_exported_actions()
+
+    def _generate_pte_into_folder(self, folder):
+        """spec/149 — call the shared standalone generator with the
+        cross-event Cut's aspect / photo_s / overlay mode. Returns the
+        path written, or ``None`` when generation didn't run (no media
+        / failure)."""
+        from mira.paths import library_root as _library_root_from_paths
+        from mira.shared.cut_pte_generation import generate_pte_for_folder
+        try:
+            return generate_pte_for_folder(
+                folder,
+                aspect=getattr(self._cut_row, "aspect", None) or "16:9",
+                photo_seconds=float(
+                    getattr(self._cut_row, "photo_s", 6.0) or 6.0),
+                overlay_mode=(
+                    getattr(self._cut_row, "overlay_mode", None)
+                    or "embedded"),
+                stem=(getattr(self._cut_row, "tag", None) or "").strip()
+                or "slideshow",
+                library_root=_library_root_from_paths(),
+            )
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "standalone PTE generation failed for cross-event %s",
+                getattr(self._cut_row, "tag", "?"))
+            return None
 
     def _fetch_member_groups(self) -> list:
         """Return ``[(event_id, [rows])]`` for the cut. Rows carry kind /

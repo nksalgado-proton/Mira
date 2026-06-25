@@ -548,16 +548,26 @@ class LibraryPage(QWidget):
         # gets the same checkboxes + summary shape as the per-event
         # flow. ``event_root=None`` suppresses the cross-volume notice
         # — cross-event members span volumes by nature; per-member
-        # link/copy fallback handles each independently.
+        # link/copy fallback handles each independently. spec/148 —
+        # honour the cross-event flow's last Overwrite vs Keep-both
+        # choice from settings, same field the per-event surface
+        # writes.
         from mira.ui.pages.share_cuts_page import (
             ExportChoices,
             _ExportTargetDialog,
         )
         from core import cut_names
+        try:
+            saved_settings = self._gateway.settings.load()
+            default_overwrite = bool(
+                getattr(saved_settings, "cut_export_overwrite_default", False))
+        except Exception:                                          # noqa: BLE001
+            default_overwrite = False
         dlg = _ExportTargetDialog(
             default_path=default_target,
             tag_display=cut_names.display_tag(cut_row.tag),
             event_root=None,
+            default_overwrite=default_overwrite,
             parent=self,
         )
         from PyQt6.QtWidgets import QDialog
@@ -567,7 +577,19 @@ class LibraryPage(QWidget):
             target=dlg.target(),
             include_originals=dlg.include_originals(),
             copy_mode=dlg.copy_mode(),
+            overwrite_existing=dlg.overwrite_existing(),
         )
+        # spec/148 — destructive-replace confirmation parallels the
+        # per-event surface so the user has one last chance to back
+        # out before the prior bundle gets cleared.
+        if (choices.overwrite_existing
+                and self._is_non_empty_folder(choices.target)
+                and not self._confirm_overwrite(
+                    cut_row, choices.target)):
+            return
+        # spec/148 — persist the radio choice so the next export pre-
+        # selects the same default. Silent on settings-store hiccups.
+        self._remember_overwrite_choice(choices.overwrite_existing)
         try:
             audio_root = ""
             try:
@@ -579,12 +601,18 @@ class LibraryPage(QWidget):
                 target=choices.target,
                 include_originals=choices.include_originals,
                 copy_mode=choices.copy_mode,
+                overwrite_existing=choices.overwrite_existing,
                 audio_root=audio_root or None,
             )
         except CrossEventExportError as exc:
             QMessageBox.warning(
                 self, tr("Export failed"), str(exc))
             return
+        # spec/148 — the actual folder written to (Keep-both may have
+        # disambiguated to ``<tag> (2)/``). The summary surfaces the
+        # disambiguated path so the Open-folder button + PTE generation
+        # land on the right files.
+        export_folder = Path(summary.get("folder") or choices.target)
         # spec/105 §6 summary — same shape as the per-event dialog.
         line_one = tr(
             "{n} member(s) materialised ({linked} linked, {copied} "
@@ -610,21 +638,77 @@ class LibraryPage(QWidget):
             ).replace("{n}", str(len(summary["missing_originals"]))))
         # spec/107 — generate slideshow.pte when "I use PTE" is on. Same
         # best-effort policy as the per-event flow: a failure logs but
-        # never blocks the summary.
+        # never blocks the summary. spec/148 — overwrite=True keeps the
+        # project filename at ``<stem>.pte`` (no ``(2)``) on Overwrite.
         pte_file = self._generate_pte_for_cross_event_cut(
-            cut_row, choices.target)
+            cut_row, export_folder,
+            overwrite=choices.overwrite_existing)
         self._show_export_complete_box(
-            [line_one] + extra_lines, choices.target, pte_file)
+            [line_one] + extra_lines, export_folder, pte_file)
         self.refresh()
+
+    # ── spec/148 helpers (shared with the per-event surface) ─────────
+
+    def _is_non_empty_folder(self, target: "Path") -> bool:
+        """spec/148 — confirm-gate predicate. True only when a prior
+        bundle would be destroyed by an Overwrite."""
+        try:
+            return target.exists() and any(target.iterdir())
+        except OSError:
+            return False
+
+    def _confirm_overwrite(self, cut_row, target: "Path") -> bool:
+        """spec/148 — destructive-replace confirm. Returns True to
+        proceed, False to cancel. Matches the per-event wording."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("Replace previous export?"))
+        box.setText(tr(
+            "Replace the previous export of this Cut?\n\n"
+            "Everything in {folder} will be replaced by the new "
+            "bundle. Any project file you've edited in PTE in that "
+            "folder will be lost.").replace("{folder}", str(target)))
+        replace_btn = box.addButton(
+            tr("Replace"), QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(
+            tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is replace_btn
+
+    def _remember_overwrite_choice(self, overwrite: bool) -> None:
+        """spec/148 — persist the radio choice on the gateway-shared
+        settings field. Silent on errors so the export still completes
+        when persistence isn't available."""
+        store = getattr(self._gateway, "settings", None)
+        if store is None or not hasattr(store, "load") or not hasattr(store, "save"):
+            return
+        try:
+            s = store.load()
+            if bool(getattr(s, "cut_export_overwrite_default", False)) == overwrite:
+                return
+            s.cut_export_overwrite_default = overwrite
+            store.save(s)
+        except Exception:                                          # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception(
+                "could not persist cut_export_overwrite_default = %s",
+                overwrite)
 
     # ── spec/107 cross-event helpers ─────────────────────────────────
 
     def _generate_pte_for_cross_event_cut(self, cut_row,
-                                          folder: "Path") -> "Optional[Path]":
+                                          folder: "Path",
+                                          *,
+                                          overwrite: bool = False,
+                                          ) -> "Optional[Path]":
         """When the master PTE toggle is on, walk the just-exported
         cross-event folder + write ``slideshow.pte``. Mirrors the per-
         event helper but reads the cross-event Cut's overlay / aspect /
-        photo_s from the library gateway."""
+        photo_s from the library gateway. spec/148 — ``overwrite=True``
+        passes through to :func:`generate_into_folder` so the project
+        filename lands at ``<stem>.pte`` without ``(2)`` disambiguation
+        (the Overwrite export already wiped the prior project)."""
         try:
             settings = self._gateway.settings.load()
         except Exception:  # noqa: BLE001
@@ -679,6 +763,7 @@ class LibraryPage(QWidget):
                 photo_seconds=photo_seconds,
                 library_root=_library_root_from_paths(),
                 overlay_mode=overlay_mode,
+                overwrite=overwrite,
             )
         except Exception:  # noqa: BLE001
             import logging

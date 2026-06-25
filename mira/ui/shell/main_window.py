@@ -3762,6 +3762,13 @@ class MainWindow(QMainWindow):
             if not confirm(self, title, body, primary_text=primary):
                 return
 
+        # Nelson 2026-06-25 — between the user dismissing the
+        # collision / confirm dialog and the batch queue's progress
+        # bar painting, the event re-open + per-day submit loop takes
+        # a perceptible beat. WaitCursor while we set up; restored in
+        # the early-return path AND in the existing finally so the
+        # cursor returns to normal once the bar paints.
+        _QGuiApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
         # Re-open the event so the delete sweep + per-day submits ride
         # one shared gateway. The DaysGridPage scratch above was
         # transient; we don't reuse its gateway because the per-day
@@ -3769,6 +3776,7 @@ class MainWindow(QMainWindow):
         try:
             eg = self.gateway.open_event(event_id)
         except Exception:                                          # noqa: BLE001
+            _QGuiApplication.restoreOverrideCursor()
             log.exception("Export now (all days): re-open failed")
             return
 
@@ -3791,6 +3799,7 @@ class MainWindow(QMainWindow):
             if n_render > 0:
                 batch_queue = getattr(self, "batch_queue", None)
                 if batch_queue is None:
+                    _QGuiApplication.restoreOverrideCursor()
                     show_error(
                         self,
                         tr("Batch queue unavailable"),
@@ -3874,6 +3883,11 @@ class MainWindow(QMainWindow):
                 # their refs. spec/147 §2 — Export now no longer carries
                 # a delete sweep, so no "delete-only" path remains here.
                 eg.close()
+            # Nelson 2026-06-25 — by now the per-day submits have
+            # enqueued and the batch queue's progress bar is about to
+            # paint on the next event-loop tick. Restore the cursor so
+            # the bar appears with a normal arrow.
+            _QGuiApplication.restoreOverrideCursor()
 
     def _on_days_lists_delete_now(self) -> None:
         """spec/147 §2 — all-days "Delete now" trigger from the Days

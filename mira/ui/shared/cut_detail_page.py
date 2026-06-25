@@ -369,8 +369,18 @@ class CutDetailPage(QWidget):
                     pixmap=QPixmap.fromImage(full)))
             else:
                 f = payload
+                # Video tiles need the ``cluster_type='video'`` badge
+                # so they read as videos at a glance — the generic
+                # image cache can't decode mp4 poster frames, so
+                # without the badge the cell stays a blank square
+                # forever. Same fix the CutSessionPage picker grid
+                # uses (Nelson 2026-06-19 for spec/144 picker; now
+                # extended to the cut-detail flat grid 2026-06-25).
+                is_video = f.kind == "video"
                 grid_items.append(ThumbGridItem(
-                    pixmap=None, payload=("file", f.export_relpath)))
+                    pixmap=None, payload=("file", f.export_relpath),
+                    cluster_type="video" if is_video else None,
+                    cluster_count=1 if is_video else 0))
                 abs_path = self._root / f.export_relpath
                 self._index_by_abs[abs_path] = len(self._items)
                 self._items.append(ViewportItem(

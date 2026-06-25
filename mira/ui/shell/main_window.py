@@ -805,6 +805,33 @@ class MainWindow(QMainWindow):
             edit_menu, tr("&Scan for external results"),
             lambda: self._scan_external_returns(quiet=False),
             surface=self._SURFACE_PER_EVENT)
+        # spec/146 — bulk "set export speed for all video clips" at the
+        # event level. The per-clip Video-Editor dropdown still drives
+        # a single segment; this submenu walks every video item in the
+        # current event and writes ``VideoAdjustment.speed = X`` in one
+        # transaction. Bakes on the next Export (``setpts`` filter).
+        edit_menu.addSeparator()
+        speed_menu = edit_menu.addMenu(
+            tr("Set &speed for all video clips"))
+        self._action_surfaces[speed_menu.menuAction()] = (
+            self._SURFACE_PER_EVENT)
+        for speed_value in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+            # Label formatting matches the per-clip dropdown
+            # ("0.5×" / "1×" / "1.5×") — sub-1 / supra-1 get a fraction
+            # mark in the dropdown, the menu keeps it terse.
+            label = (
+                f"{int(speed_value)}×"
+                if speed_value == int(speed_value)
+                else f"{speed_value:g}×"
+            )
+            self._add_menu_action(
+                speed_menu, label,
+                lambda s=speed_value: self._on_bulk_set_video_speed(s),
+                surface=self._SURFACE_PER_EVENT,
+                tooltip=tr(
+                    "Set every video clip in this event to "
+                    "{label} for the next Export.").replace(
+                    "{label}", label))
 
         # ── Export ─────────────────────────────────────────────────────────
         # Per-event only (spec/66 §1.1): the green/red ship decision over
@@ -1077,6 +1104,45 @@ class MainWindow(QMainWindow):
             self, tr("Coming next"),
             tr("“{action}” is being reassembled next.").replace(
                 "{action}", action),
+        )
+
+    def _on_bulk_set_video_speed(self, speed: float) -> None:
+        """spec/146 — Edit menu → Set speed for all video clips → [X×].
+
+        Runs :meth:`EventGateway.bulk_set_video_speed` against the
+        currently-open event and surfaces a brief info dialog naming
+        the count. The single per-clip Video-Editor speed control is
+        unchanged; this is the event-level companion for normalising
+        all clips at once before re-exporting."""
+        if self._current_event_id is None:
+            return
+        label = (
+            f"{int(speed)}×" if speed == int(speed) else f"{speed:g}×"
+        )
+        try:
+            eg = self.gateway.open_event(self._current_event_id)
+            try:
+                n = eg.bulk_set_video_speed(float(speed))
+            finally:
+                eg.close()
+        except (KeyError, RuntimeError, ValueError):
+            log.exception(
+                "bulk_set_video_speed(%s) failed for %s",
+                speed, self._current_event_id)
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        if n == 0:
+            QMessageBox.information(
+                self, tr("Set export speed"),
+                tr("No video clips found in this event."),
+            )
+            return
+        QMessageBox.information(
+            self, tr("Set export speed"),
+            tr("Set {n} video clip{plural} to {label} — re-export to apply.")
+            .replace("{n}", str(n))
+            .replace("{plural}", "" if n == 1 else "s")
+            .replace("{label}", label),
         )
 
     def _open_about(self) -> None:
@@ -3544,15 +3610,14 @@ class MainWindow(QMainWindow):
             + len(p["render_snapshots"])
             for _, p in per_day_plans
         )
-        m_delete = sum(len(p["delete_relpaths"]) for _, p in per_day_plans)
 
-        if n_render == 0 and m_delete == 0:
+        if n_render == 0:
             show_info(
                 self,
-                tr("Nothing to do"),
+                tr("Nothing marked Will export"),
                 tr(
-                    "No green renders pending and no red files to "
-                    "delete across this event."
+                    "No green renders pending across this event — "
+                    "toggle some cells to Will export."
                 ),
             )
             return
@@ -3568,7 +3633,7 @@ class MainWindow(QMainWindow):
             choice = ask_batch_collision_policy(
                 self,
                 n_render=n_render,
-                m_delete=m_delete,
+                m_delete=0,
                 n_stale=len(stale_cell_ids),
                 default=DaysGridPage._last_batch_collision,
             )
@@ -3578,7 +3643,7 @@ class MainWindow(QMainWindow):
             DaysGridPage._last_batch_collision = choice
         else:
             title, body, primary = DaysGridPage._export_now_modal_text(
-                n_render, m_delete)
+                n_render)
             if not confirm(self, title, body, primary_text=primary):
                 return
 
@@ -3603,19 +3668,11 @@ class MainWindow(QMainWindow):
         # reaps it once the closures release their refs).
         batch_submitted = False
         try:
-            _QGuiApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
-            try:
-                for _, plan in per_day_plans:
-                    for rel in plan["delete_relpaths"]:
-                        try:
-                            eg.delete_exported_file_by_relpath(rel)
-                        except Exception:                          # noqa: BLE001
-                            log.exception(
-                                "Export now (all days): unlink %s "
-                                "failed", rel)
-            finally:
-                _QGuiApplication.restoreOverrideCursor()
-
+            # spec/147 §2 — Export now is render-only across all days
+            # too. The pre-spec/147 delete loop here (the "Render N ·
+            # Delete M" coupling) is retired; deletion is the parallel
+            # "Delete now" verb (per-day on the Days Grid; the all-
+            # days equivalent rides the Days List "Delete now" button).
             if n_render > 0:
                 batch_queue = getattr(self, "batch_queue", None)
                 if batch_queue is None:
@@ -3696,20 +3753,12 @@ class MainWindow(QMainWindow):
                         )
         finally:
             if not batch_submitted:
-                # Delete-only run, or every submit failed — close eg
-                # right away. With submits in flight we let GC reap
-                # eg once the commit closures release their refs.
+                # Every submit failed (or the batch_queue was unreachable
+                # earlier) — close eg right away. With submits in flight
+                # we let GC reap eg once the commit closures release
+                # their refs. spec/147 §2 — Export now no longer carries
+                # a delete sweep, so no "delete-only" path remains here.
                 eg.close()
-        # Refresh the days list so the three-slice bars reflect the
-        # delete sweep (the renders are async — their progress lives
-        # in the batch-queue strip).
-        if m_delete > 0:
-            try:
-                self._open_days_lists_for(event_id)
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "Export now (all days): refresh after delete "
-                    "sweep failed")
 
     def _on_delete_event(self) -> None:
         """Event menu "Delete event" → offer a choice (spec/14 §5D): remove from

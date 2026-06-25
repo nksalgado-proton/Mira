@@ -577,13 +577,20 @@ class DaysGridPage(QWidget):
         self._new_pass_btn = primary_button("+ Start a new pass…")
         self._new_pass_btn.clicked.connect(self.new_pass_requested.emit)
         line2.addWidget(self._new_pass_btn)
-        # spec/68 §3 / spec/89 §5.1 D1.A — Export-mode primary trigger.
-        # Hidden outside Export mode; the per-day batch submitter wires
-        # below. Label is locked to "Export now" per spec/89 §5.1.
+        # spec/68 §3 / spec/89 §5.1 D1.A / spec/147 §2 — Export-mode
+        # primary trigger. RENDER-ONLY (spec/147): "Export now · N"
+        # renders the N green Will-export items missing a file;
+        # "Delete now · M" is its sibling verb (file removal of the M
+        # Set-aside files). Hidden outside Export mode; the per-day
+        # batch submitter wires below.
         self._export_btn = primary_button("↑ Export now")
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._export_btn.setVisible(False)   # only in Export phase
         line2.addWidget(self._export_btn)
+        self._delete_now_btn = danger_ghost_button("✗ Delete now")
+        self._delete_now_btn.clicked.connect(self._on_delete_now_clicked)
+        self._delete_now_btn.setVisible(False)
+        line2.addWidget(self._delete_now_btn)
         # Quick Sweep footer (Nelson 2026-06-22). The shared grid is
         # reused under two QS hosts with DIFFERENT endings:
         #   * standalone QS → the kept set is COPIED to a destination
@@ -918,6 +925,16 @@ class DaysGridPage(QWidget):
             self._export_btn.setVisible(is_export)
         except Exception:                                          # noqa: BLE001
             pass
+        # spec/147 §2 — Delete now mirrors Export now's visibility +
+        # both surfaces refresh their per-button live counts together.
+        try:
+            self._delete_now_btn.setVisible(is_export)
+        except Exception:                                          # noqa: BLE001
+            pass
+        try:
+            self._refresh_export_button_counts()
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: refresh export button counts")
         # spec/89 §11.3 — Compare versions only fires when the user is
         # already inside a versions cluster sub-grid. Hide everywhere
         # else; :meth:`_open_cluster` / :meth:`_close_cluster`
@@ -932,13 +949,15 @@ class DaysGridPage(QWidget):
             self._compare_btn.setVisible(bool(in_versions_subgrid))
         except Exception:                                          # noqa: BLE001
             pass
-        # Relabel the bulk verbs for the Export context (the
-        # underlying action stays a bulk phase_state write; spec/71's
-        # reminder line tells the user the verbs mean ship/drop here).
+        # Relabel the bulk verbs for the Export context. spec/147 §2
+        # renames the pair from "Export all / Drop all" to the intent-
+        # only verbs "Mark all to export / Set all aside" (the
+        # underlying action stays a bulk phase_state write — the
+        # rename signals that intent ≠ deletion).
         try:
             if is_export:
-                self._pick_all_btn.setText(tr("✓ Export all"))
-                self._skip_all_btn.setText(tr("✗ Drop all"))
+                self._pick_all_btn.setText(tr("✓ Mark all to export"))
+                self._skip_all_btn.setText(tr("✗ Set all aside"))
             else:
                 self._pick_all_btn.setText(tr("✓ Pick all"))
                 self._skip_all_btn.setText(tr("✗ Skip all"))
@@ -3467,13 +3486,214 @@ class DaysGridPage(QWidget):
             "delete_relpaths": delete_rels,
         }
 
+    def _refresh_export_button_counts(self) -> None:
+        """spec/147 §2 — Paint the live N / M counts onto the Export
+        now / Delete now button faces (and tooltips). Zero-state
+        disables the corresponding button with the canonical "Nothing
+        marked …" tooltip.
+
+        Cheap enough to run on every phase / intent change — the
+        underlying lookup walks one lineage-by-relpath sweep per
+        button. Tolerant of an absent gateway (mock / smoke paths)."""
+        if not getattr(self, "_export_btn", None):
+            return
+        eg = self._eg
+        if not self._export_mode or eg is None:
+            # Restore the canonical face when leaving Export mode so
+            # the Pick phase chrome doesn't inherit a stale count.
+            try:
+                self._export_btn.setText(tr("↑ Export now"))
+            except Exception:                                      # noqa: BLE001
+                pass
+            try:
+                self._delete_now_btn.setText(tr("✗ Delete now"))
+            except Exception:                                      # noqa: BLE001
+                pass
+            return
+        try:
+            plan = self._collect_export_run_plan()
+            n_render = (
+                len(plan["render_cells"])
+                + len(plan["render_segments"])
+                + len(plan["render_snapshots"])
+            )
+            m_delete = len(plan["delete_relpaths"])
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: live count refresh — plan collection failed")
+            return
+        # Export now · N
+        try:
+            self._export_btn.setText(
+                tr("↑ Export now · {n}")
+                .replace("{n}", str(n_render))
+                if n_render > 0 else tr("↑ Export now"))
+            self._export_btn.setEnabled(n_render > 0)
+            self._export_btn.setToolTip(
+                tr("Renders the {n} items marked Will export (green).")
+                .replace("{n}", str(n_render))
+                if n_render > 0 else tr("Nothing marked Will export."))
+        except Exception:                                          # noqa: BLE001
+            pass
+        # Delete now · M
+        try:
+            self._delete_now_btn.setText(
+                tr("✗ Delete now · {m}")
+                .replace("{m}", str(m_delete))
+                if m_delete > 0 else tr("✗ Delete now"))
+            self._delete_now_btn.setEnabled(m_delete > 0)
+            self._delete_now_btn.setToolTip(
+                tr(
+                    "Deletes the {m} exported files marked Set aside (red)."
+                ).replace("{m}", str(m_delete))
+                if m_delete > 0 else tr("Nothing marked Set aside."))
+        except Exception:                                          # noqa: BLE001
+            pass
+
+    def _on_delete_now_clicked(self) -> None:
+        """spec/147 §2 — "Delete now · M" batch trigger. DELETE-ONLY:
+        removes the M exported files whose lineage carries
+        ``intent_state='skipped'`` (Set aside) and that still exist
+        on disk. Warns when the doomed files are still in any Cuts
+        (event + cross-event) and, on confirm, sweeps both DBs so
+        no Cut is left with a dangling member.
+
+        Pairs with :meth:`_on_export_clicked` (the render verb);
+        the two are deliberately separate."""
+        if self._eg is None or not self._export_mode:
+            return
+        if self._eg.event_root is None:
+            return
+        try:
+            relpaths = list(self._collect_delete_relpaths())
+        except Exception:                                          # noqa: BLE001
+            log.exception("DaysGridPage: collect delete relpaths failed")
+            return
+        m_delete = len(relpaths)
+        if m_delete == 0:
+            show_info(
+                self,
+                tr("Nothing marked Set aside"),
+                tr(
+                    "No red files queued for deletion in this day. "
+                    "Set cells aside to populate the queue."
+                ),
+            )
+            return
+        # spec/147 §4 — assemble the per-Cut usage count for the warn.
+        try:
+            event_uses = self._eg.event_cut_usage_count(relpaths)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: event_cut_usage_count failed; "
+                "warn count will under-report")
+            event_uses = 0
+        cross_event_uses = self._delete_now_cross_event_uses(relpaths)
+        title, body, primary = self._delete_now_modal_text(
+            m_delete,
+            event_cut_uses=event_uses,
+            cross_event_cut_uses=cross_event_uses,
+        )
+        if not confirm(self, title, body, primary_text=primary):
+            return
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            try:
+                self._eg.delete_exported_files_by_relpaths(relpaths)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: bulk delete failed for %d files",
+                    m_delete)
+            # spec/147 §4 — cross-event cleanup must reach into the
+            # library DB so no library Cut is left with a dangling
+            # member. Best-effort; per-file failures are logged.
+            self._delete_now_cross_event_cleanup(relpaths)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+        # Cluster covers + flat-cell badges read from gateway state; a
+        # full refresh keeps the surface honest after the delete sweep.
+        if self._mode == "cluster" and self._cluster is not None:
+            self._open_cluster(self._cluster)
+        else:
+            self._refresh_from_gateway()
+
+    def _delete_now_cross_event_uses(
+        self, relpaths: List[str],
+    ) -> int:
+        """spec/147 §4 — count cross-event Cut usage by reaching into
+        the LibraryGateway. Returns 0 when the library isn't wired
+        (legacy / unit-test path)."""
+        if self._eg is None or not relpaths:
+            return 0
+        try:
+            event_uuid = self._eg.event().uuid
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: event().uuid failed; cross-event "
+                "warn count will under-report")
+            return 0
+        lib = self._open_library_gateway()
+        if lib is None or not hasattr(
+                lib, "cross_event_cut_usage_count"):
+            return 0
+        try:
+            return int(lib.cross_event_cut_usage_count(
+                event_uuid, relpaths))
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: cross_event_cut_usage_count failed")
+            return 0
+
+    def _delete_now_cross_event_cleanup(
+        self, relpaths: List[str],
+    ) -> int:
+        """spec/147 §4 — drop the library-DB cross-event cut_member
+        rows that reference the just-deleted files. Returns the
+        number of rows removed; 0 when no library is wired."""
+        if self._eg is None or not relpaths:
+            return 0
+        try:
+            event_uuid = self._eg.event().uuid
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: event().uuid failed during cross-event "
+                "cleanup")
+            return 0
+        lib = self._open_library_gateway()
+        if lib is None or not hasattr(
+                lib, "delete_cross_event_cut_members"):
+            return 0
+        try:
+            return int(lib.delete_cross_event_cut_members(
+                event_uuid, relpaths))
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DaysGridPage: delete_cross_event_cut_members failed")
+            return 0
+
+    def _open_library_gateway(self):
+        """spec/147 §4 — open the LibraryGateway via the umbrella
+        factory so cross-event cleanup can reach the library DB.
+        Tolerant of mock/test gateways that don't expose the
+        factory; legacy fall-through reads a bare ``library``
+        attribute when present."""
+        if self.gateway is None:
+            return None
+        factory = getattr(self.gateway, "library_gateway", None)
+        if callable(factory):
+            try:
+                return factory()
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: library_gateway() factory failed")
+                return None
+        return getattr(self.gateway, "library", None)
+
     def _on_export_clicked(self) -> None:
-        """spec/89 §5.1 — "Export now" batch trigger. Shows the locked
-        "Render N · Delete M files. Proceed?" confirm; on Run, deletes
-        the red-intent files first (so cascading Cut-membership cleanup
-        lands before fresh rows arrive), then enqueues the render
-        manifest through the spec/59 §8 ``BatchJobQueue`` (renamed from
-        ``BatchExportQueue`` by spec/84 once ingest started riding it).
+        """spec/147 §2 — "Export now · N" batch trigger. RENDER-ONLY:
+        the N green Will-export items missing a file are enqueued
+        through the spec/59 §8 ``BatchJobQueue``. Deletion is the
+        sibling "Delete now · M" verb — never coupled to this run.
 
         N = green-intent items with a render to produce. For photos
         that's the day's ``picked`` flat cells not yet in
@@ -3481,14 +3701,9 @@ class DaysGridPage(QWidget):
         (spec/56 — ClipUnits via the slice-4 walker) and picked
         SNAPSHOTS (PhotoUnits over an extracted source frame).
 
-        M = ``Exported Media/`` files whose lineage carries
-        ``intent_state='skipped'`` and that still exist on disk. The
-        common source is the versions cluster sub-grid (Slice 5
-        defers the delete to here); a Drop on a flat cell already
-        deletes immediately, so M is usually 0 in plain day mode.
-
         Engine + queue are locked (spec/68 §4); this handler only
-        builds the manifest, runs the delete sweep, and enqueues."""
+        builds the manifest and enqueues. ``_on_delete_now_clicked``
+        is the parallel verb for the M Set-aside files."""
         if self._eg is None or not self._export_mode:
             return
         if self._eg.event_root is None:
@@ -3504,21 +3719,20 @@ class DaysGridPage(QWidget):
             + len(plan["render_segments"])
             + len(plan["render_snapshots"])
         )
-        m_delete = len(plan["delete_relpaths"])
 
-        if n_render == 0 and m_delete == 0:
+        if n_render == 0:
             show_info(
                 self,
-                tr("Nothing to do"),
+                tr("Nothing marked Will export"),
                 tr(
-                    "No green renders pending and no red files to "
-                    "delete — toggle a cell, or open another day."
+                    "No green renders pending — toggle a cell to Will "
+                    "export, or open another day."
                 ),
             )
             return
 
         batch_queue = getattr(self.window(), "batch_queue", None)
-        if n_render > 0 and batch_queue is None:
+        if batch_queue is None:
             show_error(
                 self,
                 tr("Batch queue unavailable"),
@@ -3544,7 +3758,7 @@ class DaysGridPage(QWidget):
             choice = ask_batch_collision_policy(
                 self,
                 n_render=n_render,
-                m_delete=m_delete,
+                m_delete=0,
                 n_stale=len(stale_cells),
                 default=DaysGridPage._last_batch_collision,
             )
@@ -3553,26 +3767,9 @@ class DaysGridPage(QWidget):
             collision_policy = choice
             DaysGridPage._last_batch_collision = choice
         else:
-            title, body, primary = self._export_now_modal_text(
-                n_render, m_delete)
+            title, body, primary = self._export_now_modal_text(n_render)
             if not confirm(self, title, body, primary_text=primary):
                 return
-
-        # spec/89 §5.1 step 2 — delete first so the cascading Cut-
-        # membership cleanup lands before any fresh rows arrive. The
-        # sweep is best-effort: a single failed unlink is logged and
-        # the rest of the run continues.
-        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            for rel in plan["delete_relpaths"]:
-                try:
-                    self._eg.delete_exported_file_by_relpath(rel)
-                except Exception:                                  # noqa: BLE001
-                    log.exception(
-                        "DaysGridPage: delete_exported_file_by_relpath"
-                        "(%s) failed during Export now", rel)
-        finally:
-            QGuiApplication.restoreOverrideCursor()
 
         if n_render > 0:
             day_labels = {self._day_number: day_label_for(
@@ -3609,47 +3806,69 @@ class DaysGridPage(QWidget):
                 )
                 return
 
-        # Cluster covers + flat-cell badges read from gateway state; a
-        # full refresh keeps the surface honest after the delete sweep
-        # lands (the render is async — the corresponding refresh comes
-        # from the batch commit closure).
-        if m_delete > 0:
-            if self._mode == "cluster" and self._cluster is not None:
-                self._open_cluster(self._cluster)
-            else:
-                self._refresh_from_gateway()
+        # The render is async — the refresh comes from the batch
+        # commit closure once submit_export_batch's worker finishes.
 
     @staticmethod
-    def _export_now_modal_text(
-        n_render: int, m_delete: int,
-    ) -> tuple:
-        """spec/89 §5.1 D2.B — the locked "Render N · Delete M files.
-        Proceed?" wording. Factored out so the all-days variant on the
-        Days List can share the exact phrasing. Returns
-        ``(title, body, primary_button_label)``."""
-        if n_render == 0 and m_delete == 0:
+    def _export_now_modal_text(n_render: int) -> tuple:
+        """spec/147 §2 — the locked "Export now · N" confirm wording.
+        The pre-spec/147 "Render N · Delete M" coupling is retired:
+        Export now is render-only, Delete now is the parallel verb.
+        Returns ``(title, body, primary_button_label)``."""
+        if n_render == 0:
             # Caller short-circuits on this; defensive default for tests.
-            return (tr("Nothing to do"), tr(""), tr("OK"))
+            return (
+                tr("Nothing marked Will export"),
+                tr(""),
+                tr("OK"),
+            )
         title = (
-            tr("Render {n} · Delete {m} files. Proceed?")
+            tr("Export now · {n}. Proceed?")
             .replace("{n}", str(n_render))
+        )
+        body = (
+            tr("Renders the {n} items marked Will export (green).")
+            .replace("{n}", str(n_render))
+        )
+        primary = tr("Run")
+        return (title, body, primary)
+
+    @staticmethod
+    def _delete_now_modal_text(
+        m_delete: int,
+        *,
+        event_cut_uses: int,
+        cross_event_cut_uses: int,
+    ) -> tuple:
+        """spec/147 §4 — the "Delete now · M" confirm wording.
+        Warns when the doomed files are still in any Cut so the user
+        sees the blast before confirming."""
+        if m_delete == 0:
+            return (
+                tr("Nothing marked Set aside"),
+                tr(""),
+                tr("OK"),
+            )
+        title = (
+            tr("Delete now · {m}. Proceed?")
             .replace("{m}", str(m_delete))
         )
-        body_bits: list = []
-        if n_render > 0:
-            body_bits.append(
-                tr("{n} item(s) render to Exported Media/.")
-                .replace("{n}", str(n_render))
-            )
-        if m_delete > 0:
+        body_bits = [
+            tr(
+                "Deletes the {m} exported files marked Set aside (red)."
+            ).replace("{m}", str(m_delete))
+        ]
+        if event_cut_uses or cross_event_cut_uses:
             body_bits.append(
                 tr(
-                    "{m} file(s) drop from Exported Media/ "
-                    "(Original Media/ stays untouched)."
-                ).replace("{m}", str(m_delete))
+                    "Used in {n} event Cuts and {x} cross-event Cuts — "
+                    "deleting removes it from all of them."
+                )
+                .replace("{n}", str(event_cut_uses))
+                .replace("{x}", str(cross_event_cut_uses))
             )
         body = "\n\n".join(body_bits)
-        primary = tr("Run")
+        primary = tr("Delete")
         return (title, body, primary)
 
     def _bulk_set_state(self, state: str) -> None:
@@ -3658,14 +3877,12 @@ class DaysGridPage(QWidget):
         member of the open cluster). Goes through one bulk gateway
         call (single transaction) per the spec/63 §5d pattern.
 
-        Export-mode Drop all (spec/68 §3 second bullet) cascades the
-        un-export: every item in the affected set that was already
-        shipped gets its ``Exported Media/`` file deleted + its
-        lineage row dropped + ``edit_exported`` cleared. The confirm
-        text reads the shipped count out loud so the user knows the
-        on-disk blast before confirming. Charter-safe: only
-        ``Exported Media/`` is touched; ``Original Media/`` stays
-        immutable."""
+        spec/147 §1 — Export-mode "Set all aside" (renamed from "Drop
+        all") is now **intent only**. The pre-spec/147 un-export
+        cascade that deleted already-shipped files on Drop-all is
+        retired; deletion is a separate, explicit, confirmed run
+        (the toolbar's "Delete now · M" verb). Setting Set aside
+        never touches the on-disk file."""
         if self._eg is None:
             # Mock mode — apply against in-memory items so smokes/tests
             # see the visual change. No gateway round trip.
@@ -3684,46 +3901,29 @@ class DaysGridPage(QWidget):
         item_ids = self._affected_item_ids()
         if not item_ids:
             return
-        is_drop_all = (
+        is_set_aside = (
             self._export_mode and state == STATE_SKIPPED)
-        # spec/68 §3 — figure out the on-disk blast for the confirm
-        # text + the un-export cascade.
-        shipped_to_drop: list[str] = []
-        if is_drop_all:
-            try:
-                shipped_set = self._eg.exported_item_ids()
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "DaysGridPage: exported_item_ids failed; bulk "
-                    "Drop-all may leave orphans")
-                shipped_set = set()
-            shipped_to_drop = [
-                iid for iid in item_ids if iid in shipped_set]
         if self._export_mode:
-            # Export-mode confirm: name the verb + the shipped blast.
-            if is_drop_all and shipped_to_drop:
-                title = tr("Drop all {n}?").replace(
+            # spec/147 §2 — Export-mode confirm names the renamed verbs
+            # ("Mark all to export" / "Set all aside") and never warns
+            # about a deletion (Set aside is intent only; the on-disk
+            # blast happens later from the explicit "Delete now ·  M"
+            # button).
+            if is_set_aside:
+                title = tr("Set all {n} aside?").replace(
                     "{n}", str(len(item_ids)))
                 body = tr(
-                    "{shipped} of these are already exported — their "
-                    "files will be deleted from Exported Media/ "
-                    "(Original Media/ is untouched). Continue?"
-                ).replace("{shipped}", str(len(shipped_to_drop)))
-                primary = tr("Drop")
-            elif is_drop_all:
-                title = tr("Drop all {n}?").replace(
-                    "{n}", str(len(item_ids)))
-                body = tr(
-                    "None of these have shipped yet — Drop just "
-                    "marks them won't-export. Continue?")
-                primary = tr("Drop")
+                    "Marks every cell red (Set aside). Files already "
+                    "exported stay on disk — use Delete now · M to "
+                    "remove them.")
+                primary = tr("Set aside")
             else:
-                title = tr("Export all {n}?").replace(
+                title = tr("Mark all {n} to export?").replace(
                     "{n}", str(len(item_ids)))
                 body = tr(
                     "Every cell turns green — they'll all ship on the "
-                    "next Export-green run. Continue?")
-                primary = tr("Export")
+                    "next Export now run. Continue?")
+                primary = tr("Mark")
         else:
             verb = "Pick" if state == STATE_PICKED else "Skip"
             title = tr("{verb} all in view?").replace("{verb}", verb)
@@ -3737,20 +3937,10 @@ class DaysGridPage(QWidget):
             return
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
+            # spec/147 §1 — intent only. No delete cascade. The phase
+            # state write is the entire on-gateway effect of bulk
+            # toggles in Export mode now.
             self._eg.set_items_phase_state(item_ids, self._phase, state)
-            # spec/68 §3 — un-export cascade. Runs AFTER the
-            # phase_state write so the per-item teardown sees a
-            # consistent gateway view (the phase_state already says
-            # skipped). delete_exported_file is idempotent — a missing
-            # row is a no-op — so partial failures don't corrupt the
-            # remaining items.
-            for iid in shipped_to_drop:
-                try:
-                    self._eg.delete_exported_file(iid)
-                except Exception:                                  # noqa: BLE001
-                    log.exception(
-                        "delete_exported_file(%s) failed during "
-                        "bulk Drop-all", iid)
         except Exception:                                          # noqa: BLE001
             log.exception("bulk state set failed for %d items", len(item_ids))
         finally:

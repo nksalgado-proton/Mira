@@ -832,9 +832,17 @@ class PhotoViewport(QWidget):
         # inside the widget — the "black stripes" Nelson hit).
         self._video_native_size: Optional[QSize] = None
         # Cached audio / rate so the host can set them before the player
-        # arms on the first video landing; applied in ``_ensure_player``.
+        # arms on the first video landing; applied in ``_ensure_player``
+        # AND re-applied after every ``setSource`` (spec/138 §2A —
+        # ``QMediaPlayer.setSource`` resets ``playbackRate`` to 1.0).
         self._video_volume: float = 0.80
-        self._video_rate: float = 1.0
+        # spec/138 §2B — sticky session rate seeded from the global
+        # ``Settings.default_video_speed`` default. Tests can override
+        # by monkeypatching :meth:`_initial_video_rate`; the load is
+        # lazy so a headless / pre-settings environment can't crash
+        # viewport construction (the helper itself swallows failures
+        # and returns ``1.0``).
+        self._video_rate: float = self._initial_video_rate()
 
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
@@ -1279,6 +1287,15 @@ class PhotoViewport(QWidget):
         # ``_on_video_frame``).
         self._video_native_size = None
         self._player.setSource(QUrl.fromLocalFile(str(path)))
+        # spec/138 §2A — ``QMediaPlayer.setSource()`` resets the
+        # player's playbackRate to 1.0 (backend/timing-dependent),
+        # which is what made spec/137's "sometimes drops back to 1×"
+        # mess: ``_ensure_player`` set the rate ONCE at construction
+        # and nothing re-applied it on subsequent clips. Re-apply the
+        # sticky session rate on EVERY arm so the engine plays at the
+        # intended speed deterministically; ``_video_rate`` is the
+        # session truth (carry-over wanted; user-only changes).
+        self._player.setPlaybackRate(self._video_rate)
         if self._video_autoplay:
             self._player.play()
         self._video_playing = self._video_autoplay
@@ -1434,16 +1451,35 @@ class PhotoViewport(QWidget):
         return self._video_playing
 
     def video_playback_rate(self) -> float:
-        """The engine's CURRENT playback rate (spec/137 §2A).
+        """The engine's CURRENT playback rate (spec/137 / spec/138 §2B).
 
         Mirror of :meth:`video_is_playing`: returns the cached
-        ``_video_rate`` that ``_ensure_player`` applies to every clip,
-        so the rate is sticky across arms — a clip after a 2× clip
-        plays at 2×. The transport bar's reveal-resync uses this to
-        push :meth:`TransportBar.set_speed` and keep the dropdown
-        faithful to the engine's actual rate (spec/130 reveal-resync
-        + spec/137 §2B)."""
+        ``_video_rate`` that ``_ensure_player`` applies at first arm
+        AND ``_arm_video`` re-applies after every ``setSource``
+        (spec/138 §2A — the deterministic per-clip apply). The rate
+        is sticky across arms — a clip after a 2× clip plays at 2× —
+        seeded from ``Settings.default_video_speed`` and only changed
+        by user combo interaction. The transport bar's reveal-resync
+        reads this getter and pushes :meth:`TransportBar.set_speed`
+        under ``blockSignals`` so the indicator never disagrees with
+        the engine and never bounces the engine back to 1×."""
         return float(self._video_rate)
+
+    @staticmethod
+    def _initial_video_rate() -> float:
+        """Seed for the sticky session rate (spec/138 §2B).
+
+        Lazy-reads ``Settings.default_video_speed`` so headless /
+        offscreen viewports never block on a settings load. Returns
+        ``1.0`` on any failure — a missing settings file or a hand-
+        edited bad value must not crash the viewport. Tests override
+        via ``monkeypatch.setattr(PhotoViewport, '_initial_video_rate',
+        lambda: 1.5)`` to inject a known seed without touching disk."""
+        try:
+            from mira.settings.repo import SettingsRepo
+            return float(SettingsRepo().load().default_video_speed)
+        except Exception:                                          # noqa: BLE001
+            return 1.0
 
     def video_toggle_play(self) -> None:
         if self._player is None or self._video_armed is None:

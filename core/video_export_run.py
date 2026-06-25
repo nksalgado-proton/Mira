@@ -67,6 +67,13 @@ _PROGRESS_EVERY = 5
 _NUMPY_WORKERS = max(1, min((os.cpu_count() or 4) - 1, 8))
 
 ProgressCb = Callable[[int, int], bool]   # (done_frames, total_frames) -> keep?
+#: spec/139 §2 — read-only fraction sink. ``export_processed_clip``
+#: calls this on every frame-progress tick with ``done_frames /
+#: total_frames`` so the UI can paint a per-file progress bar that
+#: actually MOVES during a long encode (the aggregate bar only
+#: advances on file completion). Sink is fire-and-forget — never
+#: drives cancel (that stays with ``progress``).
+FileFractionCb = Callable[[float], None]
 
 
 def export_processed_clip(
@@ -75,13 +82,16 @@ def export_processed_clip(
     plan: ExportPlan,
     *,
     progress: Optional[ProgressCb] = None,
+    on_file_fraction: Optional[FileFractionCb] = None,
     timeout: float = 1800.0,
 ) -> Path:
     """Materialise ``video_path``'s ``plan`` to ``output_path`` (re-encoded
     MP4). Returns ``output_path``. Raises ``FileNotFoundError`` /
     ``RuntimeError`` on bad input / ffmpeg failure. ``progress(done, total)``
     is polled per few frames; returning ``False`` cancels (a partial file is
-    removed)."""
+    removed). ``on_file_fraction(0.0..1.0)`` is called on every progress
+    tick — spec/139 §2 — so the host can show per-file motion during a
+    long encode (purely informational; never cancels)."""
     video_path = Path(video_path)
     output_path = Path(output_path)
     if not video_path.exists():
@@ -114,12 +124,14 @@ def export_processed_clip(
             return _run_ffmpeg_only(
                 video_path, output_path, plan,
                 in_s=in_s, dur_s=dur_s, decode_vf=vidstab_vf,
-                progress=progress, timeout=timeout)
+                progress=progress, on_file_fraction=on_file_fraction,
+                timeout=timeout)
 
         return _run_pipe(
             video_path, output_path, plan,
             src_w=src_w, src_h=src_h, in_s=in_s, dur_s=dur_s,
-            decode_vf=vidstab_vf, progress=progress, timeout=timeout)
+            decode_vf=vidstab_vf, progress=progress,
+            on_file_fraction=on_file_fraction, timeout=timeout)
 
 
 # ── Stabilisation (two-pass) ──────────────────────────────────────────
@@ -165,7 +177,8 @@ def _vidstab_detect_and_transform(
 def _run_pipe(
     video_path: Path, output_path: Path, plan: ExportPlan, *,
     src_w: int, src_h: int, in_s: float, dur_s: float,
-    decode_vf: list[str], progress: Optional[ProgressCb], timeout: float,
+    decode_vf: list[str], progress: Optional[ProgressCb],
+    on_file_fraction: Optional[FileFractionCb], timeout: float,
 ) -> Path:
     decode_cmd = [
         _FFMPEG_EXE, "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -214,10 +227,19 @@ def _run_pipe(
                         out_w=out_w, out_h=out_h, in_s=in_s, dur_s=dur_s)
                 encode.stdin.write(np.ascontiguousarray(out).tobytes())
                 done += 1
-                if progress is not None and done % _PROGRESS_EVERY == 0:
-                    if not progress(done, total_frames):
-                        cancelled = True
-                        break
+                if done % _PROGRESS_EVERY == 0:
+                    # spec/139 §2 — surface the fraction to the host
+                    # FIRST so the per-file bar paints fresh data even
+                    # if the cancel callback returns False on this tick.
+                    if on_file_fraction is not None:
+                        try:
+                            on_file_fraction(done / max(1, total_frames))
+                        except Exception:                      # noqa: BLE001
+                            pass        # never let UI sink crash encode
+                    if progress is not None:
+                        if not progress(done, total_frames):
+                            cancelled = True
+                            break
                 _submit_next()                 # keep the pipeline full
     finally:
         _finish(decode, encode, cancelled)
@@ -232,6 +254,11 @@ def _run_pipe(
             f"FFmpeg encode failed for {video_path.name} (rc={encode.returncode})")
     if progress is not None:
         progress(total_frames, total_frames)
+    if on_file_fraction is not None:
+        try:
+            on_file_fraction(1.0)
+        except Exception:                                          # noqa: BLE001
+            pass
     log.info("exported processed clip %s [%d,%d]ms -> %s",
              video_path.name, plan.in_ms, plan.out_ms, output_path)
     return output_path
@@ -305,7 +332,8 @@ def _start_encode(
 def _run_ffmpeg_only(
     video_path: Path, output_path: Path, plan: ExportPlan, *,
     in_s: float, dur_s: float, decode_vf: list[str],
-    progress: Optional[ProgressCb], timeout: float,
+    progress: Optional[ProgressCb],
+    on_file_fraction: Optional[FileFractionCb], timeout: float,
 ) -> Path:
     """Fast path for clips with no colour and no crop/Box-Rotation: a single
     ffmpeg pass (trim + stabilise + speed + audio) — no rawvideo round-trip,
@@ -354,6 +382,14 @@ def _run_ffmpeg_only(
             f"{err.decode('utf-8', 'replace')[:500]}")
     if progress is not None:
         progress(1, 1)
+    if on_file_fraction is not None:
+        # spec/139 §2 — the fast path is single-shot ffmpeg (no
+        # frame-by-frame poll), so the most honest fraction signal is
+        # 0→1 on completion. Photos already snap; this matches.
+        try:
+            on_file_fraction(1.0)
+        except Exception:                                          # noqa: BLE001
+            pass
     log.info("exported processed clip (fast path) %s [%d,%d]ms -> %s",
              video_path.name, plan.in_ms, plan.out_ms, output_path)
     return output_path

@@ -157,11 +157,19 @@ def record_single_lineage(
     dest_path: Path,
     recipe: Optional[dict] = None,
     resolved_params: Optional[dict] = None,
+    duration_ms: Optional[int] = None,
 ) -> bool:
     """One-shot helper for video clip exports (no ``ExportResult`` —
     the video worker returns ``(ok, out_path, cancelled)``). Records
     a single lineage row (with the spec/54 §8 snapshot when the caller
-    has it); returns True on success."""
+    has it); returns True on success.
+
+    spec/144 — when ``duration_ms`` is given (the render worker emits
+    ``(out_ms - in_ms) / speed`` per clip), it lands on the lineage row
+    so the budget, cut-play scrubber, and PTE generator all read the
+    SEGMENT's real on-disk length instead of the source video's whole
+    duration. Photos pass ``None`` (their length is ``photo_s``, not a
+    clip property)."""
     try:
         rel = dest_path.relative_to(event_root)
     except ValueError:
@@ -178,6 +186,9 @@ def record_single_lineage(
             source_item_id=item_id,
             recipe_json=_recipe_payload(recipe, resolved_params),
             exported_at=_utc_now_iso(),
+            duration_ms=(int(duration_ms)
+                         if isinstance(duration_ms, (int, float))
+                         and int(duration_ms) > 0 else None),
         ))
         # spec/63 slice 8 — clips no-op inside (non-image suffix);
         # photo singles routed here get their Cut-grid thumb queued.

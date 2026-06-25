@@ -557,6 +557,12 @@ def submit_export_batch(
                     item_id=uid, dest_path=final_path,
                     recipe=recipe,
                     resolved_params=msg.get("params"),
+                    # spec/144 — the clip's TRUE on-disk duration ms
+                    # the worker computed ((out_ms - in_ms) / speed).
+                    # Lands on lineage so the budget / cut-play /
+                    # PTE all read the segment length, not the source
+                    # video's whole duration.
+                    duration_ms=msg.get("duration_ms"),
                 )
                 if ok:
                     clip_writes += 1

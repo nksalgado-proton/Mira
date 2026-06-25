@@ -1,5 +1,10 @@
 # 137 — Video playback speed: reset per clip + keep the indicator in sync
 
+**Status: SUPERSEDED by spec/138 (Nelson 2026-06-23). The indicator-only fix
+here missed the real root cause — `setSource()` resetting the player rate
+with no re-apply, plus the combo emitting `speed_changed(1.0)` on reset.
+Implement spec/138 instead. Original below.**
+
 **Status: PROPOSED (Nelson 2026-06-23). Set one video to 2×, and the **next**
 video still plays at 2× — **correct, that's the desired sticky behaviour** —
 but the speed indicator wrongly shows **1×**. The bug is only the dropdown:

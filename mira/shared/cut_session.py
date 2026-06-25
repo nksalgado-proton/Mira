@@ -58,28 +58,76 @@ class SessionFile:
 def files_from_lineage(gateway, rows) -> List[SessionFile]:
     """Join lineage rows to session cells: each row resolved to its source
     item (or, for bracket-sourced exports, the stack's merged output item) for
-    kind / day / time / duration. Preserves the rows' order."""
+    kind / day / time / duration. Preserves the rows' order.
+
+    spec/144 — for **video** members, ``SessionFile.duration_ms`` MUST be
+    the exported **clip segment's** true length, NEVER the source video's
+    whole duration. Resolution order:
+
+    1. ``lineage.duration_ms`` if recorded at export (the render worker
+       emits ``(out_ms - in_ms) / speed`` on the clip "ok" message; the
+       lineage writer persists it).
+    2. ffprobe the on-disk file (``probe_video``) — robust for legacy
+       pre-migration lineage rows whose ``duration_ms`` is NULL. Sole
+       fallback; we never use the source's whole-video length here.
+    3. ``0`` — the file is unreachable or unparseable. The scrubber
+       reads this as "use ``photo_ms``" so the show still advances on
+       :data:`QMediaPlayer.MediaStatus.EndOfMedia`."""
     by_id = {it.id: it for it in gateway.items()}
     out_of_bracket = {}
     for br in gateway.stacks():
         if br.output_item_id:
             out_of_bracket[br.bracket_id] = by_id.get(br.output_item_id)
     files: List[SessionFile] = []
+    event_root = getattr(gateway, "event_root", None)
     for ln in rows:
         src = by_id.get(ln.source_item_id) if ln.source_item_id else \
             out_of_bracket.get(ln.source_bracket_id)
         if src is None:
             files.append(SessionFile(export_relpath=ln.export_relpath))
             continue
+        if src.kind == "video":
+            duration_ms = _clip_segment_duration_ms(ln, event_root)
+        else:
+            duration_ms = 0
         files.append(SessionFile(
             export_relpath=ln.export_relpath,
             kind=src.kind,
             day_number=src.day_number,
             capture_time=src.capture_time_corrected,
-            duration_ms=int(src.duration_ms or 0) if src.kind == "video" else 0,
+            duration_ms=duration_ms,
             source_item_id=src.id,
         ))
     return files
+
+
+def _clip_segment_duration_ms(lineage_row, event_root) -> int:
+    """spec/144 — the clip's TRUE on-disk duration. Prefers the
+    persisted lineage column; falls back to ffprobing the file.
+
+    Never returns the source video's whole ``duration_ms`` — that's
+    the source-of-truth bug spec/144 exists to fix. A probe failure
+    (file missing, codec unreadable) returns ``0``; the cut-play
+    scrubber treats ``0`` as "use ``photo_ms`` for layout" and
+    advance still rides ``EndOfMedia``."""
+    raw = getattr(lineage_row, "duration_ms", None)
+    if isinstance(raw, (int, float)) and int(raw) > 0:
+        return int(raw)
+    if event_root is None:
+        return 0
+    from pathlib import Path
+    path = Path(event_root) / lineage_row.export_relpath
+    if not path.is_file():
+        return 0
+    try:
+        from core.video_extract import probe_video
+        meta = probe_video(path)
+    except Exception:                                              # noqa: BLE001
+        # The probe layer logs; we stay silent and report zero so
+        # the calling surface degrades gracefully.
+        return 0
+    duration = int(getattr(meta, "duration_ms", 0) or 0)
+    return duration if duration > 0 else 0
 
 
 def session_files(

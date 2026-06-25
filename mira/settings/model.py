@@ -284,6 +284,14 @@ class Settings:
         "Show a recent photo on startup (a random exported frame from "
         "a random closed event). Off → the bundled Mira mark.",
         True)
+    # spec/138 §2B + §2D — global default video playback speed. The
+    # speed is sticky for the session (carry-over across clips wanted),
+    # initialised from this default on each fresh viewport; the user
+    # can still pick a different rate live from the transport bar
+    # combo. Allowed values match the combo: 0.25 / 0.5 / 1 / 1.5 / 2.
+    default_video_speed: float = _u(
+        "Default video playback speed (×). Applies to fresh sessions; "
+        "the transport bar combo still lets you change it live.", 1.0)
     # ── Tone calibration trims (spec/54 §4.1 + spec/55, Nelson
     # 2026-06-10). Field-calibration knobs: -100..100, 0 = the shipped
     # recipe exactly. The Edit surface stays zero-slider (its thesis);

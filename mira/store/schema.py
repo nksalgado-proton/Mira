@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -678,6 +678,15 @@ CREATE TABLE lineage (
   -- this column — their intent rides phase_state(edit).
   intent_state      TEXT NOT NULL DEFAULT 'picked'
                     CHECK (intent_state IN ('compare', 'picked', 'skipped')),
+  -- spec/144 — the TRUE on-disk duration of a clip-segment export, in ms.
+  -- Recorded at clip-render time as ``(out_ms - in_ms) / speed`` so it
+  -- reflects what the player actually sees (the time-stretched output,
+  -- not the marker-bounds delta). NULL for photos and for legacy
+  -- pre-migration video lineage rows; the surface readers fall back to
+  -- ffprobing the file on disk when this column is NULL. NEVER reuse
+  -- the source item's ``duration_ms`` for a clip — that's the WHOLE
+  -- source video, not the segment.
+  duration_ms       INTEGER,
   CHECK ( (source_kind='item'    AND source_item_id IS NOT NULL AND source_bracket_id IS NULL)
        OR (source_kind='bracket' AND source_bracket_id IS NOT NULL AND source_item_id IS NULL) )
 );
@@ -1497,6 +1506,27 @@ def _migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
+    """spec/144 — record the clip-segment's TRUE on-disk duration on the
+    lineage row.
+
+    Before this column existed, every consumer of a clip member's
+    duration (Cut budget, cut-play scrubber, PTE timing) read the
+    SOURCE video's duration_ms — i.e. the whole video, not the
+    marker-partition segment. The budget undercounted (a clip-heavy
+    show read 25 min for a 1 h+ render), cut-play's scrubber drew
+    each clip at the source length (the player still advanced on
+    EndOfMedia, so the playhead lagged), and PTE wrote ``Duration=0``
+    (the spec/140 name-match always missed).
+
+    The migration adds a nullable ``duration_ms`` column to lineage.
+    Legacy rows stay NULL — readers fall back to ffprobing the
+    on-disk file (`probe_video`); new clip-render writes populate
+    the column directly with ``(out_ms - in_ms) / speed``.
+    """
+    conn.execute("ALTER TABLE lineage ADD COLUMN duration_ms INTEGER")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -1515,6 +1545,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v15_to_v16,
     _migrate_v16_to_v17,
     _migrate_v17_to_v18,
+    _migrate_v18_to_v19,
 ]
 
 

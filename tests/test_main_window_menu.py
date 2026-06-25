@@ -401,10 +401,14 @@ def test_all_days_export_now_does_not_close_eg_after_submit(
     assert run_eg.close.call_count == 0
 
 
-def test_all_days_export_now_closes_eg_on_delete_only_run(
+def test_all_days_export_now_no_op_when_no_renders(
         main_window, tmp_path, monkeypatch):
-    """Twin of the above: when the plan has ONLY deletes (no render
-    submits), the eg is closed immediately — no closure to wait for."""
+    """spec/147 §2 — Export now (all days) is RENDER-ONLY. When the
+    plan has no renders queued, the run short-circuits with a
+    "Nothing marked Will export" info dialog: no eg re-open, no
+    submit, and (most importantly) no calls into any delete
+    helper — Set-aside files are the parallel "Delete now · M"
+    verb's job."""
     from unittest.mock import MagicMock
 
     main_window._current_event_id = "fake-evt-id"
@@ -420,7 +424,9 @@ def test_all_days_export_now_closes_eg_on_delete_only_run(
     monkeypatch.setattr(
         main_window.gateway, "open_event", _open_event)
 
-    # Delete-only plan: 1 relpath to unlink, no renders.
+    # Plan carries a Set-aside relpath that the pre-spec/147 path
+    # would have unlinked. Under spec/147 the path skips it entirely:
+    # Set aside doesn't enter Export now's render set.
     scratch_plan = {
         "render_cells": [],
         "render_segments": [],
@@ -446,10 +452,10 @@ def test_all_days_export_now_closes_eg_on_delete_only_run(
             patch.object(main_window, "batch_queue", MagicMock()), \
             patch.object(main_window, "_open_days_lists_for"):
         main_window._on_days_lists_export_now()
+    # No renders submitted (n_render==0 short-circuits before the
+    # confirm). And no deletes happened — Export now is render-only.
     assert submit.call_count == 0
-    # Delete-only path closes eg immediately.
-    assert run_eg.close.call_count == 1
-    assert run_eg.delete_exported_file_by_relpath.call_count == 1
+    assert run_eg.delete_exported_file_by_relpath.call_count == 0
 
 
 def test_days_grid_item_activated_opens_editor_in_export_mode(

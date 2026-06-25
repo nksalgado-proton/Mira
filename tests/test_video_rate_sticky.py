@@ -23,8 +23,14 @@ import pytest
 from mira.ui.media.photo_viewport import PhotoViewport
 
 
-def test_default_playback_rate_is_1x(qapp):
-    """A fresh viewport reports 1.0× — the engine baseline."""
+def test_default_playback_rate_is_1x(qapp, monkeypatch):
+    """A fresh viewport reports 1.0× — the engine baseline.
+
+    Isolated from the live ``Settings.default_video_speed`` on disk
+    (the dev machine may have a non-default value set) by stubbing
+    the seed helper directly."""
+    monkeypatch.setattr(
+        PhotoViewport, "_initial_video_rate", staticmethod(lambda: 1.0))
     vp = PhotoViewport()
     try:
         assert vp.video_playback_rate() == pytest.approx(1.0)

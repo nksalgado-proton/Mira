@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -75,6 +76,13 @@ class BatchJobQueue(QObject):
         self._done = 0
         self._total = 0
         self._name = ""
+        # spec/139 §3 — per-file fraction (0.0..1.0) of the currently-
+        # encoding clip; ``None`` means "no per-file signal yet for
+        # this batch" so the progress line can hide the second bar.
+        # Reset to 0.0 every time the aggregate ``done`` ticks
+        # forward (new file starting); set to 1.0 when a unit message
+        # lands; updated continuously for video clips.
+        self._file_fraction: Optional[float] = None
 
     # ── state the line reads ─────────────────────────────────────────
     @property
@@ -92,6 +100,13 @@ class BatchJobQueue(QObject):
     @property
     def progress(self) -> tuple:
         return (self._done, self._total, self._name)
+
+    @property
+    def file_fraction(self) -> Optional[float]:
+        """spec/139 §3 — the current file's encode fraction (0..1)
+        for the second per-file progress bar; ``None`` while no
+        signal has landed for this batch (the line hides the bar)."""
+        return self._file_fraction
 
     @property
     def idle(self) -> bool:
@@ -122,7 +137,15 @@ class BatchJobQueue(QObject):
         self._current = job
         self._done = self._total = 0
         self._name = ""
+        self._file_fraction = None
         job.worker.progress.connect(self._on_progress)
+        # spec/139 §3 — the worker may not have a ``file_fraction``
+        # signal (older jobs / ingest workers, or test stubs that
+        # explicitly leave it ``None``). Connect lazily so those
+        # callers don't blow up on ``NoneType.connect``.
+        frac_sig = getattr(job.worker, "file_fraction", None)
+        if frac_sig is not None and hasattr(frac_sig, "connect"):
+            frac_sig.connect(self._on_file_fraction)
         job.worker.finished_result.connect(
             lambda result, j=job: self._on_finished(j, result))
         log.info("batch queue: starting %s (%s)", job.job_type, job.label)
@@ -130,7 +153,25 @@ class BatchJobQueue(QObject):
         job.worker.start()
 
     def _on_progress(self, done: int, total: int, name: str) -> None:
+        # spec/139 §3 — aggregate tick. When we already have a
+        # per-file signal AND ``done`` is advancing (a file just
+        # completed), reset the fraction back to 0 for the upcoming
+        # file — its first ``file_fraction`` emit will re-fill the
+        # bar. We do NOT bump fraction OUT of ``None`` here: a pure-
+        # photo batch never emits a fraction, so the second bar
+        # should stay hidden ("for pure-photo batches it can stay
+        # hidden", spec §3).
+        if int(done) > self._done and self._file_fraction is not None:
+            self._file_fraction = 0.0
         self._done, self._total, self._name = int(done), int(total), name
+        self.changed.emit()
+
+    def _on_file_fraction(self, fraction: float) -> None:
+        """spec/139 §3 — clip-encode tick from
+        :class:`BatchExportJob`. Stores the value so
+        :class:`BatchProgressLine` can paint the per-file bar at the
+        next ``changed`` signal."""
+        self._file_fraction = max(0.0, min(1.0, float(fraction)))
         self.changed.emit()
 
     def _on_finished(self, job: _Job, result) -> None:
@@ -175,25 +216,54 @@ class BatchProgressLine(QWidget):
         super().__init__(parent)
         self.setObjectName("BatchProgressLine")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 3, 10, 3)
-        row.setSpacing(10)
+        # spec/139 §3 — TWO bars stacked: aggregate "N of M" on top,
+        # per-file 0..100% below. Both share the right-hand queued
+        # chip + Cancel column so the chrome footprint is the same.
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(10, 3, 10, 3)
+        outer.setSpacing(10)
+        bars_col = QVBoxLayout()
+        bars_col.setContentsMargins(0, 0, 0, 0)
+        bars_col.setSpacing(2)
+        # Aggregate row: "Exporting N of M" + bar.
+        agg_row = QHBoxLayout()
+        agg_row.setContentsMargins(0, 0, 0, 0)
+        agg_row.setSpacing(10)
         self._label = QLabel("")
         self._label.setObjectName("BatchProgressLabel")
-        row.addWidget(self._label)
+        agg_row.addWidget(self._label)
         self._bar = QProgressBar()
         self._bar.setMaximumHeight(14)
         self._bar.setTextVisible(False)
-        row.addWidget(self._bar, stretch=1)
+        agg_row.addWidget(self._bar, stretch=1)
+        bars_col.addLayout(agg_row)
+        # Per-file row (spec/139 §3): tiny "encoding…" hint + a
+        # 0..100% bar that paints the active clip's frame fraction.
+        # Hidden until the first file_fraction lands; reset to 0 on
+        # each new file (BatchJobQueue handles the reset).
+        file_row = QHBoxLayout()
+        file_row.setContentsMargins(0, 0, 0, 0)
+        file_row.setSpacing(10)
+        self._file_label = QLabel("")
+        self._file_label.setObjectName("BatchProgressFileLabel")
+        file_row.addWidget(self._file_label)
+        self._file_bar = QProgressBar()
+        self._file_bar.setObjectName("BatchProgressFileBar")
+        self._file_bar.setMaximumHeight(8)
+        self._file_bar.setTextVisible(False)
+        self._file_bar.setRange(0, 1000)        # 0.1% resolution
+        file_row.addWidget(self._file_bar, stretch=1)
+        bars_col.addLayout(file_row)
+        outer.addLayout(bars_col, stretch=1)
         self._queued = QLabel("")
         self._queued.setObjectName("BatchProgressQueued")
         self._queued.setToolTip(tr(
             "Batch jobs run one at a time; the rest wait in line."))
-        row.addWidget(self._queued)
+        outer.addWidget(self._queued)
         self._cancel = QPushButton(tr("Cancel"))
         self._cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        row.addWidget(self._cancel)
+        outer.addWidget(self._cancel)
         self._queue: Optional[BatchJobQueue] = None
         #: Host-supplied callable returning the proxy builder's
         #: ``pending_count``. ``None`` while unwired (tests / early
@@ -253,15 +323,39 @@ class BatchProgressLine(QWidget):
         q = self._queue
         # ── (1) batch job running → today's full readout. ────────
         if q is not None and not q.idle:
-            done, total, name = q.progress
-            head = self._format_head(q.running_job_type, q.running_label)
-            self._label.setText(head + ("  ·  " + name if name else ""))
+            done, total, _name = q.progress
+            # spec/139 §3 — aggregate label is "{Verb} N of M" with
+            # NO filename. The filename was clutter (and long names
+            # overflowed); the count + the moving per-file bar
+            # below convey progress. ``_name`` is still emitted by
+            # the worker for logs, but the UI never displays it.
+            verb = self._verb_for(q.running_job_type)
+            self._label.setText(
+                tr("{verb} {done} of {total}")
+                .replace("{verb}", verb)
+                .replace("{done}", str(done))
+                .replace("{total}", str(max(1, total)))
+            )
             self._cancel.setToolTip(
                 self._cancel_tooltip(q.running_job_type))
             self._bar.setMaximum(max(1, total))
             self._bar.setValue(min(done, max(1, total)))
             self._bar.setVisible(True)
             self._bar.setProperty("idle", False)
+            # spec/139 §3 — per-file bar. Visible only while we have
+            # a fraction signal for the current batch (the second
+            # bar collapses for pure-photo batches that snap to 1.0
+            # so fast there's nothing to show).
+            frac = q.file_fraction
+            if frac is not None:
+                self._file_bar.setValue(int(round(frac * 1000)))
+                self._file_bar.setVisible(True)
+                self._file_label.setText(
+                    tr("encoding…") if frac < 1.0 else "")
+                self._file_label.setVisible(frac < 1.0)
+            else:
+                self._file_bar.setVisible(False)
+                self._file_label.setVisible(False)
             self._queued.setText(
                 tr("+{n} waiting").replace("{n}", str(q.queued_count))
                 if q.queued_count else "")
@@ -281,6 +375,8 @@ class BatchProgressLine(QWidget):
             self._bar.setMaximum(1)
             self._bar.setValue(0)
             self._bar.setVisible(False)
+            self._file_bar.setVisible(False)
+            self._file_label.setVisible(False)
             self._queued.setText("")
             self._cancel.setVisible(False)
             self._set_idle_styling(True)
@@ -291,6 +387,8 @@ class BatchProgressLine(QWidget):
         self._bar.setMaximum(1)
         self._bar.setValue(0)
         self._bar.setVisible(False)
+        self._file_bar.setVisible(False)
+        self._file_label.setVisible(False)
         self._queued.setText("")
         self._cancel.setVisible(False)
         self._set_idle_styling(True)
@@ -317,6 +415,10 @@ class BatchProgressLine(QWidget):
         line now serve ingest as well as export). Unknown / empty types
         fall back to the bare label so a future job type renders
         usefully even before this map learns the verb.
+
+        spec/139 §3 retired the per-line use of this label form (the
+        aggregate now reads ``{verb} N of M`` via :meth:`_verb_for`);
+        the helper stays for the legacy import-line callers and tests.
         """
         if not label:
             return ""
@@ -325,6 +427,14 @@ class BatchProgressLine(QWidget):
         if job_type == JOB_TYPE_EXPORT:
             return tr("Exporting {label}").replace("{label}", label)
         return label
+
+    @staticmethod
+    def _verb_for(job_type: str) -> str:
+        """spec/139 §3 — the verb token for the aggregate line. The
+        line text is ``{verb} N of M``; no label, no filename."""
+        if job_type == JOB_TYPE_IMPORT:
+            return tr("Importing")
+        return tr("Exporting")
 
     @staticmethod
     def _cancel_tooltip(job_type: str) -> str:

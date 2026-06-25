@@ -25,13 +25,16 @@ def _make_store(tmp_path) -> EventStore:
 
 
 def _roll_back_to_v17(conn: sqlite3.Connection) -> None:
-    """Roll the fresh v18 schema back to v17 so the v17→v18 migration
+    """Roll the fresh schema back to v17 so the v17→v18 migration
     has the right shape to operate on (the test rebuilds v17 then
-    seeds + migrates forward)."""
+    seeds + migrates forward to SCHEMA_VERSION)."""
     # The v18 DDL added camera_tz_correction; drop it so v17→v18 will
     # CREATE it fresh.
     conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
     conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
+    # spec/144 v18→v19 added lineage.duration_ms; strip it so the
+    # ADD COLUMN on the way back up doesn't collide.
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute("UPDATE schema_info SET schema_version = 17 WHERE id = 1")
 
 

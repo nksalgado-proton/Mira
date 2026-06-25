@@ -146,9 +146,20 @@ def test_picker_reveal_sync_does_not_re_emit_speed_changed(
             pass
 
 
-def test_picker_reveal_with_default_rate_shows_1x(picker_page, tmp_path):
-    """A viewport that's never seen ``video_set_playback_rate`` reports
-    1.0×; the bar reveal then shows '1×' (and still doesn't emit)."""
+def test_picker_reveal_with_default_rate_shows_1x(
+    picker_page, tmp_path, monkeypatch,
+):
+    """A viewport whose seed reads the default 1.0 (dev-machine
+    isolated via monkeypatch) opens its bar at '1×' on reveal — and
+    the sync still doesn't emit."""
+    # Force a clean 1× baseline regardless of what the dev machine's
+    # live ``Settings.default_video_speed`` happens to be.
+    picker_page.viewport.video_set_playback_rate(1.0)
+    monkeypatch.setattr(
+        "mira.settings.repo.SettingsRepo.load",
+        lambda self: type("_S", (), {"default_video_speed": 1.0})(),
+    )
+    picker_page._transport_bar.set_speed(1.0)
     picker_page.show()
     emitted: list[float] = []
 

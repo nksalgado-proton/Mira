@@ -117,6 +117,11 @@ class ExportPreviewDialog(QDialog):
     intent_toggle_requested = pyqtSignal(str)   # item_id (Space)
     open_editor_requested = pyqtSignal(str)     # item_id
     export_this_requested = pyqtSignal(str)     # item_id
+    # spec/147 §3 — single-item Delete this, parallel to Export this.
+    # Enabled only when the current item is Set aside (red) AND has
+    # a shipped file on disk. The host wires the confirmation +
+    # cross-event Cut cleanup.
+    delete_this_requested = pyqtSignal(str)     # item_id
 
     def __init__(
         self,
@@ -231,6 +236,16 @@ class ExportPreviewDialog(QDialog):
             "Render and ship this one item now. Disabled until the cell "
             "is Will export (press P).")
         actions.addWidget(self._export_this_btn)
+
+        # spec/147 §3 — single-item Delete this. Mirrors Export this:
+        # one item, one confirm, one verb. Enabled only when the cell
+        # is Set aside (red) AND its exported file exists on disk.
+        self._delete_this_btn = QPushButton("Delete this")
+        self._delete_this_btn.clicked.connect(self._on_delete_this)
+        self._delete_this_btn.setToolTip(
+            "Delete this exported file now. Disabled until the cell is "
+            "Set aside (press X).")
+        actions.addWidget(self._delete_this_btn)
 
         # spec/63 §4 / Picker-parity pair — the same labels Picker uses
         # for the F10 / F11 affordances, wired through the viewport's
@@ -543,6 +558,11 @@ class ExportPreviewDialog(QDialog):
         self._state_chip.setText(f"Intent: {label}" if label else "")
         self._stale_chip.setVisible(bool(item.is_stale))
         self._export_this_btn.setEnabled(item.state == "picked")
+        # spec/147 §3 — Delete this requires the cell to be Set aside
+        # (red) AND a shipped file to exist on disk. Anything else
+        # makes the verb a no-op or a noise click.
+        self._delete_this_btn.setEnabled(
+            item.state == "skipped" and bool(item.has_shipped_file))
         self._open_editor_btn.setEnabled(True)
 
     # ── intent updates from the host ────────────────────────────────────
@@ -654,6 +674,14 @@ class ExportPreviewDialog(QDialog):
         target = self._current_item_id()
         if target is not None:
             self.export_this_requested.emit(target)
+
+    def _on_delete_this(self) -> None:
+        """spec/147 §3 — single-item Delete this. Hands off to the
+        host via :sig:`delete_this_requested`; the host runs the
+        confirm + cross-event Cut cleanup."""
+        target = self._current_item_id()
+        if target is not None:
+            self.delete_this_requested.emit(target)
 
 
 __all__ = ["ExportPreviewDialog", "PreviewItem"]

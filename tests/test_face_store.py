@@ -220,6 +220,9 @@ def test_migrate_v11_to_v12_adds_face_table(tmp_path):
     # CREATE TABLE doesn't collide on the way back up.
     conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
     conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
+    # spec/144 v18→v19 — strip lineage.duration_ms so the ALTER on
+    # the way back up doesn't collide.
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute("UPDATE schema_info SET schema_version = 11 WHERE id = 1")
 
     schema.migrate(conn)

@@ -114,7 +114,11 @@ def test_previews_source_failure_collapses_to_zero(line):
 
 def test_batch_job_wins_over_previews(qapp, queue, line):
     """spec/96 §1 priority order: batch > previews > Ready. A live
-    job overrides the previews count + the idle label."""
+    job overrides the previews count + the idle label.
+
+    spec/139 §3 — the aggregate line is now ``"Exporting N of M"``
+    (no event label, no filename); pin that form too so a regression
+    that brings the event label back is caught here."""
     line.set_previews_source(lambda: 99)
     worker = _FakeWorker()
     queue.enqueue(worker, label="Italy 2026", on_finished=None,
@@ -122,8 +126,12 @@ def test_batch_job_wins_over_previews(qapp, queue, line):
     # The queue starts the job immediately; the line picks it up.
     worker.progress.emit(3, 10, "IMG_4001.JPG")
     qapp.processEvents()
-    assert "Creating previews" not in line._label.text()  # noqa: SLF001
-    assert "Italy 2026" in line._label.text()       # noqa: SLF001
+    label = line._label.text()                      # noqa: SLF001
+    assert "Creating previews" not in label
+    # spec/139 §3 — no event label, no filename in the aggregate line.
+    assert "Italy 2026" not in label
+    assert "IMG_4001" not in label
+    assert "Exporting" in label and "3 of 10" in label
     # Active batch chrome — bar visible, Cancel visible, idle flag off.
     assert line._cancel.isVisible() is True         # noqa: SLF001
     assert line._bar.isVisible() is True            # noqa: SLF001

@@ -509,7 +509,8 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
         "CREATE INDEX ix_event_mood ON event(mood) WHERE mood IS NOT NULL")
     # Strip the post-v2 lineage columns so the ADD COLUMN migrations
     # on the way back up don't collide (spec/89 added 'provenance' and
-    # 'intent_state').
+    # 'intent_state'; spec/144 added 'duration_ms').
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     # Strip the v12 face table so the v11→v12 CREATE TABLE doesn't
@@ -573,6 +574,9 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     stripping here — callers run :func:`_rebuild_v6_cut_tables` first,
     which recreates ``cut`` at the v6 shape (no aspect column); v14→v15
     will then add it on the way back up."""
+    # spec/144 v18→v19 added lineage.duration_ms; strip here too so
+    # the ALTER on the way back up doesn't collide.
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     conn.execute("DROP TABLE face")
@@ -773,6 +777,9 @@ def test_migrate_v16_to_v17_renames_and_scales_minute_columns(tmp_path):
     # migration's CREATE TABLE doesn't collide on the way back up.
     conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
     conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
+    # spec/144 v18→v19 — strip lineage.duration_ms so the ALTER on
+    # the way back up doesn't collide on the column.
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute(
         "INSERT INTO camera (camera_id, applied_offset_minutes, "
         "configured_tz_minutes) VALUES "

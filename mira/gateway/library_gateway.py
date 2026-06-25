@@ -1463,6 +1463,84 @@ class LibraryGateway:
             (cut_id,)).fetchone()
         return int(row[0] if row else 0)
 
+    def cross_event_cut_usage_count(
+        self,
+        event_uuid: str,
+        export_relpaths: Iterable[str],
+    ) -> int:
+        """spec/147 §4 — count the distinct cross-event Cuts that
+        reference any ``(event_uuid, export_relpath)`` pair from the
+        passed-in set.
+
+        The Export-surface delete confirm reads this to warn the user
+        before nuking a file that's still in a cross-event Cut. Counts
+        DISTINCT cuts (not member rows) so a single Cut that contains
+        two of the doomed files counts once, not twice.
+
+        Returns 0 when ``export_relpaths`` is empty or ``event_uuid``
+        is blank."""
+        relpaths = [r for r in (export_relpaths or ()) if r]
+        if not relpaths or not event_uuid:
+            return 0
+        placeholders = ",".join(["?"] * len(relpaths))
+        sql = (
+            "SELECT COUNT(DISTINCT cut_id) FROM cut_member "
+            "WHERE event_id = ? AND kind = 'export' "
+            f"AND export_relpath IN ({placeholders})"
+        )
+        row = self.user_store.conn.execute(
+            sql, (event_uuid, *relpaths)).fetchone()
+        return int(row[0] if row else 0)
+
+    def delete_cross_event_cut_members(
+        self,
+        event_uuid: str,
+        export_relpaths: Iterable[str],
+    ) -> int:
+        """spec/147 §4 — remove every cross-event ``cut_member`` row that
+        references ``(event_uuid, export_relpath)`` for any relpath in
+        the passed-in set.
+
+        Mirrors the event-scope cleanup
+        :meth:`EventGateway.delete_exported_file_by_relpath` already
+        does (it drops event-scope members for the deleted relpath
+        before the file unlink); this is the cross-event sibling so
+        no library Cut is left with a dangling member after the user
+        deletes an exported file.
+
+        Updates each affected Cut's ``updated_at`` so the "newest"
+        ordering in the Cuts list reflects the membership change.
+        Returns the number of rows removed (0 on empty input)."""
+        self._guard_read_only()
+        relpaths = [r for r in (export_relpaths or ()) if r]
+        if not relpaths or not event_uuid:
+            return 0
+        placeholders = ",".join(["?"] * len(relpaths))
+        # The two-step shape — collect affected cut ids FIRST so the
+        # UPDATE list is stable across the DELETE.
+        affected = self.user_store.conn.execute(
+            "SELECT DISTINCT cut_id FROM cut_member "
+            "WHERE event_id = ? AND kind = 'export' "
+            f"AND export_relpath IN ({placeholders})",
+            (event_uuid, *relpaths)).fetchall()
+        cut_ids = [r[0] for r in affected]
+        if not cut_ids:
+            return 0
+        now = self._now()
+        with self.user_store.transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM cut_member "
+                "WHERE event_id = ? AND kind = 'export' "
+                f"AND export_relpath IN ({placeholders})",
+                (event_uuid, *relpaths))
+            removed = int(cursor.rowcount or 0)
+            cut_id_placeholders = ",".join(["?"] * len(cut_ids))
+            conn.execute(
+                f"UPDATE cut SET updated_at = ? "
+                f"WHERE id IN ({cut_id_placeholders})",
+                (now, *cut_ids))
+        return removed
+
     def stamp_cross_event_cut_exported(self, cut_id: str) -> None:
         """The export pipeline's stamp: update ``last_exported_at`` only
         (no other field). The Cut's identity is untouched."""

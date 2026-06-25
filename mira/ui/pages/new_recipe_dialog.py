@@ -294,6 +294,21 @@ class NewRecipeContext:
     overlay_fields: List[str] = field(default_factory=list)
     overlay_mode: Optional[str] = None
 
+    # spec/143 — separators on/off toggle + card-style picker. The
+    # dialog dropped both controls during the spec/90 Phase 4 sweep;
+    # the data already exists (``Cut.separators`` + ``card_style`` in
+    # ``extras_json``) and is honoured by export + play, but the UI
+    # has silently fallen back to the global ``use_separators``
+    # setting since. ``separators`` is the prefill (True = on, False
+    # = off); the host seeds it from ``cut.separators`` on Edit and
+    # from the per-event setting for a brand-new Cut (cross-event
+    # default stays False). ``card_style`` is the prefill from
+    # :meth:`EventGateway.cut_card_style` — one of ``'black'`` /
+    # ``'single'`` / ``'multi'``; an unknown value normalises to
+    # ``'black'`` in the dialog.
+    separators: bool = True
+    card_style: str = "black"
+
     # ``is_editing`` flips the Start-button gate to a permissive mode
     # (spec/90 Phase 4e — Nelson 2026-06-20): when True, Start enables
     # as long as Source is non-empty, regardless of probe state. Use
@@ -1729,6 +1744,18 @@ class NewRecipeDialog(QDialog):
         # legacy ``pill_toggle`` QPushButton path lit ambiguous tints.
         self._overlay_field_chips: Dict[str, QCheckBox] = {}
 
+        # spec/143 — separators toggle + card-style picker. The host
+        # seeds ``ctx.separators`` from ``cut.separators`` on Edit and
+        # from the per-event ``use_separators`` setting for a brand-new
+        # Cut (cross-event default stays False). An unknown
+        # ``card_style`` normalises to ``'black'`` so a stale prefill
+        # can't park a bogus value on the dialog.
+        self._separators: bool = bool(ctx.separators)
+        self._card_style: str = (
+            ctx.card_style if ctx.card_style in ("black", "single", "multi")
+            else "black"
+        )
+
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
         # :meth:`_run_probe` after a short quiet period. 200ms is fast
@@ -3079,6 +3106,13 @@ class NewRecipeDialog(QDialog):
         if self._overlay_field_options:
             row.addWidget(self._build_overlay_box())
 
+        # spec/143 — separators on/off + card-style control. Sibling to
+        # the overlay / aspect / music blocks. Dropped during the spec/
+        # 90 Phase 4 sweep; without it the dialog silently fell back to
+        # the global ``use_separators`` setting and the user lost the
+        # per-Cut choice.
+        row.addWidget(self._build_separators_box())
+
         row.addStretch()
         v.addLayout(row)
         return host
@@ -3167,6 +3201,83 @@ class NewRecipeDialog(QDialog):
         enabled = self._overlay_mode in ("embedded", "burn_in")
         for chip in self._overlay_field_chips.values():
             chip.setEnabled(enabled)
+
+    # -------- Separators + card-style control (spec/143) ------------- #
+
+    def _build_separators_box(self) -> QWidget:
+        """spec/143 — the separators on/off picker + card-style select.
+
+        Built as a single QWidget so the surrounding Runtime row slots
+        it like the overlay / aspect / music blocks. The toggle drives
+        whether export + play insert day-separator and opener cards
+        (the per-Cut counterpart of the global ``use_separators``
+        setting). The card-style combo picks the colour treatment for
+        those cards — ``black`` / ``single`` / ``multi`` — and greys
+        out when separators are Off so the user sees the disabled
+        choice instead of editing a setting that has no effect."""
+        box = QWidget()
+        sb = QVBoxLayout(box)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(2)
+        sb.addWidget(QLabel(tr("Separators")))
+
+        self._separators_combo = QComboBox()
+        self._separators_combo.setObjectName("RuntimeSeparatorsCombo")
+        self._separators_combo.setToolTip(tr(
+            "Day-separator + opener cards between days. Off = play "
+            "and export the photos with no cards; Day cards = insert "
+            "one card per new day (the style picker controls the "
+            "colour treatment)."))
+        self._separators_combo.addItem(tr("Off"), userData=False)
+        self._separators_combo.addItem(tr("Day cards"), userData=True)
+        self._separators_combo.setCurrentIndex(1 if self._separators else 0)
+        self._separators_combo.currentIndexChanged.connect(
+            self._on_separators_changed)
+        sb.addWidget(self._separators_combo)
+
+        self._card_style_combo = QComboBox()
+        self._card_style_combo.setObjectName("RuntimeCardStyleCombo")
+        self._card_style_combo.setToolTip(tr(
+            "Card style — Black is a plain dark slate, Single re-uses "
+            "one tinted card, Multi varies the tint per day."))
+        # Order pinned by spec/143 §2 — black first (the default), then
+        # the two tinted variants. Labels ride ``tr()`` for i18n; the
+        # userData carries the canonical enum the gateway persists.
+        self._card_style_combo.addItem(tr("Black"), userData="black")
+        self._card_style_combo.addItem(tr("Single"), userData="single")
+        self._card_style_combo.addItem(tr("Multi"), userData="multi")
+        idx = self._card_style_combo.findData(self._card_style)
+        if idx >= 0:
+            self._card_style_combo.setCurrentIndex(idx)
+        self._card_style_combo.currentIndexChanged.connect(
+            self._on_card_style_changed)
+        sb.addWidget(self._card_style_combo)
+        self._sync_card_style_enabled()
+        return box
+
+    def _on_separators_changed(self, _index: int) -> None:
+        """spec/143 — the toggle flipped. Track the new value and
+        grey / restore the style combo so the user sees the disabled
+        choice instead of editing a setting with no effect."""
+        data = self._separators_combo.currentData()
+        self._separators = bool(data)
+        self._sync_card_style_enabled()
+
+    def _on_card_style_changed(self, _index: int) -> None:
+        """spec/143 — the style picker changed. Unknown / missing data
+        falls back to the canonical default so a stale prefill can't
+        smuggle a bogus value through the round-trip."""
+        data = self._card_style_combo.currentData()
+        self._card_style = (
+            str(data) if data in ("black", "single", "multi") else "black"
+        )
+
+    def _sync_card_style_enabled(self) -> None:
+        """Off → the style picker greys out. The saved choice survives
+        so the user can flip back without losing the pick, identical
+        to the overlay mode / fields gesture."""
+        if hasattr(self, "_card_style_combo"):
+            self._card_style_combo.setEnabled(bool(self._separators))
 
     def _on_budget_toggled(self, checked: bool) -> None:
         """Checkbox toggled — flip the budget state, grey or restore the
@@ -4057,6 +4168,29 @@ class NewRecipeDialog(QDialog):
                 chip.blockSignals(False)
             if hasattr(self, "_overlay_mode_combo"):
                 self._sync_overlay_fields_enabled()
+            # spec/143 — load the Cut's separator on/off + card-style
+            # choice into the picker. An absent ``separators`` key keeps
+            # the dialog's current value (True / new-cut default); an
+            # unknown ``card_style`` normalises to ``black`` so a stale
+            # composition can't park a bogus value on the dialog.
+            sep_raw = presentation.get("separators")
+            if sep_raw is not None:
+                self._separators = bool(sep_raw)
+            style_raw = presentation.get("card_style")
+            if style_raw in ("black", "single", "multi"):
+                self._card_style = style_raw
+            if hasattr(self, "_separators_combo"):
+                self._separators_combo.blockSignals(True)
+                self._separators_combo.setCurrentIndex(
+                    1 if self._separators else 0)
+                self._separators_combo.blockSignals(False)
+            if hasattr(self, "_card_style_combo"):
+                self._card_style_combo.blockSignals(True)
+                idx = self._card_style_combo.findData(self._card_style)
+                if idx >= 0:
+                    self._card_style_combo.setCurrentIndex(idx)
+                self._card_style_combo.blockSignals(False)
+                self._sync_card_style_enabled()
 
     def _decode_expr(
         self, expr: Sequence[Sequence[Any]],
@@ -4417,14 +4551,17 @@ class NewRecipeDialog(QDialog):
         """The ``presentation`` block of the composition (spec/90 §5.1).
         Emits the runtime fields the dialog currently exposes.
 
-        spec/106 — ``music_category`` is now emitted (combo value, or
+        spec/106 — ``music_category`` is emitted (combo value, or
         ``None`` for "No music") so :func:`recipe_to_cut_draft` carries
         it onto the resulting ``CutDraft`` and downstream
-        ``create_cut`` / ``update_cut`` persist it. The remaining
-        Phase 4 gaps (``card_style``, ``overlay_fields``,
-        ``separators``) are still parked on a settings surface that
-        was never wired — they stay out of the dict so the adapter's
-        tolerant defaults take over."""
+        ``create_cut`` / ``update_cut`` persist it.
+
+        spec/143 — ``separators`` + ``card_style`` are always emitted
+        so the per-Cut choice replaces the silent fallback to the
+        global ``use_separators`` setting. The style key persists
+        regardless of the toggle (the saved pick survives an Off flip
+        the same way the overlay fields do), and the export + play
+        layers read both verbatim."""
         target_s: Optional[int] = (
             int(self._target_minutes) * 60 if self._has_budget else None
         )
@@ -4440,6 +4577,12 @@ class NewRecipeDialog(QDialog):
             # ``photo_s``. ``recipe_to_cut_draft`` threads it onto the
             # CutDraft so create_cut / update_cut_settings persist it.
             "aspect": self._aspect,
+            # spec/143 — separator on/off + card-style picker. Always
+            # emitted: the dialog's choice replaces the global
+            # ``use_separators`` fallback the dropped control left in
+            # place.
+            "separators": bool(self._separators),
+            "card_style": self._card_style,
         }
         # spec/114 — overlay mode + fields. Emitted only when the user
         # opted in (mode != Off); recipe_to_cut_draft tolerates the

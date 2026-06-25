@@ -1135,11 +1135,25 @@ class ShareCutsPage(QWidget):
             self._eg = None
 
     def on_titlebar_back(self) -> None:
-        """Shared title-bar Back → the CURRENT sub-page's back action: the
-        list closes the event (``_on_back``), detail / pool return to the list
-        (``_on_detail_back`` / ``_on_pool_back``). Mirrors Days Grid's
-        cluster-aware title-bar Back."""
+        """Shared title-bar Back → the CURRENT sub-page's back action.
+
+        spec/142 — prefer the sub-page's own ``on_titlebar_back``
+        dispatcher when it has one. :class:`CutSessionPage` uses it
+        to step its three-level drill-down (single → grid → days
+        panel) instead of leaving the session outright; without this
+        preference, Back from a day's grid fired
+        ``back_requested`` → ``_on_cancel`` and the user lost their
+        in-progress Cut just trying to pick another day.
+
+        Sub-pages without ``on_titlebar_back`` (list / detail / pool)
+        fall through to their ``back_requested`` signal unchanged —
+        ``_on_back`` / ``_on_detail_back`` / ``_on_pool_back`` keep
+        firing exactly as before."""
         cur = self._stack.currentWidget()
+        fn = getattr(cur, "on_titlebar_back", None)
+        if callable(fn):
+            fn()
+            return
         sig = getattr(cur, "back_requested", None)
         if sig is not None:
             sig.emit()
@@ -1341,6 +1355,13 @@ class ShareCutsPage(QWidget):
             # hides the control entirely.
             overlay_field_options=list(
                 kwargs.get("overlay_field_options") or []),
+            # spec/143 — seed the separators on/off control. A brand-
+            # new Cut starts on the per-event ``use_separators``
+            # setting; ``_apply_recipe_prefill`` overrides this from
+            # the existing Cut's saved choice when the user is
+            # editing. The card-style picker keeps its 'black'
+            # default for new Cuts.
+            separators=bool(kwargs.get("separators_on", True)),
         )
         # Default selection — start the Source from #exported so the
         # user composes from there (matches the legacy New Cut default).
@@ -1473,6 +1494,18 @@ class ShareCutsPage(QWidget):
         if aspect:
             from core.cut_aspect import normalise as _normalise_aspect
             ctx.aspect = _normalise_aspect(aspect)
+        # spec/143 — re-seat the Cut's saved separator on/off + card-
+        # style choice on the dialog context. The dialog reads both at
+        # construction; the prefill replaces the new-cut default
+        # (``use_separators`` setting / ``'black'``) so the user lands
+        # on the Cut's own choice. Absent / unknown values fall
+        # through to the new-cut defaults.
+        separators = getattr(prefill, "separators", None)
+        if separators is not None:
+            ctx.separators = bool(separators)
+        card_style = getattr(prefill, "card_style", None)
+        if card_style in ("black", "single", "multi"):
+            ctx.card_style = card_style
 
     def _recipe_store(self) -> Optional[RecipeStore]:
         """Construct a :class:`RecipeStore` over the app's user_store, or
@@ -1808,8 +1841,11 @@ class ShareCutsPage(QWidget):
         draft = self._exec_edit_dialog(prefill=None, kwargs=kwargs)
         if draft is None:
             return
-        session = CutSession.from_draft(
-            self._eg, draft, separators_on=self._separators_on())
+        # spec/143 — honour the dialog's per-Cut separator choice. The
+        # draft now carries it (the dialog seeds from the
+        # ``use_separators`` setting for a new Cut, the user overrides
+        # per-Cut), so we no longer force the global setting on top.
+        session = CutSession.from_draft(self._eg, draft)
         self._start_session(session)
 
     def _on_adjust_cut(self, cut_id: str) -> None:
@@ -1862,6 +1898,11 @@ class ShareCutsPage(QWidget):
             # 4:3 / 3:2 / 1:1 choice instead of falling back to the
             # NewRecipeContext default ("16:9").
             aspect=cut.aspect,
+            # spec/143 — the Cut's saved separator on/off choice rides
+            # the prefill so the dialog opens on the user's per-Cut
+            # value rather than the global ``use_separators`` setting.
+            # ``cut.separators`` is the bool column on the Cut row.
+            separators=bool(cut.separators),
         )
         kwargs = self._dialog_kwargs()
         kwargs["existing_cuts"] = [
@@ -1869,8 +1910,10 @@ class ShareCutsPage(QWidget):
         draft = self._exec_edit_dialog(prefill, kwargs)
         if draft is None:
             return
-        session = CutSession.for_cut_with_draft(
-            eg, cut, draft, separators_on=self._separators_on())
+        # spec/143 — Adjust honours the dialog's separator choice the
+        # same way New does; the draft carries the user's per-Cut
+        # value (seeded from ``cut.separators`` on Edit).
+        session = CutSession.for_cut_with_draft(eg, cut, draft)
         self._start_session(session)
 
     def _exec_edit_dialog(self, prefill, kwargs):
@@ -2436,6 +2479,11 @@ class ShareCutsPage(QWidget):
         # :meth:`_cut_overlay_text` to resolve a Cut-folder filename
         # back to the lineage relpath ``frame_provenance`` keys on.
         overlay_lookup = self._build_overlay_member_lookup(cut)
+        # spec/144 — basename → lineage.duration_ms lookup so the PTE
+        # generator reads the segment's TRUE recorded length without
+        # paying a per-clip ffprobe. Probe is the fallback for legacy
+        # members whose lineage row predates the duration column.
+        duration_lookup = self._build_clip_duration_lookup(cut)
         members: List[PteMember] = []
         for entry in sorted(folder.iterdir(),
                             key=lambda p: p.name.lower()):
@@ -2451,7 +2499,8 @@ class ShareCutsPage(QWidget):
             elif suffix == ".mp4":
                 members.append(PteMember(
                     kind="video", path=entry,
-                    duration_ms=self._cut_video_duration_ms(cut, entry),
+                    duration_ms=self._cut_video_duration_ms(
+                        cut, entry, duration_lookup),
                 ))
         if not members:
             return None
@@ -2581,22 +2630,74 @@ class ShareCutsPage(QWidget):
         lines = cut_overlay.compose_overlay_lines(fields, prov)
         return "\n".join(lines) if lines else None
 
-    def _cut_video_duration_ms(self, cut, video: Path) -> int:
-        """The clip length, in ms, for the `[Times]` block. The export
-        folder's filenames carry no duration, so the gateway is asked
-        for the source item's ``duration_ms``. Falls back to 0 when
-        the source is missing (the slide still plays — the cumulative
-        synchpos just skips ahead)."""
+    def _build_clip_duration_lookup(self, cut) -> Dict[str, int]:
+        """spec/144 — basename → ``lineage.duration_ms`` for the Cut's
+        video members. Returns the persisted segment length recorded at
+        export time so the PTE generator (and any other surface) doesn't
+        repeat the ffprobe pass per clip.
+
+        Members without a stored duration (legacy lineage rows, photos)
+        contribute nothing — :meth:`_cut_video_duration_ms` falls back
+        to ``probe_video`` for those."""
+        eg = self._eg
+        if eg is None:
+            return {}
         try:
-            # The export's filename is ``NNN_<sourcename>`` — strip the
-            # NNN_ prefix to match the source item's name.
-            stem = video.name.split("_", 1)[-1] if "_" in video.name else video.name
-            for it in self._eg.items():
-                if it.kind == "video" and Path(it.origin_relpath or "").name.lower() == stem.lower():
-                    return int(it.duration_ms or 0)
-        except Exception:  # noqa: BLE001
-            log.exception("video duration lookup failed for %s", video)
-        return 0
+            rows = eg.cut_member_files(cut.id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "clip-duration lookup: cut_member_files failed for %s",
+                cut.tag)
+            return {}
+        out: Dict[str, int] = {}
+        for row in rows:
+            relpath = getattr(row, "export_relpath", None)
+            duration = getattr(row, "duration_ms", None)
+            if not relpath or duration is None:
+                continue
+            basename = Path(relpath).name
+            if not basename:
+                continue
+            try:
+                ms = int(duration)
+            except (TypeError, ValueError):
+                continue
+            if ms <= 0:
+                continue
+            out.setdefault(basename, ms)
+        return out
+
+    def _cut_video_duration_ms(
+        self,
+        cut,
+        video: Path,
+        duration_lookup: Optional[Dict[str, int]] = None,
+    ) -> int:
+        """The exported clip's real length, in ms (spec/140 + spec/144).
+
+        spec/144 — prefers the lineage row's ``duration_ms`` (recorded
+        at export as ``(out_ms - in_ms) / speed``); falls back to
+        ffprobing the file when the row predates the migration. Never
+        uses the source video's whole ``duration_ms`` — that was the
+        spec/140-era name-match bug that wrote ``Duration=0`` to PTE.
+
+        ``duration_lookup`` is the per-cut basename → ms map
+        :meth:`_build_clip_duration_lookup` builds; pass it in when
+        running the loop so each member is one dict hit instead of a
+        per-clip ffprobe. A missing entry triggers the probe fallback
+        so legacy lineage rows still resolve correctly.
+        """
+        if duration_lookup:
+            cached = duration_lookup.get(Path(video).name)
+            if cached:
+                return int(cached)
+        try:
+            from core.video_extract import probe_video
+            meta = probe_video(Path(video))
+            return int(getattr(meta, "duration_ms", 0) or 0)
+        except Exception:                                          # noqa: BLE001
+            log.exception("video duration probe failed for %s", video)
+            return 0
 
     def _probe_audio_ms(self, track: Path) -> int:
         """Get a soundtrack track's duration in ms. Mutagen handles

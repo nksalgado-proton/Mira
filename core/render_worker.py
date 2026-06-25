@@ -193,12 +193,18 @@ class _NameReserver:
 
 
 def _render_clip_unit(clip: ClipUnit, collision: str,
-                      reserver: _NameReserver) -> dict:
+                      reserver: _NameReserver,
+                      *, on_file_fraction=None) -> dict:
     """Render one clip via :func:`core.video_export_run.
     export_processed_clip` — the same ffmpeg + per-frame numpy
     pipeline the workshop preview uses. ``plan`` is hydrated from
     the worker side so :class:`core.video_export.ExportPlan` never
-    crosses the JSON wire (no Params dataclass on the other side)."""
+    crosses the JSON wire (no Params dataclass on the other side).
+
+    spec/139 §2 — when ``on_file_fraction(unit_id, fraction)`` is
+    provided, the clip exporter surfaces its frame-progress ratio
+    through it (alongside the per-unit completion message) so the
+    host can paint a continuously-moving per-file bar."""
     from core.photo_render import Params
     from core.video_export import ExportPlan
     from core.video_export_run import export_processed_clip
@@ -241,9 +247,25 @@ def _render_clip_unit(clip: ClipUnit, collision: str,
         dest_dir.mkdir(parents=True, exist_ok=True)
         final, existed, renamed = reserver.claim(
             dest_dir, (clip.base_name or src.stem) + ".mp4", collision)
-        export_processed_clip(src, final, plan)
+        # spec/139 §2 — partial-application closure so the per-frame
+        # callback in ``export_processed_clip`` carries the unit_id
+        # up to the host without each layer learning it.
+        if on_file_fraction is not None:
+            uid = clip.unit_id
+            _frac = lambda f, _uid=uid: on_file_fraction(_uid, float(f))
+        else:
+            _frac = None
+        export_processed_clip(src, final, plan, on_file_fraction=_frac)
+        # spec/144 — the segment's TRUE on-disk duration. ``plan.
+        # duration_ms`` is ``out_ms - in_ms`` (marker-bounds delta);
+        # the actual output is ``setpts=PTS/speed``-stretched, so the
+        # file plays for ``duration_ms / speed`` milliseconds. Round
+        # to int; clamp to >0 so a zero-length sentinel never lands.
+        speed = max(0.01, float(plan.speed))
+        segment_duration_ms = max(1, int(round(plan.duration_ms / speed)))
         return {**base, "status": "ok", "final_path": str(final),
                 "existed_before": existed, "renamed": renamed,
+                "duration_ms": segment_duration_ms,
                 "params": {f: getattr(params, f)
                            for f in params.__dataclass_fields__}}
     except Exception as exc:                                # noqa: BLE001
@@ -333,7 +355,8 @@ def _render_unit(unit: PhotoUnit, collision: str,
 
 
 def run_manifest_inline(manifest: ExportManifest,
-                        progress=None) -> list[dict]:
+                        progress=None,
+                        on_file_fraction=None) -> list[dict]:
     """The spec/60 §4 last resort: when the worker process cannot
     spawn at all, the SAME manifest renders in-process — sequential
     (one at a time, like the legacy path; an in-process pool would
@@ -343,7 +366,12 @@ def run_manifest_inline(manifest: ExportManifest,
     ``progress(done, total, name) -> keep_going`` is polled before
     each unit; returning False stops (the units already written stay
     — per-unit truth covers partial runs). Returns the unit-result
-    messages, same shape the process streams."""
+    messages, same shape the process streams.
+
+    spec/139 §2 — ``on_file_fraction(unit_id, fraction)`` (when
+    given) surfaces per-file progress: 1.0 once on completion for
+    photos (near-instant), and continuously 0.0→1.0 from the clip
+    encoder for videos."""
     reserver = _NameReserver()
     messages: list[dict] = []
     total = len(manifest.units) + len(manifest.clips)
@@ -359,6 +387,14 @@ def run_manifest_inline(manifest: ExportManifest,
             if not keep_going:
                 return messages
         messages.append(_render_unit(unit, manifest.collision, reserver))
+        # spec/139 §2 — photos snap to 1.0 per file so the per-file
+        # bar shows the same "complete" signal at the right beat as
+        # the aggregate done++ that already happened.
+        if on_file_fraction is not None:
+            try:
+                on_file_fraction(unit.unit_id, 1.0)
+            except Exception:                               # noqa: BLE001
+                pass
     for clip in manifest.clips:
         done += 1
         if progress is not None:
@@ -370,7 +406,9 @@ def run_manifest_inline(manifest: ExportManifest,
             if not keep_going:
                 return messages
         messages.append(
-            _render_clip_unit(clip, manifest.collision, reserver))
+            _render_clip_unit(
+                clip, manifest.collision, reserver,
+                on_file_fraction=on_file_fraction))
     return messages
 
 
@@ -410,6 +448,23 @@ def worker_main(argv: list[str], out: Optional[IO[str]] = None) -> int:
 
     counts = {"ok": 0, "errors": 0, "skipped": 0}
     reserver = _NameReserver()
+    # spec/139 §2 — frame-progress IPC for the clip lane. The clip
+    # thread emits ``{"type": "frame", "unit_id": ..., "fraction":
+    # 0..1}`` JSON lines via this lock-serialised closure so the
+    # parent's ``messages()`` consumer paints a continuously-moving
+    # per-file bar even while the aggregate count holds on the same
+    # long video. Lock guards stdout against the photo lane's per-
+    # unit ``_emit`` writes that race the same pipe.
+    _emit_lock = threading.Lock()
+
+    def _emit_locked(message: dict) -> None:
+        with _emit_lock:
+            _emit(out, message)
+
+    def _on_clip_fraction(unit_id: str, fraction: float) -> None:
+        _emit_locked({"type": "frame", "unit_id": unit_id,
+                      "fraction": float(fraction)})
+
     # Photo lane (N-wide) + clip lane (1-wide) run side by side under
     # one as_completed loop (spec/60 §3 — when one lane empties the
     # other takes the full width; fast-path clips are pure ffmpeg/GPU
@@ -426,7 +481,8 @@ def worker_main(argv: list[str], out: Optional[IO[str]] = None) -> int:
             for u in manifest.units
         ] + [
             clip_pool.submit(
-                _render_clip_unit, c, manifest.collision, reserver)
+                _render_clip_unit, c, manifest.collision, reserver,
+                on_file_fraction=_on_clip_fraction)
             for c in manifest.clips
         ]
         for fut in as_completed(futures):
@@ -434,7 +490,7 @@ def worker_main(argv: list[str], out: Optional[IO[str]] = None) -> int:
             key = {"ok": "ok", "error": "errors",
                    "skipped": "skipped"}[msg["status"]]
             counts[key] += 1
-            _emit(out, msg)
+            _emit_locked(msg)
 
     _emit(out, {"type": "done", **counts})
     log.info("render worker: done (%s)", counts)

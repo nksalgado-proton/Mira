@@ -136,7 +136,8 @@ CREATE TABLE cut_member (
 )""")
     # Strip the post-v8 lineage columns so the ADD COLUMN steps on
     # the way back up don't collide (spec/89 added 'provenance' and
-    # 'intent_state').
+    # 'intent_state'; spec/144 added 'duration_ms').
+    conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
     conn.execute("ALTER TABLE lineage DROP COLUMN intent_state")
     conn.execute("ALTER TABLE lineage DROP COLUMN provenance")
     # Strip the v12 face table so the v11→v12 CREATE TABLE doesn't

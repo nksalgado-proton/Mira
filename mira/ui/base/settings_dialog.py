@@ -951,6 +951,28 @@ SETTINGS_SCHEMA: list[dict] = [
     {
         "tab": "Video",
         "fields": [
+            # spec/138 §2D — global default playback speed for video
+            # surfaces. Sticky for the session; the transport combo
+            # still lets the user change it live.
+            {
+                "key": "default_video_speed",
+                "label": "Default video speed",
+                "widget": "combo",
+                "tooltip": (
+                    "Default video playback speed (×) the Picker / "
+                    "Editor video transport opens at. Sticky for the "
+                    "session — you can still pick a different rate "
+                    "live from the speed control on any clip."
+                ),
+                "options": [
+                    (0.25, "0.25×"),
+                    (0.5, "0.5×"),
+                    (1.0, "1×"),
+                    (1.5, "1.5×"),
+                    (2.0, "2×"),
+                ],
+                "restart_required": False,
+            },
             # Nelson 2026-06-09 audit — video clip CRF promotion.
             {
                 "key": "video_clip_crf",

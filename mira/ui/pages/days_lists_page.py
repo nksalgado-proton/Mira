@@ -605,10 +605,12 @@ class DaysListsPage(QWidget):
     new_pass_requested = pyqtSignal()
     pick_all_days_requested = pyqtSignal()
     skip_all_days_requested = pyqtSignal()
-    # spec/89 §5.1 D3.B — the all-days "Export now" run trigger.
-    # Fired only in Export-identity mode; the host walks every day,
-    # totals N + M, asks once, then submits per-day batches.
+    # spec/89 §5.1 D3.B / spec/147 §2 — the all-days "Export now ·
+    # N" (render-only) + "Delete now · M" (delete-only) run triggers.
+    # Both fire only in Export-identity mode; the host walks every
+    # day, totals the live counts, asks once, then submits.
     export_now_requested = pyqtSignal()
+    delete_now_requested = pyqtSignal()
 
     day_activated = pyqtSignal(int)               # day_number
     day_pick_all_requested = pyqtSignal(int)
@@ -698,16 +700,25 @@ class DaysListsPage(QWidget):
         new_pass = primary_button("+ Start a new pass…")
         new_pass.clicked.connect(self.new_pass_requested.emit)
         head.addWidget(new_pass)
-        # spec/89 §5.1 D3.B — the all-days Export now trigger. Visible
+        # spec/89 §5.1 D3.B / spec/147 §2 — the all-days Export now
+        # (render-only) + Delete now (delete-only) verbs. Both visible
         # only under the Export identity; the host walks every day,
-        # totals N + M, asks once with the locked modal, then submits
-        # per-day batches through the spec/60 engine.
+        # totals N + M live, asks once with the locked modal, then
+        # submits per-day batches.
         self._export_now_btn = primary_button("↑ Export now")
         self._export_now_btn.setToolTip(_EXPORT_NOW_TIP_ALL_DAYS)
         self._export_now_btn.clicked.connect(
             self.export_now_requested.emit)
         self._export_now_btn.setVisible(False)
         head.addWidget(self._export_now_btn)
+        self._delete_now_btn = danger_ghost_button("✗ Delete now")
+        self._delete_now_btn.setToolTip(
+            "Deletes the M exported files marked Set aside (red) "
+            "across every day.")
+        self._delete_now_btn.clicked.connect(
+            self.delete_now_requested.emit)
+        self._delete_now_btn.setVisible(False)
+        head.addWidget(self._delete_now_btn)
         # Global Pick-all / Skip-all are Pick verbs — hidden under the Edit
         # identity, where there is no day-level Skip (Nelson 2026-06-18).
         self._pick_all_days_btn = ghost_button("✓ Pick all days")
@@ -767,6 +778,36 @@ class DaysListsPage(QWidget):
         rail.style().unpolish(rail)
         rail.style().polish(rail)
 
+    def set_export_now_counts(self, n_render: int, m_delete: int) -> None:
+        """spec/147 §2 — paint the live N / M counts onto the
+        all-days Export now · N and Delete now · M button faces (+
+        tooltips). Zero-state disables the corresponding button with
+        the canonical "Nothing marked …" tooltip. The host computes
+        the totals across all days and calls this method whenever
+        an intent change makes them stale."""
+        try:
+            self._export_now_btn.setText(
+                "↑ Export now · {n}".format(n=int(n_render))
+                if n_render > 0 else "↑ Export now")
+            self._export_now_btn.setEnabled(n_render > 0)
+            self._export_now_btn.setToolTip(
+                "Renders the {n} items marked Will export (green) "
+                "across all days.".format(n=int(n_render))
+                if n_render > 0 else "Nothing marked Will export.")
+        except AttributeError:
+            pass
+        try:
+            self._delete_now_btn.setText(
+                "✗ Delete now · {m}".format(m=int(m_delete))
+                if m_delete > 0 else "✗ Delete now")
+            self._delete_now_btn.setEnabled(m_delete > 0)
+            self._delete_now_btn.setToolTip(
+                "Deletes the {m} exported files marked Set aside "
+                "(red) across all days.".format(m=int(m_delete))
+                if m_delete > 0 else "Nothing marked Set aside.")
+        except AttributeError:
+            pass
+
     def set_scan_status(self, report) -> None:
         """spec/89 §2.2 — push the spec/57 §3 return-scan report to the
         Export scan chip. The chip is auto-hidden under non-Export
@@ -800,7 +841,8 @@ class DaysListsPage(QWidget):
           ``Export all days`` / ``Drop all days``; the host respects
           explicit P/X decisions on the bulk (Block 3 D2a.B).
         """
-        # The scan chip + Export now button are Export-only.
+        # The scan chip + Export now / Delete now buttons are
+        # Export-only.
         try:
             self._scan_chip.setVisible(self._identity_phase == "export")
         except AttributeError:
@@ -810,15 +852,22 @@ class DaysListsPage(QWidget):
                 self._identity_phase == "export")
         except AttributeError:
             pass
+        try:
+            self._delete_now_btn.setVisible(
+                self._identity_phase == "export")
+        except AttributeError:
+            pass
         if self._identity_phase == "export":
-            self._pick_all_days_btn.setText("✓ Export all days")
+            # spec/147 §2 — renamed: intent-only bulk verbs.
+            self._pick_all_days_btn.setText("✓ Mark all to export")
             self._pick_all_days_btn.setToolTip(
-                "Set every undecided picked keeper to Export. "
-                "Explicit Drop decisions are kept.")
-            self._skip_all_days_btn.setText("✗ Drop all days")
+                "Mark every undecided picked keeper as Will export "
+                "(green). Explicit Set aside decisions are kept.")
+            self._skip_all_days_btn.setText("✗ Set all aside")
             self._skip_all_days_btn.setToolTip(
-                "Drop every undecided picked keeper. "
-                "Explicit Export decisions are kept.")
+                "Mark every undecided picked keeper as Set aside "
+                "(red). Files already exported stay on disk — use "
+                "Delete now · M to remove them.")
             self._pick_all_days_btn.setVisible(True)
             self._skip_all_days_btn.setVisible(True)
             return

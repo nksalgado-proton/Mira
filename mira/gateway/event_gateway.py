@@ -1818,6 +1818,12 @@ class EventGateway:
             return cut_budget.ShowTotals()
         relpaths = [ln.export_relpath for ln in rows]
         qs = ",".join("?" * len(relpaths))
+        # spec/144 — for video, prefer ``lineage.duration_ms`` (the clip
+        # segment's on-disk length recorded at export) over the source
+        # item's whole-video ``duration_ms``. Photos contribute 0; the
+        # un-recorded fallback (legacy lineage row) reads as 0 here and
+        # the surface readers (cut-play scrubber, recipe probe) ffprobe
+        # the file when they need the live truth.
         row = self.store.conn.execute(
             "SELECT "
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
@@ -1825,7 +1831,7 @@ class EventGateway:
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
             "    THEN 1 ELSE 0 END) AS videos, "
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
-            "    THEN COALESCE(si.duration_ms, oi.duration_ms, 0) ELSE 0 END) AS video_ms, "
+            "    THEN COALESCE(l.duration_ms, 0) ELSE 0 END) AS video_ms, "
             "COUNT(DISTINCT COALESCE(si.day_number, oi.day_number)) AS days "
             "FROM lineage l "
             + self._CUT_SOURCE_JOIN +
@@ -1845,7 +1851,13 @@ class EventGateway:
         duration reads 0 — honest minimum), and ``separator_count`` filled
         with the member days (one separator per day, spec/61 §4) — callers
         zero it when the separators setting is off. Undated sources don't
-        count a day."""
+        count a day.
+
+        spec/144 — for video members the duration sums ``lineage.
+        duration_ms`` (the clip-segment's TRUE on-disk length recorded at
+        export). Falls back to ``0`` when the column is NULL (legacy
+        pre-migration row, or a never-rendered placeholder); the surfaces
+        that need the live truth ffprobe the file."""
         row = self.store.conn.execute(
             "SELECT "
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
@@ -1853,7 +1865,7 @@ class EventGateway:
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
             "    THEN 1 ELSE 0 END) AS videos, "
             "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
-            "    THEN COALESCE(si.duration_ms, oi.duration_ms, 0) ELSE 0 END) AS video_ms, "
+            "    THEN COALESCE(l.duration_ms, 0) ELSE 0 END) AS video_ms, "
             "COUNT(DISTINCT COALESCE(si.day_number, oi.day_number)) AS days "
             "FROM cut_member cm "
             "JOIN lineage l ON l.export_relpath = cm.export_relpath "
@@ -2258,6 +2270,40 @@ class EventGateway:
         with self.store.transaction():
             self.store.upsert(adjustment)
             self._touch()
+
+    def bulk_set_video_speed(self, speed: float) -> int:
+        """spec/146 — set :attr:`VideoAdjustment.speed` = ``speed`` for
+        every video item in the event, in one transaction.
+
+        Mirrors the per-clip workshop handler (editor_page.py:2636):
+        when a video item has no ``VideoAdjustment`` row yet a default
+        one is created with the chosen ``speed``. Non-video items are
+        untouched (the writer filters on ``kind == 'video'``).
+
+        The value bakes on the next Export — it flows into
+        :func:`core.video_export.build_export_plan` (``speed`` is
+        forwarded to ffmpeg's ``setpts`` filter via
+        :data:`core.video_export_run`). Already-exported files don't
+        change until the user re-exports.
+
+        Returns the count of items whose ``speed`` was set. Raises
+        ``ValueError`` for non-positive ``speed`` (the dropdown values
+        are 0.5 / 0.75 / 1 / 1.25 / 1.5 / 2; a non-positive value would
+        produce a degenerate ``setpts`` filter)."""
+        if not isinstance(speed, (int, float)) or speed <= 0:
+            raise ValueError(f"speed must be > 0, got {speed!r}")
+        speed = float(speed)
+        n = 0
+        with self.store.transaction():
+            for item in self.items(kind="video", include_hidden=True):
+                vadj = (self.store.get(m.VideoAdjustment, item.id)
+                        or m.VideoAdjustment(item_id=item.id))
+                vadj.speed = speed
+                self.store.upsert(vadj)
+                n += 1
+            if n:
+                self._touch()
+        return n
 
     # ----- video workshop mutators: markers / segments / snapshots -------- #
     # spec/56 retired create_clip / create_snapshot / keep_whole_video /
@@ -3222,6 +3268,93 @@ class EventGateway:
             "missing_files": missing,
             "rows_deleted": rows_deleted,
         }
+
+    def event_cut_usage_count(
+        self, export_relpaths: Iterable[str],
+    ) -> int:
+        """spec/147 §4 — count the DISTINCT event-scope Cuts (event.db
+        ``cut_member`` rows with ``event_id IS NULL``) that contain any
+        of ``export_relpaths``.
+
+        The Export-surface Delete-now confirm sums this with
+        :meth:`LibraryGateway.cross_event_cut_usage_count` to warn the
+        user before nuking files that are still in any Cut. Counts
+        DISTINCT cuts (not member rows) so a single Cut with two
+        doomed files counts once.
+
+        Returns 0 on an empty input list."""
+        relpaths = [r for r in (export_relpaths or ()) if r]
+        if not relpaths:
+            return 0
+        placeholders = ",".join(["?"] * len(relpaths))
+        row = self.store.conn.execute(
+            "SELECT COUNT(DISTINCT cut_id) FROM cut_member "
+            f"WHERE event_id IS NULL AND export_relpath IN ({placeholders})",
+            tuple(relpaths),
+        ).fetchone()
+        return int(row[0] if row else 0)
+
+    def delete_exported_files_by_relpaths(
+        self, export_relpaths: Iterable[str],
+    ) -> Dict:
+        """spec/147 §2 — the "Delete now" batch worker.
+
+        Per-file delegate to :meth:`delete_exported_file_by_relpath`
+        (same cascade semantics: drop the lineage row, the on-disk
+        file, the event-scope ``cut_member`` rows, and ``edit_exported``
+        when the last shipped row for the source item is gone).
+        Returns the aggregate ``{"deleted_files": [...],
+        "missing_files": [...], "rows_deleted": int, "item_ids":
+        [...]}`` summary across every relpath.
+
+        Cross-event ``cut_member`` rows (the LIBRARY's user_store.db)
+        live in a different store and are cleaned up by the caller via
+        :meth:`LibraryGateway.delete_cross_event_cut_members` — kept
+        out of here so this gateway stays event-scope (charter
+        invariant #1)."""
+        relpaths = [r for r in (export_relpaths or ()) if r]
+        deleted_files: list = []
+        missing_files: list = []
+        rows_deleted = 0
+        item_ids: list = []
+        for rel in relpaths:
+            res = self.delete_exported_file_by_relpath(rel)
+            deleted_files.extend(res.get("deleted_files") or [])
+            missing_files.extend(res.get("missing_files") or [])
+            rows_deleted += int(res.get("rows_deleted") or 0)
+            if res.get("item_id"):
+                item_ids.append(res["item_id"])
+        return {
+            "deleted_files": deleted_files,
+            "missing_files": missing_files,
+            "rows_deleted": rows_deleted,
+            "item_ids": item_ids,
+        }
+
+    def set_aside_export_relpaths(self) -> List[str]:
+        """spec/147 §2 — every ``Exported Media/`` lineage row whose
+        ``intent_state = 'skipped'`` (Set aside) and whose file is
+        STILL on disk. The Days Grid / Days List "Delete now · M"
+        button reads this list to drive the live ``M`` count + the
+        actual delete pass.
+
+        Returns the relpaths in deterministic (export_relpath) order
+        so the count + the run agree."""
+        if self.event_root is None:
+            return []
+        rows = self.store.conn.execute(
+            "SELECT export_relpath FROM lineage "
+            "WHERE phase = 'edit' AND intent_state = 'skipped' "
+            "AND export_relpath LIKE 'Exported Media/%' "
+            "ORDER BY export_relpath"
+        ).fetchall()
+        event_root = Path(self.event_root)
+        out: List[str] = []
+        for r in rows:
+            rel = r["export_relpath"]
+            if (event_root / rel).is_file():
+                out.append(rel)
+        return out
 
     def delete_exported_file_by_relpath(
         self, export_relpath: str,

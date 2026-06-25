@@ -86,6 +86,22 @@ WORKSHOP_REVEAL_HEIGHT = 168
 _SIDE_ICON_PX = 16
 _MUTE_ICON_PX = 18
 
+#: Allowed playback-speed labels for the speed combo, in display order.
+#: Shared by :func:`_speed_label_for` (rate → label snap) and
+#: :meth:`VideoWorkshopBar._on_speed_text` (label → rate). Keep them
+#: in lockstep — adding a tier means updating both.
+_SPEED_LABELS = {
+    0.25: "0.25×", 0.5: "0.5×", 1.0: "1×", 1.5: "1.5×", 2.0: "2×",
+}
+
+
+def _speed_label_for(rate: float) -> str:
+    """Snap ``rate`` to the closest combo label. Defensive: an
+    out-of-range value lands on the nearest available tier."""
+    rounded = min(
+        _SPEED_LABELS.keys(), key=lambda k: abs(k - float(rate)))
+    return _SPEED_LABELS[rounded]
+
 
 def _theme_mode() -> str:
     app = QApplication.instance()
@@ -248,7 +264,12 @@ class VideoWorkshopBar(QWidget):
 
         self.speed_combo = select(["0.25×", "0.5×", "1×", "1.5×", "2×"])
         self.speed_combo.setObjectName("VideoSpeed")
-        self.speed_combo.setCurrentText("1×")
+        # spec/138 §2C/§2D — combo default text comes from
+        # ``Settings.default_video_speed``, not a hardcoded 1×. Under
+        # ``blockSignals`` so the seed never fires ``speed_changed``
+        # (programmatic syncs MUST NOT bounce the engine — root cause
+        # #2 of the spec/138 mess).
+        self._seed_speed_combo_from_settings()
         self.speed_combo.setFixedWidth(58)
         self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed_combo.currentTextChanged.connect(self._on_speed_text)
@@ -446,10 +467,21 @@ class VideoWorkshopBar(QWidget):
 
     def set_speed(self, rate: float) -> None:
         was = self.speed_combo.blockSignals(True)
-        # Snap to the nearest available label.
-        labels = {0.25: "0.25×", 0.5: "0.5×", 1.0: "1×", 1.5: "1.5×", 2.0: "2×"}
-        rounded = min(labels.keys(), key=lambda k: abs(k - float(rate)))
-        self.speed_combo.setCurrentText(labels[rounded])
+        self.speed_combo.setCurrentText(_speed_label_for(rate))
+        self.speed_combo.blockSignals(was)
+
+    def _seed_speed_combo_from_settings(self) -> None:
+        """Initial combo text from ``Settings.default_video_speed``
+        (spec/138 §2D). Lazy + tolerant: a missing settings file or
+        a hand-edited bad value falls back to ``1×``. Under
+        ``blockSignals`` so the seed never fires ``speed_changed``."""
+        try:
+            from mira.settings.repo import SettingsRepo
+            default = float(SettingsRepo().load().default_video_speed)
+        except Exception:                                          # noqa: BLE001
+            default = 1.0
+        was = self.speed_combo.blockSignals(True)
+        self.speed_combo.setCurrentText(_speed_label_for(default))
         self.speed_combo.blockSignals(was)
 
     def set_tools_enabled(

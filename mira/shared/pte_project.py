@@ -645,6 +645,32 @@ def _build_video_clip(*, clip_guid: str, master_id: str, video_path: str,
     )
 
 
+#: spec/140 §2 — floor for any video member whose probed duration
+#: came back as 0 (corrupt mp4 / missing ffmpeg). PTE refuses to play
+#: a zero-length clip, so we substitute a sane minimum and log; the
+#: result is a slide that plays for half a second instead of one that
+#: silently dies during the show.
+_MIN_VIDEO_DURATION_MS = 500
+
+
+def _safe_video_duration_ms(probed_ms: int, *, path: object) -> int:
+    """Coerce a probed ms value into something PTE can actually play.
+
+    Negative / zero / missing → :data:`_MIN_VIDEO_DURATION_MS` with a
+    warning logged once per call. Anything ≥ the floor passes through
+    unchanged. Pure: the caller is what threads the file through to
+    the three Duration sites."""
+    n = int(probed_ms or 0)
+    if n >= _MIN_VIDEO_DURATION_MS:
+        return n
+    log.warning(
+        "pte: video %s had unusable duration %d ms — substituting "
+        "%d ms so PTE plays the clip instead of skipping a "
+        "Duration=0 entry", path, n, _MIN_VIDEO_DURATION_MS,
+    )
+    return _MIN_VIDEO_DURATION_MS
+
+
 def _format_times_section(slide_durations_ms: Sequence[int]) -> str:
     """Render the `[Times]` body — cumulative `opt_synchpos<N>=` lines +
     the trailing `opt_slidescount=N`. Each entry is the running total
@@ -735,12 +761,18 @@ def generate(
             body = _regenerate_guids(body)
             clip_guid = fresh_guid()
             body, cover_guid = _set_video_clip_guid(body, clip_guid)
-            body = _set_slide_video_paths(body, path_s, m.duration_ms)
-            duration_ms = max(int(m.duration_ms), 0) + int(transition_ms)
-            slide_durations_ms.append(duration_ms)
+            # spec/140 §2 — coerce ``m.duration_ms`` to a usable
+            # minimum so the same non-zero value lands in BOTH
+            # :Video slide objects, the [Tracks] VideoClip Duration,
+            # AND the [Times] cumulative. PTE won't play any clip
+            # whose Duration is 0.
+            clip_ms = _safe_video_duration_ms(
+                int(m.duration_ms), path=m.path)
+            body = _set_slide_video_paths(body, path_s, clip_ms)
+            slide_durations_ms.append(clip_ms + int(transition_ms))
             video_clips.append(_build_video_clip(
                 clip_guid=clip_guid, master_id=cover_guid,
-                video_path=path_s, duration_ms=int(m.duration_ms),
+                video_path=path_s, duration_ms=clip_ms,
                 start_slide_idx=i, caption=Path(m.path).stem))
         else:
             body = proto_photo_body

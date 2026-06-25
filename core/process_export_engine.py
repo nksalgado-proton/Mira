@@ -107,6 +107,12 @@ class ProcessBucketInput:
 # callback are caught and logged — the engine continues so a flaky
 # UI thread can't lose the export.
 ProgressCB = Callable[[int, int, str], bool]
+# spec/139 §2 — separate per-file fraction sink. Fired AFTER each
+# file completes (this engine is photo-only, so a write is near-
+# instant — fraction snaps to 1.0 per file). The clip lane lives in
+# :mod:`core.render_worker` and surfaces fraction via its own sink
+# during the encode. Sink is fire-and-forget; never cancels.
+FileFractionCB = Callable[[str, float], None]
 
 
 def _count_total(
@@ -332,6 +338,7 @@ def run_process_export(
     style_resolver: Optional[Callable[[Path], Optional[str]]] = None,
     gate_kept: bool = True,
     progress: Optional[ProgressCB] = None,
+    on_file_fraction: Optional[FileFractionCB] = None,
     params_sink: Optional[dict[str, dict]] = None,
 ) -> ExportResult:
     """Execute the Process export across all ``buckets``.
@@ -386,6 +393,15 @@ def run_process_export(
                 if not keep_going:
                     cancelled = True
                     break
+            # spec/139 §2 — photo writes are near-instant, so per-file
+            # fraction snaps to 1.0 alongside the aggregate tick. The
+            # video lane (clips) lives in render_worker.py and surfaces
+            # fraction during the encode.
+            if on_file_fraction is not None:
+                try:
+                    on_file_fraction(src.name, 1.0)
+                except Exception:                     # noqa: BLE001
+                    pass
 
             if not src.is_file():
                 result.skipped.append((src, "source missing"))

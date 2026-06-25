@@ -40,6 +40,11 @@ class BatchExportJob(QThread):
     """One batch job over a fully-resolved manifest."""
 
     progress = pyqtSignal(int, int, str)
+    #: spec/139 §3 — per-file 0.0..1.0 fraction emitted alongside the
+    #: aggregate ``progress`` ticks. Videos stream a continuous fraction
+    #: from the clip encoder; photos snap to 1.0 per file. The host
+    #: paints a second bar that resets per file and hides when idle.
+    file_fraction = pyqtSignal(float)
     finished_result = pyqtSignal(object)
 
     def __init__(self, manifest: ExportManifest,
@@ -107,6 +112,23 @@ class BatchExportJob(QThread):
                 src = self._sources.get(msg.get("unit_id", ""))
                 self.progress.emit(done, total,
                                    src.name if src else "")
+                # spec/139 §3 — clip completion: the per-file bar
+                # snaps to 1.0 so the moving fraction stream ends
+                # cleanly at FULL before the next file resets to 0
+                # (the next "frame" emit belongs to a different
+                # clip). Photo completions don't emit — pure-photo
+                # batches keep the per-file bar hidden ("the
+                # aggregate already moves fast", spec §3).
+                if msg.get("kind") == "clip":
+                    self.file_fraction.emit(1.0)
+            elif kind == "frame":
+                # spec/139 §2 — clip frame-progress tick from
+                # ``_render_clip_unit``'s ``on_file_fraction`` sink.
+                try:
+                    frac = float(msg.get("fraction", 0.0))
+                except (TypeError, ValueError):
+                    frac = 0.0
+                self.file_fraction.emit(max(0.0, min(1.0, frac)))
             elif kind == "fatal":
                 log.error("render worker fatal: %s", msg.get("error"))
         rc = job.wait()
@@ -119,11 +141,24 @@ class BatchExportJob(QThread):
             unit_messages, self._sources, cancelled=self._cancel)
 
     def _run_inline(self):
+        # spec/139 §3 — only the CLIP lane drives the per-file bar
+        # (videos take long enough that a moving fraction is
+        # meaningful). Photos snap so fast that any per-unit emit
+        # would just flicker the bar 0→100→0; instead, leave the
+        # bar hidden when the manifest has no clips.
+        clip_unit_ids = {c.unit_id for c in self._manifest.clips}
+
         def cb(done: int, total: int, name: str) -> bool:
             self.progress.emit(done, total, name)
             return not self._cancel
 
-        messages = run_manifest_inline(self._manifest, progress=cb)
+        def _on_frac(unit_id: str, fraction: float) -> None:
+            if unit_id not in clip_unit_ids:
+                return
+            self.file_fraction.emit(max(0.0, min(1.0, float(fraction))))
+
+        messages = run_manifest_inline(
+            self._manifest, progress=cb, on_file_fraction=_on_frac)
         return build_batch_result(
             messages, self._sources, ran_inline=True,
             cancelled=self._cancel)

@@ -71,7 +71,13 @@ def _doc() -> m.EventDocument:
         m.Lineage(export_relpath="Exported Media/e3b.jpg", phase="edit",
                   source_kind="item", source_item_id="p3", exported_at="t4"),
         m.Lineage(export_relpath="Exported Media/v1.mp4", phase="edit",
-                  source_kind="item", source_item_id="v1", exported_at="t5"),
+                  source_kind="item", source_item_id="v1", exported_at="t5",
+                  # spec/144 — the clip-segment's TRUE on-disk duration
+                  # the render worker recorded at export (in this fixture
+                  # the export is the whole video, so segment ms ==
+                  # source ms; a real clip-segment lineage row carries a
+                  # value strictly less than ``src.duration_ms``).
+                  duration_ms=30_000),
         m.Lineage(export_relpath="Cuts/old/x.jpg", phase="share",
                   source_kind="item", source_item_id="p1", exported_at="t6"),
     ]

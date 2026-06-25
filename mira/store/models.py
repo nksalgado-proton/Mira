@@ -392,6 +392,14 @@ class Lineage:
     # 'skipped' (drop on next Export run). Single-version flat cells
     # ignore this field — their intent reads from phase_state(edit).
     intent_state: str = "picked"
+    # spec/144 — the TRUE on-disk duration of a clip-segment export, in
+    # ms. Recorded at clip-render time as ``(out_ms - in_ms) / speed``
+    # so it matches what the player sees (time-stretched output).
+    # ``None`` for photos and for legacy pre-migration video rows; the
+    # surface readers ffprobe the file when ``None`` (`probe_video`).
+    # NEVER reuse the source item's ``duration_ms`` for a clip — that's
+    # the whole source video, not the segment.
+    duration_ms: Optional[int] = None
 
 
 @dataclass

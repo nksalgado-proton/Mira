@@ -39,8 +39,8 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QColor, QImage, QPainter, QPen, QPixmap, QPolygonF)
 from PyQt6.QtWidgets import (
-    QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QSizePolicy,
-    QStackedLayout, QToolButton, QVBoxLayout, QWidget)
+    QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel,
+    QSizePolicy, QStackedLayout, QToolButton, QVBoxLayout, QWidget)
 
 from core import audio_library, cut_overlay
 from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
@@ -49,6 +49,16 @@ from mira.ui.media.image_loader import load_pixmap
 from mira.ui.shared.separator_card import render_separator_image
 
 log = logging.getLogger(__name__)
+
+
+#: spec/140 §1 — watchdog for the photo→video swap. The first
+#: ``videoFrameChanged`` typically arrives within ~50–150 ms of
+#: ``setSource`` + ``play``. If it doesn't (codec mismatch, file
+#: missing the right frames, etc.) we MUST still swap so the show
+#: advances instead of hanging on the previous photo. 750 ms is
+#: comfortably past the worst real first-frame latency without
+#: feeling like a stall.
+_VIDEO_SWAP_TIMEOUT_MS = 750
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,6 +253,7 @@ class CutPlayerDialog(QDialog):
             Callable[[str], Optional[cut_overlay.FrameProvenance]]
         ] = None,
         resolve_path: Optional[Callable[[object], Path]] = None,
+        video_rate: float = 1.0,
         parent: Optional[QWidget] = None,
     ) -> None:
         """spec/94 Phase 4a-iii — ``resolve_path``, when wired,
@@ -276,6 +287,19 @@ class CutPlayerDialog(QDialog):
         self._music_index = 0
         self._index = -1
         self._paused = False
+        # spec/145 — rehearsal-only video-speed override. Compounds with
+        # the clip's baked speed (a 2×-baked clip at 1.5× plays 3×) and
+        # never touches the exported bytes or the PTE generator. The
+        # control lives next to the per-photo spinner on the transport
+        # bar; the host seeds the initial value from
+        # ``Settings.default_video_speed`` (spec/138). Clamped > 0 so
+        # ``setPlaybackRate`` never receives a degenerate value.
+        try:
+            seed_rate = float(video_rate)
+        except (TypeError, ValueError):
+            seed_rate = 1.0
+        self._video_rate: float = seed_rate if seed_rate > 0 else 1.0
+        self._video_rate_combo: Optional[QComboBox] = None
         # Spec/81 §3.1 — live overlays.
         self._overlay_fields: tuple = tuple(overlay_fields or ())
         self._provenance_resolver = provenance_resolver
@@ -315,6 +339,11 @@ class CutPlayerDialog(QDialog):
         self._video_audio = None
         self._music = None
         self._music_audio = None
+        # spec/140 §1 — no-black-frame swap state. ``_pending_video_sink``
+        # is the QVideoSink the one-shot ``videoFrameChanged`` handler
+        # is connected to; ``_video_swap_timer`` is the watchdog.
+        self._pending_video_sink = None
+        self._video_swap_timer: Optional[QTimer] = None
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -454,6 +483,13 @@ class CutPlayerDialog(QDialog):
             if not self._paused:
                 self._timer.start(self._photo_ms)
         elif getattr(payload, "kind", "photo") == "video":
+            # spec/144 — videos NEVER ride :attr:`_timer`. Advance is
+            # event-driven via :data:`QMediaPlayer.MediaStatus.EndOfMedia`
+            # in :meth:`_on_video_status`, so the show moves on the
+            # *instant* the clip ends — no hold-the-last-frame pause
+            # (the old precomputed-timer path could over-run a
+            # segment) and no early cut-off (under-running the segment
+            # with a stale ``SessionFile.duration_ms``).
             self._show_video(self._resolve_payload_path(payload))
         else:
             pm = load_pixmap(self._resolve_payload_path(payload))
@@ -493,6 +529,9 @@ class CutPlayerDialog(QDialog):
         self._show_pixmap(QPixmap.fromImage(img))
 
     def _show_pixmap(self, pm: QPixmap) -> None:
+        # spec/140 §1 — a video→photo transition must cancel any
+        # pending first-frame swap (the next clip starts clean).
+        self._reset_video_swap_state()
         if self._video_widget is not None:
             self._video_widget.hide()
         self._photo.show()
@@ -589,13 +628,90 @@ class CutPlayerDialog(QDialog):
         ev.accept()
 
     def _show_video(self, path: Path) -> None:
+        """spec/140 §1 — start the player but hold the photo until
+        the first valid video frame, then swap. A ``QVideoWidget``
+        with no frame paints opaque black, which used to flash on
+        every photo→video transition. Mirrors PhotoViewport's
+        no-black-frame contract."""
         self._ensure_video()
-        self._photo.hide()
-        self._video_widget.show()
-        self._stack_layout.setCurrentWidget(self._video_widget)
+        # Don't hide _photo / show the video widget here — the swap
+        # happens in :meth:`_on_first_video_frame` once the sink
+        # reports a valid frame. Belt-and-braces: a watchdog timer
+        # forces the swap if no frame arrives (an unreadable clip
+        # would otherwise hang on the previous photo).
+        self._reset_video_swap_state()
+        sink = self._player.videoSink()
+        if sink is not None:
+            sink.videoFrameChanged.connect(self._on_first_video_frame)
+            self._pending_video_sink = sink
+        self._video_swap_timer = QTimer(self)
+        self._video_swap_timer.setSingleShot(True)
+        self._video_swap_timer.timeout.connect(self._force_video_swap)
+        self._video_swap_timer.start(_VIDEO_SWAP_TIMEOUT_MS)
         self._player.setSource(QUrl.fromLocalFile(str(path)))
         if not self._paused:
             self._player.play()
+        # spec/145 — re-apply the rehearsal rate AFTER setSource (Qt
+        # resets the rate to 1.0 on a new source on some backends). The
+        # rate must land BEFORE the first frame so the user doesn't see
+        # the clip play one frame at 1× then jump.
+        self._apply_video_rate()
+
+    def _reset_video_swap_state(self) -> None:
+        """Tear down any pending one-shot frame handler / watchdog
+        from a previous clip (the swap is per-clip)."""
+        if self._video_swap_timer is not None:
+            try:
+                self._video_swap_timer.stop()
+            except Exception:                                  # noqa: BLE001
+                pass
+            self._video_swap_timer = None
+        if self._pending_video_sink is not None:
+            try:
+                self._pending_video_sink.videoFrameChanged.disconnect(
+                    self._on_first_video_frame)
+            except (TypeError, RuntimeError):
+                pass
+            self._pending_video_sink = None
+
+    def _on_first_video_frame(self, frame) -> None:
+        """spec/140 §1 — one-shot: on the first VALID frame the
+        ``QVideoWidget`` has live pixels, so flip the stack and
+        retire the watchdog. Ignores invalid / null frames the sink
+        sometimes emits while priming the pipeline."""
+        try:
+            if frame is None or not frame.isValid():
+                return
+        except Exception:                                          # noqa: BLE001
+            # Some frame objects don't expose isValid (test stubs);
+            # treat a non-None frame as good enough to swap.
+            if frame is None:
+                return
+        self._do_video_swap()
+
+    def _force_video_swap(self) -> None:
+        """Watchdog: a clip that never produces a frame
+        (unreadable / codec mismatch) must NOT hang on the previous
+        photo. After ``_VIDEO_SWAP_TIMEOUT_MS`` we swap anyway so
+        the user at least sees the eventual EndOfMedia / error and
+        the show advances."""
+        log.warning(
+            "cut play: no first video frame arrived in %d ms — "
+            "forcing swap so the show doesn't stall",
+            _VIDEO_SWAP_TIMEOUT_MS,
+        )
+        self._do_video_swap()
+
+    def _do_video_swap(self) -> None:
+        """The actual photo→video swap, called from EITHER the
+        first-frame handler OR the watchdog. Idempotent."""
+        self._reset_video_swap_state()
+        if self._video_widget is None:
+            return
+        self._photo.hide()
+        self._video_widget.show()
+        self._video_widget.raise_()
+        self._stack_layout.setCurrentWidget(self._video_widget)
 
     def _on_video_status(self, status) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
@@ -635,6 +751,10 @@ class CutPlayerDialog(QDialog):
             if kind == "file" and getattr(payload, "kind", "") == "video":
                 if self._player is not None:
                     self._player.play()
+                # spec/145 — resume the clip at the selected rate
+                # (the player drops back to 1.0 across pause/resume
+                # on some backends).
+                self._apply_video_rate()
             else:
                 self._timer.start(self._photo_ms)
             if self._music is not None:
@@ -675,6 +795,9 @@ class CutPlayerDialog(QDialog):
         self._torn_down = True
         self._timer.stop()
         self._ticker.stop()
+        # spec/140 §1 — drop the pending first-frame swap so the
+        # watchdog can't fire on a half-destroyed widget.
+        self._reset_video_swap_state()
         if self._music is not None:
             try:
                 self._music.mediaStatusChanged.disconnect()
@@ -825,6 +948,30 @@ class CutPlayerDialog(QDialog):
         self._slide_spin.valueChanged.connect(self._on_slide_time_changed)
         slide_lbl = QLabel(tr("Per slide:"), bar)
 
+        # spec/145 — rehearsal-only video-speed override. The select sits
+        # next to the per-photo spinner because it's the sibling concept
+        # (both tune rehearsal pacing live). On change we call
+        # ``QMediaPlayer.setPlaybackRate(r)`` — multiplicative with the
+        # baked clip speed (a 2×-baked clip at 1.5× plays 3×). The
+        # exported bytes and PTE output are unchanged; this is a
+        # browse-the-rehearsal knob.
+        self._video_rate_combo = QComboBox(bar)
+        self._video_rate_combo.setObjectName("CutPlayVideoRateCombo")
+        self._video_rate_combo.setToolTip(tr(
+            "Video playback speed for the rehearsal (compounds with the "
+            "clip's baked speed). Doesn't change the exported clips or "
+            "the generated PTE."))
+        for rate in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+            label = (f"{int(rate)}×" if rate == int(rate)
+                     else f"{rate:g}×")
+            self._video_rate_combo.addItem(label, userData=float(rate))
+        idx = self._video_rate_combo.findData(float(self._video_rate))
+        if idx >= 0:
+            self._video_rate_combo.setCurrentIndex(idx)
+        self._video_rate_combo.currentIndexChanged.connect(
+            self._on_video_rate_changed)
+        video_lbl = QLabel(tr("Video:"), bar)
+
         self._btn_fs = mk_btn("⛶", tr("Toggle fullscreen"),
                               self._toggle_fullscreen)
 
@@ -837,6 +984,9 @@ class CutPlayerDialog(QDialog):
         lay.addSpacing(8)
         lay.addWidget(slide_lbl)
         lay.addWidget(self._slide_spin)
+        lay.addSpacing(8)
+        lay.addWidget(video_lbl)
+        lay.addWidget(self._video_rate_combo)
         lay.addWidget(self._btn_fs)
 
         bar.setSizePolicy(QSizePolicy.Policy.Preferred,
@@ -868,6 +1018,40 @@ class CutPlayerDialog(QDialog):
             self._scrubber.set_entries(self._durations, self._sep_indexes)
         self._preview_cache.clear()        # separator height depends on duration? no — but cheap to drop
         self._update_time_label()
+
+    def _on_video_rate_changed(self, _index: int) -> None:
+        """spec/145 — apply the rehearsal speed live. The current clip
+        (if any) jumps to the new rate immediately; the next
+        :meth:`_show_video` call re-arms the rate so following clips
+        play at it too. Pairs with spec/144's EndOfMedia advance:
+        a higher rate ends the clip sooner and the show moves on
+        without any timing desync."""
+        if self._video_rate_combo is None:
+            return
+        data = self._video_rate_combo.currentData()
+        try:
+            rate = float(data)
+        except (TypeError, ValueError):
+            return
+        if rate <= 0:
+            return
+        self._video_rate = rate
+        self._apply_video_rate()
+
+    def _apply_video_rate(self) -> None:
+        """Push the current ``_video_rate`` to the QMediaPlayer. Safe
+        to call when the player isn't constructed yet (a photos-only
+        Cut hasn't lazy-initialised it) — it's a no-op then. Also
+        catches the stub-player case from the test suite where the
+        ``setPlaybackRate`` slot exists as a duck method."""
+        if self._player is None:
+            return
+        try:
+            self._player.setPlaybackRate(float(self._video_rate))
+        except Exception:                                              # noqa: BLE001
+            log.exception(
+                "setPlaybackRate(%s) failed on the cut player",
+                self._video_rate)
 
     def _on_scrubber_seeked(self, index: int, _ms_offset: int) -> None:
         # Snap to the entry's start — seeking inside a clip is for v2.

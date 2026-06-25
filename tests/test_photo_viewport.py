@@ -158,10 +158,20 @@ class _FakePlayer:
         self.playing = False
         self.position = 0
         self.stopped = 0
+        # spec/138 §2A — ``_arm_video`` now re-applies the sticky
+        # rate after every ``setSource`` so Qt's silent reset can't
+        # survive. The fake mirrors the contract so the existing
+        # arming tests don't AttributeError on ``setPlaybackRate``.
+        self.rate = 1.0
 
     def setSource(self, url) -> None:       # noqa: N802
         self.source = url
         self.playing = False
+        # Emulate Qt: setSource resets the playback rate.
+        self.rate = 1.0
+
+    def setPlaybackRate(self, rate) -> None:  # noqa: N802
+        self.rate = float(rate)
 
     def play(self) -> None:
         self.playing = True

@@ -575,6 +575,11 @@ class EventsPage(QWidget):
             music_categories=list(categories),
             music_hint=music_hint,
             overlay_field_options=overlay_field_options,
+            # spec/143 — cross-event default for separators is OFF
+            # (spec/81 §3.1 — no single timeline to orient). The user
+            # can opt in per Cut from the dialog; the card-style
+            # picker keeps the canonical 'black' default.
+            separators=False,
         )
 
         # spec/94 Phase 1b — wire RecipeStore through the Gateway

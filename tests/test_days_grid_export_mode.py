@@ -136,21 +136,26 @@ def _ship_one(eg: EventGateway, event_dir: Path, item_id: str) -> Path:
 
 def test_export_mode_chrome_swaps_labels_and_shows_export_button(
         qapp, app_gateway):
-    """Pick all / Skip all relabel to the ship verbs, "Start a new
-    pass…" hides, the Export-green primary reveals — and the storage
-    phase under the hood is ``"edit"`` (spec/66 §1.1)."""
+    """spec/147 §2 — Pick all / Skip all relabel to the renamed
+    intent-only verbs ("Mark all to export" / "Set all aside"),
+    "Start a new pass…" hides, and the Export-green primary + the
+    spec/147 §2 Delete-now sibling both reveal. Storage phase under
+    the hood stays ``"edit"`` (spec/66 §1.1)."""
     page = DaysGridPage(app_gateway)
     assert page.open_for_day(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     assert page._export_mode is True
     assert page._phase == "edit"            # shared decision storage
     assert page._identity_phase == "export"
-    assert "Export" in page._pick_all_btn.text()
-    assert "Drop" in page._skip_all_btn.text()
+    # spec/147 §2 — renamed labels: intent only.
+    assert "Mark all to export" in page._pick_all_btn.text()
+    assert "Set all aside" in page._skip_all_btn.text()
     # ``isVisibleTo(parent)`` checks the flag set by setVisible()
     # without needing the page to actually be on-screen.
     assert not page._new_pass_btn.isVisibleTo(page)
     assert page._export_btn.isVisibleTo(page)
+    # spec/147 §2 — the Delete now sibling button reveals together.
+    assert page._delete_now_btn.isVisibleTo(page)
     page.close_event()
 
 
@@ -1162,14 +1167,13 @@ def test_x_on_unshipped_cell_does_not_call_delete_exported_file(
 # --------------------------------------------------------------------------- #
 
 
-def test_bulk_drop_all_cascades_un_export_for_shipped_items(
+def test_bulk_set_aside_is_intent_only_no_files_deleted(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
-    """The bulk Drop-all button (``✗ Drop all``) in Export mode must
-    delete the on-disk files for every shipped item it touches AND
-    drop their lineage rows. The pre-fix bug: it wrote
-    ``phase_state = skipped`` and stopped, leaving the JPEGs on disk
-    and the corner badge still painting — the surface lied about
-    its state."""
+    """spec/147 §1 — "Set all aside" (renamed from "Drop all") is
+    INTENT ONLY. The pre-spec/147 cascade that deleted shipped
+    files on Drop-all is retired: the files stay on disk, the
+    lineage rows survive, and ``edit_exported`` stays set. The
+    user clears the bytes via the explicit "Delete now · M" verb."""
     _, source_eg = store_and_gateway
     shipped_x2 = _ship_one(source_eg, event_dir, "x2")
     shipped_x4 = _ship_one(source_eg, event_dir, "x4")
@@ -1186,23 +1190,22 @@ def test_bulk_drop_all_cascades_un_export_for_shipped_items(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     page._on_skip_all_clicked()
 
-    # Shipped files are gone, lineage is empty, exported_item_ids
-    # returns empty, and the corner badge cleared on every cell.
-    assert not shipped_x2.is_file()
-    assert not shipped_x4.is_file()
-    assert source_eg.exported_item_ids() == set()
+    # spec/147 §1 — files SURVIVE; lineage SURVIVES; the intent
+    # state moves to skipped (red) but nothing on disk changes.
+    assert shipped_x2.is_file()
+    assert shipped_x4.is_file()
+    assert source_eg.exported_item_ids() == {"x2", "x4"}
     for it in page._items:
-        assert it.exported is False
         assert it.state == STATE_SKIPPED
     page.close_event()
 
 
-def test_bulk_drop_all_confirm_text_names_shipped_count(
+def test_bulk_set_aside_confirm_warns_intent_only(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
-    """The Drop-all confirm dialog in Export mode names the shipped
-    count explicitly so the user knows the on-disk blast before
-    confirming. (Without that, the prompt reads identically to a
-    Pick-mode bulk Skip — invisible blast.)"""
+    """spec/147 §2 — the Set-all-aside confirm names the renamed
+    verb and tells the user the on-disk files are kept (use Delete
+    now · M to remove). The pre-spec/147 "Drop will delete N files"
+    language is retired since Set aside no longer touches bytes."""
     _, source_eg = store_and_gateway
     _ship_one(source_eg, event_dir, "x1")
     _ship_one(source_eg, event_dir, "x3")
@@ -1221,19 +1224,19 @@ def test_bulk_drop_all_confirm_text_names_shipped_count(
 
     assert len(captured) == 1
     title, body, primary = captured[0]
-    assert "Drop all" in title and "4" in title       # 4 items total
-    assert "2" in body                                  # 2 are shipped
-    assert "Exported Media" in body
-    assert "Original Media" in body                     # charter pin
-    assert primary == "Drop"
+    # spec/147 §2 — renamed verb in title + the "files stay on disk"
+    # reminder steering the user to Delete now.
+    assert "Set all" in title and "aside" in title
+    assert "Delete now" in body
+    assert primary == "Set aside"
     page.close_event()
 
 
-def test_bulk_export_all_in_export_mode_uses_ship_verb_in_confirm(
+def test_bulk_mark_all_to_export_uses_intent_verb_in_confirm(
         qapp, app_gateway, monkeypatch):
-    """Pick-all in Export mode reads as "Export all" in the
-    confirm — the user shouldn't see Pick-mode chrome on the
-    Export-mode action."""
+    """spec/147 §2 — Pick-all in Export mode is renamed to "Mark
+    all to export" (intent only). The confirm text matches the
+    renamed verb."""
     captured: list[tuple] = []
     monkeypatch.setattr(
         "mira.ui.pages.days_grid_page.confirm",
@@ -1246,9 +1249,10 @@ def test_bulk_export_all_in_export_mode_uses_ship_verb_in_confirm(
 
     assert len(captured) == 1
     title, body, primary = captured[0]
-    assert "Export all" in title
+    # Title interpolates the count: "Mark all {n} to export?"
+    assert "Mark all" in title and "to export" in title
     assert "ship" in body.lower()
-    assert primary == "Export"
+    assert primary == "Mark"
     page.close_event()
 
 
@@ -1396,14 +1400,16 @@ def test_export_now_button_label_is_locked_to_export_now(
     page.close_event()
 
 
-def test_export_now_modal_text_carries_n_and_m(
+def test_export_now_modal_text_carries_n_render_only(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
-    """spec/89 §5.1 D2.B — the confirm modal's title reads "Render N ·
-    Delete M files. Proceed?" with the actual counts the run would
-    execute. M counts versions cluster lineage rows with
-    intent_state='skipped' whose file is still on disk."""
+    """spec/147 §2 — Export now is RENDER-ONLY. The confirm modal's
+    title reads "Export now · N. Proceed?" with the actual render
+    count; the pre-spec/147 "Render N · Delete M" coupling is
+    retired. Any Set-aside files stay on disk until the user fires
+    the parallel Delete now · M verb."""
     _, eg = store_and_gateway
-    # Two skipped-intent third-party returns under x2 → cluster, M=2.
+    # Two skipped-intent third-party returns under x2 — under
+    # spec/147 these do NOT count toward the Export now modal.
     for rel in ("Exported Media/x2-v1.jpg", "Exported Media/x2-v2.jpg"):
         eg.record_lineage(m.Lineage(
             export_relpath=rel, phase="edit", source_kind="item",
@@ -1444,26 +1450,27 @@ def test_export_now_modal_text_carries_n_and_m(
 
     assert len(captured) == 1
     title, body, primary = captured[0]
-    # N = 2 (x1 + x3 picked, render targets); M = 2 (the two skipped
-    # versions of x2).
-    assert "Render 2" in title
-    assert "Delete 2 files" in title
+    # spec/147 §2 — N = 2 (x1 + x3 picked); the modal mentions only
+    # the render count, not any delete count.
+    assert "Export now" in title and "2" in title
+    assert "Delete" not in title
     assert primary == "Run"
-    # Body explains the destination directories.
-    assert "Exported Media" in body
-    assert "Original Media" in body                # charter pin
-    # Cancel left both files in place + lineage intact.
+    # Body explains the render scope.
+    assert "Will export" in body
+    # Cancel left both Set-aside files + lineage in place — Export now
+    # never touches them under spec/147.
     assert (event_dir / "Exported Media" / "x2-v1.jpg").is_file()
     assert (event_dir / "Exported Media" / "x2-v2.jpg").is_file()
     assert len(eg.versions_for_item("x2")) == 2
     page.close_event()
 
 
-def test_export_now_run_deletes_red_intent_versions(
+def test_export_now_run_does_not_delete_red_intent_versions(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
-    """spec/89 §5.1 step 2 — Run executes the delete sweep before the
-    render submit. After Run, every red-intent version file is gone
-    and its lineage row is dropped."""
+    """spec/147 §2 — Export now no longer carries a delete sweep.
+    Run renders the N green Will-export items missing a file and
+    leaves every Set-aside file untouched. The on-disk blast is
+    the parallel "Delete now · M" verb."""
     _, eg = store_and_gateway
     rel_keep = "Exported Media/x1-keep.jpg"
     rel_drop = "Exported Media/x1-drop.jpg"
@@ -1482,10 +1489,7 @@ def test_export_now_run_deletes_red_intent_versions(
     eg.set_phase_state("x3", "edit", "picked")
 
     # Auto-accept the modal and short-circuit the render submit (we
-    # only care about the delete sweep here). The function-local import
-    # of submit_export_batch in DaysGridPage._on_export_clicked re-reads
-    # the source module attribute at call time, so patching the source
-    # module takes effect.
+    # only care about the lack of any delete here).
     monkeypatch.setattr(
         "mira.ui.pages.days_grid_page.confirm",
         lambda *args, **kwargs: True)
@@ -1508,10 +1512,11 @@ def test_export_now_run_deletes_red_intent_versions(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     page._on_export_clicked()
 
+    # spec/147 §1 — Set-aside file SURVIVES Export now.
     assert (event_dir / "Exported Media" / "x1-keep.jpg").is_file()
-    assert not (event_dir / "Exported Media" / "x1-drop.jpg").is_file()
+    assert (event_dir / "Exported Media" / "x1-drop.jpg").is_file()
     rel_paths = {r.export_relpath for r in eg.versions_for_item("x1")}
-    assert rel_paths == {rel_keep}             # the skipped row dropped
+    assert rel_paths == {rel_keep, rel_drop}      # both rows still here
     # The render lane was still invoked for the other green keeper.
     assert len(submitted) == 1
     page.close_event()

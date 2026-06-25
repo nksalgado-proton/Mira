@@ -1983,14 +1983,25 @@ class ShareCutsPage(QWidget):
         return drafts[0] if drafts else None
 
     def _start_session(self, session: CutSession) -> None:
-        self._teardown_session()
-        page = CutSessionPage(
-            self._eg, session, event_root=self._eg.event_root)
-        page.finished.connect(self._on_session_done)
-        page.cancelled.connect(self._on_session_done_nothing)
-        self._session_page = page
-        self._stack.addWidget(page)
-        self._stack.setCurrentWidget(page)
+        # Nelson 2026-06-25 — building the CutSessionPage (load every
+        # member, decode thumbs, render the days panel) takes a few
+        # seconds on a Cut of any size. Without a busy cursor the
+        # click that lands here looks ignored. Both New Cut → Start
+        # and Adjust → Start funnel through this method, so wrapping
+        # here covers both.
+        from PyQt6.QtGui import QGuiApplication
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._teardown_session()
+            page = CutSessionPage(
+                self._eg, session, event_root=self._eg.event_root)
+            page.finished.connect(self._on_session_done)
+            page.cancelled.connect(self._on_session_done_nothing)
+            self._session_page = page
+            self._stack.addWidget(page)
+            self._stack.setCurrentWidget(page)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
 
     def _teardown_session(self) -> None:
         if self._session_page is not None:
@@ -2040,16 +2051,24 @@ class ShareCutsPage(QWidget):
         # aspect so the rehearsal and the export match (no more 16:9
         # cards in a 4:3 show).
         from core.cut_aspect import normalise as _normalise_aspect
-        self.detail_page.show_cut(
-            self._eg, cut,
-            separators_on=self._separators_on(),
-            aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")))
-        # spec/117 — flip the persistent Open folder / Open in PTE
-        # buttons based on whether the Cut shipped and the state of
-        # its on-disk bundle. Cheap to compute (one folder probe +
-        # one glob).
-        self._sync_exported_actions(cut)
-        self._stack.setCurrentWidget(self.detail_page)
+        # Nelson 2026-06-25 — show_cut walks every member, renders the
+        # opener + separator cards, builds the flat grid; takes a few
+        # seconds on a big Cut. WaitCursor while the surface assembles.
+        from PyQt6.QtGui import QGuiApplication
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.detail_page.show_cut(
+                self._eg, cut,
+                separators_on=self._separators_on(),
+                aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")))
+            # spec/117 — flip the persistent Open folder / Open in PTE
+            # buttons based on whether the Cut shipped and the state of
+            # its on-disk bundle. Cheap to compute (one folder probe +
+            # one glob).
+            self._sync_exported_actions(cut)
+            self._stack.setCurrentWidget(self.detail_page)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
 
     def _sync_exported_actions(self, cut) -> None:
         """Push the per-event Cut's spec/117 + spec/149 button visibility
@@ -2258,8 +2277,16 @@ class ShareCutsPage(QWidget):
             return
         from mira.shared.cut_session import show_entries
         from mira.ui.shared.cut_play import CutPlayerDialog
+        # Nelson 2026-06-25 — show_entries walks every member, music
+        # scans the library, opener card render is non-trivial; a
+        # few-second delay before the dialog appears. WaitCursor while
+        # we assemble; restored right before exec() so the dialog
+        # owns the cursor for its lifetime.
+        from PyQt6.QtGui import QGuiApplication
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         entries = show_entries(eg, cut, separators_on=self._separators_on())
         if not entries:
+            QGuiApplication.restoreOverrideCursor()
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.NoIcon)
             box.setWindowTitle(tr("Play"))
@@ -2323,6 +2350,7 @@ class ShareCutsPage(QWidget):
         )
         dlg.setWindowTitle(
             cut_names.display_tag(cut.tag) + " — " + tr("rehearsal"))
+        QGuiApplication.restoreOverrideCursor()
         dlg.start()
         dlg.exec()
 

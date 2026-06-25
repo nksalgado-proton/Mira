@@ -269,7 +269,9 @@ class _DayNavigatorPill(QFrame):
 
     Mutable: ``set_day(...)`` updates the label in place so the page
     can refresh without rebuilding the widget (rebuild + deleteLater
-    left the old widget painted under the new one — Nelson 2026-06-14)."""
+    left the old widget painted under the new one — Nelson 2026-06-14).
+    ``set_nav_state(can_prev, can_next)`` disables the chevrons at the
+    ends of the day list so the user reads the boundary."""
 
     prev_clicked = pyqtSignal()
     next_clicked = pyqtSignal()
@@ -284,19 +286,21 @@ class _DayNavigatorPill(QFrame):
         h.setSpacing(10)
         # ``#DayPillNav`` chevrons: tight, no Ghost padding (the prev/next
         # used to render blank — see redesign.qss for the fix).
-        prev_btn = QPushButton("‹")
-        prev_btn.setObjectName("DayPillNav")
-        prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        prev_btn.clicked.connect(self.prev_clicked.emit)
-        h.addWidget(prev_btn)
+        self._prev_btn = QPushButton("‹")
+        self._prev_btn.setObjectName("DayPillNav")
+        self._prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prev_btn.setToolTip(tr("Previous day"))
+        self._prev_btn.clicked.connect(self.prev_clicked.emit)
+        h.addWidget(self._prev_btn)
         self._label = QLabel("")
         self._label.setObjectName("Sub")
         h.addWidget(self._label)
-        next_btn = QPushButton("›")
-        next_btn.setObjectName("DayPillNav")
-        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        next_btn.clicked.connect(self.next_clicked.emit)
-        h.addWidget(next_btn)
+        self._next_btn = QPushButton("›")
+        self._next_btn.setObjectName("DayPillNav")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_btn.setToolTip(tr("Next day"))
+        self._next_btn.clicked.connect(self.next_clicked.emit)
+        h.addWidget(self._next_btn)
 
     def set_day(
         self,
@@ -312,6 +316,19 @@ class _DayNavigatorPill(QFrame):
             f"{item_count} items",
         ) if b)
         self._label.setText(meta)
+
+    def set_nav_state(self, can_prev: bool, can_next: bool) -> None:
+        """Disable a chevron when stepping that direction would land
+        off the day list. Cursor reverts to the default arrow on
+        disabled buttons so the dead state reads visually."""
+        self._prev_btn.setEnabled(bool(can_prev))
+        self._next_btn.setEnabled(bool(can_next))
+
+    def text(self) -> str:
+        """Back-compat shim so callers / tests that used to read the
+        plain-QLabel ``_grid_header`` keep working when this pill
+        replaces it (cut_session_page Nelson 2026-06-25)."""
+        return self._label.text()
 
 
 def _state_swatch(state: str, label: str) -> QWidget:

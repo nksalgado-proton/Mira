@@ -46,6 +46,7 @@ from mira.ui.base.surface import back_button
 from mira.ui.design import ThumbGrid, ThumbGridItem, confirm, ghost_button
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
+from mira.ui.pages.days_grid_page import _DayNavigatorPill
 
 log = logging.getLogger(__name__)
 
@@ -523,8 +524,17 @@ class CutSessionPage(QWidget):
         self._back_to_days_btn.setToolTip(tr("Back to the day list  (Esc)"))
         self._back_to_days_btn.clicked.connect(self._back_to_days)
         grid_chrome.addWidget(self._back_to_days_btn)
-        self._grid_header = QLabel("")
-        self._grid_header.setObjectName("DayGridHeader")
+        # Nelson 2026-06-25 — the plain QLabel header gave no day
+        # indication users could spot and no way to step to the next
+        # day without going back to the days list. Reuse the shared
+        # _DayNavigatorPill (same widget the DaysGridPage Pick/Edit
+        # surfaces use) so the chrome reads identically and the prev /
+        # next chevrons land "go to the neighbour day" in place.
+        self._grid_header = _DayNavigatorPill()
+        self._grid_header.prev_clicked.connect(
+            lambda: self._step_day(-1))
+        self._grid_header.next_clicked.connect(
+            lambda: self._step_day(+1))
         grid_chrome.addWidget(self._grid_header, stretch=1)
         grid_host_v.addLayout(grid_chrome)
         self._grid = ThumbGrid(
@@ -611,19 +621,41 @@ class CutSessionPage(QWidget):
         self._refresh_days()
         self._stack.setCurrentIndex(0)
 
+    def _step_day(self, direction: int) -> None:
+        """Move ``direction`` (±1) day groups, clamped to the list.
+        Wired to the day pill's prev / next chevrons; the pill itself
+        disables them at the boundaries via ``set_nav_state``, so this
+        is defence in depth."""
+        if not self._groups:
+            return
+        target = self._open_group + int(direction)
+        if not (0 <= target < len(self._groups)):
+            return
+        self._open_day(target)
+
     # ── grid level ───────────────────────────────────────────────────
 
     def _open_day(self, group_index: int) -> None:
         self._open_group = group_index
         files = self._files_of_open_group()
         day, _ = self._groups[group_index]
-        header = (tr("Undated") if day is None
-                  else tr("Day {n}").replace("{n}", str(day)))
-        extra = self._day_labels.get(day or -1, "")
-        if extra:
-            header += f" · {extra}"
         items = [self._grid_item_for(f) for f in files]
-        self._grid_header.setText(header)
+        # The pill takes (day_number, title, date_iso, item_count) and
+        # joins the truthy bits. We pass ``_day_labels`` (the joined
+        # "date · location" string) as the date slot and leave the
+        # title empty; the pill formats them identically to the
+        # DaysGridPage Pick/Edit chrome.
+        day_number = day if day is not None else 0
+        self._grid_header.set_day(
+            day_number=day_number,
+            title="",
+            date_iso=self._day_labels.get(day or -1, ""),
+            item_count=len(files),
+        )
+        self._grid_header.set_nav_state(
+            can_prev=group_index > 0,
+            can_next=group_index < len(self._groups) - 1,
+        )
         self._grid.set_items(items)
         self._stack.setCurrentIndex(1)
         self._index_by_abs = {

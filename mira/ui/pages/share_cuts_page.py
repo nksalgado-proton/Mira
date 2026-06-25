@@ -1233,6 +1233,26 @@ class ShareCutsPage(QWidget):
     def _separators_on(self) -> bool:
         return bool(getattr(self._settings(), "use_separators", True))
 
+    def _transition_s(self) -> float:
+        """spec/152 §3 — global crossfade transition duration as
+        seconds. Falls back to 2.0 (matches
+        ``pte_project.DEFAULT_TRANSITION_MS``) when the setting is
+        missing on a stale Settings JSON (or 0 when explicitly off)."""
+        raw = getattr(self._settings(), "default_transition_ms", 2000)
+        try:
+            return max(0.0, float(raw) / 1000.0)
+        except (TypeError, ValueError):
+            return 2.0
+
+    def _transition_ms(self) -> int:
+        """spec/152 §3 — same value as ``_transition_s`` but in ms,
+        for callers that pass it straight to ``pte_project.generate``."""
+        raw = getattr(self._settings(), "default_transition_ms", 2000)
+        try:
+            return max(0, int(round(float(raw))))
+        except (TypeError, ValueError):
+            return 2000
+
     # ── the list ─────────────────────────────────────────────────────
 
     def refresh(self) -> None:
@@ -2303,11 +2323,21 @@ class ShareCutsPage(QWidget):
                 and t.mood == cut.music_category
             ] if root else []
             totals = eg.cut_show_totals(cut.id)
-            if not self._separators_on():
-                from dataclasses import replace as _replace
-                totals = _replace(totals, separator_count=0)
+            sep_on = self._separators_on()
+            # spec/152 §3 — count opener + transition seconds in the
+            # show total so the audio playlist runs the full PTE
+            # length. The pre-spec/152 audio was built to a shorter
+            # total than PTE actually showed (audio cut off before
+            # the last slide ended).
+            from dataclasses import replace as _replace
+            totals = _replace(
+                totals,
+                separator_count=totals.separator_count if sep_on else 0,
+                opener_count=1 if sep_on else 0,
+            )
+            transition_s = self._transition_s()
             music = audio_library.build_playlist(
-                tracks, totals.seconds(cut.photo_s))
+                tracks, totals.seconds(cut.photo_s, transition_s))
         # spec/111 — the Cut carries the slideshow canvas aspect; the
         # Play preview matches the export's pixel dimensions so the
         # rehearsal isn't a different shape from the handoff.
@@ -2636,6 +2666,9 @@ class ShareCutsPage(QWidget):
                 include_originals=choices.include_originals,
                 copy_mode=choices.copy_mode,
                 overwrite_existing=choices.overwrite_existing,
+                # spec/152 §3 — thread the transition time so the
+                # audio playlist is built to the same total PTE shows.
+                transition_ms=self._transition_ms(),
             )
         except Exception:  # noqa: BLE001 — disk-level surprises surface honestly
             log.exception("export failed for cut %s", cut_id)
@@ -2796,6 +2829,11 @@ class ShareCutsPage(QWidget):
             photo_seconds=photo_seconds,
             library_root=_library_root_from_paths(),
             overlay_mode=overlay_mode,
+            # spec/152 §3 — thread the user-configured transition time
+            # through to PTE so its [Times] cumulative agrees with the
+            # show length cut_budget reports + the audio playlist runs
+            # to (no more cut-off audio at the end of a PTE show).
+            transition_ms=self._transition_ms(),
             stem=stem,
             overwrite=overwrite,
         )

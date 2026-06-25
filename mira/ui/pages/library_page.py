@@ -757,12 +757,24 @@ class LibraryPage(QWidget):
             photo_seconds = float(getattr(cut_row, "photo_s", 6.0))
             overlay_mode = (
                 getattr(cut_row, "overlay_mode", None) or "embedded")
+            # spec/152 §3 — thread the user-configured transition time
+            # through to PTE so its [Times] cumulative + the show
+            # length budget + the audio playlist all agree on wall
+            # time. Falls back to the existing PTE default when the
+            # setting is missing on a stale Settings JSON.
+            transition_ms = 2000
+            raw_t = getattr(settings, "default_transition_ms", 2000)
+            try:
+                transition_ms = max(0, int(round(float(raw_t))))
+            except (TypeError, ValueError):
+                pass
             return generate_into_folder(
                 folder, members, tracks,
                 aspect=aspect,
                 photo_seconds=photo_seconds,
                 library_root=_library_root_from_paths(),
                 overlay_mode=overlay_mode,
+                transition_ms=transition_ms,
                 overwrite=overwrite,
             )
         except Exception:  # noqa: BLE001

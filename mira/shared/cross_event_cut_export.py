@@ -207,6 +207,8 @@ def export_cross_event_cut(
     rng=None,
     opener_writer: Optional[callable] = None,
     separator_writer: Optional[callable] = None,
+    # spec/152 §3 — see the matching kwarg on ``export_cut``.
+    transition_ms: int = 0,
 ) -> dict:
     """Materialise a cross-event Cut at ``target`` (a writable directory).
 
@@ -450,6 +452,10 @@ def export_cross_event_cut(
         audio_tracks=audio_tracks,
         copy_mode=copy_mode,
         rng=rng,
+        # spec/152 §3 — cross-event Cuts have no separators today
+        # (opener_count=0 reflects the no-opener path).
+        transition_ms=transition_ms,
+        opener_count=0,
     )
 
     # Stamp the cut row's last_exported_at via the library gateway.

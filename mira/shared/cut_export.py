@@ -297,6 +297,11 @@ def write_audio_playlist(
     audio_tracks: Optional[Sequence[audio_library.AudioTrack]] = None,
     copy_mode: bool = False,
     rng=None,
+    # spec/152 §3 — transition + opener accounted for in the show
+    # length so the playlist runs to the same total PTE shows. Defaults
+    # are zero so callers that pre-date 152 are unaffected.
+    transition_ms: int = 0,
+    opener_count: int = 0,
 ) -> tuple[int, bool]:
     """spec/112 — build + place one Cut's soundtrack into ``dest/audio/``.
 
@@ -322,7 +327,8 @@ def write_audio_playlist(
         photo_count=photo_count,
         separator_count=separator_count,
         video_ms_total=video_ms_total,
-    ).seconds(photo_s)
+        opener_count=opener_count,
+    ).seconds(photo_s, transition_ms / 1000.0)
     if audio_tracks is not None:
         tracks = list(audio_tracks)
     elif audio_root:
@@ -396,6 +402,11 @@ def export_cut(
     overwrite_existing: bool = False,
     original_resolver: Optional[OriginalResolver] = None,
     rng=None,
+    # spec/152 §3 — global crossfade transition (ms) the audio
+    # playlist + PTE generator both account for. Defaults to 0 so
+    # pre-152 callers see the legacy hard-cut budget; UI callers
+    # pass the Settings value (``default_transition_ms``).
+    transition_ms: int = 0,
 ) -> ExportResult:
     """Materialize one Cut (spec/81 §4-§5, spec/105 §3-§5).
 
@@ -560,6 +571,14 @@ def export_cut(
         audio_tracks=audio_tracks,
         copy_mode=copy_mode,
         rng=rng,
+        # spec/152 §3 — include the transition_ms + opener slot in the
+        # show total so the playlist runs to the same wall time PTE
+        # plays. The opener only spends show time when separators
+        # are on AND an opener_writer was provided (the caller chose
+        # to render one); a test or callsite that doesn't render an
+        # opener gets opener_count=0 and the legacy total.
+        transition_ms=transition_ms,
+        opener_count=1 if (separators_on and opener_writer is not None) else 0,
     )
 
     gateway.mark_cut_exported(cut.id)

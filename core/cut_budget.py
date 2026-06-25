@@ -29,12 +29,28 @@ class ShowTotals:
     video_count: int = 0
     separator_count: int = 0
     video_ms_total: int = 0
+    # spec/152 §3 — opener slide count (always 0 or 1). The opener
+    # spends ``photo_s + transition_s`` of show time just like
+    # separators and photos do; pre-152 callers passed ``transition_s
+    # = 0`` so the difference vanished. Kept as a separate field so
+    # callers that build totals manually can tell the opener apart
+    # (e.g. when ``separators_on`` is False the opener is still
+    # rendered as a card and counts here, but no day separators do).
+    opener_count: int = 0
 
-    def seconds(self, photo_s: float) -> float:
-        """Projected show length: photos + separators at ``photo_s`` each,
-        videos at true duration."""
-        return (self.photo_count + self.separator_count) * photo_s \
-            + self.video_ms_total / 1000.0
+    def seconds(self, photo_s: float, transition_s: float = 0.0) -> float:
+        """Projected show length: photos + separators + opener at
+        ``photo_s + transition_s`` each, videos at true duration with
+        NO transition added (spec/150 §1 — the next slide's transition
+        window overlaps the clip's tail). ``transition_s`` defaults to
+        zero for backward compatibility with callers that pre-date
+        spec/152; the Play / Export call sites pass the Settings'
+        ``default_transition_ms / 1000`` so the audio playlist + PTE
+        ``[Times]`` agree with what's shown."""
+        slot_s = float(photo_s) + float(transition_s)
+        slide_count = (
+            self.photo_count + self.separator_count + self.opener_count)
+        return slide_count * slot_s + self.video_ms_total / 1000.0
 
 
 def zone(total_s: float, target_s: Optional[int], max_s: Optional[int]) -> str:

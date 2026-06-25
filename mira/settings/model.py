@@ -304,6 +304,15 @@ class Settings:
     default_video_speed: float = _u(
         "Default video playback speed (×). Applies to fresh sessions; "
         "the transport bar combo still lets you change it live.", 1.0)
+    # spec/152 §4 — global default crossfade duration (ms) between
+    # consecutive Cut slides. Counted in cut_budget.seconds() so the
+    # show total / audio playlist / PTE [Times] all agree on wall
+    # time. ``0`` = hard cuts (legacy behaviour). Matches the existing
+    # ``pte_project.DEFAULT_TRANSITION_MS``.
+    default_transition_ms: int = _u(
+        "Default crossfade transition between Cut slides, in ms. "
+        "Counted in the show length and the audio playlist; PTE picks "
+        "up the same value. 0 = no transition.", 2000)
     # ── Tone calibration trims (spec/54 §4.1 + spec/55, Nelson
     # 2026-06-10). Field-calibration knobs: -100..100, 0 = the shipped
     # recipe exactly. The Edit surface stays zero-slider (its thesis);

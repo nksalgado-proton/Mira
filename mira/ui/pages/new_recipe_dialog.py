@@ -1634,6 +1634,12 @@ class NewRecipeDialog(QDialog):
         ctx: NewRecipeContext,
         pool_probe: Optional[Callable[[list], int]] = None,
         totals_probe: Optional[Callable] = None,
+        # spec/152 §3 — given a list of export relpaths, return a
+        # ``ShowTotals``. Used by ``_projected_show_seconds`` to
+        # compute the metrics line with TRUE video durations + the
+        # transition slots, instead of the legacy
+        # ``picked * photo_s`` projection.
+        show_totals_for_paths: Optional[Callable] = None,
         recipe_probe: Optional[Callable[
             [dict], "_recipe_resolver.RecipeResolution"]] = None,
         recipe_store: Optional[RecipeStore] = None,
@@ -1673,6 +1679,7 @@ class NewRecipeDialog(QDialog):
         self._ctx = ctx
         self._pool_probe = pool_probe
         self._totals_probe = totals_probe
+        self._show_totals_for_paths = show_totals_for_paths
         self._recipe_probe = recipe_probe
         self._recipe_store = recipe_store
         self._dc_creator = dc_creator
@@ -3053,20 +3060,22 @@ class NewRecipeDialog(QDialog):
 
         # spec/152 §3 — crossfade transition between consecutive
         # slides. Sibling to the per-photo seconds (both belong to
-        # the *show*'s timing). 0 reverts to hard cuts. The dialog
-        # seeds the spinbox from the Cut's stored value or — for a
-        # new Cut — the global Settings default.
+        # the *show*'s timing) and displayed in seconds to match.
+        # 0 reverts to hard cuts. Stored internally as ms; the spinbox
+        # divides on display, multiplies in ``_on_transition_changed``
+        # before stashing on ``_transition_ms``.
         tr_box = QWidget()
         tv = QVBoxLayout(tr_box)
         tv.setContentsMargins(0, 0, 0, 0)
         tv.setSpacing(2)
-        tv.addWidget(QLabel(tr("Transition (ms)")))
-        self._transition_spin = QSpinBox()
+        tv.addWidget(QLabel(tr("Transition (s)")))
+        self._transition_spin = QDoubleSpinBox()
         self._transition_spin.setObjectName("RuntimeTransitionSpin")
-        self._transition_spin.setRange(0, 10000)
-        self._transition_spin.setSingleStep(100)
-        self._transition_spin.setValue(int(self._transition_ms))
-        self._transition_spin.setSuffix(" ms")
+        self._transition_spin.setRange(0.0, 10.0)
+        self._transition_spin.setSingleStep(0.1)
+        self._transition_spin.setDecimals(1)
+        self._transition_spin.setValue(self._transition_ms / 1000.0)
+        self._transition_spin.setSuffix(" s")
         self._transition_spin.setToolTip(tr(
             "Crossfade between consecutive slides. Counted in the "
             "show length so the audio playlist + PTE total match the "
@@ -3353,15 +3362,14 @@ class NewRecipeDialog(QDialog):
         self._per_photo_seconds = float(value)
         self._refresh_metrics_from_state()
 
-    def _on_transition_changed(self, value: int) -> None:
-        """spec/152 §3 — track the user's per-Cut transition. We mark
-        ``_transition_user_set`` so the presentation emit knows whether
-        to include the field (the round-trip omits it when the value
-        still matches the global default, keeping unaffected Cuts NULL
-        in the DB)."""
-        self._transition_ms = int(value)
+    def _on_transition_changed(self, value: float) -> None:
+        """spec/152 §3 — the spinbox shows seconds; convert to the
+        stored ms and track whether the user moved off the global
+        default. Round to the nearest 100 ms so a 1.5 s pick lands as
+        1500 ms (the storage step matches the spinbox step)."""
+        self._transition_ms = int(round(float(value) * 1000))
         self._transition_user_set = (
-            int(value) != int(self._default_transition_ms))
+            self._transition_ms != int(self._default_transition_ms))
         self._refresh_metrics_from_state()
 
     def _on_aspect_changed(self, _index: int) -> None:
@@ -3591,6 +3599,38 @@ class NewRecipeDialog(QDialog):
             return
         self._apply_metrics(self._last_resolution)
 
+    def _projected_show_seconds(
+        self, resolution: "_recipe_resolver.RecipeResolution",
+    ) -> float:
+        """spec/152 §3 — compute the projected show length from the
+        resolver's picked subset using the gateway's totals helper.
+        Falls back to the legacy ``picked * photo_s`` approximation
+        when the helper isn't wired (mock-mode tests / cross-event
+        flavour today). The transition slot is added per non-video
+        slide; opener_count is 0 here because the dialog doesn't know
+        yet whether the host will render one — the rehearsal +
+        export paths compute it independently."""
+        picked_paths = [
+            k for k, picked in resolution.seed.items() if picked
+        ]
+        helper = self._show_totals_for_paths
+        transition_s = float(self._transition_ms) / 1000.0
+        if helper is None or not picked_paths:
+            picked_count = len(picked_paths)
+            return picked_count * (
+                float(self._per_photo_seconds) + transition_s)
+        try:
+            totals = helper(picked_paths)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "show_totals_for_paths failed; falling back to "
+                "picked * photo_s + transition")
+            picked_count = len(picked_paths)
+            return picked_count * (
+                float(self._per_photo_seconds) + transition_s)
+        return float(totals.seconds(
+            float(self._per_photo_seconds), transition_s))
+
     def _apply_metrics(
         self, resolution: "_recipe_resolver.RecipeResolution",
     ) -> None:
@@ -3598,10 +3638,17 @@ class NewRecipeDialog(QDialog):
         runtime budget set, includes the ``of MM:SS target`` suffix;
         without one (spec/90 §5.1 — has_budget=False), the line drops
         the suffix and tags the runtime as ``runtime`` so the user
-        sees the projected length without an implied limit."""
+        sees the projected length without an implied limit.
+
+        spec/152 §3 — total_s sums true VIDEO durations (not just
+        ``picked * photo_s``) and accounts for the per-photo
+        transition window so the dialog's projection matches the
+        audio playlist + PTE show length. The picked-path list is
+        passed to the gateway's
+        :meth:`show_totals_for_export_relpaths` projection helper."""
         pool_size = len(resolution.pool)
         picked = sum(1 for v in resolution.seed.values() if v)
-        total_s = float(picked) * float(self._per_photo_seconds)
+        total_s = self._projected_show_seconds(resolution)
         head = (
             f"{pool_size} {tr('in pool')} · "
             f"{picked} {tr('initially picked')} · "

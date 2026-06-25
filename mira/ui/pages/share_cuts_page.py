@@ -1276,13 +1276,21 @@ class ShareCutsPage(QWidget):
             ),
         )
         cuts: list[CutSnapshot] = []
+        sep_on_global = self._separators_on()
         for cut in self._eg.cuts():
             totals = self._eg.cut_show_totals(cut.id)
-            if not self._separators_on():
-                from dataclasses import replace as _replace
-                totals = _replace(totals, separator_count=0)
+            # spec/152 §3 — include the transition slot + opener so
+            # the tile's duration matches the rehearsal / PTE total.
+            from dataclasses import replace as _replace
+            totals = _replace(
+                totals,
+                separator_count=(totals.separator_count
+                                 if sep_on_global else 0),
+                opener_count=(1 if sep_on_global else 0),
+            )
             count = totals.photo_count + totals.video_count
-            seconds = int(totals.seconds(cut.photo_s) or 0)
+            seconds = int(totals.seconds(
+                cut.photo_s, self._transition_s(cut)) or 0)
             cuts.append(CutSnapshot(
                 cut_id=cut.id,
                 name=cut.tag or "",
@@ -1650,6 +1658,13 @@ class ShareCutsPage(QWidget):
             ctx=ctx,
             pool_probe=kwargs.get("pool_probe"),
             totals_probe=kwargs.get("totals_probe"),
+            # spec/152 §3 — give the dialog a way to project show
+            # totals (with TRUE video durations) for the resolver's
+            # picked subset. Without this the metric line falls back
+            # to ``picked * photo_s`` which ignores video durations.
+            show_totals_for_paths=(
+                (lambda paths: eg.show_totals_for_export_relpaths(paths))
+                if eg is not None else None),
             recipe_probe=(lambda comp: eg.resolve_recipe(comp))
                           if eg is not None else None,
             recipe_store=self._recipe_store(),
@@ -2103,7 +2118,12 @@ class ShareCutsPage(QWidget):
             self.detail_page.show_cut(
                 self._eg, cut,
                 separators_on=self._separators_on(),
-                aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")))
+                aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")),
+                # spec/152 §3 — per-Cut transition wins over the
+                # global Settings default; both expand the displayed
+                # show length so the detail page agrees with the
+                # rehearsal / audio / PTE timing.
+                transition_s=self._transition_s(cut))
             # spec/117 — flip the persistent Open folder / Open in PTE
             # buttons based on whether the Cut shipped and the state of
             # its on-disk bundle. Cheap to compute (one folder probe +
@@ -2376,7 +2396,8 @@ class ShareCutsPage(QWidget):
             totals = eg.cut_show_totals(cut.id)
             opener_image = render_cut_opener_image(
                 tag_text=cut_names.display_tag(cut.tag),
-                lines=cut_opener_lines(cut, totals, cut.photo_s),
+                lines=cut_opener_lines(
+                    cut, totals, cut.photo_s, self._transition_s(cut)),
                 aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=cut.id)
         # Spec/81 §3.1 — live overlays in Play. When the Cut has any
@@ -2655,7 +2676,8 @@ class ShareCutsPage(QWidget):
             aspect = normalise(getattr(cut, "aspect", "16:9"))
             _, canvas_h = aspect_dimensions(aspect)
             totals = eg.cut_show_totals(cut.id)
-            lines = cut_opener_lines(cut, totals, cut.photo_s)
+            lines = cut_opener_lines(
+                cut, totals, cut.photo_s, self._transition_s(cut))
             tag_text = cut_names.display_tag(cut.tag)
             card_style = eg.cut_card_style(cut)
             cut_id_seed = cut.id

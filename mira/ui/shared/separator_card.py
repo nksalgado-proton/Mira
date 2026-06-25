@@ -190,7 +190,9 @@ def render_cut_opener_image(
     return img
 
 
-def cut_opener_lines(cut, totals, photo_s: float) -> list:
+def cut_opener_lines(
+    cut, totals, photo_s: float, transition_s: float = 0.0,
+) -> list:
     """The opener's fact lines, composed in ONE place (grid tile, the
     rehearsal and the export all show the same card).
 
@@ -198,7 +200,12 @@ def cut_opener_lines(cut, totals, photo_s: float) -> list:
     (filters moved to the source DC). The opener now reads only the
     Cut's own self-describing facts — count·length, target, music,
     created date. Showing the source DC's styles is a later refinement
-    (callers would need to thread the DC's filters through)."""
+    (callers would need to thread the DC's filters through).
+
+    spec/152 §3 — ``transition_s`` is added to every non-video slide's
+    contribution to ``totals.seconds``. Defaults to 0 for back-compat
+    with pre-152 callers; rehearsal / export call sites pass the
+    per-Cut value (per-Cut wins over Settings default)."""
 
     def _mmss(seconds: float) -> str:
         s = max(0, int(round(seconds)))
@@ -206,7 +213,7 @@ def cut_opener_lines(cut, totals, photo_s: float) -> list:
 
     n = totals.photo_count + totals.video_count
     lines = [tr("{n} items · {len}").replace("{n}", str(n)).replace(
-        "{len}", _mmss(totals.seconds(photo_s)))]
+        "{len}", _mmss(totals.seconds(photo_s, transition_s)))]
     bits = []
     if cut.target_s:
         bits.append(tr("target {t}").replace("{t}", _mmss(cut.target_s)))

@@ -1880,6 +1880,45 @@ class EventGateway:
             video_ms_total=int(row["video_ms"] or 0),
         )
 
+    def show_totals_for_export_relpaths(
+        self, paths,
+    ) -> cut_budget.ShowTotals:
+        """spec/152 §3 — project ShowTotals for an ARBITRARY list of
+        export relpaths. The New / Adjust Cut dialog uses this to
+        compute the metric line BEFORE the membership is committed:
+        same JOIN shape as :meth:`cut_show_totals`, but the
+        membership comes from the caller (the dialog's resolver
+        output) instead of ``cut_member``.
+
+        Empty list returns zeros. Unknown relpaths (the resolver
+        sometimes lists items whose lineage row is missing — defensive)
+        contribute nothing rather than crashing the projection.
+        """
+        members = [str(p) for p in (paths or []) if p]
+        if not members:
+            return cut_budget.ShowTotals()
+        placeholders = ",".join("?" * len(members))
+        row = self.store.conn.execute(
+            "SELECT "
+            "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
+            "    THEN 0 ELSE 1 END) AS photos, "
+            "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
+            "    THEN 1 ELSE 0 END) AS videos, "
+            "SUM(CASE WHEN COALESCE(si.kind, oi.kind, 'photo') = 'video' "
+            "    THEN COALESCE(l.duration_ms, 0) ELSE 0 END) AS video_ms, "
+            "COUNT(DISTINCT COALESCE(si.day_number, oi.day_number)) AS days "
+            "FROM lineage l "
+            + self._CUT_SOURCE_JOIN +
+            f"WHERE l.export_relpath IN ({placeholders})",
+            tuple(members),
+        ).fetchone()
+        return cut_budget.ShowTotals(
+            photo_count=int(row["photos"] or 0),
+            video_count=int(row["videos"] or 0),
+            separator_count=int(row["days"] or 0),
+            video_ms_total=int(row["video_ms"] or 0),
+        )
+
     def photo_persons_for_item(self, item_id: str) -> List[m.PhotoPerson]:
         return self.store.query_by(m.PhotoPerson, item_id=item_id)
 

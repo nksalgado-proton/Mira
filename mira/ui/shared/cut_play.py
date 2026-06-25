@@ -456,6 +456,16 @@ class CutPlayerDialog(QDialog):
         self._player.setAudioOutput(self._video_audio)
         self._player.setVideoOutput(self._video_widget)
         self._player.mediaStatusChanged.connect(self._on_video_status)
+        # spec/152 Phase 2 — cache the most recent valid video frame
+        # so ``_capture_outgoing_pixmap`` has something to fade from
+        # at swap time. ``QMediaPlayer.videoSink().videoFrame()``
+        # returns null / invalid on Windows-WMF backends right after
+        # ``stop()``, so we observe ``videoFrameChanged`` directly
+        # and stash the latest QImage as it streams in.
+        self._latest_video_image: Optional[QImage] = None
+        sink = self._player.videoSink()
+        if sink is not None:
+            sink.videoFrameChanged.connect(self._on_video_frame_observed)
 
     def _ensure_music(self) -> None:
         if self._music is not None or not self._music_tracks:
@@ -517,6 +527,15 @@ class CutPlayerDialog(QDialog):
             self._capture_outgoing_pixmap()
             if self._index >= 0 else None
         )
+        # spec/152 Phase 2 — show the overlay with the captured frame
+        # IMMEDIATELY, before the new entry's paint reaches the user.
+        # Without this the new photo / video paints fully (because the
+        # underlying ``QStackedLayout`` swap is instant) for a frame
+        # or two BEFORE the overlay is raised, which reads as a "pop"
+        # to the right size on a photo→photo swap and as a black flash
+        # on any video transition.
+        if outgoing_pm is not None and not outgoing_pm.isNull():
+            self._show_transition_overlay(outgoing_pm)
         self._timer.stop()
         if self._player is not None:
             self._player.stop()
@@ -551,13 +570,12 @@ class CutPlayerDialog(QDialog):
             self._show_pixmap(pm)
             if not self._paused:
                 self._timer.start(self._photo_ms)
-        # spec/152 Phase 2 — start the crossfade animation if we
-        # have a captured outgoing frame. The animation is
-        # decorative — the new entry below paints normally
-        # regardless of whether the fade succeeds (so a failed
-        # last-frame capture just hard-cuts, as before).
+        # spec/152 Phase 2 — start the fade animation now that the
+        # new entry is set up underneath the overlay. The overlay
+        # itself was raised earlier (so the new entry doesn't pop);
+        # this just kicks off the opacity 1 → 0 tween.
         if outgoing_pm is not None and not outgoing_pm.isNull():
-            self._start_transition_fade(outgoing_pm)
+            self._start_transition_animation()
         # Refresh the overlay AFTER the frame paint.
         self._update_overlay(kind, payload)
         # Snap the scrubber to the new entry; the ticker keeps it warm.
@@ -593,45 +611,61 @@ class CutPlayerDialog(QDialog):
                         return 2000
         return 2000
 
+    def _on_video_frame_observed(self, frame) -> None:
+        """spec/152 Phase 2 — stash the latest valid QImage so the
+        crossfade overlay always has a real frame to fade from.
+        Cheap: one QImage clone per visible frame, dropped on the
+        next observation. Invalid / null frames are ignored."""
+        if frame is None:
+            return
+        try:
+            if not frame.isValid():
+                return
+            img = frame.toImage()
+        except Exception:                                          # noqa: BLE001
+            return
+        if not img.isNull():
+            # ``QImage`` is implicitly shared; copy to detach from the
+            # sink's buffer so it survives the next frame arrival.
+            self._latest_video_image = QImage(img)
+
     def _capture_outgoing_pixmap(self) -> Optional[QPixmap]:
         """Capture the current entry's displayed pixels as a QPixmap
         so the crossfade overlay can fade them out while the next
         entry sets up.
 
-        Photos / opener / separator: the cached scaled pixmap on
-        ``BlurredPhotoCanvas`` is reused directly.
+        Photos / opener / separator: ``QWidget.grab()`` snapshots the
+        widget exactly as rendered (matches the new entry's painted
+        geometry beat-for-beat, so a photo→photo swap doesn't show a
+        size jump between overlay and new entry).
 
-        Video: read the most recent ``QVideoSink.videoFrame()`` and
-        convert to QPixmap. The capture MUST happen before
-        ``self._player.stop()`` clears the surface, which is why
-        ``_show_index`` calls this at the very top."""
-        # Photo / sep / opener path — the raw pixmap is the source of
-        # truth (the canvas re-scales for fit, but the raw is what we
-        # want for the fade so it scales to the overlay's geometry
-        # consistently with the new entry's paint).
+        Video: returns the most recent observed frame, cached by the
+        sink listener wired in ``_ensure_video``. ``videoFrame()``
+        returns invalid frames on Windows-WMF immediately after
+        ``stop()``; the cached path side-steps that race."""
+        # Photo / sep / opener path — use the canvas's RENDERED size
+        # so the overlay matches the new entry's pixel-perfect
+        # geometry. Falls back to the raw pixmap when grab() fails
+        # (e.g. the canvas hasn't been painted yet on the first slide).
         if (self._video_widget is None
                 or not self._video_widget.isVisible()):
+            try:
+                grabbed = self._photo.grab()
+            except Exception:                                      # noqa: BLE001
+                grabbed = QPixmap()
+            if isinstance(grabbed, QPixmap) and not grabbed.isNull():
+                return grabbed
             raw = getattr(self, "_raw_pixmap", None)
             if isinstance(raw, QPixmap) and not raw.isNull():
                 return QPixmap(raw)
             return None
-        # Video path — grab the current sink frame.
-        try:
-            sink = self._player.videoSink() if self._player else None
-            frame = sink.videoFrame() if sink is not None else None
-        except Exception:                                          # noqa: BLE001
-            return None
-        if frame is None:
-            return None
-        try:
-            if not frame.isValid():
-                return None
-            img = frame.toImage()
-        except Exception:                                          # noqa: BLE001
-            return None
-        if img.isNull():
-            return None
-        return QPixmap.fromImage(img)
+        # Video path — use the cached latest frame from the sink
+        # listener. ``videoFrame()`` is unreliable here (returns
+        # invalid frames on Windows-WMF after stop()).
+        img = self._latest_video_image
+        if img is not None and not img.isNull():
+            return QPixmap.fromImage(img)
+        return None
 
     def _ensure_transition_overlay(self) -> None:
         """Lazily build the overlay widget. Single-slide Cuts skip
@@ -661,12 +695,19 @@ class CutPlayerDialog(QDialog):
         self._transition_opacity = effect
         self._transition_anim = anim
 
-    def _start_transition_fade(self, outgoing_pm: QPixmap) -> None:
-        """Show the overlay with the captured pixmap and run the
-        opacity 1 → 0 animation. ``transition_ms <= 0`` short-circuits
-        to an instant hard cut (the legacy pre-152 behaviour). A null
-        pixmap also short-circuits — fading from nothing is just a
-        wasted animation tick."""
+    def _show_transition_overlay(self, outgoing_pm: QPixmap) -> None:
+        """spec/152 Phase 2 — install the captured outgoing frame on
+        the overlay AT FULL OPACITY and raise it above the stack. The
+        animation is NOT started here — that happens later in
+        :meth:`_start_transition_animation` once the new entry's
+        widgets are set up underneath. This split is what stops a
+        photo→photo swap from "popping" (the new photo paints fully
+        BEFORE the overlay is in place if the two steps run together)
+        and a photo→video swap from flashing black (the video sink
+        paints opaque black before the first frame).
+
+        ``transition_ms <= 0`` (Settings "hard cut" mode) skips
+        construction entirely — no overlay, no fade."""
         if outgoing_pm is None or outgoing_pm.isNull():
             return
         transition_ms = self._transition_ms_value()
@@ -676,9 +717,6 @@ class CutPlayerDialog(QDialog):
         overlay = self._transition_overlay
         if overlay is None:
             return
-        # Scale the outgoing pixmap to fit the canvas the same way the
-        # active entry's pixels do — so a photo / video / card all
-        # cross-fade against geometrically matched bytes.
         sz = self._stack_widget.size()
         if sz.width() > 0 and sz.height() > 0:
             scaled = outgoing_pm.scaled(
@@ -691,10 +729,31 @@ class CutPlayerDialog(QDialog):
         self._transition_opacity.setOpacity(1.0)
         overlay.raise_()
         overlay.show()
+        # Stash the duration the matching ``_start_transition_animation``
+        # call will read. Keeps the two halves connected without
+        # smuggling state through a method arg.
+        self._pending_transition_ms = int(transition_ms)
+
+    def _start_transition_animation(self) -> None:
+        """spec/152 Phase 2 — start the opacity 1 → 0 tween the
+        ``_show_transition_overlay`` call queued up. Called AFTER the
+        new entry's widgets are set up underneath the overlay."""
         anim = self._transition_anim
+        ms = getattr(self, "_pending_transition_ms", 0)
+        if anim is None or ms <= 0:
+            return
         anim.stop()
-        anim.setDuration(int(transition_ms))
+        anim.setDuration(int(ms))
         anim.start()
+        self._pending_transition_ms = 0
+
+    # Back-compat shim — tests in tests/test_cut_play_transition.py
+    # still drive ``_start_transition_fade``. The new behaviour is
+    # show-then-start; the shim collapses them so the existing tests
+    # exercise the same surface.
+    def _start_transition_fade(self, outgoing_pm: QPixmap) -> None:
+        self._show_transition_overlay(outgoing_pm)
+        self._start_transition_animation()
 
     def _on_transition_finished(self) -> None:
         """Animation done — drop the overlay so it stops eating
@@ -943,6 +1002,14 @@ class CutPlayerDialog(QDialog):
         self._video_widget.show()
         self._video_widget.raise_()
         self._stack_layout.setCurrentWidget(self._video_widget)
+        # spec/152 Phase 2 — the ``video_widget.raise_()`` above
+        # restacks the video on top of the crossfade overlay; if a
+        # fade is still mid-flight we'd see the new video pop in at
+        # 100 % the moment the first frame arrived. Re-raise the
+        # overlay so it stays above until its own animation finishes.
+        if (self._transition_overlay is not None
+                and self._transition_overlay.isVisible()):
+            self._transition_overlay.raise_()
 
     def _on_video_status(self, status) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer

@@ -950,6 +950,8 @@ SETTINGS_SCHEMA: list[dict] = [
             # slides. Same value drives the in-app Play crossfade, the
             # PTE [Times] cumulative, and the show-length budget the
             # audio playlist is built to. ``0`` reverts to hard cuts.
+            # Displayed in seconds (matches the "Per slide" spinbox
+            # right above it); the dataclass field is still ms.
             {
                 "key": "default_transition_ms",
                 "label": "Crossfade transition between slides",
@@ -958,11 +960,15 @@ SETTINGS_SCHEMA: list[dict] = [
                     "How long the crossfade between consecutive Cut "
                     "slides lasts. Counted in the show length so the "
                     "audio playlist and the generated PTE end at the "
-                    "same time the slideshow does. Default 2000 ms; "
-                    "0 = hard cuts (no transition)."
+                    "same time the slideshow does. Default 2 s; 0 = "
+                    "hard cuts (no transition)."
                 ),
-                "min": 0, "max": 10000, "step": 100,
-                "decimals": 0, "suffix": " ms",
+                "min": 0.0, "max": 10.0, "step": 0.1,
+                "decimals": 1, "suffix": " s",
+                # spec/152 §3 — the field stores ms; the UI shows
+                # seconds. ``scale: 1000`` divides on load, multiplies
+                # on save (handled in the rebuild adapter).
+                "scale": 1000,
             },
         ],
     },
@@ -1599,13 +1605,35 @@ class SettingsDialog(QDialog):
                            float(entry.get("step", 1.0)))
         if entry.get("suffix"):
             spin.setSuffix(entry["suffix"])
+        # spec/152 §3 — optional unit-scale between widget value and
+        # stored field value. ``scale=1000`` lets the widget show
+        # seconds while the dataclass field stays in ms (so the model
+        # and JSON keep a unit-agnostic integer).
+        try:
+            scale = float(entry.get("scale", 1) or 1)
+        except (TypeError, ValueError):
+            scale = 1.0
+        scale = scale if scale != 0 else 1.0
+        # Whether to coerce the stored value to int (when decimals=0
+        # AND the storage unit is integer-friendly). With a scale of
+        # 1000 the round-trip is always int-ish (ms multiplier on
+        # display = integer ms in storage).
+        store_as_int = (decimals == 0 or abs(scale - 1.0) > 1e-9)
 
         def _read() -> Any:
-            return spin.value()
+            raw = spin.value()
+            if abs(scale - 1.0) < 1e-9:
+                return int(raw) if decimals == 0 else float(raw)
+            stored = float(raw) * scale
+            return int(round(stored)) if store_as_int else stored
 
         def _write(value: Any) -> None:
             try:
-                spin.setValue(float(value) if decimals > 0 else int(value))
+                v = float(value) / scale
+            except (TypeError, ValueError):
+                return
+            try:
+                spin.setValue(v if decimals > 0 else int(round(v)))
             except (TypeError, ValueError):
                 pass
 

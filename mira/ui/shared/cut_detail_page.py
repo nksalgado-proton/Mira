@@ -296,7 +296,11 @@ class CutDetailPage(QWidget):
         self._open_pte_btn.setVisible(bool(show_pte))
         self._generate_pte_btn.setVisible(bool(show_generate))
 
-    def show_cut(self, eg, cut, *, separators_on: bool, aspect: str) -> None:
+    def show_cut(
+        self, eg, cut, *,
+        separators_on: bool, aspect: str,
+        transition_s: float = 0.0,
+    ) -> None:
         """Build the flat show-order grid for one Cut: file tiles + a
         rendered separator tile at every day boundary."""
         self._cut_id = cut.id
@@ -310,13 +314,20 @@ class CutDetailPage(QWidget):
         self._entries = show_entries(eg, cut, separators_on=separators_on)
 
         totals_for_opener = eg.cut_show_totals(cut.id)
-        if not separators_on:
-            from dataclasses import replace as _replace
-            totals_for_opener = _replace(totals_for_opener, separator_count=0)
+        from dataclasses import replace as _replace
+        # spec/152 §3 — opener slot + transition spend the same wall
+        # time the rehearsal does; sum them into the opener-card line
+        # so it agrees with the in-page meta + the audio playlist.
+        totals_for_opener = _replace(
+            totals_for_opener,
+            separator_count=(totals_for_opener.separator_count
+                             if separators_on else 0),
+            opener_count=(1 if separators_on else 0),
+        )
         self._cut = cut
         self._card_style = eg.cut_card_style(cut)
         self._opener_lines = cut_opener_lines(
-            cut, totals_for_opener, cut.photo_s)
+            cut, totals_for_opener, cut.photo_s, transition_s)
 
         grid_items: List[ThumbGridItem] = []
         self._thumbs = {}
@@ -387,14 +398,25 @@ class CutDetailPage(QWidget):
                     path=abs_path, kind=f.kind, payload=f))
 
         totals = eg.cut_show_totals(cut.id)
-        if not separators_on:
-            from dataclasses import replace as _replace
-            totals = _replace(totals, separator_count=0)
+        # spec/152 §3 — include transition + opener slots so the
+        # detail-page projection matches the rehearsal / audio / PTE
+        # total. Per-Cut transition wins over the Settings default.
+        from dataclasses import replace as _replace
+        totals = _replace(
+            totals,
+            separator_count=(totals.separator_count
+                             if separators_on else 0),
+            opener_count=(1 if separators_on else 0),
+        )
+        # The caller passes the resolved transition_s (per-Cut value if
+        # set, else Settings.default_transition_ms). Defaults to 0 so
+        # legacy callers that don't pass it still produce sane totals.
         n = totals.photo_count + totals.video_count
         self._tag_lbl.setText(cut_names.display_tag(cut.tag))
         self._meta_lbl.setText(
             tr("{n} items · {len} projected").replace("{n}", str(n)).replace(
-                "{len}", _fmt_mmss(totals.seconds(cut.photo_s))))
+                "{len}", _fmt_mmss(totals.seconds(
+                    cut.photo_s, transition_s))))
         self._header_lbl.setText(
             tr("{tag} — the show, in order").replace(
                 "{tag}", cut_names.display_tag(cut.tag)))

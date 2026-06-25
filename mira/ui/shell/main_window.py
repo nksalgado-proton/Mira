@@ -441,6 +441,12 @@ class MainWindow(QMainWindow):
         # spec/89 §5.1 D3.B — all-days "Export now" trigger.
         self.days_lists_page.export_now_requested.connect(
             self._on_days_lists_export_now)
+        # spec/147 §2 — all-days "Delete now" trigger (parallel to the
+        # per-day Delete now in DaysGridPage). The signal was emitted
+        # by the days_lists toolbar but had no handler until this
+        # wiring landed.
+        self.days_lists_page.delete_now_requested.connect(
+            self._on_days_lists_delete_now)
         # spec/70 Phase 3 — DaysGridPage signal wiring. Back returns to
         # Days Lists; an item click bridges to PickerPage (Surface 07,
         # redesigned + PhotoViewport-backed).
@@ -3509,6 +3515,7 @@ class MainWindow(QMainWindow):
                      if day_number is not None
                      else eg.items(provenance="captured"))
             target_ids = [it.id for it in items]
+            zero_target_feedback: "Optional[tuple[str, str]]" = None
             if self._export_phase_active:
                 # Drop items the user has already touched — respect
                 # explicit P/X decisions per Block 3 D2a.B.
@@ -3520,9 +3527,40 @@ class MainWindow(QMainWindow):
                         "the legacy aggressive bulk")
                     decided = set()
                 target_ids = [iid for iid in target_ids if iid not in decided]
-            eg.set_items_phase_state(target_ids, phase, state)
+                # spec/89 Block 3 D2a.B + Nelson 2026-06-25 feedback —
+                # when the filter drops every target the bulk runs as a
+                # silent no-op. That used to look like a broken button
+                # (user clicks "Set all aside", nothing visible
+                # changes). Tell the user explicitly what happened and
+                # point at the per-cell shortcuts for flipping already-
+                # decided items.
+                if not target_ids and items:
+                    verb_label = (tr("Mark all to export")
+                                  if state == "picked"
+                                  else tr("Set all aside"))
+                    zero_target_feedback = (
+                        tr("Nothing to change"),
+                        tr(
+                            "All {n} item(s) in this {scope} already "
+                            "have an explicit Will-export or Set-aside "
+                            "decision. {verb} only affects items "
+                            "without a decision yet — use per-cell P "
+                            "or X to flip an already-decided item."
+                        )
+                        .replace("{n}", str(len(items)))
+                        .replace("{scope}",
+                                 tr("event") if day_number is None
+                                 else tr("day"))
+                        .replace("{verb}", verb_label),
+                    )
+            if target_ids:
+                eg.set_items_phase_state(target_ids, phase, state)
         finally:
             eg.close()
+        if zero_target_feedback is not None:
+            from mira.ui.design import show_info
+            show_info(self, zero_target_feedback[0],
+                      zero_target_feedback[1])
         self._open_days_lists_for(event_id)
 
     def _on_days_lists_export_now(self) -> None:
@@ -3612,15 +3650,92 @@ class MainWindow(QMainWindow):
         )
 
         if n_render == 0:
-            show_info(
+            # spec/89 §5.1 D3.B (Nelson 2026-06-25) — when the normal
+            # filter yields zero fresh renders, check whether the
+            # event already has Mira renders on disk and offer to
+            # re-export them. The default filter drops every cell
+            # whose item is in ``exported_item_ids()`` unless it's
+            # stale (edited since export). For a user who wants to
+            # re-render everything from scratch (e.g. after a spec/150
+            # encoder fix), there's no other affordance — so we
+            # surface it here when the alternative is the dead-end
+            # "Nothing marked Will export" message.
+            try:
+                eg2 = self.gateway.open_event(event_id)
+                try:
+                    exported_ids = set(eg2.exported_item_ids())
+                finally:
+                    eg2.close()
+            except Exception:                                       # noqa: BLE001
+                log.exception(
+                    "Export now (all days): exported_item_ids probe failed")
+                exported_ids = set()
+            if not exported_ids:
+                show_info(
+                    self,
+                    tr("Nothing marked Will export"),
+                    tr(
+                        "No green renders pending across this event — "
+                        "toggle some cells to Will export."
+                    ),
+                )
+                return
+            if not confirm(
                 self,
-                tr("Nothing marked Will export"),
+                tr("Re-export everything?"),
                 tr(
-                    "No green renders pending across this event — "
-                    "toggle some cells to Will export."
-                ),
+                    "Nothing is queued for a fresh render, but this "
+                    "event has {n} item(s) already exported. Re-render "
+                    "them from scratch? You'll choose Overwrite or "
+                    "Keep both on the next step."
+                ).replace("{n}", str(len(exported_ids))),
+                primary_text=tr("Re-export"),
+            ):
+                return
+            # Re-collect with the force flag flipped so the
+            # already-shipped filter in ``_collect_ship_cells``
+            # doesn't drop the items we're targeting.
+            per_day_plans = []
+            stale_cell_ids = []
+            scratch = DaysGridPage(self.gateway)
+            scratch._preview_headless = True
+            scratch._force_include_shipped = True
+            try:
+                for dn in days:
+                    if not scratch.open_for_day(
+                            event_id, dn, title="", date_iso="",
+                            phase="export"):
+                        continue
+                    plan = scratch._collect_export_run_plan()
+                    if (plan["render_cells"]
+                            or plan["render_segments"]
+                            or plan["render_snapshots"]):
+                        per_day_plans.append((dn, plan))
+                        # Every re-collected cell IS already shipped
+                        # (that's the whole point of this branch), so
+                        # all of them want the Overwrite / Keep both
+                        # path — mirror what stale-since-export does.
+                        stale_cell_ids.extend(
+                            c.item_id for c in plan["render_cells"])
+            finally:
+                scratch.close_event()
+                scratch.deleteLater()
+            n_render = sum(
+                len(p["render_cells"])
+                + len(p["render_segments"])
+                + len(p["render_snapshots"])
+                for _, p in per_day_plans
             )
-            return
+            if n_render == 0:
+                show_info(
+                    self,
+                    tr("Nothing to re-export"),
+                    tr(
+                        "Couldn't resolve any of the previously-"
+                        "exported items for re-render."
+                    ),
+                )
+                return
 
         # spec/118 §3 — when ≥1 cell across the run is edited-since-
         # export, swap the plain confirm for the run-level Overwrite /
@@ -3759,6 +3874,129 @@ class MainWindow(QMainWindow):
                 # their refs. spec/147 §2 — Export now no longer carries
                 # a delete sweep, so no "delete-only" path remains here.
                 eg.close()
+
+    def _on_days_lists_delete_now(self) -> None:
+        """spec/147 §2 — all-days "Delete now" trigger from the Days
+        List toolbar. Walks every day with a scratch DaysGridPage to
+        collect the union of ``intent_state='skipped'`` lineage rows
+        whose file still exists, surfaces the cut-usage warn once,
+        and on confirm deletes through the event gateway + sweeps any
+        library Cut members that referenced the doomed files.
+
+        Parallel to :meth:`_on_days_lists_export_now`; mirrors the
+        per-day :meth:`DaysGridPage._on_delete_now_clicked` design
+        summed across the whole event."""
+        event_id = self._current_event_id
+        if event_id is None:
+            return
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QGuiApplication as _QGuiApplication
+        from mira.ui.design import confirm, show_error, show_info
+        from mira.ui.pages.days_grid_page import DaysGridPage
+
+        try:
+            eg = self.gateway.open_event(event_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception("Delete now (all days): open_event failed")
+            return
+
+        all_relpaths: list[str] = []
+        try:
+            try:
+                days = sorted(
+                    d.day_number for d in eg.trip_days()
+                    if d.day_number is not None)
+            except Exception:                                      # noqa: BLE001
+                log.exception("Delete now (all days): trip_days failed")
+                days = []
+            scratch = DaysGridPage(self.gateway)
+            scratch._preview_headless = True
+            try:
+                for dn in days:
+                    if not scratch.open_for_day(
+                            event_id, dn, title="", date_iso="",
+                            phase="export"):
+                        continue
+                    try:
+                        rels = list(scratch._collect_delete_relpaths())
+                    except Exception:                              # noqa: BLE001
+                        log.exception(
+                            "Delete now (all days): collect day %d "
+                            "failed", dn)
+                        continue
+                    all_relpaths.extend(rels)
+            finally:
+                scratch.close_event()
+                scratch.deleteLater()
+            # Dedupe (a relpath listed via two days shouldn't double-count).
+            relpaths = sorted(set(all_relpaths))
+            m_delete = len(relpaths)
+            if m_delete == 0:
+                show_info(
+                    self,
+                    tr("Nothing marked Set aside"),
+                    tr(
+                        "No red files queued for deletion across this "
+                        "event. Set cells aside to populate the queue."
+                    ),
+                )
+                return
+            # spec/147 §4 — same cut-usage warn the per-day verb shows.
+            try:
+                event_uses = eg.event_cut_usage_count(relpaths)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "Delete now (all days): event_cut_usage_count failed; "
+                    "warn count will under-report")
+                event_uses = 0
+            cross_event_uses = 0
+            # Cross-event count via the library gateway, matching the
+            # per-day path's helper. Defensive: no library → count 0.
+            # ``lib`` is hoisted so the post-confirm cleanup block can
+            # reference it even when the factory call failed.
+            lib = None
+            try:
+                lib_factory = getattr(self.gateway, "library_gateway", None)
+                lib = (lib_factory() if callable(lib_factory)
+                       else getattr(self.gateway, "library", None))
+                if lib is not None and hasattr(
+                        lib, "cross_event_cut_usage_count"):
+                    cross_event_uses = int(lib.cross_event_cut_usage_count(
+                        eg.event().uuid, relpaths))
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "Delete now (all days): cross-event usage probe failed")
+            title, body, primary = DaysGridPage._delete_now_modal_text(
+                m_delete,
+                event_cut_uses=event_uses,
+                cross_event_cut_uses=cross_event_uses,
+            )
+            if not confirm(self, title, body, primary_text=primary):
+                return
+            _QGuiApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
+            try:
+                try:
+                    eg.delete_exported_files_by_relpaths(relpaths)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "Delete now (all days): bulk delete failed for "
+                        "%d files", m_delete)
+                # spec/147 §4 — best-effort cross-event sweep.
+                try:
+                    if (lib is not None
+                            and hasattr(lib,
+                                        "delete_cross_event_cut_members")):
+                        lib.delete_cross_event_cut_members(
+                            eg.event().uuid, relpaths)
+                except Exception:                                  # noqa: BLE001
+                    log.exception(
+                        "Delete now (all days): cross-event cleanup failed")
+            finally:
+                _QGuiApplication.restoreOverrideCursor()
+        finally:
+            eg.close()
+        # Refresh the days list so the new badge counts land.
+        self._open_days_lists_for(event_id)
 
     def _on_delete_event(self) -> None:
         """Event menu "Delete event" → offer a choice (spec/14 §5D): remove from

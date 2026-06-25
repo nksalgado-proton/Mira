@@ -3191,10 +3191,17 @@ class DaysGridPage(QWidget):
         from mira.ui.exported.staleness import is_cell_stale
 
         already_shipped: set = set()
-        try:
-            already_shipped = self._eg.exported_item_ids()
-        except Exception:                                          # noqa: BLE001
-            log.exception("DaysGridPage: exported_item_ids failed")
+        # spec/89 §5.1 D3.B — when ``_force_include_shipped`` is set
+        # (by the all-days "Re-export everything" path from
+        # ``main_window._on_days_lists_export_now``), skip the
+        # already-shipped filter so every picked item re-enters the
+        # render pool. The collision policy at the run-confirm layer
+        # still drives Overwrite / Keep both for the actual write.
+        if not getattr(self, "_force_include_shipped", False):
+            try:
+                already_shipped = self._eg.exported_item_ids()
+            except Exception:                                      # noqa: BLE001
+                log.exception("DaysGridPage: exported_item_ids failed")
 
         event_root = Path(self._eg.event_root)
         try:

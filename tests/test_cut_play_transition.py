@@ -200,3 +200,166 @@ def test_null_outgoing_pixmap_is_a_no_op(qapp):
     finally:
         dlg._teardown_media()
         dlg.deleteLater()
+
+
+def test_explicit_transition_ms_overrides_parent_lookup(qapp):
+    """spec/152 §3 — when the host passes ``transition_ms=`` at
+    construction, that value wins over the parent-walking heuristic
+    that the legacy path uses. This is what stops the rehearsal
+    from disagreeing with the PTE generator + budget on the per-Cut
+    transition: PTE reads the per-Cut value via
+    ``share_cuts_page._transition_ms(cut)``; the dialog now receives
+    the same value explicitly. Without this, a per-Cut override
+    would silently fall through to the global default in the
+    rehearsal — yielding the 13-min cut_play vs PTE shortfall the
+    user reported."""
+    payload = SimpleNamespace(
+        kind="photo", export_relpath="a.jpg", duration_ms=0)
+    entries = [("file", payload), ("file", payload)]
+    dlg = CutPlayerDialog(
+        entries, event_root=Path("/ignored"),
+        photo_s=6.0, day_meta={}, aspect="16:9",
+        transition_ms=1500)
+    try:
+        assert dlg._transition_ms_value() == 1500
+        # And the per-entry slot picks it up — 6_000 + 1_500 = 7_500.
+        assert dlg._entry_total_ms(0) == 7_500
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_explicit_transition_ms_zero_means_hard_cut(qapp):
+    """``transition_ms=0`` (the explicit "no transition" choice)
+    yields a slot of just ``photo_ms`` and a 0 boundary — same
+    behaviour as before spec/152."""
+    payload = SimpleNamespace(
+        kind="photo", export_relpath="a.jpg", duration_ms=0)
+    entries = [("file", payload), ("file", payload)]
+    dlg = CutPlayerDialog(
+        entries, event_root=Path("/ignored"),
+        photo_s=6.0, day_meta={}, aspect="16:9",
+        transition_ms=0)
+    try:
+        assert dlg._transition_ms_value() == 0
+        assert dlg._entry_total_ms(0) == 6_000
+        assert dlg._boundary_transition_ms(0, 1) == 0
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_boundary_transition_ms_photo_to_photo_is_full(qapp):
+    """spec/152 Phase 3 — a photo→photo boundary keeps the full
+    transition_ms (the in-app crossfade matches PTE's [Times] slot
+    contribution from the outgoing photo)."""
+    dlg = _make_dialog(transition_ms=2000)
+    try:
+        # entries[0] and entries[1] are both photos in _make_dialog.
+        assert dlg._boundary_transition_ms(0, 1) == 2000
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_boundary_transition_ms_photo_to_video_is_half(qapp):
+    """spec/152 Phase 3 — a photo→video boundary uses HALF
+    transition_ms; only the photo side does its part of the fade
+    (the video hard-cuts in). The wall-clock shortfall is
+    reclaimed by the global video_rate slowdown."""
+    payload_p = SimpleNamespace(
+        kind="photo", export_relpath="p.jpg", duration_ms=0)
+    payload_v = SimpleNamespace(
+        kind="video", export_relpath="v.mp4", duration_ms=10_000)
+    entries = [("file", payload_p), ("file", payload_v)]
+    dlg = CutPlayerDialog(
+        entries, event_root=Path("/ignored"),
+        photo_s=6.0, day_meta={}, aspect="16:9")
+    dlg._transition_ms_value = lambda: 2000
+    try:
+        assert dlg._boundary_transition_ms(0, 1) == 1000
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_boundary_transition_ms_video_to_video_is_zero(qapp):
+    """spec/152 Phase 3 — a video→video boundary skips the overlay
+    entirely. The bridge is the frozen last-frame on the photo
+    widget while the new clip's first frame loads (no black gap)."""
+    payload_a = SimpleNamespace(
+        kind="video", export_relpath="a.mp4", duration_ms=10_000)
+    payload_b = SimpleNamespace(
+        kind="video", export_relpath="b.mp4", duration_ms=8_000)
+    entries = [("file", payload_a), ("file", payload_b)]
+    dlg = CutPlayerDialog(
+        entries, event_root=Path("/ignored"),
+        photo_s=6.0, day_meta={}, aspect="16:9")
+    dlg._transition_ms_value = lambda: 2000
+    try:
+        assert dlg._boundary_transition_ms(0, 1) == 0
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_boundary_transition_ms_zero_setting_short_circuits(qapp):
+    """When the global transition setting is 0 ("hard cut"),
+    every boundary returns 0 regardless of kind."""
+    dlg = _make_dialog(transition_ms=0)
+    try:
+        assert dlg._boundary_transition_ms(0, 1) == 0
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()
+
+
+def test_overlay_pixmap_preserves_logical_size_on_hidpi_capture(qapp):
+    """spec/152 Phase 2 (regression for the "pop to smaller" reported
+    against commit 33708f0): on a HiDPI display ``self._photo.grab()``
+    returns a pixmap whose LOGICAL size matches the canvas (its device
+    pixel count is ``logical * dpr``). The pre-fix ``_show_transition_
+    overlay`` called ``QPixmap.scaled(canvas_logical_size, …)``, which
+    Qt6 interprets as DEVICE pixels — the result rendered at half
+    logical size on DPR=2 screens, which the user saw as the photo
+    "popping smaller" the instant the overlay raised. The fix bypasses
+    the scale when the source's logical size already matches the
+    canvas, so the overlay paints at exactly the canvas's logical size.
+
+    Note we check LOGICAL size, not the DPR attribute: ``QLabel``
+    internally normalises the stored pixmap to the screen's DPR, so
+    ``QLabel.pixmap().devicePixelRatio()`` reflects the screen, not
+    the source. The load-bearing invariant is that the logical size
+    (``pixmap.size() / pixmap.devicePixelRatio()``) equals the canvas
+    — which is what controls how big the photo appears."""
+    dlg = _make_dialog(transition_ms=400)
+    try:
+        dlg._stack_widget.resize(QSize(1000, 600))
+        # Simulate a HiDPI grab: 2000×1200 device pixels at DPR=2.0
+        # → logical 1000×600 (matching the canvas).
+        hidpi = QPixmap(2000, 1200)
+        hidpi.fill()
+        hidpi.setDevicePixelRatio(2.0)
+        dlg._raw_pixmap = hidpi
+        dlg._index = 0
+        dlg._start_transition_fade(hidpi)
+        pm = dlg._transition_overlay.pixmap()
+        assert pm is not None and not pm.isNull()
+        dpr = pm.devicePixelRatio() or 1.0
+        logical_w = int(round(pm.width() / dpr))
+        logical_h = int(round(pm.height() / dpr))
+        assert logical_w == 1000, (
+            f"spec/152 Phase 2: overlay pixmap logical width "
+            f"{logical_w} ≠ canvas width 1000 — the 'pop to smaller' "
+            f"regression. devicePixelRatio={dpr}, "
+            f"pixel size={pm.size()}"
+        )
+        assert logical_h == 600, (
+            f"spec/152 Phase 2: overlay pixmap logical height "
+            f"{logical_h} ≠ canvas height 600 — the 'pop to smaller' "
+            f"regression. devicePixelRatio={dpr}, "
+            f"pixel size={pm.size()}"
+        )
+    finally:
+        dlg._teardown_media()
+        dlg.deleteLater()

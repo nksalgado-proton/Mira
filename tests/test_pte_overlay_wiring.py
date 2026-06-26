@@ -208,6 +208,50 @@ def test_strip_seq_prefix_handles_sequence_only(gw):
     assert page._strip_seq_prefix("plain.jpg") == "plain.jpg"
 
 
+# ── PTE inclusion gate (spec/152 §X) ────────────────────────────
+
+
+def test_is_card_slide_name_matches_opener_separators_undated():
+    """Card slides are rendered by the exporter (not pulled from the
+    member list) and must always be included in the regenerated PTE.
+    Recognised by name pattern after stripping the NNN_ prefix."""
+    assert ShareCutsPage._is_card_slide_name("opener.jpg") is True
+    assert ShareCutsPage._is_card_slide_name("OPENER.JPG") is True
+    assert ShareCutsPage._is_card_slide_name("day1.jpg") is True
+    assert ShareCutsPage._is_card_slide_name("day42.jpg") is True
+    assert ShareCutsPage._is_card_slide_name("undated.jpg") is True
+    # Real cut members are not card slides.
+    assert ShareCutsPage._is_card_slide_name("IMG_1234.jpg") is False
+    assert ShareCutsPage._is_card_slide_name("VID_5678.mp4") is False
+    # Defensive: things that look almost like a card slide.
+    assert ShareCutsPage._is_card_slide_name("day.jpg") is False
+    assert ShareCutsPage._is_card_slide_name("dayX.jpg") is False
+    assert ShareCutsPage._is_card_slide_name("day1.png") is False
+
+
+def test_is_cut_member_file_admits_cut_members_and_card_slides(gw):
+    """Members in the overlay lookup pass the gate; card slides pass
+    by name pattern; everything else (a stale file in the folder
+    from a prior export) is filtered out. This is what makes the
+    regenerated PTE match the current Cut selection."""
+    page = _stub_page(gw)
+    page._is_card_slide_name = ShareCutsPage._is_card_slide_name
+    page._is_cut_member_file = (
+        lambda stripped, lookup:
+        ShareCutsPage._is_cut_member_file(page, stripped, lookup))
+    cut = gw.cut("cut-o")
+    lookup = page._build_overlay_member_lookup(cut)
+    # Current members → admitted.
+    assert page._is_cut_member_file("IMG_001.jpg", lookup) is True
+    assert page._is_cut_member_file("IMG_002.jpg", lookup) is True
+    # Card slides → admitted regardless of the member list.
+    assert page._is_cut_member_file("opener.jpg", lookup) is True
+    assert page._is_cut_member_file("day1.jpg", lookup) is True
+    # Stale file from a prior export — NOT a member, NOT a card → out.
+    assert page._is_cut_member_file("IMG_999.jpg", lookup) is False
+    assert page._is_cut_member_file("OLD_VIDEO.mp4", lookup) is False
+
+
 # ── Per-photo resolution ───────────────────────────────────────
 
 

@@ -386,6 +386,34 @@ def test_music_block_empty_when_no_audio(skel, members):
     assert "TMusicItem" not in music.group(0)
 
 
+def test_music_block_emits_is_repeat_flag(output):
+    """PTE AV Studio 11 stores the "Repeat tracks" option as a
+    nested ``object Options:TMusicOptions`` block with ``IsRepeat=1``
+    inside ``object Music:Music`` (confirmed by diffing two
+    identical projects exported with the option ON vs OFF). We
+    emit it unconditionally so the soundtrack loops to the end of
+    the visual show even when the audio total is shorter than the
+    slide total."""
+    music = _music_block(output)
+    assert "object Options:TMusicOptions" in music
+    assert "IsRepeat=1" in music
+    # The Options block must precede Track0 — PTE writes it that way
+    # and we want byte-shape parity for a clean round-trip.
+    opt_pos = music.find("object Options:TMusicOptions")
+    track_pos = music.find("object Track0:TMusicTrack")
+    assert 0 <= opt_pos < track_pos
+
+
+def test_music_block_emits_is_repeat_flag_with_no_audio(skel, members):
+    text = generate(skel, members, [],
+                    aspect="16:9", photo_seconds=6.0,
+                    project_path=Path("C:/cut/slideshow.pte"),
+                    images_folder=Path("C:/cut"),
+                    overlay_mode=OVERLAY_EMBEDDED)
+    music = _music_block(text)
+    assert "IsRepeat=1" in music
+
+
 # ── Write path: BOM + CRLF ─────────────────────────────────────
 
 

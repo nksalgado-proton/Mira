@@ -492,12 +492,37 @@ class LibraryPage(QWidget):
                 self, tr("Play"),
                 tr("This Cut has no playable members yet."))
             return
+        # spec/152 Phase 3 — videos play at 1×; the rehearsal's
+        # wall-clock matches PTE because cut_play._entry_total_ms now
+        # holds every photo / opener / separator slot for
+        # ``photo_s + transition_s`` (same shape PTE's [Times] uses).
+        # The per-Cut transition_ms is resolved here (per-Cut
+        # override > umbrella settings > 2000 default) and threaded
+        # explicitly so the dialog can't disagree with the PTE
+        # generator on this page.
+        per_cut_ms = getattr(cut, "transition_ms", None)
+        if isinstance(per_cut_ms, (int, float)):
+            transition_ms = max(0, int(round(float(per_cut_ms))))
+        else:
+            try:
+                settings = (
+                    self._gateway.settings.load()
+                    if self._gateway is not None else None
+                )
+            except Exception:                                          # noqa: BLE001
+                settings = None
+            raw_t = getattr(settings, "default_transition_ms", 2000)
+            try:
+                transition_ms = max(0, int(round(float(raw_t))))
+            except (TypeError, ValueError):
+                transition_ms = 2000
         dlg = CutPlayerDialog(
             entries,
             event_root=Path(""),   # unused — resolve_path supplies the path
             photo_s=cut.photo_s,
             day_meta=day_meta,
             resolve_path=make_resolve_path(gateway=self._gateway),
+            transition_ms=transition_ms,
             parent=self,
         )
         dlg.setWindowTitle(

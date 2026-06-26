@@ -495,16 +495,37 @@ def _replace_kv(body: str, key: str, value: str) -> str:
     return pattern.sub(lambda _m: replacement, body, count=1)
 
 
+#: Nested ``TMusicOptions`` block with ``IsRepeat=1``. PTE writes this
+#: block inside ``object Music:Music`` when the user enables
+#: "Repeat tracks" in Project Options → Music; absent otherwise. We
+#: emit it unconditionally so a Mira-generated show whose playlist
+#: total is shorter than the visual run-time (the audio-library
+#: builder rounds DOWN and the spec/152 transition budget is
+#: approximate) loops the soundtrack instead of running to silence.
+#: Confirmed by diffing two otherwise-identical projects exported
+#: from PTE AV Studio 11 with the option ON vs OFF.
+_MUSIC_REPEAT_BLOCK = (
+    "  object Options:TMusicOptions\r\n"
+    "    IsRepeat=1\r\n"
+    "  end\r\n"
+)
+
+
 def _format_music_block(audio_tracks: Sequence[PteAudioTrack],
                         item_template: str) -> str:
     """Render the ``object Music:Music`` block with one `TMusicItem` per
     track. ``item_template`` is the skeleton's prototype item — its
-    FadeIn/FadeOut/Volume ride to every emitted item."""
+    FadeIn/FadeOut/Volume ride to every emitted item. The nested
+    ``Options:TMusicOptions`` block with ``IsRepeat=1`` is emitted
+    unconditionally (see :data:`_MUSIC_REPEAT_BLOCK`) so the soundtrack
+    loops to the end of the visual show even when the audio total is
+    a few seconds shorter than the slide total."""
     if not audio_tracks:
         # Empty Music block — no items. Match PTE's shape so the section
         # round-trips cleanly.
         return ("object Music:Music\r\n"
-                "  object Track0:TMusicTrack\r\n"
+                + _MUSIC_REPEAT_BLOCK
+                + "  object Track0:TMusicTrack\r\n"
                 "  end\r\n"
                 "end\r\n")
     items: List[str] = []
@@ -528,7 +549,8 @@ def _format_music_block(audio_tracks: Sequence[PteAudioTrack],
                       item, flags=re.MULTILINE, count=1)
         items.append(item)
     return ("object Music:Music\r\n"
-            "  object Track0:TMusicTrack\r\n"
+            + _MUSIC_REPEAT_BLOCK
+            + "  object Track0:TMusicTrack\r\n"
             + "".join(items)
             + "  end\r\n"
             "end\r\n")

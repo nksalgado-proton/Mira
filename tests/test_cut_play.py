@@ -257,8 +257,10 @@ def test_overlay_fields_filter_what_renders(qapp, gw, tmp_path):
 
 
 def test_durations_table_uses_true_clip_length(qapp, gw, tmp_path):
-    """Photos/separators get ``photo_ms``; videos get their true
-    ``SessionFile.duration_ms``. The scrubber walks this table."""
+    """spec/152 Phase 3 — photos / opener / separators each get
+    ``photo_ms + transition_ms`` (matches PTE's [Times] cumulative
+    which adds transition_ms per non-video slide). Videos get their
+    true ``SessionFile.duration_ms`` (spec/150 §1)."""
     from mira.shared.cut_session import SessionFile
     entries = [
         ("opener", None),
@@ -273,9 +275,14 @@ def test_durations_table_uses_true_clip_length(qapp, gw, tmp_path):
         day_meta={d.day_number: d for d in gw.trip_days()},
         aspect="16:9",
         opener_image=QImage(16, 9, QImage.Format.Format_RGB32))
-    assert p._durations == [6000, 6000, 6000, 4500]
+    # Force a known transition_ms (the stub dialog has no settings
+    # backplane; ``_transition_ms_value`` defaults to 2000).
+    p._transition_ms_value = lambda: 2000
+    p._recompute_durations()
+    # 3 non-video slots × (6_000 + 2_000) + 1 video × 4_500 = 28_500
+    assert p._durations == [8000, 8000, 8000, 4500]
     assert p._sep_indexes == [1]
-    assert p._total_ms() == 22_500
+    assert p._total_ms() == 28_500
 
 
 def test_scrubber_click_seeks_to_entry(qapp, gw, tmp_path):
@@ -306,24 +313,30 @@ def test_jump_to_separator_walks_prev_next(qapp, gw, tmp_path):
 
 def test_slide_time_spinbox_updates_durations_live(qapp, gw, tmp_path):
     """Changing 'Per slide' updates ``_photo_ms`` AND rebuilds the
-    scrubber durations on the spot."""
+    scrubber durations on the spot. spec/152 Phase 3: the per-entry
+    duration is ``photo_ms + transition_ms`` for non-video slides."""
     p = _player(gw, tmp_path)
     p.start()
+    p._transition_ms_value = lambda: 2000
+    p._recompute_durations()
     assert p._photo_ms == 6000
     p._on_slide_time_changed(3.5)
     assert p._photo_ms == 3500
-    # photos / separators / opener all picked up the new duration
-    assert all(d == 3500 for d in p._durations)
+    # photos / separators / opener all hold for 3.5 s + 2.0 s = 5500.
+    assert all(d == 5500 for d in p._durations)
 
 
 def test_time_label_reflects_played_and_total(qapp, gw, tmp_path):
-    """The mm:ss read-out shows played / total."""
+    """The mm:ss read-out shows played / total. spec/152 Phase 3:
+    each non-video slot carries ``photo_ms + transition_ms``."""
     p = _player(gw, tmp_path)
+    p._transition_ms_value = lambda: 2000
+    p._recompute_durations()
     p.start()
     p._show_index(2)                     # the first file frame
     p._update_time_label()
-    # total = 5 entries * 6 s = 30 s; played starts at the entry's prefix.
-    assert p._time_label.text().endswith("/ 00:30")
+    # total = 5 entries * (6 + 2) s = 40 s; played starts at entry prefix.
+    assert p._time_label.text().endswith("/ 00:40")
 
 
 def test_play_icon_toggles_on_pause(qapp, gw, tmp_path):

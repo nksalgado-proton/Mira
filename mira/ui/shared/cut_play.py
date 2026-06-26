@@ -36,7 +36,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import (
     QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
-    QRect, Qt, QTimer, QUrl, pyqtSignal)
+    QRect, QSize, Qt, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (
     QColor, QImage, QPainter, QPen, QPixmap, QPolygonF)
 from PyQt6.QtWidgets import (
@@ -282,6 +282,7 @@ class CutPlayerDialog(QDialog):
         ] = None,
         resolve_path: Optional[Callable[[object], Path]] = None,
         video_rate: float = 1.0,
+        transition_ms: Optional[int] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         """spec/94 Phase 4a-iii — ``resolve_path``, when wired,
@@ -328,6 +329,23 @@ class CutPlayerDialog(QDialog):
             seed_rate = 1.0
         self._video_rate: float = seed_rate if seed_rate > 0 else 1.0
         self._video_rate_combo: Optional[QComboBox] = None
+        # spec/152 §3 — per-Cut transition_ms, explicit. The host
+        # passes the resolved value (per-Cut override > global
+        # default > 2000 fallback) so the rehearsal's slot math
+        # matches the budget + PTE [Times] exactly — without the
+        # dialog having to walk ``parent()._settings()`` and risk
+        # silently disagreeing with the host's own ``_transition_ms``.
+        # ``None`` keeps the legacy parent-walking behaviour as a
+        # fallback for stub tests that construct the dialog with no
+        # host page.
+        if transition_ms is None:
+            self._explicit_transition_ms: Optional[int] = None
+        else:
+            try:
+                self._explicit_transition_ms = max(
+                    0, int(round(float(transition_ms))))
+            except (TypeError, ValueError):
+                self._explicit_transition_ms = None
         # Spec/81 §3.1 — live overlays.
         self._overlay_fields: tuple = tuple(overlay_fields or ())
         self._provenance_resolver = provenance_resolver
@@ -527,6 +545,17 @@ class CutPlayerDialog(QDialog):
             self._capture_outgoing_pixmap()
             if self._index >= 0 else None
         )
+        # spec/152 Phase 3 — boundary-aware transition duration. The
+        # value is fixed BEFORE we mutate ``self._index``: photo↔photo
+        # gets the full transition; photo↔video gets half; video↔video
+        # gets zero (the frozen last-frame on the photo widget bridges
+        # the codec swap, so no black gap appears). A "0" boundary
+        # short-circuits the overlay entirely.
+        boundary_ms = (
+            self._boundary_transition_ms(self._index, index)
+            if self._index >= 0 and 0 <= index < len(self._entries)
+            else 0
+        )
         # spec/152 Phase 2 — when the outgoing entry is a video,
         # FREEZE its last frame on the photo widget BEFORE we stop
         # the player. Otherwise the QVideoWidget paints opaque black
@@ -534,7 +563,10 @@ class CutPlayerDialog(QDialog):
         # while the next entry's setup runs. The frozen still on the
         # photo widget acts as a guaranteed visual fallback even when
         # the crossfade overlay can't be constructed (e.g. the cache
-        # listener never observed a frame on some Qt backend).
+        # listener never observed a frame on some Qt backend), AND it
+        # is what bridges a video→video swap with no overlay
+        # (boundary_ms == 0) — the photo widget shows A's last frame
+        # until ``_do_video_swap`` reveals B's first frame.
         coming_from_video = (
             self._video_widget is not None
             and self._video_widget.isVisible()
@@ -546,15 +578,18 @@ class CutPlayerDialog(QDialog):
             self._fit_current()
             self._video_widget.hide()
             self._stack_layout.setCurrentWidget(self._photo)
-        # spec/152 Phase 2 — show the overlay with the captured frame
+        # spec/152 Phase 2/3 — show the overlay with the captured frame
         # IMMEDIATELY, before the new entry's paint reaches the user.
         # Without this the new photo / video paints fully (because the
         # underlying ``QStackedLayout`` swap is instant) for a frame
         # or two BEFORE the overlay is raised, which reads as a "pop"
         # to the right size on a photo→photo swap and as a black flash
-        # on any video transition.
-        if outgoing_pm is not None and not outgoing_pm.isNull():
-            self._show_transition_overlay(outgoing_pm)
+        # on any video transition. ``boundary_ms <= 0`` short-circuits
+        # — the video→video bridge runs on the frozen-last-frame path
+        # alone.
+        if (outgoing_pm is not None and not outgoing_pm.isNull()
+                and boundary_ms > 0):
+            self._show_transition_overlay(outgoing_pm, ms=boundary_ms)
             # Force a synchronous paint so the overlay actually covers
             # the canvas before the next-entry setup runs; without this
             # Qt may defer the show() paint to the next event-loop tick
@@ -569,18 +604,23 @@ class CutPlayerDialog(QDialog):
             return
         self._index = index
         kind, payload = self._entries[index]
+        # spec/152 Phase 3 — the photo / opener / separator slot hold
+        # time is ``photo_ms + transition_ms`` (see :meth:`_entry_total_ms`
+        # for the rationale). Computing once here keeps the timer in
+        # step with the scrubber's per-entry duration table.
+        slot_ms = self._entry_total_ms(self._index)
         if kind == "opener":
             if self._opener_image is not None:
                 self._show_image(self._opener_image)
                 if not self._paused:
-                    self._timer.start(self._photo_ms)
+                    self._timer.start(slot_ms)
             else:
                 self.advance()
                 return
         elif kind == "sep":
             self._show_image(self._separator_image(payload))
             if not self._paused:
-                self._timer.start(self._photo_ms)
+                self._timer.start(slot_ms)
         elif getattr(payload, "kind", "photo") == "video":
             # spec/144 — videos NEVER ride :attr:`_timer`. Advance is
             # event-driven via :data:`QMediaPlayer.MediaStatus.EndOfMedia`
@@ -589,17 +629,37 @@ class CutPlayerDialog(QDialog):
             # (the old precomputed-timer path could over-run a
             # segment) and no early cut-off (under-running the segment
             # with a stale ``SessionFile.duration_ms``).
+            #
+            # spec/152 Phase 3 — at a photo→video boundary the photo
+            # widget would otherwise keep painting the OUTGOING photo
+            # underneath the crossfade overlay (which carries the
+            # SAME image), so the fade has no visible target and the
+            # user sees an abrupt cut when the video's first frame
+            # arrives. Clearing the photo widget makes the overlay's
+            # fade reveal the dialog's black canvas — visually
+            # "photo fades out, video hard-cuts in" which is the
+            # half-transition shape Phase 3 commits to. The video
+            # widget takes over on its first frame (see
+            # ``_do_video_swap``); the brief moment of dark canvas
+            # between overlay-finish and first-frame is typically
+            # tens of milliseconds on a warm machine.
+            if outgoing_pm is not None and not outgoing_pm.isNull():
+                # Only clear when there IS an outgoing fade — for
+                # the very first slide there's no overlay so we
+                # leave the photo widget alone (no transition).
+                self._photo.setPixmap(QPixmap())
             self._show_video(self._resolve_payload_path(payload))
         else:
             pm = load_pixmap(self._resolve_payload_path(payload))
             self._show_pixmap(pm)
             if not self._paused:
-                self._timer.start(self._photo_ms)
+                self._timer.start(slot_ms)
         # spec/152 Phase 2 — start the fade animation now that the
         # new entry is set up underneath the overlay. The overlay
         # itself was raised earlier (so the new entry doesn't pop);
         # this just kicks off the opacity 1 → 0 tween.
-        if outgoing_pm is not None and not outgoing_pm.isNull():
+        if (outgoing_pm is not None and not outgoing_pm.isNull()
+                and boundary_ms > 0):
             self._start_transition_animation()
         # Refresh the overlay AFTER the frame paint.
         self._update_overlay(kind, payload)
@@ -611,15 +671,63 @@ class CutPlayerDialog(QDialog):
 
     # ── spec/152 Phase 2 — crossfade transition ─────────────────────
 
+    def _entry_class(self, idx: int) -> str:
+        """spec/152 Phase 3 — classify an entry as ``'photo'`` or
+        ``'video'`` for boundary-transition arithmetic. Opener and
+        separator slides read as ``'photo'`` because they hold for the
+        photo slot and crossfade like one. Out-of-range indices read
+        as ``'photo'`` (the only safe default — never claim a sentinel
+        index is a video boundary)."""
+        if not (0 <= idx < len(self._entries)):
+            return "photo"
+        kind, payload = self._entries[idx]
+        if kind == "file" and getattr(payload, "kind", "") == "video":
+            return "video"
+        return "photo"
+
+    def _boundary_transition_ms(
+        self, outgoing_idx: int, incoming_idx: int
+    ) -> int:
+        """spec/152 Phase 3 — boundary-aware transition duration.
+
+        * photo↔photo: full ``transition_ms`` (a true crossfade).
+        * photo↔video: ``transition_ms / 2`` (only the photo side is
+          rendered; the video hard-cuts in or out).
+        * video↔video: ``0`` (a hard cut; the frozen last-frame of A
+          held on the photo widget bridges the gap until B's first
+          frame arrives — see ``_show_index``'s ``coming_from_video``
+          path and ``_do_video_swap`` for the swap mechanics).
+
+        The shorter video-boundary transitions free up wall-clock that
+        the global ``video_rate`` (computed once per Cut in
+        :func:`core.cut_budget.mira_play_video_speed`) reclaims so the
+        rehearsal lands at the same total length as the generated PTE
+        show."""
+        full_ms = self._transition_ms_value()
+        if full_ms <= 0:
+            return 0
+        out_class = self._entry_class(outgoing_idx)
+        in_class = self._entry_class(incoming_idx)
+        if out_class == "photo" and in_class == "photo":
+            return full_ms
+        if out_class == "video" and in_class == "video":
+            return 0
+        return full_ms // 2
+
     def _transition_ms_value(self) -> int:
-        """spec/152 §3 — read the global transition time from Settings.
-        Falls back to 2000 ms (matching pte_project.DEFAULT_TRANSITION_MS)
-        on a stale Settings JSON. Returns 0 ⇒ no transition; the caller
-        skips the fade entirely."""
-        # The dialog doesn't carry a direct settings handle; reach via
-        # the host page when available. Defensive — the dialog is also
-        # constructed in unit tests with no settings backplane at all,
-        # so we accept the fallback.
+        """spec/152 §3 — the per-Cut transition duration in ms.
+
+        The host passes the resolved value (per-Cut override > global
+        default > 2000 fallback) at construction time via
+        ``transition_ms=`` so the rehearsal's slot math matches the
+        PTE [Times] generator and the budget exactly. The legacy
+        parent-walking path is kept as a fallback for stub tests and
+        a defensive default (still 2000) for any caller that wires
+        neither."""
+        if self._explicit_transition_ms is not None:
+            return self._explicit_transition_ms
+        # Legacy path — walk the parent for ``_settings`` / ``settings``
+        # (kept for stub tests that don't pass ``transition_ms``).
         parent = self.parent()
         for attr in ("_settings", "settings"):
             getter = getattr(parent, attr, None)
@@ -714,13 +822,21 @@ class CutPlayerDialog(QDialog):
         anim = QPropertyAnimation(effect, b"opacity")
         anim.setStartValue(1.0)
         anim.setEndValue(0.0)
-        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        # spec/152 Phase 3 — Linear easing so the fade duration the
+        # user perceives matches the configured transition_ms. With
+        # the previous InOutQuad curve the steep mid-section made a
+        # 2 s fade feel like ~1.3 s (opacity hit 0.125 by t=0.75 of
+        # the duration), and the user read the transition as "not
+        # taking the 2 s that are set".
+        anim.setEasingCurve(QEasingCurve.Type.Linear)
         anim.finished.connect(self._on_transition_finished)
         self._transition_overlay = overlay
         self._transition_opacity = effect
         self._transition_anim = anim
 
-    def _show_transition_overlay(self, outgoing_pm: QPixmap) -> None:
+    def _show_transition_overlay(
+        self, outgoing_pm: QPixmap, *, ms: Optional[int] = None,
+    ) -> None:
         """spec/152 Phase 2 — install the captured outgoing frame on
         the overlay AT FULL OPACITY and raise it above the stack. The
         animation is NOT started here — that happens later in
@@ -731,11 +847,21 @@ class CutPlayerDialog(QDialog):
         and a photo→video swap from flashing black (the video sink
         paints opaque black before the first frame).
 
-        ``transition_ms <= 0`` (Settings "hard cut" mode) skips
-        construction entirely — no overlay, no fade."""
+        ``ms`` overrides the duration — used by spec/152 Phase 3's
+        boundary-aware caller in :meth:`_show_index` to halve the
+        transition at photo↔video boundaries. ``ms is None`` falls
+        back to the global Settings value (the back-compat shim
+        :meth:`_start_transition_fade` calls in this shape and the
+        legacy test surface still drives it).
+
+        ``transition_ms <= 0`` (Settings "hard cut" mode, OR the
+        Phase 3 video↔video boundary) skips construction entirely —
+        no overlay, no fade."""
         if outgoing_pm is None or outgoing_pm.isNull():
             return
-        transition_ms = self._transition_ms_value()
+        transition_ms = (
+            self._transition_ms_value() if ms is None else int(ms)
+        )
         if transition_ms <= 0:
             return
         self._ensure_transition_overlay()
@@ -743,10 +869,36 @@ class CutPlayerDialog(QDialog):
         if overlay is None:
             return
         sz = self._stack_widget.size()
+        # spec/152 Phase 2 — the photo / opener / separator capture is
+        # ``self._photo.grab()``, which already returns a pixmap whose
+        # LOGICAL size matches the canvas (with the screen's DPR baked
+        # in). Calling ``QPixmap.scaled(sz, …)`` here would re-scale
+        # against the canvas's LOGICAL size while Qt6 treats that QSize
+        # as DEVICE pixels — and neither ``QPixmap.scaled()`` nor a
+        # follow-up ``setDevicePixelRatio()`` reliably propagates the
+        # source DPR across a scale call. On HiDPI the result rendered
+        # at half logical size, which the user saw as the photo
+        # "popping smaller" the instant the overlay raised. The fix:
+        # use the grab AS-IS when its logical size already matches the
+        # canvas (the common photo→photo case), and only fall through
+        # to a DPR-aware scale when the source differs — the cached
+        # video-frame path, whose QImage lands at the clip's native
+        # pixel resolution and HAS to fit the canvas with letterboxing.
         if sz.width() > 0 and sz.height() > 0:
-            scaled = outgoing_pm.scaled(
-                sz, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation)
+            dpr = outgoing_pm.devicePixelRatio() or 1.0
+            logical_w = int(round(outgoing_pm.width() / dpr))
+            logical_h = int(round(outgoing_pm.height() / dpr))
+            if logical_w == sz.width() and logical_h == sz.height():
+                scaled = outgoing_pm
+            else:
+                target = QSize(
+                    max(1, int(round(sz.width() * dpr))),
+                    max(1, int(round(sz.height() * dpr))),
+                )
+                scaled = outgoing_pm.scaled(
+                    target, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                scaled.setDevicePixelRatio(dpr)
         else:
             scaled = outgoing_pm
         overlay.setPixmap(scaled)
@@ -1090,7 +1242,12 @@ class CutPlayerDialog(QDialog):
                 # on some backends).
                 self._apply_video_rate()
             else:
-                self._timer.start(self._photo_ms)
+                # spec/152 Phase 3 — resume on the entry's full slot
+                # (photo_ms + transition_ms). The resume currently
+                # restarts the FULL slot rather than the remainder
+                # which is a pre-existing rough edge; preserving that
+                # behaviour, just on the new total.
+                self._timer.start(self._entry_total_ms(self._index))
             if self._music is not None:
                 self._music.play()
         self._update_play_icon()
@@ -1506,7 +1663,13 @@ class CutPlayerDialog(QDialog):
                 return 0
             return max(0, int(self._player.position()))
         # photo / opener / separator
-        total = self._photo_ms
+        # spec/152 Phase 3 — the slot's full hold is ``photo_ms +
+        # transition_ms`` (matches the timer the slot was armed with
+        # in :meth:`_show_index`). Reading ``self._photo_ms`` here
+        # under-reported elapsed time by transition_ms, which back
+        # into the scrubber as a playhead that moved faster than the
+        # show actually was.
+        total = self._entry_total_ms(self._index)
         if self._paused or not self._timer.isActive():
             return 0
         remaining = int(self._timer.remainingTime())
@@ -1515,15 +1678,28 @@ class CutPlayerDialog(QDialog):
         return max(0, total - remaining)
 
     def _entry_total_ms(self, index: int) -> int:
+        """spec/152 Phase 3 — wall-clock the entry occupies in the
+        rehearsal. PHOTO / opener / separator slots ALWAYS carry
+        ``photo_ms + transition_ms`` (matching PTE's ``[Times]``
+        cumulative, which adds ``transition_ms`` to every non-video
+        slide regardless of neighbor). Videos hold for ``clip_ms``
+        only (spec/150 §1).
+
+        The boundary-aware crossfade — full at photo↔photo, half at
+        photo↔video, zero at video↔video — affects the VISIBLE fade
+        duration only; it fits inside this fixed photo slot so the
+        Cut's total wall-clock equals the audio playlist / budget /
+        PTE total without needing a global video speed adjustment."""
         if not (0 <= index < len(self._entries)):
-            return self._photo_ms
+            return self._photo_ms + self._transition_ms_value()
         kind, payload = self._entries[index]
         if kind == "file" and getattr(payload, "kind", "") == "video":
             d = int(getattr(payload, "duration_ms", 0) or 0)
-            return d if d > 0 else self._photo_ms
+            return d if d > 0 else (
+                self._photo_ms + self._transition_ms_value())
         if kind == "opener" and self._opener_image is None:
             return 0
-        return self._photo_ms
+        return self._photo_ms + self._transition_ms_value()
 
     def _recompute_durations(self) -> None:
         self._durations = [

@@ -270,22 +270,26 @@ def test_scrubber_duration_uses_session_file_duration_for_video(dlg):
     # fixture carries duration_ms = 30_000.
     assert dlg._durations[1] == 30_000
 
-    # Photo entries fall back to photo_ms (6_000 by default).
-    assert dlg._durations[0] == dlg._photo_ms
-    assert dlg._durations[2] == dlg._photo_ms
+    # spec/152 Phase 3 — photo entries hold for
+    # ``photo_ms + transition_ms`` (matches PTE's [Times] cumulative).
+    expected_photo = dlg._photo_ms + dlg._transition_ms_value()
+    assert dlg._durations[0] == expected_photo
+    assert dlg._durations[2] == expected_photo
 
 
 def test_scrubber_falls_back_to_photo_ms_for_zero_duration(dlg):
     """When the segment duration can't be resolved (legacy lineage +
     file missing — both yield 0 from ``files_from_lineage``), the
-    scrubber MUST use ``photo_ms`` for the layout so the playhead
-    is in a sane place. Advance still rides EndOfMedia so the show
-    doesn't stall."""
+    scrubber MUST use ``photo_ms + transition_ms`` for the layout so
+    the playhead is in a sane place. Advance still rides EndOfMedia
+    so the show doesn't stall."""
     # Forcefully drop the video entry's duration to 0 to mimic the
     # unresolved case.
     video_payload = dlg._entries[1][1]
     object.__setattr__(video_payload, "duration_ms", 0)
     dlg._recompute_durations()
-    assert dlg._durations[1] == dlg._photo_ms, (
-        "spec/144 — a 0-ms video entry must paint as photo_ms for "
-        "scrubber layout; advance still rides EndOfMedia")
+    expected_fallback = dlg._photo_ms + dlg._transition_ms_value()
+    assert dlg._durations[1] == expected_fallback, (
+        "spec/144 / spec/152 Phase 3 — a 0-ms video entry must paint "
+        "as photo_ms + transition_ms for scrubber layout; advance "
+        "still rides EndOfMedia")

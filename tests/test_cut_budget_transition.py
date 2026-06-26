@@ -96,3 +96,5 @@ def test_formula_pinned_with_explicit_arithmetic():
     transition_s = 1.5
     expected = (5 + 2 + 1) * (7.0 + 1.5) + 8.5
     assert t.seconds(photo_s, transition_s) == pytest.approx(expected)
+
+

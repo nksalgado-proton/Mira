@@ -137,13 +137,20 @@ def test_totals_and_zone_follow_picks(gw):
     assert s.zone() == "amber"
 
 
-def test_separators_off_zeroes_the_cards(gw):
+def test_separators_off_zeroes_only_the_day_cards(gw):
+    """spec/143 §X — the ``separators_on`` toggle controls only the
+    per-day separator cards. The opener (title slide with Cut name +
+    facts) rides every Cut that has at least one picked file regardless
+    of the toggle — it's the title of the show, not a day boundary.
+    Pre-fix: separators OFF dropped the opener too, leaving the user
+    with a Cut whose title card vanished as a side-effect of turning
+    off day separators. Now: opener counts (1 photo + 1 opener) × 6 s
+    = 12 s; separator_count stays 0."""
     s = CutSession.from_draft(gw, _draft())
     s.separators_on = False
     s.set_state("Exported Media/e2.jpg", True)
     assert s.totals().separator_count == 0
-    # spec/152 §3 — no separators → no opener either. 1 photo × 6 s = 6 s.
-    assert s.show_seconds() == 6.0
+    assert s.show_seconds() == 12.0
 
 
 def test_days_grouping_in_show_order(gw):

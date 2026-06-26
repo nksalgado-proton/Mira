@@ -1230,7 +1230,19 @@ class ShareCutsPage(QWidget):
         s = self.gateway.settings
         return s.load() if hasattr(s, "load") else s
 
-    def _separators_on(self) -> bool:
+    def _separators_on(self, cut=None) -> bool:
+        """spec/143 §X — the per-Cut ``cut.separators`` value wins over
+        the global ``Settings.use_separators``. The pre-fix path always
+        read the global setting, so the user's per-Cut "Separators OFF"
+        choice was silently ignored on the Play / Detail surfaces — the
+        Export pipeline (which reads ``cut.separators`` directly) was
+        the only consumer that respected it. When the caller doesn't
+        pass a cut (legacy sites), fall back to the global setting."""
+        if cut is not None:
+            try:
+                return bool(getattr(cut, "separators"))
+            except AttributeError:
+                pass
         return bool(getattr(self._settings(), "use_separators", True))
 
     def _transition_s(self, cut=None) -> float:
@@ -1276,17 +1288,22 @@ class ShareCutsPage(QWidget):
             ),
         )
         cuts: list[CutSnapshot] = []
-        sep_on_global = self._separators_on()
         for cut in self._eg.cuts():
+            sep_on = self._separators_on(cut)
             totals = self._eg.cut_show_totals(cut.id)
             # spec/152 §3 — include the transition slot + opener so
             # the tile's duration matches the rehearsal / PTE total.
+            # spec/143 §X — the opener is independent of separators_on
+            # (it's the title slide, not a per-day card); it counts
+            # whenever the Cut has at least one file.
             from dataclasses import replace as _replace
+            has_files = (
+                totals.photo_count + totals.video_count > 0)
             totals = _replace(
                 totals,
                 separator_count=(totals.separator_count
-                                 if sep_on_global else 0),
-                opener_count=(1 if sep_on_global else 0),
+                                 if sep_on else 0),
+                opener_count=(1 if has_files else 0),
             )
             count = totals.photo_count + totals.video_count
             seconds = int(totals.seconds(
@@ -2117,7 +2134,7 @@ class ShareCutsPage(QWidget):
         try:
             self.detail_page.show_cut(
                 self._eg, cut,
-                separators_on=self._separators_on(),
+                separators_on=self._separators_on(cut),
                 aspect=_normalise_aspect(getattr(cut, "aspect", "16:9")),
                 # spec/152 §3 — per-Cut transition wins over the
                 # global Settings default; both expand the displayed
@@ -2347,7 +2364,7 @@ class ShareCutsPage(QWidget):
         # owns the cursor for its lifetime.
         from PyQt6.QtGui import QGuiApplication
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        entries = show_entries(eg, cut, separators_on=self._separators_on())
+        entries = show_entries(eg, cut, separators_on=self._separators_on(cut))
         if not entries:
             QGuiApplication.restoreOverrideCursor()
             box = QMessageBox(self)
@@ -2366,17 +2383,20 @@ class ShareCutsPage(QWidget):
                 and t.mood == cut.music_category
             ] if root else []
             totals = eg.cut_show_totals(cut.id)
-            sep_on = self._separators_on()
+            sep_on = self._separators_on(cut)
             # spec/152 §3 — count opener + transition seconds in the
             # show total so the audio playlist runs the full PTE
             # length. The pre-spec/152 audio was built to a shorter
             # total than PTE actually showed (audio cut off before
-            # the last slide ended).
+            # the last slide ended). spec/143 §X — opener is
+            # independent of separators (title slide always rides).
             from dataclasses import replace as _replace
+            has_files = (
+                totals.photo_count + totals.video_count > 0)
             totals = _replace(
                 totals,
                 separator_count=totals.separator_count if sep_on else 0,
-                opener_count=1 if sep_on else 0,
+                opener_count=1 if has_files else 0,
             )
             transition_s = self._transition_s(cut)
             music = audio_library.build_playlist(
@@ -2389,7 +2409,11 @@ class ShareCutsPage(QWidget):
         _, canvas_h = aspect_dimensions(aspect)
         card_style = eg.cut_card_style(cut)
         opener_image = None
-        if self._separators_on():
+        # spec/143 §X — the opener is the title slide, not a per-day
+        # separator; render it whenever the Cut has files regardless
+        # of the per-Cut separators_on toggle (which controls only the
+        # day separator cards).
+        if entries:
             from mira.ui.shared.separator_card import (
                 cut_opener_lines, render_cut_opener_image,
             )
@@ -2670,33 +2694,39 @@ class ShareCutsPage(QWidget):
         # spec/148 — persist the radio choice so the next export's
         # dialog pre-selects the same default.
         self._remember_overwrite_choice(choices.overwrite_existing)
-        seps = self._separators_on()
-        opener_writer = None
-        if seps:
-            from core.cut_aspect import aspect_dimensions, normalise
-            from mira.ui.shared.separator_card import (
-                cut_opener_lines, render_cut_opener_image,
-            )
-            # spec/111 — aspect lives on the Cut. The renderer takes
-            # the aspect string + a canvas height (width is derived);
-            # we pass the canonical pixel height so the card matches
-            # the (width, height) the PTE override (spec/107) writes.
-            aspect = normalise(getattr(cut, "aspect", "16:9"))
-            _, canvas_h = aspect_dimensions(aspect)
-            totals = eg.cut_show_totals(cut.id)
-            lines = cut_opener_lines(
-                cut, totals, cut.photo_s, self._transition_s(cut))
-            tag_text = cut_names.display_tag(cut.tag)
-            card_style = eg.cut_card_style(cut)
-            cut_id_seed = cut.id
+        # spec/143 §X — read the per-Cut value; export side does too
+        # (cut_export.py defaults ``separators_on`` to ``cut.separators``
+        # when None) so the explicit pass here just keeps the symbol
+        # available for the opener_writer wiring below.
+        seps = self._separators_on(cut)
+        # spec/143 §X — the opener is the title slide, not a per-day
+        # separator. Wire ``opener_writer`` unconditionally so every
+        # exported Cut gets its title card; the export pipeline still
+        # gates day-separator cards on ``seps``.
+        from core.cut_aspect import aspect_dimensions, normalise
+        from mira.ui.shared.separator_card import (
+            cut_opener_lines, render_cut_opener_image,
+        )
+        # spec/111 — aspect lives on the Cut. The renderer takes
+        # the aspect string + a canvas height (width is derived);
+        # we pass the canonical pixel height so the card matches
+        # the (width, height) the PTE override (spec/107) writes.
+        aspect = normalise(getattr(cut, "aspect", "16:9"))
+        _, canvas_h = aspect_dimensions(aspect)
+        totals = eg.cut_show_totals(cut.id)
+        lines = cut_opener_lines(
+            cut, totals, cut.photo_s, self._transition_s(cut))
+        tag_text = cut_names.display_tag(cut.tag)
+        card_style = eg.cut_card_style(cut)
+        cut_id_seed = cut.id
 
-            def opener_writer(target: Path) -> None:  # noqa: F811
-                img = render_cut_opener_image(
-                    tag_text=tag_text, lines=lines,
-                    aspect=aspect, height=canvas_h,
-                    card_style=card_style, seed_key=cut_id_seed)
-                if not img.save(str(target), "JPG", 92):
-                    raise OSError(f"could not write {target}")
+        def opener_writer(target: Path) -> None:
+            img = render_cut_opener_image(
+                tag_text=tag_text, lines=lines,
+                aspect=aspect, height=canvas_h,
+                card_style=card_style, seed_key=cut_id_seed)
+            if not img.save(str(target), "JPG", 92):
+                raise OSError(f"could not write {target}")
         # Spec/81 §3.1 — overlays. When the Cut has fields selected, feed
         # the export a provenance resolver so embedded mode writes IPTC
         # *where* tags (technical EXIF rides the file already). The

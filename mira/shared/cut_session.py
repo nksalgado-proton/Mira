@@ -146,12 +146,19 @@ def session_files(
 def show_entries(gateway, cut, *, separators_on: bool) -> List[Tuple[str, object]]:
     """One Cut as THE SHOW: the ``("opener", None)`` title slide first (the
     Cut's name + facts), then ``("sep", day_number)`` at every day boundary,
-    interleaved with ``("file", SessionFile)`` in chronological order. All card
-    slides ride the separators setting. The flat grid, the rehearsal player,
-    and the export walk this same sequence — WYSIWYG by construction."""
+    interleaved with ``("file", SessionFile)`` in chronological order. The
+    flat grid, the rehearsal player, and the export walk this same sequence
+    — WYSIWYG by construction.
+
+    **The opener is the title of the show, not a day separator.** It rides
+    every Cut that has at least one file, regardless of ``separators_on``;
+    the toggle only gates the per-day boundary cards. The pre-fix path
+    coupled both under the same flag, so turning separators OFF dropped
+    the title card too — exactly the user's "Separators OFF should keep
+    the initial header" report."""
     files = files_from_lineage(gateway, gateway.cut_member_files(cut.id))
     entries: List[Tuple[str, object]] = []
-    if separators_on and files:
+    if files:
         entries.append(("opener", None))
     last_day: object = object()
     for f in files:
@@ -296,15 +303,18 @@ class CutSession:
 
     def show_seconds(self, transition_s: float = 0.0) -> float:
         """spec/152 §3 — the show's projected wall time. Adds
-        ``transition_s`` to every non-video slide slot and counts an
-        opener when ``separators_on`` (the opener card always rides
-        with separators in the rehearsal / export). When the caller
-        doesn't have a global default to inject, ``transition_s`` falls
-        back to the per-session ``transition_ms`` (the user's per-Cut
+        ``transition_s`` to every non-video slide slot, counts ONE
+        opener whenever the Cut has at least one picked file (the
+        opener is the title slide — it rides every Cut regardless of
+        the ``separators_on`` toggle), and adds the per-day separator
+        cards only when separators are on. When the caller doesn't
+        have a global default to inject, ``transition_s`` falls back
+        to the per-session ``transition_ms`` (the user's per-Cut
         override) or 0 — picker hosts pass an effective value so the
         bar matches the rehearsal."""
         totals = self.totals()
-        if self.separators_on:
+        has_files = bool(self.picked_files())
+        if has_files:
             from dataclasses import replace as _replace
             totals = _replace(totals, opener_count=1)
         # ``transition_s`` overrides the per-session value when the
@@ -339,7 +349,10 @@ class CutSession:
             separator_count=len(days) if self.separators_on else 0,
             video_ms_total=video_ms,
         )
-        if self.separators_on:
+        # Opener always rides when the pool is non-empty (the title
+        # slide is independent of the separators toggle, mirroring
+        # :meth:`show_seconds`).
+        if self.files:
             totals = _replace(totals, opener_count=1)
         if transition_s <= 0.0 and self.transition_ms is not None:
             transition_s = max(0.0, float(self.transition_ms) / 1000.0)

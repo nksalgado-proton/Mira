@@ -46,14 +46,19 @@ def _player(gw, tmp_path) -> CutPlayerDialog:
 
 
 def test_show_entries_is_the_wysiwyg_sequence(gw):
-    """Opener first (round 2), then separators at day boundaries."""
+    """Opener first (round 2), then separators at day boundaries.
+
+    spec/143 §X — ``separators_on=False`` keeps the opener (it's the
+    title slide, not a per-day card) and drops only the day cards.
+    The pre-fix coupled both under the same flag, so users who turned
+    separators off lost their title card too."""
     entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
     assert [(k, getattr(p, "export_relpath", p)) for k, p in entries] == [
         ("opener", None),
         ("sep", 1), ("file", "Exported Media/e1.jpg"),
         ("sep", 2), ("file", "Exported Media/e3a.jpg")]
     bare = show_entries(gw, gw.cut("cut-s"), separators_on=False)
-    assert [k for k, _ in bare] == ["file", "file"]
+    assert [k for k, _ in bare] == ["opener", "file", "file"]
 
 
 def test_advance_walks_entries_and_times_photos(qapp, gw, tmp_path):

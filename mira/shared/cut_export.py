@@ -477,7 +477,12 @@ def export_cut(
     last_day: object = object()
     totals_photos = totals_seps = 0
     totals_video_ms = 0
-    if separators_on and opener_writer is not None and files:
+    # Opener (title slide) always rides when the Cut has at least one
+    # file and the caller provided an ``opener_writer``. Decoupled from
+    # ``separators_on`` (which now controls per-day cards only) so a
+    # Cut with separators off still gets its initial header — the
+    # user's "Separators OFF should keep the title card" report.
+    if opener_writer is not None and files:
         seq += 1
         target_path = dest / f"{seq:03d}_opener.jpg"
         try:
@@ -573,12 +578,11 @@ def export_cut(
         rng=rng,
         # spec/152 §3 — include the transition_ms + opener slot in the
         # show total so the playlist runs to the same wall time PTE
-        # plays. The opener only spends show time when separators
-        # are on AND an opener_writer was provided (the caller chose
-        # to render one); a test or callsite that doesn't render an
-        # opener gets opener_count=0 and the legacy total.
+        # plays. The opener rides whenever an ``opener_writer`` was
+        # provided AND the Cut has files — decoupled from
+        # ``separators_on`` (which now controls per-day cards only).
         transition_ms=transition_ms,
-        opener_count=1 if (separators_on and opener_writer is not None) else 0,
+        opener_count=1 if (opener_writer is not None and files) else 0,
     )
 
     gateway.mark_cut_exported(cut.id)

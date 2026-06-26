@@ -19,7 +19,7 @@ and the Cut play rehearsal (CutPlayerDialog).
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QRectF, QSize, Qt
+from PyQt6.QtCore import QRect, QRectF, QSize, Qt
 from PyQt6.QtGui import (
     QColor,
     QPainter,
@@ -78,6 +78,27 @@ class BlurredPhotoCanvas(QWidget):
 
     def pixmap(self) -> QPixmap | None:
         return self._pixmap
+
+    def foreground_rect(self) -> QRect:
+        """The sharp photo's rect (logical px) within this canvas — where
+        the foreground is actually drawn: KeepAspectRatio-centred inside the
+        inner-padded area (the blurred copy fills the rest). Empty when no
+        pixmap is set. Mirrors the geometry in :meth:`paintEvent` exactly so
+        callers can anchor overlays to the photo edge, not the canvas edge."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return QRect()
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if pw <= 0 or ph <= 0:
+            return QRect()
+        pad = self._inner_pad
+        avail_w = max(1, self.width() - pad * 2)
+        avail_h = max(1, self.height() - pad * 2)
+        scale = min(avail_w / pw, avail_h / ph)
+        w = max(1, int(round(pw * scale)))
+        h = max(1, int(round(ph * scale)))
+        x = int((self.width() - w) // 2)
+        y = int((self.height() - h) // 2)
+        return QRect(x, y, w, h)
 
     def setInnerPad(self, pad: int) -> None:  # noqa: N802
         self._inner_pad = max(0, int(pad))

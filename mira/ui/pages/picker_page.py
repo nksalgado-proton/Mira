@@ -232,9 +232,17 @@ class PickerPage(QWidget):
         # viewport — the one place the grammar lives.
         self.setFocusProxy(self.viewport)
 
-        # Exposure overlay ON the photo — a pill at the bottom of the
-        # media area; follows the host's resizes itself.
-        self._expo_overlay = PhotoExposureOverlay(self.viewport)
+        # Exposure overlay ON the photo — a single-line pill pinned to the
+        # bottom edge of the displayed image (not the view), so it never
+        # floats over the letterbox bars when the photo doesn't fill the
+        # frame. Parented to the photo-area widget and driven by the
+        # viewport's letterbox rect + ``photo_geometry_changed`` pulse (the
+        # same contract the exported watermark uses).
+        self._expo_overlay = PhotoExposureOverlay(
+            vp.photo_area_widget(),
+            rect_provider=vp.image_rect_in_photo_area,
+        )
+        vp.photo_geometry_changed.connect(self._expo_overlay.reposition)
 
         # ── TOP_BAR — hidden. Back moved to the shared title bar; the only
         # other occupant (the position counter) rides into the nav band below,

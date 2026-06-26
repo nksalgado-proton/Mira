@@ -747,6 +747,22 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "restart_required": False,
             },
+            # spec/134 — text size of the on-photo overlay pill (shared by
+            # the Picker/Editor single view and Cut play). Applies live.
+            {
+                "key": "overlay_exif_font_px",
+                "label": "Photo overlay text size",
+                "widget": "spinbox",
+                "tooltip": (
+                    "Text size, in pixels, of the exposure / provenance "
+                    "pill drawn over photos — the Picker, Editor and Cut "
+                    "play single views, the Quick Sweep pill and the "
+                    "compare-grid tiles. Smaller = less obtrusive. "
+                    "Default 9. Changing it updates the overlay immediately."
+                ),
+                "min": 6, "max": 28, "step": 1, "decimals": 0,
+                "restart_required": False,
+            },
             # Nelson 2026-06-09 audit — focus-peaking opacity promotion.
             # Completes the existing peaking_color + peaking_sensitivity
             # pair; the third knob users routinely want.

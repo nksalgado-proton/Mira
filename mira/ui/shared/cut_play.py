@@ -53,6 +53,12 @@ from mira.ui.i18n import tr
 from mira.ui.media.image_loader import load_pixmap
 from mira.ui.palette import PALETTE
 
+#: Plain-text separator between overlay field GROUPS (When / Where / Camera
+#: / Exposure) on the single-line Cut-play pill — the plain-text twin of the
+#: Picker's HTML ``_FIELD_SEPARATOR``. Heavier than the ``·`` used *within* a
+#: group so the eye can still tell the groups apart.
+_OVERLAY_FIELD_SEPARATOR = "  •  "
+
 
 def _theme_mode() -> str:
     """Active theme (``'dark'`` / ``'light'``). Mirrors the helper in
@@ -486,7 +492,10 @@ class CutPlayerDialog(QDialog):
             # look without an inline override.
             self._overlay_label.setAttribute(
                 Qt.WidgetAttribute.WA_StyledBackground, True)
-            self._overlay_label.setWordWrap(True)
+            # Single strip along the photo's bottom edge (mirrors the
+            # Picker pill) — no wrap; the field groups join onto one line.
+            self._overlay_label.setWordWrap(False)
+            self._overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._overlay_label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.NoTextInteraction)
             self._overlay_label.setAttribute(
@@ -1134,7 +1143,7 @@ class CutPlayerDialog(QDialog):
         if not lines:
             lbl.hide()
             return
-        lbl.setText("\n".join(lines))
+        lbl.setText(_OVERLAY_FIELD_SEPARATOR.join(lines))
         lbl.adjustSize()
         self._position_overlay()
         lbl.raise_()
@@ -1144,16 +1153,28 @@ class CutPlayerDialog(QDialog):
         lbl = self._overlay_label
         if lbl is None or not lbl.isVisible() and not lbl.text():
             return
-        margin = 24
-        # Lift the overlay above the transport bar when it's visible.
-        bottom_inset = margin
-        if self._transport is not None and self._transport.isVisible():
-            bottom_inset = margin + self._transport.height()
-        max_w = max(180, int(self.width() * 0.66))
-        lbl.setMaximumWidth(max_w)
+        margin = 8
+        # Anchor to the displayed photo's bottom edge, centred (mirrors the
+        # Picker pill) — not the player's bottom-left corner. The photo is
+        # KeepAspectRatio-centred inside the BlurredPhotoCanvas, so use its
+        # foreground rect mapped into this widget's coordinates; fall back to
+        # the stack area (above the transport) when no photo rect is known.
+        photo_rect = (
+            self._photo.foreground_rect() if self._photo is not None
+            else QRect())
+        if not photo_rect.isEmpty():
+            top_left = self._photo.mapTo(self, photo_rect.topLeft())
+            area = QRect(top_left, photo_rect.size())
+        else:
+            host = self._stack_widget if self._stack_widget is not None else self
+            area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
+        lbl.setMaximumWidth(self.width())
         lbl.adjustSize()
-        y = max(margin, self.height() - lbl.height() - bottom_inset)
-        lbl.move(margin, y)
+        w = min(lbl.width(), self.width())
+        cx = area.x() + area.width() // 2
+        x = max(0, min(cx - w // 2, self.width() - w))
+        y = max(0, area.y() + area.height() - lbl.height() - margin)
+        lbl.move(int(x), int(y))
 
     def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
         self._toggle_fullscreen()

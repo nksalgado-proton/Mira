@@ -271,6 +271,19 @@ def build_qpalette(resolved: dict[str, str]) -> QPalette:
     return p
 
 
+def _overlay_exif_font_px() -> int:
+    """The on-photo overlay pill's text size (px) from the roaming Settings
+    repo, clamped to a sane range. Falls back to the design default on any
+    load failure so a settings-less boot path still themes cleanly."""
+    from mira.ui.palette import DEFAULT_OVERLAY_EXIF_FONT_PX
+    try:
+        from mira.settings.repo import SettingsRepo
+        px = int(SettingsRepo().load().overlay_exif_font_px)
+    except Exception:                                              # noqa: BLE001
+        return DEFAULT_OVERLAY_EXIF_FONT_PX
+    return max(6, min(28, px))
+
+
 def apply_theme(
     app: QApplication, mode: Mode = "dark", *, palette_name: str = "Mira"
 ) -> None:
@@ -328,6 +341,11 @@ def apply_theme(
         Path(__file__).resolve().parents[2]
         / "assets" / "icons" / "glyphs" / "chevron_down.svg"
     ).as_posix()
+    # spec/134 — the on-photo overlay pill's text size is a user setting
+    # (GridTileExif / CutPlayOverlay QSS roles). Read defensively so an
+    # early-boot / settings-less path (smoke scripts, tests) falls back to
+    # the design default rather than failing the whole theme apply.
+    resolved["overlay_exif_font_px"] = str(_overlay_exif_font_px())
 
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(build_qpalette(resolved))

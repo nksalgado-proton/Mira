@@ -261,12 +261,18 @@ class AdjustmentSurface(QWidget):
 
         # spec/134 — the configurable viewer overlay (When / Where /
         # Camera / Exposure). Picker + Editor share one widget so the
-        # pill reads the same on both surfaces. Parented to the
-        # viewport (mirrors how PickerPage parents its own); the host
-        # pushes content via :meth:`set_viewer_overlay_html` on every
-        # item landing.
+        # pill reads the same on both surfaces. A single-line strip pinned
+        # to the bottom edge of the displayed image (not the view), via the
+        # viewport's letterbox rect + ``photo_geometry_changed`` pulse —
+        # the same anchoring PickerPage and the crop overlay use. The host
+        # pushes content via :meth:`set_viewer_overlay_html`.
         from mira.ui.media.photo_overlay import PhotoExposureOverlay
-        self._viewer_overlay = PhotoExposureOverlay(self._display)
+        self._viewer_overlay = PhotoExposureOverlay(
+            photo_host,
+            rect_provider=self._display.image_rect_in_photo_area,
+        )
+        self._display.photo_geometry_changed.connect(
+            self._viewer_overlay.reposition)
 
     # ── Construction ─────────────────────────────────────────────────
 

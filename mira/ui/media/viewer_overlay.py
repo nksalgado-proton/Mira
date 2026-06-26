@@ -20,6 +20,12 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
+#: Separator between field GROUPS (When / Where / Camera / Exposure) on the
+#: single-line pill. Heavier than the middot ``·`` the cut-overlay uses
+#: *within* a group (camera·lens·flash, focal·f·shutter·ISO) so the eye can
+#: still tell the groups apart. Non-breaking spaces keep the line intact.
+_FIELD_SEPARATOR = "&nbsp;&nbsp;•&nbsp;&nbsp;"
+
 
 def viewer_overlay_fields_from_settings() -> list:
     """spec/134 — read ``viewer_overlay_fields`` from the roaming
@@ -51,7 +57,8 @@ def compose_viewer_overlay_html(
          via :meth:`EventGateway.item_provenance` (empty when ``eg`` /
          ``item_id`` is missing).
       3. Compose lines via :func:`core.cut_overlay.compose_overlay_lines`.
-      4. Join with ``<br>`` so the overlay pill stacks fields.
+      4. Join the field groups onto ONE line with :data:`_FIELD_SEPARATOR`
+         so the pill reads as a single strip along the photo's bottom edge.
 
     Returns ``""`` (the pill's "hidden" sentinel) when the selection
     is empty OR every selected field is data-free for this item.
@@ -70,7 +77,7 @@ def compose_viewer_overlay_html(
             log.exception(
                 "item_provenance failed for %s", item_id)
     lines = compose_overlay_lines(fields, prov)
-    return "<br>".join(lines) if lines else ""
+    return _FIELD_SEPARATOR.join(lines) if lines else ""
 
 
 __all__ = [

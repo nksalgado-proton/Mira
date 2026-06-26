@@ -287,6 +287,17 @@ class Settings:
         "subset of When / Where / Camera / Exposure (the cut-overlay "
         "vocabulary). Empty = overlay off.",
         default_factory=lambda: ["how2"])
+    # spec/134 — text size (px) of the on-photo provenance/exposure pill,
+    # shared by the Picker/Editor single-view overlay and the Cut-play
+    # overlay. Substituted into the QSS roles GridTileExif / CutPlayOverlay
+    # at theme-apply time; changing it re-applies the theme live. Default
+    # 9 reads small on a 1080p panel and scales up with the user's display
+    # DPI — bump it here if the pill reads too large/small.
+    overlay_exif_font_px: int = _u(
+        "Text size (in pixels) of the exposure / provenance pill drawn "
+        "over photos (Picker / Editor / Cut play single views, the Quick "
+        "Sweep pill and the compare-grid tiles). Smaller = less "
+        "obtrusive. Default 9.", 9)
     # spec/136 — startup splash sourced from a random exported photo of
     # a random closed event (or the bundled mark when none / opt-out).
     # Off → the bundled mark splash; the splash itself still covers the

@@ -1252,12 +1252,17 @@ class MainWindow(QMainWindow):
             new_base = changed["photos_base_path"][1]
             self.gateway.set_photos_base_path(new_base or "")  # settings + index mirror
             self.events_page.refresh()
-        if "theme" in changed:
+        if "theme" in changed or "overlay_exif_font_px" in changed:
+            # Both re-theme: the photo-overlay pill size is a QSS token
+            # (GridTileExif / CutPlayOverlay) baked at apply_theme time, so
+            # changing it re-applies with the app's current mode.
             from PyQt6.QtWidgets import QApplication
             from mira.ui.theme import apply_theme
             app = QApplication.instance()
             if app is not None:
-                apply_theme(app, changed["theme"][1])  # type: ignore[arg-type]
+                mode = changed["theme"][1] if "theme" in changed \
+                    else (app.property("theme") or "dark")
+                apply_theme(app, mode)  # type: ignore[arg-type]
         if "font_scale" in changed:
             from PyQt6.QtWidgets import QApplication
             from mira.ui.app import apply_font_scale

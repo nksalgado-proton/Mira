@@ -91,19 +91,22 @@ def test_compose_default_exposure_only():
     assert html == "85mm · f/2.8 · 1/250 · ISO 400"
 
 
-def test_compose_all_fields_joins_with_br():
-    """When + where + camera + exposure → four lines stacked via
-    ``<br>`` so the pill displays them as a multi-line block."""
+def test_compose_all_fields_joins_on_one_line():
+    """When + where + camera + exposure → ONE line, the field groups
+    joined by the heavier ``•`` separator (the pill is a single strip
+    along the photo's bottom edge; within-group items keep the ``·``)."""
+    from mira.ui.media.viewer_overlay import _FIELD_SEPARATOR
     eg = _StubEg(_prov_full())
     html = compose_viewer_overlay_html(
         eg, "i1",
         fields=[FIELD_WHEN, FIELD_WHERE, FIELD_HOW1, FIELD_HOW2])
-    assert html == (
-        "2026-04-01T08:00:00"
-        "<br>Arenal, Costa Rica"
-        "<br>Panasonic G9 II · LEICA 12-60 · no flash"
-        "<br>85mm · f/2.8 · 1/250 · ISO 400"
-    )
+    assert html == _FIELD_SEPARATOR.join([
+        "2026-04-01T08:00:00",
+        "Arenal, Costa Rica",
+        "Panasonic G9 II · LEICA 12-60 · no flash",
+        "85mm · f/2.8 · 1/250 · ISO 400",
+    ])
+    assert "<br>" not in html
 
 
 def test_compose_empty_selection_returns_empty():
@@ -247,9 +250,11 @@ def test_picker_compose_reflects_setting_change(
                                path=Path(tmp_path) / "p.jpg",
                                kind="photo")
         # Flip to when + where (no how2).
+        from mira.ui.media.viewer_overlay import _FIELD_SEPARATOR
         settings.update(viewer_overlay_fields=[FIELD_WHEN, FIELD_WHERE])
         html = page._compose_viewer_overlay_html(item)
-        assert html == "2026-04-01T08:00:00<br>Arenal, Costa Rica"
+        assert html == _FIELD_SEPARATOR.join(
+            ["2026-04-01T08:00:00", "Arenal, Costa Rica"])
         # Clear it — overlay hides.
         settings.update(viewer_overlay_fields=[])
         assert page._compose_viewer_overlay_html(item) == ""

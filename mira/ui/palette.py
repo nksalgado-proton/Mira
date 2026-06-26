@@ -86,6 +86,15 @@ def _redesign_qss_path() -> Path:
     )
 
 
+#: Fallback for the ``{overlay_exif_font_px}`` QSS token (the on-photo
+#: provenance/exposure pill size, roles GridTileExif / CutPlayOverlay).
+#: Real runs inject the user setting in ``theme.apply_theme``; this keeps
+#: direct ``build_redesign_qss`` callers (tests / smoke scripts that pass
+#: no token dict) producing valid CSS. Mirrors
+#: ``Settings.overlay_exif_font_px``'s default — keep the two in sync.
+DEFAULT_OVERLAY_EXIF_FONT_PX = 9
+
+
 def _glyph_url(name: str) -> str:
     """Absolute, forward-slashed path to ``assets/icons/glyphs/<name>``.
     Qt's QSS ``url(...)`` is happiest with absolute paths in POSIX form,
@@ -140,4 +149,7 @@ def build_redesign_qss(
     if "chevron_down_icon_url" not in tokens:
         qss = qss.replace(
             "{chevron_down_icon_url}", _glyph_url("chevron_down.svg"))
+    if "overlay_exif_font_px" not in tokens:
+        qss = qss.replace(
+            "{overlay_exif_font_px}", str(DEFAULT_OVERLAY_EXIF_FONT_PX))
     return qss

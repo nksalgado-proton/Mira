@@ -957,7 +957,7 @@ QLabel#GridTileExif {
     color: #F0F0F0;
     background-color: rgba(0, 0, 0, 150);
     border-radius: 6px;
-    font-size: 11px;
+    font-size: {overlay_exif_font_px}px;
     padding: 2px 8px;
 }
 
@@ -1436,8 +1436,8 @@ QFrame#CutPlayTransport {
 QLabel#CutPlayOverlay {
     color: #ffffff;
     background-color: rgba(0, 0, 0, 150);
-    padding: 8px 12px;
-    font-size: 14px;
+    padding: 6px 10px;
+    font-size: {overlay_exif_font_px}px;
     border-radius: 6px;
 }
 

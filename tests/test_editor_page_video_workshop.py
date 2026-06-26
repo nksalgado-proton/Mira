@@ -885,3 +885,45 @@ def test_landing_backfills_null_duration_on_db_row(
     assert len(page._markers) == 1
     assert page._markers[0].at_ms == 4_000
     page.close_event()
+
+
+# ── spec/56 + spec/138 — Edit preview speed follows the segment ───────
+
+
+def test_segment_select_drives_engine_to_segment_speed(qapp, app_gateway):
+    """Selecting a segment sets the PREVIEW engine rate to that segment's
+    baked ``vadj.speed`` (WYSIWYG of the rendered clip), NOT whatever
+    sticky rate carried over from the Picker skim default or a prior 2x
+    segment. The bug: bind pushed the speed to the INDICATOR only
+    (``set_speed`` blocks signals), so a 1x segment kept previewing at
+    the stale sticky engine rate."""
+    page = _editor_on_video(app_gateway)
+    try:
+        # Simulate a stale sticky rate (Picker skim default / a prior
+        # 2x segment left the engine here).
+        page._viewport.video_set_playback_rate(2.0)
+        # Segment 0 carries no persisted speed → its baked speed is 1x.
+        # Re-binding the (still-selected) segment must reset the engine.
+        page._bind_panel_to_selection()
+        assert page._viewport.video_playback_rate() == pytest.approx(1.0)
+    finally:
+        page.close_event()
+
+
+def test_segment_with_persisted_speed_previews_at_that_speed(
+        qapp, app_gateway, store_and_gateway):
+    """A segment carrying ``vadj.speed = 2.0`` previews at 2x — the engine
+    matches the speed the workshop indicator shows, even if the engine
+    had been left at a different (sticky) rate."""
+    _, eg = store_and_gateway
+    page = _editor_on_video(app_gateway)
+    try:
+        seg0_id = page._segment_items[0].id
+        eg.save_video_adjustment(
+            m.VideoAdjustment(item_id=seg0_id, speed=2.0))
+        # Leave the engine at a mismatched sticky rate first.
+        page._viewport.video_set_playback_rate(1.0)
+        page._bind_panel_to_selection()
+        assert page._viewport.video_playback_rate() == pytest.approx(2.0)
+    finally:
+        page.close_event()

@@ -2007,14 +2007,16 @@ class EditorPage(QWidget):
         # default. The hardcoded ``set_playing(False)`` here would paint
         # the play glyph while the auto-armed player is already running.
         self._workshop_bar.set_playing(self._viewport.video_is_playing())
-        # spec/137 — sticky-rate engine, sync the dropdown to its
-        # truth at reveal (a clip after a 2× clip still plays at 2×,
-        # but the combo defaults to 1× without this push). The
-        # per-segment ``vadj.speed`` push in
-        # :meth:`_bind_panel_to_selection` runs after this and wins
-        # when the selection carries a persisted speed — both calls
-        # use ``set_speed`` which blocks signals, so neither echoes
-        # back into the engine.
+        # Seed the dropdown to the engine's current rate as a transient;
+        # the authoritative per-segment push in
+        # :meth:`_bind_panel_to_selection` runs right after (via
+        # ``_select_segment_for_position(0)`` below) and sets BOTH the
+        # indicator AND the engine to the selected segment's baked
+        # ``vadj.speed`` — so the Edit preview is WYSIWYG with the
+        # rendered clip rather than inheriting the Picker's sticky skim
+        # rate. ``set_speed`` blocks signals (display-only); the engine
+        # rate is driven directly via ``video_set_playback_rate`` in the
+        # bind, so there is no echo back through ``speed_changed``.
         self._workshop_bar.set_speed(
             self._viewport.video_playback_rate())
         self._workshop_bar.set_duration(self._video_duration_ms)
@@ -2297,7 +2299,18 @@ class EditorPage(QWidget):
                 self._workshop_bar.set_muted(
                     (vadj.audio_volume if vadj else 1.0) == 0.0
                     or not (vadj.include_audio if vadj else True))
-                self._workshop_bar.set_speed(vadj.speed if vadj else 1.0)
+                # spec/56 + spec/138 — the Edit preview must play at the
+                # SELECTED segment's baked speed (WYSIWYG of the clip the
+                # export renders via setpts/atempo), NOT the Picker's
+                # sticky skim rate (PhotoViewport._video_rate, seeded from
+                # Settings.default_video_speed and carried across clips).
+                # The old code pushed the speed to the INDICATOR only
+                # (set_speed blocks signals → never reached the engine), so
+                # a segment marked 1× could still preview at the sticky
+                # rate. Drive both off one value so they can't diverge.
+                seg_speed = vadj.speed if (vadj and vadj.speed) else 1.0
+                self._workshop_bar.set_speed(seg_speed)
+                self._viewport.video_set_playback_rate(seg_speed)
             elif kind == "snapshot":
                 adj = self._eg.adjustment(item_id)
                 style, look, creative_filter, crop, angle, aspect = \

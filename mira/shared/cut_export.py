@@ -4,8 +4,8 @@ Materializes a Cut to a target directory: **linked** media (NTFS hardlink,
 copy fallback — never byte-duplicates by choice), named with a sequence prefix
 so plain filename sort = chronological show order; **separator** images
 rendered into the same sequence (when the Cut's ``separators`` flag is on);
-an **``audio/``** subdir with the playlist; and **overlay** handling per the
-Cut's ``overlay_mode`` (spec/81 §3.1).
+an **``audio/``** subdir with the playlist; and **overlay** handling driven
+by the Cut's selected fields (spec/81 §3.1, spec/153).
 
 **The target is a PARAMETER (spec/81 §5).** Composition travels with the Cut;
 the destination does NOT. ``export_cut`` takes ``target`` defaulting to
@@ -13,15 +13,13 @@ the destination does NOT. ``export_cut`` takes ``target`` defaulting to
 charter invariant #2). Re-export reproduces identical bundle *content*; where
 it lands is a re-confirmed default.
 
-**Overlays cost no budget** (spec/81 §3.1) and change no membership:
-  * ``embedded`` (default, link-pure) — the technical fields already live in
-    the JPEG's EXIF; only *where* needs writing → IPTC City/Sub-location/
-    Country via the bundled ExifTool, written into the linked file in place
-    (members stay hardlinks). A frame with no *where* data stays a pure link.
-  * ``burn_in`` (opt-in) — member *copies* with the chosen fields drawn into
-    the pixels by an injected renderer (the UI layer owns pixels). These
-    members are copies, not links.
-In-app Play draws overlays live (the play path, not here).
+**Overlays cost no budget** (spec/81 §3.1) and change no membership. The
+selected fields ride the generated ``.pte`` as separate ``:Text`` objects
+(spec/153); here, members stay **hardlinks** and we additionally embed the
+*where* IPTC tags (City / Sub-location / Country) into the linked JPEG via
+the bundled ExifTool so the location travels with the file (the technical
+EXIF is already there). A frame with no *where* data stays a pure link.
+Burn-in is retired. In-app Play draws overlays live (the play path, not here).
 
 Export is a SNAPSHOT: the Cut stays live; by default a name collision on
 disk gets a ``(2)``-style disambiguator instead of touching the old folder
@@ -51,11 +49,6 @@ log = logging.getLogger(__name__)
 #: target -> None; renders the day's separator card into ``target``.
 SeparatorWriter = Callable[[Path, Optional[int]], None]
 
-#: (src, dst, fields, provenance) -> None; renders a member COPY with the
-#: chosen overlay fields drawn into the pixels (burn-in mode). Injected by the
-#: caller — the UI layer owns pixels.
-OverlayRenderer = Callable[[Path, Path, Sequence[str], "cut_overlay.FrameProvenance"], None]
-
 #: relpath -> FrameProvenance; resolves a member's provenance facts for
 #: overlays (injected by the gateway/caller — pure data, no Qt).
 ProvenanceResolver = Callable[[str], "cut_overlay.FrameProvenance"]
@@ -78,8 +71,7 @@ class ExportResult:
     folder: Path
     linked: int = 0
     copied: int = 0                      # hardlink fallback copies
-    burned_in: int = 0                   # overlay burn-in copies
-    iptc_written: int = 0                # embedded-mode where-IPTC writes
+    iptc_written: int = 0                # where-IPTC writes (location → file)
     separators: int = 0
     audio_files: int = 0
     audio_short: bool = False            # library couldn't cover the show
@@ -395,7 +387,6 @@ def export_cut(
     audio_root: Optional[str] = None,
     audio_tracks: Optional[Sequence[audio_library.AudioTrack]] = None,
     provenance_resolver: Optional[ProvenanceResolver] = None,
-    overlay_renderer: Optional[OverlayRenderer] = None,
     iptc_writer: Optional[IptcWriter] = None,
     include_originals: bool = False,
     copy_mode: bool = False,
@@ -415,12 +406,11 @@ def export_cut(
     pass it in via :func:`resolve_event_cut_target` (so the resolver
     can see ``library_root`` + ``cuts_export_root`` without coupling
     this module to settings). ``separators_on`` defaults to the Cut's
-    own ``separators`` flag. Overlays follow the Cut's ``overlay_mode``
-    + ``overlay_fields``: ``embedded`` writes *where* IPTC into the
-    linked file (members stay links); ``burn_in`` emits rendered
-    copies via ``overlay_renderer``. Overlays cost no budget.
-    ``audio_tracks`` overrides the library scan (tests + pre-scanned
-    callers).
+    own ``separators`` flag. Overlays follow the Cut's ``overlay_fields``:
+    the fields ride the generated ``.pte`` as separate text (spec/153) and
+    the *where* IPTC is embedded into the linked file (members stay links).
+    Overlays cost no budget. ``audio_tracks`` overrides the library scan
+    (tests + pre-scanned callers).
 
     spec/105 §3 — ``include_originals=True`` resolves each member's
     source item to its ``origin_relpath`` (via ``original_resolver``,
@@ -433,8 +423,7 @@ def export_cut(
     spec/105 §5 — ``copy_mode=True`` forces ``shutil.copy2`` for media,
     originals AND audio (the show is then independent of the source
     event's lifecycle). Default ``False`` hardlinks with a copy
-    fallback on cross-volume OSError. Overlay burn-in members stay
-    copies regardless (rendered).
+    fallback on cross-volume OSError.
 
     spec/148 — ``overwrite_existing=True`` materialises into ``base``
     even when it already exists (its prior contents are cleared first),
@@ -462,7 +451,6 @@ def export_cut(
     result = ExportResult(folder=dest)
 
     overlay_fields = list(gateway.cut_overlay_fields(cut))
-    overlay_mode = cut.overlay_mode or "embedded"
     iptc_writer = iptc_writer or _exiftool_iptc_writer
     resolve_original = (
         original_resolver if original_resolver is not None
@@ -512,27 +500,19 @@ def export_cut(
             continue
         seq += 1
         dst = dest / f"{seq:03d}_{Path(f.export_relpath).name}"
-        if overlay_fields and overlay_mode == "burn_in" and overlay_renderer is not None:
-            try:
-                overlay_renderer(src, dst, overlay_fields, _provenance(f.export_relpath))
-                result.burned_in += 1
-                result.copied += 1
-            except Exception:  # noqa: BLE001 — a failed burn-in falls back to a plain link
-                log.exception("overlay burn-in failed for %s", f.export_relpath)
-                if _place(src, dst, force_copy=copy_mode):
-                    result.linked += 1
-                else:
-                    result.copied += 1
+        # spec/153 — overlays ride the generated .pte as separate text
+        # objects (burn-in retired). The member stays a link; we still
+        # embed the *where* IPTC tags into the JPEG so the location
+        # travels with the file (the technical EXIF is already there).
+        if _place(src, dst, force_copy=copy_mode):
+            result.linked += 1
         else:
-            if _place(src, dst, force_copy=copy_mode):
-                result.linked += 1
-            else:
-                result.copied += 1
-            if overlay_fields and overlay_mode == "embedded":
-                prov = _provenance(f.export_relpath)
-                if cut_overlay.needs_embedded_write(overlay_fields, prov):
-                    if iptc_writer(dst, cut_overlay.where_iptc_tags(prov)):
-                        result.iptc_written += 1
+            result.copied += 1
+        if overlay_fields:
+            prov = _provenance(f.export_relpath)
+            if cut_overlay.needs_embedded_write(overlay_fields, prov):
+                if iptc_writer(dst, cut_overlay.where_iptc_tags(prov)):
+                    result.iptc_written += 1
         if f.kind == "video":
             totals_video_ms += f.duration_ms
         else:
@@ -587,10 +567,10 @@ def export_cut(
 
     gateway.mark_cut_exported(cut.id)
     log.info(
-        "export_cut %s -> %s (%d linked, %d copied, %d burned-in, %d iptc, "
+        "export_cut %s -> %s (%d linked, %d copied, %d iptc, "
         "%d separators, %d audio, %d originals_linked, %d originals_copied, "
         "%d missing, %d missing_originals)",
-        cut.tag, dest, result.linked, result.copied, result.burned_in,
+        cut.tag, dest, result.linked, result.copied,
         result.iptc_written, result.separators, result.audio_files,
         result.originals_linked, result.originals_copied,
         len(result.missing), len(result.missing_originals))

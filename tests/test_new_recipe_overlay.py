@@ -1,28 +1,25 @@
-"""Tests for spec/114 — restore the overlay control in NewRecipeDialog.
+"""Tests for the Cut overlay control (spec/114, simplified by spec/153).
 
-Six contracts:
+spec/153 retired the Off / Embedded / Burn-in mode combo: the overlay
+control is now **just the four field flags** (When / Where / Camera /
+Exposure). Overlays are on when ≥1 flag is checked, off when none; the
+generated ``.pte`` always carries the selected fields as separate ``:Text``
+objects (``overlay_mode`` is fixed at ``"embedded"`` internally).
 
-* The control sets ``overlay_mode`` + ``overlay_fields`` into
-  ``composition()["presentation"]`` when the user opts in.
-* Prefill (Edit-mode) pre-selects the saved mode + chip checks.
-* Mode = Off keeps the saved chip picks AROUND (don't lose work) but the
-  presentation block omits both fields — adapters read it as Off.
-* End-to-end: ``EventGateway.create_cut(overlay_fields=…,
-  overlay_mode=…)`` persists, ``EventGateway.cut_overlay_fields`` reads
-  them back, and ``export_cut`` writes the matching overlay
-  (embedded IPTC for one mode, burn-in pixels for the other).
-* The cross-event path also persists overlay via
-  ``LibraryGateway.create_cross_event_cut`` + the same dialog with
-  ``inventory_scope == INVENTORY_LIBRARY``.
-* The pre-spec/114 ``composition()`` schema stays exact when nothing
-  overlay is set — the regression guard for unrelated dialog tests.
+Contracts pinned here:
+
+* checking ≥1 field surfaces ``overlay_mode="embedded"`` + ``overlay_fields``
+  in ``composition()["presentation"]``; no fields → both keys omitted (the
+  legacy Off shape the recipe adapter tolerates);
+* prefill (Edit-mode) pre-checks the saved field chips;
+* end-to-end: ``create_cut`` persists, ``cut_overlay_fields`` reads back,
+  ``export_cut`` embeds the *where* IPTC while members stay links;
+* the cross-event path persists the same way;
+* the chips are real QCheckBoxes in canonical field order.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
 
 from core import cut_overlay
 from mira.gateway.event_gateway import EventGateway
@@ -62,14 +59,13 @@ def _overlay_vocab():
 
 
 def _dialog(qapp, *, overlay_field_options=None,
-            overlay_mode=None, overlay_fields=(), inventory=INVENTORY_EVENT):
+            overlay_fields=(), inventory=INVENTORY_EVENT):
     ctx = NewRecipeContext(
         available_pools=_pools(),
         available_styles=["macro"],
         overlay_field_options=list(
             overlay_field_options if overlay_field_options is not None
             else _overlay_vocab()),
-        overlay_mode=overlay_mode,
         overlay_fields=list(overlay_fields),
     )
     return NewRecipeDialog(
@@ -82,31 +78,28 @@ def _dialog(qapp, *, overlay_field_options=None,
 
 
 # --------------------------------------------------------------------- #
-# 1. The control surfaces overlay_mode + overlay_fields in composition()
+# 1. Field flags drive the overlay block in composition()
 # --------------------------------------------------------------------- #
 
 
-def test_setting_mode_and_fields_emits_them_in_presentation(qapp):
-    """spec/114 — the user picks Embedded + two fields; the
-    composition's presentation block carries them under the canonical
-    keys the export layer + adapter already read."""
+def test_checking_fields_emits_embedded_mode_and_fields(qapp):
+    """spec/153 — checking ≥1 field surfaces ``overlay_mode="embedded"``
+    + the canonical-ordered field list under the keys the export layer +
+    adapter already read."""
     dlg = _dialog(qapp)
     try:
-        # Off → no overlay keys at all.
+        # No fields → no overlay keys (the legacy Off shape).
         comp_off = dlg.composition()
         assert "overlay_mode" not in comp_off["presentation"]
         assert "overlay_fields" not in comp_off["presentation"]
 
-        # Pick Embedded + the WHERE + HOW1 chips.
-        dlg._overlay_mode_combo.setCurrentIndex(1)
         dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
         dlg._overlay_field_chips[cut_overlay.FIELD_HOW1].setChecked(True)
 
-        comp = dlg.composition()
-        pres = comp["presentation"]
+        pres = dlg.composition()["presentation"]
         assert pres["overlay_mode"] == "embedded"
-        # Order follows the canonical OVERLAY_FIELDS tuple so the
-        # round-trip is stable regardless of click order.
+        # Order follows the canonical OVERLAY_FIELDS tuple regardless of
+        # click order.
         assert pres["overlay_fields"] == [
             cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1,
         ]
@@ -114,39 +107,15 @@ def test_setting_mode_and_fields_emits_them_in_presentation(qapp):
         dlg.deleteLater()
 
 
-def test_burn_in_mode_persists_through_composition(qapp):
-    """The Burn-in option is its own enum value the export layer keys
-    on. Pin both modes for clarity."""
+def test_no_fields_omits_overlay_keys(qapp):
+    """Unchecking back to zero fields drops both overlay keys so the
+    adapter reads it as off — no smuggling stale picks through."""
     dlg = _dialog(qapp)
     try:
-        dlg._overlay_mode_combo.setCurrentIndex(2)
-        dlg._overlay_field_chips[cut_overlay.FIELD_HOW2].setChecked(True)
-        comp = dlg.composition()
-        assert comp["presentation"]["overlay_mode"] == "burn_in"
-        assert comp["presentation"]["overlay_fields"] == [
-            cut_overlay.FIELD_HOW2]
-    finally:
-        dlg.deleteLater()
-
-
-def test_mode_off_drops_overlay_keys_even_with_chips_checked(qapp):
-    """The chip checks survive a flip to Off (don't lose work on a
-    fat-finger), but the composition omits the overlay block so the
-    adapter reads it as Off — exactly today's behaviour."""
-    dlg = _dialog(qapp)
-    try:
-        dlg._overlay_mode_combo.setCurrentIndex(1)
-        dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
+        chip = dlg._overlay_field_chips[cut_overlay.FIELD_WHERE]
+        chip.setChecked(True)
         assert "overlay_mode" in dlg.composition()["presentation"]
-
-        # Flip Off — the dialog state forgets the mode, the chips stay
-        # checked so the user can flip back without re-picking.
-        dlg._overlay_mode_combo.setCurrentIndex(0)
-        chips_still_checked = [
-            k for k, c in dlg._overlay_field_chips.items() if c.isChecked()
-        ]
-        assert chips_still_checked == [cut_overlay.FIELD_WHERE]
-        # …but the composition omits both fields.
+        chip.setChecked(False)
         pres = dlg.composition()["presentation"]
         assert "overlay_mode" not in pres
         assert "overlay_fields" not in pres
@@ -155,41 +124,27 @@ def test_mode_off_drops_overlay_keys_even_with_chips_checked(qapp):
 
 
 # --------------------------------------------------------------------- #
-# 2. Prefill — opening Edit on an existing Cut pre-selects the choice
+# 2. Prefill — opening Edit on an existing Cut pre-checks the chips
 # --------------------------------------------------------------------- #
 
 
-def test_prefill_seeds_mode_and_chips_from_ctx(qapp):
-    """spec/114 — the host prefills ``NewRecipeContext.overlay_mode`` +
-    ``.overlay_fields`` from the existing Cut; the dialog opens on
-    those exact values."""
+def test_prefill_pre_checks_the_saved_fields(qapp):
+    """spec/114/153 — the host prefills ``NewRecipeContext.overlay_fields``
+    from the existing Cut; the dialog opens with those chips checked and
+    re-emits them (mode fixed at embedded)."""
     dlg = _dialog(
-        qapp, overlay_mode="embedded",
+        qapp,
         overlay_fields=[cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW2])
     try:
         assert dlg._overlay_mode == "embedded"
-        assert dlg._overlay_mode_combo.currentData() == "embedded"
         checked = sorted(
-            k for k, c in dlg._overlay_field_chips.items() if c.isChecked()
-        )
+            k for k, c in dlg._overlay_field_chips.items() if c.isChecked())
         assert checked == sorted(
             [cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW2])
-        # The composition emits the same shape on first call (no edit).
         pres = dlg.composition()["presentation"]
         assert pres["overlay_mode"] == "embedded"
         assert set(pres["overlay_fields"]) == {
             cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW2}
-    finally:
-        dlg.deleteLater()
-
-
-def test_prefill_drops_unknown_overlay_mode(qapp):
-    """A legacy / typo'd overlay_mode reads as Off — the dialog never
-    surfaces an invalid value the export layer would mis-render."""
-    dlg = _dialog(qapp, overlay_mode="not-a-mode")
-    try:
-        assert dlg._overlay_mode is None
-        assert dlg._overlay_mode_combo.currentData() is None
     finally:
         dlg.deleteLater()
 
@@ -200,16 +155,11 @@ def test_prefill_drops_unknown_overlay_mode(qapp):
 
 
 def test_empty_vocab_hides_the_control_entirely(qapp):
-    """A host without the vocabulary gets the legacy zero-control state
-    (overlays simply off). Pin this so a future surface that forgets
-    to wire ``overlay_field_options`` doesn't crash on a missing combo."""
+    """A host without the vocabulary gets no chips and emits nothing
+    overlay-related — the legacy zero-control state."""
     dlg = _dialog(qapp, overlay_field_options=[])
     try:
         assert not dlg._overlay_field_chips
-        # The mode combo only exists when the box is built; missing
-        # vocabulary means missing widgets.
-        assert not hasattr(dlg, "_overlay_mode_combo")
-        # composition emits nothing overlay-related.
         pres = dlg.composition()["presentation"]
         assert "overlay_mode" not in pres
         assert "overlay_fields" not in pres
@@ -218,14 +168,13 @@ def test_empty_vocab_hides_the_control_entirely(qapp):
 
 
 # --------------------------------------------------------------------- #
-# 4. End-to-end — create_cut persists, export_cut writes the overlay
+# 4. End-to-end — create_cut persists, export_cut embeds where-IPTC
 # --------------------------------------------------------------------- #
 
 
 def _make_event_gw(tmp_path) -> EventGateway:
     """A minimal event.db + one Exported Media file the export can
-    point at. Adapted from the cut_export fixture so the overlay
-    end-to-end test stays self-contained."""
+    point at."""
     from tests.test_gateway_cuts import _doc, _now
     store = EventStore.create(tmp_path / "event.db", event_id="evt-o")
     store.save_document(_doc())
@@ -236,10 +185,9 @@ def _make_event_gw(tmp_path) -> EventGateway:
     return gw
 
 
-def test_create_cut_persists_overlay_mode_and_fields(tmp_path):
-    """spec/114 — the dialog → create_cut path persists overlay. The
-    fields round-trip via ``cut_overlay_fields`` (which parses the
-    persisted JSON column)."""
+def test_create_cut_persists_overlay_fields(tmp_path):
+    """The dialog → create_cut path persists overlay fields; they
+    round-trip via ``cut_overlay_fields``."""
     gw = _make_event_gw(tmp_path)
     try:
         cut = gw.create_cut(
@@ -248,17 +196,15 @@ def test_create_cut_persists_overlay_mode_and_fields(tmp_path):
         )
         loaded = gw.cut(cut.id)
         assert loaded is not None
-        assert loaded.overlay_mode == "embedded"
         assert list(gw.cut_overlay_fields(loaded)) == [
             cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1]
     finally:
         gw.close()
 
 
-def test_export_cut_writes_embedded_iptc_when_mode_is_embedded(tmp_path):
-    """An ``embedded`` Cut with the *where* field hits the IPTC writer
-    seam exactly once per shipped file. The pixels stay links so the
-    rest of the show keeps the spec/57 link-pure invariant."""
+def test_export_cut_embeds_where_iptc_and_keeps_links(tmp_path):
+    """A Cut with the *where* field hits the IPTC writer once per shipped
+    file; members stay links (overlays ride the .pte, not the pixels)."""
     gw = _make_event_gw(tmp_path)
     try:
         cut = gw.create_cut(
@@ -268,8 +214,7 @@ def test_export_cut_writes_embedded_iptc_when_mode_is_embedded(tmp_path):
         gw.set_cut_members(cut.id, ["Exported Media/e1.jpg"])
 
         def _prov(_relpath):
-            return cut_overlay.FrameProvenance(
-                city="Tokyo", country="Japan")
+            return cut_overlay.FrameProvenance(city="Tokyo", country="Japan")
 
         iptc_calls: list = []
 
@@ -285,46 +230,9 @@ def test_export_cut_writes_embedded_iptc_when_mode_is_embedded(tmp_path):
         assert result.iptc_written == 1
         assert result.linked == 1 and result.copied == 0
         assert len(iptc_calls) == 1
-        path, tags = iptc_calls[0]
-        # The IPTC tag set matches the spec/32 §2c where mapping.
+        _path, tags = iptc_calls[0]
         assert tags[cut_overlay.IPTC_CITY] == "Tokyo"
         assert tags[cut_overlay.IPTC_COUNTRY] == "Japan"
-    finally:
-        gw.close()
-
-
-def test_export_cut_burns_pixels_when_mode_is_burn_in(tmp_path):
-    """A ``burn_in`` Cut hits the overlay renderer (which emits a
-    COPY, not a link). Pin the copy count + the renderer seam so the
-    spec/114 → spec/107 wiring stays honest."""
-    gw = _make_event_gw(tmp_path)
-    try:
-        cut = gw.create_cut(
-            "show-burn", overlay_mode="burn_in",
-            overlay_fields=[cut_overlay.FIELD_WHERE],
-        )
-        gw.set_cut_members(cut.id, ["Exported Media/e1.jpg"])
-
-        def _prov(_relpath):
-            return cut_overlay.FrameProvenance(city="Tokyo")
-
-        renderer_calls: list = []
-
-        def _renderer(src, dst, fields, prov):
-            renderer_calls.append(
-                (Path(src), Path(dst), tuple(fields), prov))
-            dst.write_bytes(b"BURNED")
-
-        result = export_cut(
-            gw, gw.cut(cut.id), event_root=tmp_path,
-            separators_on=False,
-            provenance_resolver=_prov, overlay_renderer=_renderer,
-        )
-        assert result.burned_in == 1
-        assert result.linked == 0 and result.copied == 1
-        assert len(renderer_calls) == 1
-        _src, _dst, fields, _prov = renderer_calls[0]
-        assert fields == (cut_overlay.FIELD_WHERE,)
     finally:
         gw.close()
 
@@ -335,25 +243,18 @@ def test_export_cut_burns_pixels_when_mode_is_burn_in(tmp_path):
 
 
 def test_cross_event_create_cut_persists_overlay(tmp_path):
-    """spec/114 §4 — the same dialog (with ``INVENTORY_LIBRARY``)
-    drives ``LibraryGateway.create_cross_event_cut``; the new column
-    + the existing ``overlay_*`` kwargs persist the overlay. Pin both
-    sides so a future divergence stays caught."""
+    """The cross-event path persists the overlay fields the same way."""
     us = UserStore.create(
         tmp_path / "mira.db", app_version="t", created_at=NOW)
     try:
         lg = LibraryGateway(us, now=lambda: NOW)
         cut = lg.create_cross_event_cut(
             "share",
-            overlay_mode="burn_in",
+            overlay_mode="embedded",
             overlay_fields=[cut_overlay.FIELD_HOW2],
         )
         loaded = lg.cross_event_cut(cut.id)
         assert loaded is not None
-        assert loaded.overlay_mode == "burn_in"
-        # The library gateway reads its fields from JSON column;
-        # consume the same list to stay symmetrical with the per-event
-        # gateway's ``cut_overlay_fields``.
         import json as _json
         assert _json.loads(loaded.overlay_fields_json) == [
             cut_overlay.FIELD_HOW2]
@@ -362,12 +263,11 @@ def test_cross_event_create_cut_persists_overlay(tmp_path):
 
 
 def test_cross_event_dialog_emits_overlay_in_composition(qapp):
-    """The cross-event surface uses the same NewRecipeDialog under
-    ``INVENTORY_LIBRARY``. The contract is identical: pick mode +
-    fields, composition carries them."""
+    """The cross-event surface uses the same dialog under
+    ``INVENTORY_LIBRARY``; checking a field carries it into the
+    composition identically."""
     dlg = _dialog(qapp, inventory=INVENTORY_LIBRARY)
     try:
-        dlg._overlay_mode_combo.setCurrentIndex(1)
         dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
         pres = dlg.composition()["presentation"]
         assert pres["overlay_mode"] == "embedded"
@@ -377,24 +277,19 @@ def test_cross_event_dialog_emits_overlay_in_composition(qapp):
 
 
 # --------------------------------------------------------------------- #
-# 6. Regression — the pre-spec/114 composition schema is unchanged when
-# the user never touches overlay (the dialog's other tests rely on this)
+# 6. Regression — composition schema unchanged when overlay untouched
 # --------------------------------------------------------------------- #
 
 
 def test_composition_schema_unchanged_when_overlay_untouched(qapp):
-    """Pin the legacy presentation block exactly so the other dialog
-    tests (and external consumers like the recipe adapter) keep reading
-    the same keys. spec/114 only adds two keys; both stay absent when
-    the user keeps overlay Off."""
+    """The presentation block keeps its legacy keys and omits the overlay
+    keys when no field is checked (external consumers rely on this)."""
     dlg = _dialog(qapp)
     try:
         pres = dlg.composition()["presentation"]
-        # Required keys (the pre-spec/114 surface).
         assert "photo_s" in pres
         assert "music_category" in pres
         assert "aspect" in pres
-        # Overlay keys absent in the Off / default state.
         assert "overlay_mode" not in pres
         assert "overlay_fields" not in pres
     finally:
@@ -407,12 +302,8 @@ def test_composition_schema_unchanged_when_overlay_untouched(qapp):
 
 
 def test_overlay_field_chips_are_qcheckboxes(qapp):
-    """spec/119 — the overlay-field selectors carry an OS-native
-    checkbox indicator instead of the legacy ``pill_toggle``
-    QPushButton (whose ``#OverlayFieldChip`` object name overrode
-    ``#PillToggle`` and silently defeated spec/113's accent-fill
-    QSS). The role reuses ``DaysTableCheck`` so the box matches the
-    dialog's other real checkboxes."""
+    """The overlay-field selectors carry an OS-native checkbox indicator
+    (spec/119) and reuse the ``DaysTableCheck`` role."""
     from PyQt6.QtWidgets import QCheckBox
     dlg = _dialog(qapp)
     try:
@@ -425,19 +316,13 @@ def test_overlay_field_chips_are_qcheckboxes(qapp):
 
 def test_overlay_fields_keep_canonical_order_regardless_of_click_order(qapp):
     """``_on_overlay_field_toggled`` rebuilds the list from
-    :data:`core.cut_overlay.OVERLAY_FIELDS`, not click order. Click
-    the chips out of order — the composition still reads in the
-    canonical sequence."""
+    :data:`core.cut_overlay.OVERLAY_FIELDS`, not click order."""
     dlg = _dialog(qapp)
     try:
-        dlg._overlay_mode_combo.setCurrentIndex(1)        # Embedded
-        # Click in REVERSE-canonical order so a click-order bug would
-        # show up as the inverse list.
         dlg._overlay_field_chips[cut_overlay.FIELD_HOW2].setChecked(True)
         dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
         dlg._overlay_field_chips[cut_overlay.FIELD_WHEN].setChecked(True)
         pres = dlg.composition()["presentation"]
-        # Canonical order: WHEN < WHERE < HOW1 < HOW2.
         assert pres["overlay_fields"] == [
             cut_overlay.FIELD_WHEN,
             cut_overlay.FIELD_WHERE,
@@ -447,52 +332,15 @@ def test_overlay_fields_keep_canonical_order_regardless_of_click_order(qapp):
         dlg.deleteLater()
 
 
-def test_mode_off_disables_field_checkboxes_keeping_their_checks(qapp):
-    """spec/119 + spec/114 — flipping the mode to Off must DISABLE the
-    field checkboxes (visibly grey) but keep their checked state, so
-    flipping back to Embedded restores the user's picks instantly.
-    The chip-as-QCheckBox conversion preserves this gesture verbatim."""
-    dlg = _dialog(qapp)
-    try:
-        dlg._overlay_mode_combo.setCurrentIndex(1)        # Embedded
-        dlg._overlay_field_chips[cut_overlay.FIELD_WHERE].setChecked(True)
-        dlg._overlay_field_chips[cut_overlay.FIELD_HOW1].setChecked(True)
-        # Enabled in Embedded.
-        for chip in dlg._overlay_field_chips.values():
-            assert chip.isEnabled() is True
-        # Off → disabled, but checks ride.
-        dlg._overlay_mode_combo.setCurrentIndex(0)
-        for key, chip in dlg._overlay_field_chips.items():
-            assert chip.isEnabled() is False, key
-        assert dlg._overlay_field_chips[
-            cut_overlay.FIELD_WHERE].isChecked() is True
-        assert dlg._overlay_field_chips[
-            cut_overlay.FIELD_HOW1].isChecked() is True
-        # Flip back — re-enabled, still checked, composition surfaces
-        # the original picks.
-        dlg._overlay_mode_combo.setCurrentIndex(1)
-        for chip in dlg._overlay_field_chips.values():
-            assert chip.isEnabled() is True
-        pres = dlg.composition()["presentation"]
-        assert pres["overlay_mode"] == "embedded"
-        assert pres["overlay_fields"] == [
-            cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1]
-    finally:
-        dlg.deleteLater()
-
-
 def test_prefill_pre_checks_the_right_field_checkboxes(qapp):
-    """spec/119 — Edit-mode prefill: the saved overlay_fields land on
-    the matching QCheckboxes with their ``isChecked()`` flag set so
-    the user sees the OS-native indicator on entry (no more "did I
-    select that?" guessing the spec/113 cycles tried to fix)."""
+    """Edit-mode prefill: the saved overlay_fields land checked on the
+    matching QCheckBoxes."""
     dlg = _dialog(
-        qapp, overlay_mode="embedded",
+        qapp,
         overlay_fields=[cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1])
     try:
         for key, chip in dlg._overlay_field_chips.items():
-            want = key in (cut_overlay.FIELD_WHERE,
-                           cut_overlay.FIELD_HOW1)
+            want = key in (cut_overlay.FIELD_WHERE, cut_overlay.FIELD_HOW1)
             assert chip.isChecked() is want, key
     finally:
         dlg.deleteLater()

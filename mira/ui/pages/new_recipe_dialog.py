@@ -1759,18 +1759,14 @@ class NewRecipeDialog(QDialog):
             (ctx.music_category or None) if ctx.music_category else None
         )
 
-        # spec/114 — overlay picker. The vocabulary + prefill ride the
-        # ctx; the mode combo + field multi-select sit beside the
-        # music + aspect controls in the Runtime row. ``_overlay_mode``
-        # is ``None`` when Off, ``'embedded'`` or ``'burn_in'`` when
-        # the user opts in.
+        # spec/153 — overlay picker is just the field flags now (no mode
+        # combo; burn-in retired). ``_overlay_mode`` stays ``"embedded"``
+        # internally so the export path is unchanged; the FIELDS decide
+        # what shows (empty = nothing).
         self._overlay_field_options: List = list(
             ctx.overlay_field_options or ())
         self._overlay_fields: List[str] = list(ctx.overlay_fields or ())
-        self._overlay_mode: Optional[str] = (
-            ctx.overlay_mode
-            if ctx.overlay_mode in ("embedded", "burn_in") else None
-        )
+        self._overlay_mode: Optional[str] = "embedded"
         # Chip-by-key so the multi-select can toggle individual fields
         # without rebuilding the row. Populated in the runtime row
         # builder; readers tolerate ``None`` for surfaces that hide the
@@ -3188,34 +3184,23 @@ class NewRecipeDialog(QDialog):
         return host
 
     def _build_overlay_box(self) -> QWidget:
-        """spec/114 — the Overlay mode combo + the field multi-select
-        chips. Built as a single QWidget so the surrounding Runtime row
-        slots it like the music / aspect blocks."""
+        """spec/153 — the overlay control is just the field flags
+        (When / Where / Camera / Exposure). No mode picker: overlays are
+        on when ≥1 flag is checked, off when none. (The old Off / Embedded
+        / Burn-in combo is gone — burn-in is retired; the generated PTE
+        always carries the fields as separate :Text objects.) Built as a
+        single QWidget so the Runtime row slots it like the music / aspect
+        blocks."""
         box = QWidget()
         ob = QVBoxLayout(box)
         ob.setContentsMargins(0, 0, 0, 0)
         ob.setSpacing(2)
         ob.addWidget(QLabel(tr("Overlays")))
 
-        self._overlay_mode_combo = QComboBox()
-        self._overlay_mode_combo.setObjectName("RuntimeOverlayModeCombo")
-        self._overlay_mode_combo.setToolTip(tr(
-            "Overlay mode — Off shows nothing on slides; Embedded "
-            "writes the selected fields as JPEG metadata (link-pure "
-            "for everything except *where*); Burn-in draws them into "
-            "the pixels of a rendered copy."))
-        self._overlay_mode_combo.addItem(tr("Off"), userData=None)
-        self._overlay_mode_combo.addItem(tr("Embedded"), userData="embedded")
-        self._overlay_mode_combo.addItem(tr("Burn-in"), userData="burn_in")
-        if self._overlay_mode == "embedded":
-            self._overlay_mode_combo.setCurrentIndex(1)
-        elif self._overlay_mode == "burn_in":
-            self._overlay_mode_combo.setCurrentIndex(2)
-        else:
-            self._overlay_mode_combo.setCurrentIndex(0)
-        self._overlay_mode_combo.currentIndexChanged.connect(
-            self._on_overlay_mode_changed)
-        ob.addWidget(self._overlay_mode_combo)
+        # spec/153 — there is one overlay behaviour now (separate PTE text);
+        # ``overlay_mode`` stays ``embedded`` internally so the export path
+        # is unchanged, but the user never picks it.
+        self._overlay_mode = "embedded"
 
         # Fields row — one :class:`QCheckBox` per ``(key, label)`` pair.
         # spec/119: the old ``pill_toggle`` returned a checkable
@@ -3243,16 +3228,7 @@ class NewRecipeDialog(QDialog):
             self._overlay_field_chips[str(key)] = chip
             chips_flow.addWidget(chip)
         ob.addWidget(chips_host)
-        self._sync_overlay_fields_enabled()
         return box
-
-    def _on_overlay_mode_changed(self, _index: int) -> None:
-        """spec/114 — mode picker changed. Off disables the field
-        pills; the saved field list survives so the user can flip back
-        without re-picking everything."""
-        data = self._overlay_mode_combo.currentData()
-        self._overlay_mode = data if data in ("embedded", "burn_in") else None
-        self._sync_overlay_fields_enabled()
 
     def _on_overlay_field_toggled(self, _checked: bool = False) -> None:
         """spec/114 — read the active field set off the chips so the
@@ -3264,15 +3240,6 @@ class NewRecipeDialog(QDialog):
             if chip.isChecked()
         }
         self._overlay_fields = [k for k in _co.OVERLAY_FIELDS if k in keys]
-
-    def _sync_overlay_fields_enabled(self) -> None:
-        """When mode = Off the field chips grey out (the saved checks
-        stay so the user can flip back without losing the picks).
-        Touches both ``isEnabled`` and the focus policy so a disabled
-        chip doesn't steal tab focus."""
-        enabled = self._overlay_mode in ("embedded", "burn_in")
-        for chip in self._overlay_field_chips.values():
-            chip.setEnabled(enabled)
 
     # -------- Separators + card-style control (spec/143) ------------- #
 
@@ -4259,36 +4226,21 @@ class NewRecipeDialog(QDialog):
                 if idx >= 0:
                     self._aspect_combo.setCurrentIndex(idx)
                 self._aspect_combo.blockSignals(False)
-            # spec/114 — load the Cut's overlay mode + fields into the
-            # picker. Unknown modes fall back to Off; unknown field
-            # keys are dropped (the canonical
-            # :data:`OVERLAY_FIELDS` ordering enforces the surviving
-            # set). The chip lookup tolerates a host that didn't wire
-            # the vocabulary (the multi-select isn't rendered then).
-            mode = presentation.get("overlay_mode")
-            self._overlay_mode = (
-                mode if mode in ("embedded", "burn_in") else None)
+            # spec/153 — load the Cut's overlay FIELDS into the picker;
+            # the mode is always ``embedded`` now (burn-in retired).
+            # Unknown field keys are dropped (the canonical
+            # :data:`OVERLAY_FIELDS` ordering enforces the surviving set).
+            self._overlay_mode = "embedded"
             from core import cut_overlay as _co
             valid = set(_co.OVERLAY_FIELDS)
             self._overlay_fields = [
                 str(k) for k in (presentation.get("overlay_fields") or ())
                 if str(k) in valid
             ]
-            if hasattr(self, "_overlay_mode_combo"):
-                self._overlay_mode_combo.blockSignals(True)
-                if self._overlay_mode == "embedded":
-                    self._overlay_mode_combo.setCurrentIndex(1)
-                elif self._overlay_mode == "burn_in":
-                    self._overlay_mode_combo.setCurrentIndex(2)
-                else:
-                    self._overlay_mode_combo.setCurrentIndex(0)
-                self._overlay_mode_combo.blockSignals(False)
             for key, chip in self._overlay_field_chips.items():
                 chip.blockSignals(True)
                 chip.setChecked(key in self._overlay_fields)
                 chip.blockSignals(False)
-            if hasattr(self, "_overlay_mode_combo"):
-                self._sync_overlay_fields_enabled()
             # spec/143 — load the Cut's separator on/off + card-style
             # choice into the picker. An absent ``separators`` key keeps
             # the dialog's current value (True / new-cut default); an
@@ -4705,14 +4657,12 @@ class NewRecipeDialog(QDialog):
             "separators": bool(self._separators),
             "card_style": self._card_style,
         }
-        # spec/114 — overlay mode + fields. Emitted only when the user
-        # opted in (mode != Off); recipe_to_cut_draft tolerates the
-        # omission and treats it as Off, identical to today's
-        # behaviour. The fields are reset to ``[]`` when mode = Off so
-        # the round-trip can't smuggle stale picks through a "no
-        # overlay" composition.
-        if self._overlay_mode in ("embedded", "burn_in"):
-            out["overlay_mode"] = self._overlay_mode
+        # spec/153 — overlays are driven by the field flags (no mode
+        # picker; burn-in retired). Emit the keys only when ≥1 field is
+        # checked; an empty selection means "no overlay" and omits both,
+        # matching the legacy Off shape recipe_to_cut_draft tolerates.
+        if self._overlay_fields:
+            out["overlay_mode"] = "embedded"
             out["overlay_fields"] = list(self._overlay_fields)
         # spec/152 §3 — emit transition_ms ONLY when the user actually
         # overrode the global default. Omitting it (the common case)

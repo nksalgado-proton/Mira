@@ -179,8 +179,8 @@ def test_embedded_overlay_writes_where_iptc_keeps_links(gw, tmp_path):
     result = export_cut(
         gw, cut, event_root=tmp_path, separators_on=False,
         provenance_resolver=prov, iptc_writer=iptc)
-    # members stayed hardlinks (no burn-in copies), and where-IPTC was written
-    assert result.linked == 1 and result.copied == 0 and result.burned_in == 0
+    # members stayed hardlinks (overlays ride the .pte), where-IPTC was written
+    assert result.linked == 1 and result.copied == 0
     assert result.iptc_written == 1
     assert written and written[0][1] == {
         cut_overlay.IPTC_CITY: "Arenal",
@@ -200,27 +200,6 @@ def test_embedded_overlay_no_where_data_stays_pure_link(gw, tmp_path):
     # 'where' not selected → no IPTC write, frame stays a pure link
     assert result.iptc_written == 0 and calls == []
     assert result.linked == 1
-
-
-def test_burn_in_overlay_emits_copies_not_links(gw, tmp_path):
-    gw.update_cut_settings("cut-s", overlay_fields_json='["where"]',
-                           overlay_mode="burn_in")
-    gw.set_cut_members("cut-s", ["Exported Media/e1.jpg", "Exported Media/e2.jpg"])
-    cut = gw.cut("cut-s")
-    rendered = []
-
-    def render(src, dst, fields, prov):
-        rendered.append(dst.name)
-        dst.write_bytes(b"BURNED:" + src.name.encode())
-
-    result = export_cut(
-        gw, cut, event_root=tmp_path, separators_on=False,
-        provenance_resolver=lambda r: cut_overlay.FrameProvenance(city="Arenal"),
-        overlay_renderer=render)
-    assert result.burned_in == 2 and result.linked == 0
-    assert result.copied == 2          # burned-in members are copies, not links
-    assert len(rendered) == 2
-    assert (result.folder / "001_e1.jpg").read_bytes().startswith(b"BURNED:")
 
 
 def test_overlays_cost_no_budget(gw, tmp_path):

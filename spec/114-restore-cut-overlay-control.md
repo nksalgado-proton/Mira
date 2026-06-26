@@ -1,5 +1,11 @@
 # 114 — Restore the overlay control in the Cut composition dialog
 
+> **Simplified by spec/153 (2026-06-26):** the Off / Embedded / Burn-in
+> mode combo described here is **removed**. The overlay control is now just
+> the field flags (When / Where / Camera / Exposure) — overlays are on when
+> ≥1 flag is checked, off when none; `overlay_mode` is fixed at `embedded`
+> internally. Burn-in is retired (no pixel renderer). See spec/153.
+
 **Status: SHIPPED (Nelson 2026-06-22). `NewRecipeContext` gained
 `overlay_field_options` / `overlay_mode` / `overlay_fields` (mirrors the
 spec/106 music pattern). `NewRecipeDialog._build_overlay_box` renders, in

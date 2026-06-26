@@ -265,7 +265,6 @@ def publish_cut(
     separator_writer=None,
     opener_writer=None,
     provenance_resolver=None,
-    overlay_renderer=None,
     iptc_writer=None,
 ) -> PublishResult:
     """Publish an event-scope Cut (spec/76 §B.3).
@@ -289,7 +288,6 @@ def publish_cut(
         separator_writer=separator_writer,
         opener_writer=opener_writer,
         provenance_resolver=provenance_resolver,
-        overlay_renderer=overlay_renderer,
         iptc_writer=iptc_writer,
     )
     manifest = _build_manifest(
@@ -300,7 +298,7 @@ def publish_cut(
     _atomic_write_json(manifest_path, manifest)
     summary = {
         "linked": result.linked, "copied": result.copied,
-        "burned_in": result.burned_in, "iptc_written": result.iptc_written,
+        "iptc_written": result.iptc_written,
         "separators": result.separators, "audio_files": result.audio_files,
         "audio_short": result.audio_short,
         "missing": list(result.missing),

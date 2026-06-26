@@ -1,6 +1,6 @@
 # 153 — PTE separate-text overlays (photo info + separators)
 
-**Status: IN PROGRESS (Nelson 2026-06-26). The generated `.pte` carries
+**Status: SHIPPED (Nelson 2026-06-26). The generated `.pte` carries
 the photo-info and day-separator text as *separate PTE `:Text` objects*
 layered over the slide image — not baked into pixels — so the user can
 swap the image underneath in PTE AV Studio (e.g. replace a flat separator

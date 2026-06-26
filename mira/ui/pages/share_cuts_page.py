@@ -2905,6 +2905,9 @@ class ShareCutsPage(QWidget):
                     entry.name, cut.tag)
                 continue
             if suffix in (".jpg", ".jpeg", ".png"):
+                # spec/153 — heal stale baked opener/separator cards from a
+                # pre-flat export so the new :Text isn't laid over old text.
+                self._reflatten_card_image(entry, stripped, card_text_ctx)
                 members.append(PteMember(
                     kind="photo", path=entry,
                     texts=self._pte_slide_texts(
@@ -3074,7 +3077,11 @@ class ShareCutsPage(QWidget):
     def _pte_card_text_context(self, cut) -> dict:
         """spec/153 — resolve the inputs the per-slide separate-text
         overlays need, once per PTE generation: the day plan (separator
-        title/sub) and the show title + facts (opener)."""
+        title/sub), the show title + facts (opener), AND the flat-card
+        render inputs (aspect / height / style) so the generator can
+        re-flatten any stale baked card image it finds (self-healing on
+        a PTE regenerate, not just a full re-export)."""
+        from core.cut_aspect import aspect_dimensions, normalise
         from mira.ui.shared.separator_card import cut_opener_lines
         eg = self._eg
         day_meta = {d.day_number: d for d in eg.trip_days()}
@@ -3088,8 +3095,40 @@ class ShareCutsPage(QWidget):
                 if ln]
         except Exception:                                          # noqa: BLE001
             log.exception("opener lines failed for cut %s", cut.tag)
+        aspect = normalise(getattr(cut, "aspect", "16:9"))
+        _, canvas_h = aspect_dimensions(aspect)
         return dict(day_meta=day_meta, opener_tag=opener_tag,
-                    opener_lines=opener_lines)
+                    opener_lines=opener_lines,
+                    aspect=aspect, canvas_h=canvas_h,
+                    card_style=eg.cut_card_style(cut), cut_id=cut.id)
+
+    def _reflatten_card_image(self, entry: Path, stripped: str,
+                              ctx: dict) -> None:
+        """spec/153 — overwrite a card-slide image (opener / day separator
+        / undated) with a flat, text-less background so a regenerated
+        ``.pte`` never shows STALE baked text under the new ``:Text``
+        objects. Card images are generated (never hardlinks), so
+        overwriting is safe; real photos are left untouched. Failures are
+        logged, not fatal."""
+        from mira.ui.shared.separator_card import render_flat_background
+        lower = stripped.lower()
+        if lower == "opener.jpg":
+            seed = ctx["cut_id"]
+        elif lower == "undated.jpg":
+            seed = f"{ctx['cut_id']}:None"
+        elif (lower.startswith("day") and lower.endswith(".jpg")
+                and lower[3:-4].isdigit()):
+            seed = f"{ctx['cut_id']}:{int(lower[3:-4])}"
+        else:
+            return  # not a card slide — leave real photos alone
+        try:
+            img = render_flat_background(
+                aspect=ctx["aspect"], height=ctx["canvas_h"],
+                card_style=ctx["card_style"], seed_key=seed)
+            if not img.save(str(entry), "JPG", 92):
+                raise OSError(f"could not write {entry}")
+        except Exception:                                          # noqa: BLE001
+            log.exception("re-flatten card failed for %s", entry)
 
     def _pte_slide_texts(self, cut, stripped: str, entry: Path,
                          overlay_lookup: Dict[str, str], *, ctx: dict):

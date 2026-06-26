@@ -340,14 +340,23 @@ def test_time_label_reflects_played_and_total(qapp, gw, tmp_path):
 
 
 def test_play_icon_toggles_on_pause(qapp, gw, tmp_path):
-    """The transport's ▶/⏸ glyph flips with the pause state."""
+    """The transport play/pause state flips with the pause state.
+
+    spec/152 §X — the dialog now uses the canonical
+    :func:`transport_button` (SVG line-icon, theme-tinted) instead of
+    the legacy Unicode ▶/⏸ glyph pair. The visible state lives on the
+    button's ``_playing`` flag (an underscore attribute by design —
+    :func:`set_transport_playing` is the public flip), so the test
+    asserts that instead of widget text."""
     p = _player(gw, tmp_path)
     p.start()
-    assert p._btn_play.text() == "⏸"
+    # _player.start() runs in not-paused mode → button shows the
+    # "playing" icon (pause glyph).
+    assert getattr(p._btn_play, "_playing", None) is True
     p._toggle_pause()
-    assert p._btn_play.text() == "▶"
+    assert getattr(p._btn_play, "_playing", None) is False
     p._toggle_pause()
-    assert p._btn_play.text() == "⏸"
+    assert getattr(p._btn_play, "_playing", None) is True
 
 
 def test_stop_button_finishes_and_stops_timers(qapp, gw, tmp_path):

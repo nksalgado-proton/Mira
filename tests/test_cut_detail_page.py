@@ -9,6 +9,7 @@ freshness).
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 import pytest
 
@@ -161,3 +162,35 @@ def test_adjust_emits_cut_id(qapp, gw, tmp_path):
     page.adjust_requested.connect(got.append)
     page.adjust_requested.emit(page._cut_id)
     assert got == ["cut-s"]
+
+
+def test_video_tile_routes_through_thumb_cache_not_photo_cache(
+        qapp, gw, tmp_path):
+    """spec/152 §X — video cells must NOT go through the image-only
+    ``photo_cache`` (PIL can't decode mp4 — the cell would render
+    forever-blank). They route through a ``_VideoThumbWorker`` that
+    extracts the first frame via ``thumb_cache.ensure_thumb`` and
+    THEN feeds the resulting JPEG into the photo_cache."""
+    page = CutDetailPage()
+    asked_paths: list = []
+    page._cache.request_scaled_pixmap = (
+        lambda path, target, priority=0: asked_paths.append(Path(path)))
+    gw.set_cut_members("cut-s", [
+        "Exported Media/e1.jpg",
+        "Exported Media/v1.mp4",
+    ])
+    page.show_cut(
+        gw, gw.cut("cut-s"), separators_on=False, aspect="16:9")
+    # The photo is asked through the image cache.
+    assert any(p.name == "e1.jpg" for p in asked_paths)
+    # The video is NOT — the prior bug was passing the .mp4 here and
+    # getting a "cannot identify image file" silently logged.
+    assert not any(p.suffix.lower() == ".mp4" for p in asked_paths), (
+        "spec/152 §X: the mp4 must never reach the photo cache; "
+        "blank tile regression. Asked paths: "
+        f"{[p.name for p in asked_paths]}"
+    )
+    # The video has a worker in flight (extraction pending) — proof
+    # the routing did fire the thumb-cache pipeline.
+    video_abs = tmp_path / "Exported Media/v1.mp4"
+    assert video_abs in page._video_thumb_in_flight

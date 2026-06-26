@@ -1415,6 +1415,44 @@ QPushButton#TransportButton {
     padding: 4px 0;
 }
 
+/* ── Cut play rehearsal (spec/152 §X) ─────────────────────────────
+ * The full-screen Cut rehearsal dialog (mira/ui/shared/cut_play.py).
+ * Five roles total — the dialog frame + transport follow the active
+ * theme; the slideshow canvas keeps a forced black background so
+ * photos always paint against neutral dark regardless of theme;
+ * the overlay / missing / hover labels sit ON the canvas and so
+ * carry a slideshow-specific white-on-translucent-black treatment
+ * that doesn't theme.
+ */
+QWidget#CutPlayCanvas {
+    background-color: #000000;
+}
+
+QFrame#CutPlayTransport {
+    background-color: {base};
+    border-top: 1px solid {border_subtle};
+}
+
+QLabel#CutPlayOverlay {
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 150);
+    padding: 8px 12px;
+    font-size: 14px;
+    border-radius: 6px;
+}
+
+QLabel#CutPlayMissing {
+    color: #cccccc;
+    background-color: transparent;
+}
+
+QLabel#CutPlayHoverPreview {
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 220);
+    border: 1px solid rgba(255, 255, 255, 90);
+    padding: 4px;
+}
+
 /* ── MEDIA host state border (spec/42 Nelson 2026-06-04) ──────
  * The canonical photo-border-as-state lives at the BaseSurface
  * MEDIA host so EVERY surface (photo cull, video cull, future

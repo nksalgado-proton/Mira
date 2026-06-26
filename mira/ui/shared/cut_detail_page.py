@@ -25,7 +25,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QObject, QRunnable, QSize, Qt, QThreadPool, pyqtSignal,
+)
 from PyQt6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QFrame,
@@ -63,6 +65,71 @@ _CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 #: Full-size card height for the single view (the grid thumb would be
 #: blurry — cards render fresh, Nelson eyeball 2026-06-12).
 _CARD_FULL_HEIGHT = 1080
+
+#: Position (in ms) for the video poster frame the Cut grid renders.
+#: Zero asks for the actual first frame the user filmed; the thumb-cache
+#: ladder falls through to ``_VIDEO_THUMB_FALLBACK_MS`` if it reads black.
+_VIDEO_THUMB_POSITION_MS = 0
+_VIDEO_THUMB_FALLBACK_MS = 1000
+
+#: ``thumb_cache.ensure_thumb`` item id for the Cut detail grid. Distinct
+#: from ``"daygrid"`` (the Picker's poster) so a customised first-frame
+#: extraction here doesn't collide with whatever the Picker decided to
+#: cache.
+_VIDEO_THUMB_ITEM_ID = "cutgrid"
+
+
+class _VideoThumbSignals(QObject):
+    """Cross-thread bridge for the QRunnable video-thumb workers.
+
+    ``QRunnable`` itself isn't a ``QObject`` so it can't carry signals;
+    this tiny helper holds them and lives on the GUI thread. Workers
+    emit through it, the slot runs back on the GUI thread."""
+
+    thumb_ready = pyqtSignal(object, object)   # (video_abs, thumb_path)
+    thumb_failed = pyqtSignal(object)          # (video_abs,)
+
+
+class _VideoThumbWorker(QRunnable):
+    """Background ffmpeg invocation to materialise a video's first-frame
+    poster. Runs ``thumb_cache.ensure_thumb`` (which spawns ffmpeg
+    synchronously) on a thread-pool worker so the GUI thread stays
+    responsive even when the Cut carries dozens of clips. The cache is
+    keyed by the source path so subsequent visits re-use the same JPEG
+    in milliseconds."""
+
+    def __init__(
+        self,
+        signals: _VideoThumbSignals,
+        *,
+        event_root: Path,
+        video_abs: Path,
+        source_rel_path: Path,
+    ) -> None:
+        super().__init__()
+        self._signals = signals
+        self._event_root = event_root
+        self._video_abs = video_abs
+        self._source_rel_path = source_rel_path
+
+    def run(self) -> None:                             # noqa: D401 — QRunnable slot
+        from core.thumb_cache import ensure_thumb
+        try:
+            out = ensure_thumb(
+                event_root=self._event_root,
+                source_video=self._video_abs,
+                source_rel_path=self._source_rel_path,
+                item_id=_VIDEO_THUMB_ITEM_ID,
+                position_ms=_VIDEO_THUMB_POSITION_MS,
+                fallback_position_ms=_VIDEO_THUMB_FALLBACK_MS,
+            )
+        except Exception:                              # noqa: BLE001
+            log.warning(
+                "cut grid: video thumb extraction failed for %s",
+                self._video_abs, exc_info=True)
+            self._signals.thumb_failed.emit(self._video_abs)
+            return
+        self._signals.thumb_ready.emit(self._video_abs, Path(out))
 
 
 class CutDetailPage(QWidget):
@@ -105,6 +172,22 @@ class CutDetailPage(QWidget):
         from mira.ui.media.photo_cache import photo_cache
         self._cache = photo_cache()
         self._cache.scaled_pixmap_ready.connect(self._on_thumb_ready)
+        # spec/152 §X — first-frame poster extraction for video tiles.
+        # The photo_cache can't decode mp4, so videos used to render as
+        # blank tiles until the user opened them. We now extract their
+        # first frame via ``thumb_cache.ensure_thumb`` on a thread-pool
+        # worker, then route the resulting JPEG through the same scaled
+        # cache photos use; the existing ``_on_thumb_ready`` slot then
+        # paints it into the grid cell.
+        self._video_thumb_signals = _VideoThumbSignals(self)
+        self._video_thumb_signals.thumb_ready.connect(
+            self._on_video_thumb_ready)
+        self._video_thumb_signals.thumb_failed.connect(
+            self._on_video_thumb_failed)
+        # Track which videos already have a worker in flight so a
+        # second ``_request_missing_thumbs`` (e.g. on grid re-entry)
+        # doesn't queue a duplicate ffmpeg run.
+        self._video_thumb_in_flight: set[Path] = set()
 
         # spec/94 Phase 3 — Back lives in the shared title bar.
         self.uses_titlebar_back = True
@@ -333,6 +416,10 @@ class CutDetailPage(QWidget):
         self._thumbs = {}
         self._items = []
         self._index_by_abs = {}
+        # spec/152 §X — reset the in-flight tracker too so a re-entry
+        # into a re-populated Cut doesn't think a stale video already
+        # has a worker running.
+        self._video_thumb_in_flight = set()
         for kind, payload in self._entries:
             if kind == "opener":
                 img = render_cut_opener_image(
@@ -427,13 +514,61 @@ class CutDetailPage(QWidget):
 
     def _request_missing_thumbs(self) -> None:
         """Queue async grid-thumb decodes (priority 1) for every file
-        tile without one. Navigation elsewhere may drop queued ones
+        tile without one. Photos go through the image-only photo cache
+        directly; videos route through a thumb-cache extraction worker
+        (ffmpeg writes a first-frame JPEG, then the same scaled cache
+        consumes it). Navigation elsewhere may drop queued ones
         (generation rule) — callers re-invoke on re-entry."""
         for kind, f in self._entries:
-            if kind == "file" and f.export_relpath not in self._thumbs:
-                self._cache.request_scaled_pixmap(
-                    self._root / f.export_relpath, _GRID_THUMB_TARGET,
-                    priority=1)
+            if kind != "file":
+                continue
+            if f.export_relpath in self._thumbs:
+                continue
+            abs_path = self._root / f.export_relpath
+            if getattr(f, "kind", "") == "video":
+                if abs_path in self._video_thumb_in_flight:
+                    continue
+                self._video_thumb_in_flight.add(abs_path)
+                worker = _VideoThumbWorker(
+                    self._video_thumb_signals,
+                    event_root=self._root,
+                    video_abs=abs_path,
+                    source_rel_path=Path(f.export_relpath),
+                )
+                QThreadPool.globalInstance().start(worker)
+                continue
+            self._cache.request_scaled_pixmap(
+                abs_path, _GRID_THUMB_TARGET, priority=1)
+
+    def _on_video_thumb_ready(
+        self, video_abs: object, thumb_path: object,
+    ) -> None:
+        """Worker delivered a poster JPEG for ``video_abs``. Register
+        the JPEG path against the video's grid index so the standard
+        ``_on_thumb_ready`` slot can paint it, then queue the scaled
+        decode through the photo cache."""
+        v_path = Path(video_abs)
+        self._video_thumb_in_flight.discard(v_path)
+        index = self._index_by_abs.get(v_path)
+        if index is None:
+            return
+        jpeg = Path(thumb_path)
+        if not jpeg.exists():
+            return
+        # The thumb-ready callback uses ``_index_by_abs[path]`` to find
+        # the grid cell to paint into — register the JPEG cache path
+        # against the SAME index the video carries so the existing
+        # routing works unchanged.
+        self._index_by_abs[jpeg] = index
+        self._cache.request_scaled_pixmap(
+            jpeg, _GRID_THUMB_TARGET, priority=1)
+
+    def _on_video_thumb_failed(self, video_abs: object) -> None:
+        """ffmpeg refused the source at every rung (corrupt clip,
+        missing codec, …). Drop the in-flight flag so a re-entry can
+        retry; the cell stays blank with its ``cluster_type='video'``
+        badge — same fallback as before this fix."""
+        self._video_thumb_in_flight.discard(Path(video_abs))
 
     def _on_thumb_ready(self, path: Path, _pm: QPixmap, _native) -> None:
         index = self._index_by_abs.get(Path(path))

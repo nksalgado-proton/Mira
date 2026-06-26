@@ -116,25 +116,44 @@ class BlurredPhotoCanvas(QWidget):
             painter.end()
             return
 
+        # spec/152 §X — DPR-aware foreground scale. The pre-fix path
+        # called ``self._pixmap.scaled(avail_logical, …)`` which Qt6
+        # treats as DEVICE pixels and discards the source DPR; on a
+        # HiDPI screen (DPR > 1) the result rendered at half logical
+        # size and then upscaled to fill ``avail``, which the user
+        # read as "the in-line PTE slideshow is sharper than our
+        # Play". We now scale to (avail_logical × screen_DPR) device
+        # pixels and stamp the DPR back so ``drawPixmap`` lays the
+        # result down at full screen resolution.
         pad = self._inner_pad
         avail = QSize(
             max(1, self.width() - pad * 2),
             max(1, self.height() - pad * 2),
         )
+        dpr = self.devicePixelRatioF() or 1.0
+        device_target = QSize(
+            max(1, int(round(avail.width() * dpr))),
+            max(1, int(round(avail.height() * dpr))),
+        )
         scaled = self._pixmap.scaled(
-            avail,
+            device_target,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        x = (self.width() - scaled.width()) // 2
-        y = (self.height() - scaled.height()) // 2
+        scaled.setDevicePixelRatio(dpr)
+        # ``scaled.width()`` is now in DEVICE pixels; convert back to
+        # logical when laying it down so it occupies the right area.
+        logical_w = scaled.width() / dpr
+        logical_h = scaled.height() / dpr
+        x = int((self.width() - logical_w) // 2)
+        y = int((self.height() - logical_h) // 2)
         painter.drawPixmap(x, y, scaled)
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(self.FRAME_COLOR, 1))
         frame = QRectF(
             x + 0.5, y + 0.5,
-            scaled.width() - 1.0, scaled.height() - 1.0,
+            logical_w - 1.0, logical_h - 1.0,
         )
         painter.drawRoundedRect(frame, 3.0, 3.0)
         painter.end()

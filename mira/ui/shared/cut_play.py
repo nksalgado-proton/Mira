@@ -41,13 +41,26 @@ from PyQt6.QtGui import (
     QColor, QImage, QPainter, QPen, QPixmap, QPolygonF)
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFrame, QGraphicsOpacityEffect,
-    QHBoxLayout, QLabel, QSizePolicy, QStackedLayout, QToolButton,
+    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStackedLayout,
     QVBoxLayout, QWidget)
 
 from core import audio_library, cut_overlay
+from mira.ui.base.surface import set_transport_playing, transport_button
+from mira.ui.design import ghost_button
 from mira.ui.design.blurred_photo_canvas import BlurredPhotoCanvas
+from mira.ui.design.inputs import select
 from mira.ui.i18n import tr
 from mira.ui.media.image_loader import load_pixmap
+from mira.ui.palette import PALETTE
+
+
+def _theme_mode() -> str:
+    """Active theme (``'dark'`` / ``'light'``). Mirrors the helper in
+    :mod:`mira.ui.media.transport_bar`; defaults to ``'dark'`` when
+    the QApplication property isn't set yet (early tests)."""
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance()
+    return (app.property("theme") if app else None) or "dark"
 from mira.ui.shared.separator_card import render_separator_image
 
 log = logging.getLogger(__name__)
@@ -137,13 +150,20 @@ class _Scrubber(QWidget):
         cur = self._durations[self._index]
         return prefix + int(cur * self._fraction)
 
+    #: Horizontal inset on each end of the track so the first / last
+    #: chapter diamond (half-width = 5 px) and the playhead's line never
+    #: clip against the widget edge. Picked once here so paint + input
+    #: mapping stay consistent.
+    _SIDE_INSET = 8
+
     def x_to_index_and_offset(self, x: int) -> Tuple[int, int]:
         """Map a pixel x-coordinate to ``(entry_index, ms_inside_entry)``."""
         if not self._durations:
             return 0, 0
-        w = max(1, self.width())
-        x = max(0, min(w - 1, int(x)))
-        target_ms = int(self.total_ms() * x / w)
+        usable = max(1, self.width() - 2 * self._SIDE_INSET)
+        x = max(self._SIDE_INSET,
+                min(self.width() - self._SIDE_INSET - 1, int(x)))
+        target_ms = int(self.total_ms() * (x - self._SIDE_INSET) / usable)
         acc = 0
         for i, d in enumerate(self._durations):
             if acc + d > target_ms:
@@ -176,24 +196,49 @@ class _Scrubber(QWidget):
         r = self.rect()
         track_h = 6
         ty = (r.height() - track_h) // 2
-        # unplayed
-        p.fillRect(QRect(0, ty, r.width(), track_h),
-                   QColor(255, 255, 255, 60))
+
+        # spec/152 §X — theme-aware track + playhead. The transport bar
+        # the scrubber sits in follows the active theme via QSS, so the
+        # scrubber must too. The pre-fix white-with-60-alpha track was
+        # invisible on the light theme's white card background; here we
+        # read the palette so dark theme picks a light track and light
+        # theme picks a dark one.
+        mode = _theme_mode()
+        pal = PALETTE[mode]
+        track_unplayed = QColor(pal["track"])
+        track_played = QColor(pal["ink_soft"])
+        ink = QColor(pal["ink"])
+
+        # Inset so the leftmost / rightmost markers and the playhead's
+        # vertical line never half-clip against the widget edge — the
+        # diamond at index 0 (a Cut whose opener is off but whose first
+        # entry is a day separator) used to sit at sx=0 with half of
+        # the polygon off-screen; same shape with the playhead at the
+        # very start of the show.
+        inset = self._SIDE_INSET
+        usable_w = max(1, r.width() - 2 * inset)
+
+        # Unplayed track.
+        p.fillRect(QRect(inset, ty, usable_w, track_h), track_unplayed)
         if not self._durations:
             p.end()
             return
         total = self.total_ms()
-        # played
-        px = int(r.width() * (self.playhead_ms() / total))
-        p.fillRect(QRect(0, ty, px, track_h),
-                   QColor(255, 255, 255, 210))
+        # Played portion.
+        px = inset + int(usable_w * (self.playhead_ms() / total))
+        played_w = max(0, px - inset)
+        if played_w > 0:
+            p.fillRect(QRect(inset, ty, played_w, track_h), track_played)
         # Chapter markers — soft amber diamonds floating just above the
-        # track (Nelson 2026-06-19). A diamond reads as "bookmark" at a
-        # glance and doesn't visually compete with the playhead's
-        # circle (the earlier 2 px yellow line through the track read
-        # as a stray pen mark whenever the playhead crossed it).
+        # track. A diamond reads as "bookmark" at a glance and doesn't
+        # visually compete with the playhead.
         marker_fill = QColor(244, 184, 96, 245)        # warm amber
-        marker_stroke = QColor(28, 22, 14, 170)        # near-black, soft
+        # Stroke darkens on light theme (dark slate) so the diamond
+        # has a visible outline on the white transport background.
+        marker_stroke = (
+            QColor(28, 22, 14, 170) if mode == "dark"
+            else QColor(120, 80, 30, 200)
+        )
         marker_pen = QPen(marker_stroke, 1.0)
         marker_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         half = 5
@@ -202,7 +247,7 @@ class _Scrubber(QWidget):
             if i >= len(self._durations):
                 continue
             t = sum(self._durations[:i])
-            sx = int(r.width() * t / total)
+            sx = inset + int(usable_w * t / total)
             diamond = QPolygonF([
                 QPointF(sx, cy - half),
                 QPointF(sx + half, cy),
@@ -219,11 +264,19 @@ class _Scrubber(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(marker_fill)
             p.drawRect(QRect(sx - 1, ty - 1, 2, track_h + 2))
-        # playhead
-        p.setPen(QPen(QColor(255, 255, 255, 240), 2))
+        # Playhead — a slim vertical line (no circle thumb), matching
+        # the Edit surface's MarkerTimeline. The black halo gives it
+        # contrast on both themes: invisible on dark, visible on light;
+        # the ``ink``-coloured core reads on both.
+        halo_color = QColor(0, 0, 0, 180)
+        halo = QPen(halo_color)
+        halo.setWidth(3)
+        p.setPen(halo)
         p.drawLine(px, ty - 6, px, ty + track_h + 6)
-        p.setBrush(QColor(255, 255, 255, 255))
-        p.drawEllipse(QPoint(px, ty + track_h // 2), 6, 6)
+        core = QPen(ink)
+        core.setWidth(1)
+        p.setPen(core)
+        p.drawLine(px, ty - 6, px, ty + track_h + 6)
         p.end()
 
     # ── input ────────────────────────────────────────────────────────
@@ -298,10 +351,11 @@ class CutPlayerDialog(QDialog):
         # start() then exec(), and applying modality to an already-visible
         # window is unreliable on Windows (owner left half-disabled).
         self.setModal(True)
-        self.setStyleSheet("background-color: black;")  # pragma: no-qss
-        # the show's canvas — a deliberate exception to the no-inline rule: this
-        # surface is the slideshow itself, not app chrome, and must stay black in
-        # any theme.
+        # The dialog itself uses the active theme — no inline override.
+        # Only the slideshow canvas (the ``CutPlayCanvas`` stack widget
+        # below) carries a forced black background via QSS so photos
+        # paint against a neutral dark regardless of theme; everything
+        # else (transport chrome, dialog frame) follows the theme.
         self._entries = list(entries)
         self._root = Path(event_root)
         self._resolve_path = resolve_path
@@ -363,6 +417,14 @@ class CutPlayerDialog(QDialog):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         self._stack_widget = QWidget(self)
+        # spec/152 §X — the slideshow canvas. ``CutPlayCanvas`` is the
+        # one role with a forced black background (defined in QSS) so
+        # photos always paint against a neutral dark surface even when
+        # the active theme is light. WA_StyledBackground lets the QSS
+        # rule actually apply to a plain QWidget.
+        self._stack_widget.setObjectName("CutPlayCanvas")
+        self._stack_widget.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
         self._stack_widget.setSizePolicy(QSizePolicy.Policy.Ignored,
                                          QSizePolicy.Policy.Ignored)
         self._stack_layout = QStackedLayout(self._stack_widget)
@@ -419,12 +481,11 @@ class CutPlayerDialog(QDialog):
         if self._overlay_fields and self._provenance_resolver is not None:
             self._overlay_label = QLabel(self)
             self._overlay_label.setObjectName("CutPlayOverlay")
-            self._overlay_label.setStyleSheet(  # pragma: no-qss — slideshow overlay
-                "color: #ffffff;"
-                " background-color: rgba(0, 0, 0, 150);"
-                " padding: 8px 12px;"
-                " font-size: 14px;"
-                " border-radius: 6px;")
+            # Styling lives in QSS under ``QLabel#CutPlayOverlay`` so
+            # the slideshow overlay keeps its white-on-translucent-black
+            # look without an inline override.
+            self._overlay_label.setAttribute(
+                Qt.WidgetAttribute.WA_StyledBackground, True)
             self._overlay_label.setWordWrap(True)
             self._overlay_label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.NoTextInteraction)
@@ -443,8 +504,8 @@ class CutPlayerDialog(QDialog):
         # the bar the moment QVideoWidget claimed its surface).
         self._transport: Optional[QFrame] = None
         self._scrubber: Optional[_Scrubber] = None
-        self._btn_play: Optional[QToolButton] = None
-        self._btn_fs: Optional[QToolButton] = None
+        self._btn_play: Optional[QPushButton] = None
+        self._btn_fs: Optional[QPushButton] = None
         self._time_label: Optional[QLabel] = None
         self._slide_spin: Optional[QDoubleSpinBox] = None
         self._preview_label: Optional[QLabel] = None
@@ -999,11 +1060,9 @@ class CutPlayerDialog(QDialog):
 
     def _show_missing_label(self) -> None:
         if self._missing_label is None:
-            from PyQt6.QtWidgets import QLabel
             self._missing_label = QLabel(self._stack_widget)
+            self._missing_label.setObjectName("CutPlayMissing")
             self._missing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._missing_label.setStyleSheet(  # pragma: no-qss — slideshow text
-                "color: #cccccc; background: transparent;")
             self._stack_layout.addWidget(self._missing_label)
         self._missing_label.setText(tr("(file missing)"))
         self._stack_layout.setCurrentWidget(self._missing_label)
@@ -1013,15 +1072,25 @@ class CutPlayerDialog(QDialog):
             self._missing_label.setText("")
 
     def _fit_current(self) -> None:
+        """spec/152 §X — feed ``BlurredPhotoCanvas`` the FULL-resolution
+        raw pixmap. The pre-fix path pre-scaled it to the stack widget's
+        LOGICAL size with ``QPixmap.scaled(QSize, …)``, which Qt6
+        treats as DEVICE pixels (DPR dropped). The canvas then scaled
+        that already-downsampled pixmap a second time, so HiDPI users
+        saw a blurry approximation of the source while the inline PTE
+        slideshow rendered the same bytes at full screen resolution.
+        With the raw pixmap reaching the canvas untouched, the DPR-
+        aware scale inside ``BlurredPhotoCanvas.paintEvent`` is the
+        only resampling step — single pass, full quality, matches PTE.
+
+        Resize handling: the canvas redraws on its own resize event
+        and re-scales from ``_pixmap`` each time, so dropping the
+        pre-scale here doesn't cost a tier of cached work — the
+        canvas's per-paint downscale is the work that used to be
+        duplicated."""
         pm = getattr(self, "_raw_pixmap", QPixmap())
         if pm.isNull():
             return
-        # Scale against the canvas-area size (the stack widget), not the
-        # whole dialog — the transport now reserves real estate below.
-        size = self._stack_widget.size()
-        if size.width() > 0 and size.height() > 0:
-            pm = pm.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
-                           Qt.TransformationMode.SmoothTransformation)
         self._photo.setPixmap(pm)
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
@@ -1356,65 +1425,37 @@ class CutPlayerDialog(QDialog):
     # ── transport bar ────────────────────────────────────────────────
 
     def _build_transport(self) -> None:
-        """Bottom-anchored Stop · ⏮ Sep · ▶/⏸ · Sep ⏭ · timeline ·
-        time read-out · 'Per slide' spinbox · fullscreen toggle.
+        """Bottom-anchored Stop · ⏮ Sep · Play/Pause · Sep ⏭ · timeline ·
+        time read-out · 'Per slide' spinbox · video-speed select ·
+        fullscreen toggle.
 
-        Inline styling matches the dialog's own black canvas (the docstring
-        precedent at the top of the file): the transport belongs to the
-        show, not to app chrome."""
+        Uses the same standard-widget vocabulary as the Edit surface's
+        ``VideoWorkshopBar`` (spec/56): :func:`ghost_button` for the
+        chrome buttons, :func:`transport_button` for Play/Pause,
+        :func:`select` for the speed combo, plain ``QLabel`` /
+        ``QDoubleSpinBox`` for the rest. No inline styles — the bar
+        follows the active theme (light or dark) via QSS roles."""
         bar = QFrame(self)
         bar.setObjectName("CutPlayTransport")
-        bar.setStyleSheet(  # pragma: no-qss — slideshow transport bar
-            "QFrame#CutPlayTransport {"
-            " background-color: rgba(0, 0, 0, 220);"
-            " border-top: 1px solid rgba(255, 255, 255, 50);"
-            "}"
-            " QToolButton {"
-            " color: #ffffff; background: transparent;"
-            " border: 1px solid rgba(255, 255, 255, 60);"
-            " border-radius: 4px;"
-            " padding: 6px 10px; font-size: 14px;"
-            "}"
-            " QToolButton:hover {"
-            " background-color: rgba(255, 255, 255, 30);"
-            " border-color: rgba(255, 255, 255, 140);"
-            "}"
-            " QToolButton:pressed {"
-            " background-color: rgba(255, 255, 255, 50);"
-            "}"
-            " QLabel {"
-            " color: #ffffff; background: transparent;"
-            " font-size: 13px;"
-            "}"
-            " QDoubleSpinBox {"
-            " color: #ffffff;"
-            " background-color: rgba(255, 255, 255, 20);"
-            " border: 1px solid rgba(255, 255, 255, 60);"
-            " border-radius: 4px;"
-            " padding: 2px 4px;"
-            " min-width: 70px;"
-            "}")
-        # Pointing-hand on the buttons (PyQt6 QSS cursor is unreliable on
-        # Windows — manual setCursor matches the rest of the app).
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
 
-        def mk_btn(label: str, tip: str, callback) -> QToolButton:
-            b = QToolButton(bar)
-            b.setText(label)
-            b.setToolTip(tip)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(callback)
-            return b
+        btn_stop = ghost_button(tr("Stop"))
+        btn_stop.setToolTip(tr("End rehearsal"))
+        btn_stop.clicked.connect(self._finish)
 
-        btn_stop = mk_btn("⏹", tr("Stop (end rehearsal)"), self._finish)
-        btn_prev_sep = mk_btn("⏮", tr("Previous day separator"),
-                              lambda: self._jump_to_separator(-1))
-        self._btn_play = mk_btn("⏸", tr("Pause / resume"),
-                                self._toggle_pause)
-        btn_next_sep = mk_btn("⏭", tr("Next day separator"),
-                              lambda: self._jump_to_separator(1))
+        btn_prev_sep = ghost_button("⏮")
+        btn_prev_sep.setToolTip(tr("Previous day separator"))
+        btn_prev_sep.clicked.connect(lambda: self._jump_to_separator(-1))
+
+        self._btn_play = transport_button(tr("Play / pause"))
+        self._btn_play.clicked.connect(self._toggle_pause)
+
+        btn_next_sep = ghost_button("⏭")
+        btn_next_sep.setToolTip(tr("Next day separator"))
+        btn_next_sep.clicked.connect(lambda: self._jump_to_separator(1))
 
         scrub = _Scrubber(bar)
         scrub.seeked.connect(self._on_scrubber_seeked)
@@ -1425,10 +1466,13 @@ class CutPlayerDialog(QDialog):
 
         self._time_label = QLabel(_fmt_time(0) + " / " +
                                   _fmt_time(self._total_ms()), bar)
+        self._time_label.setObjectName("Sub")
         self._time_label.setMinimumWidth(96)
         self._time_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        slide_lbl = QLabel(tr("Per slide:"), bar)
+        slide_lbl.setObjectName("Sub")
         self._slide_spin = QDoubleSpinBox(bar)
         self._slide_spin.setRange(0.5, 30.0)
         self._slide_spin.setSingleStep(0.5)
@@ -1441,7 +1485,6 @@ class CutPlayerDialog(QDialog):
         self._slide_spin.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._slide_spin.installEventFilter(self)
         self._slide_spin.valueChanged.connect(self._on_slide_time_changed)
-        slide_lbl = QLabel(tr("Per slide:"), bar)
 
         # spec/145 — rehearsal-only video-speed override. The select sits
         # next to the per-photo spinner because it's the sibling concept
@@ -1450,25 +1493,33 @@ class CutPlayerDialog(QDialog):
         # baked clip speed (a 2×-baked clip at 1.5× plays 3×). The
         # exported bytes and PTE output are unchanged; this is a
         # browse-the-rehearsal knob.
-        self._video_rate_combo = QComboBox(bar)
+        rate_options = [
+            (0.5, "0.5×"), (0.75, "0.75×"), (1.0, "1×"),
+            (1.25, "1.25×"), (1.5, "1.5×"), (2.0, "2×"),
+        ]
+        self._video_rate_combo = select([label for _, label in rate_options])
         self._video_rate_combo.setObjectName("CutPlayVideoRateCombo")
         self._video_rate_combo.setToolTip(tr(
             "Video playback speed for the rehearsal (compounds with the "
             "clip's baked speed). Doesn't change the exported clips or "
             "the generated PTE."))
-        for rate in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
-            label = (f"{int(rate)}×" if rate == int(rate)
-                     else f"{rate:g}×")
-            self._video_rate_combo.addItem(label, userData=float(rate))
-        idx = self._video_rate_combo.findData(float(self._video_rate))
-        if idx >= 0:
-            self._video_rate_combo.setCurrentIndex(idx)
+        # ``select`` doesn't take per-item userData; attach the rate via
+        # ``setItemData`` so the existing ``_on_video_rate_changed``
+        # currentData() read still works.
+        for i, (rate, _label) in enumerate(rate_options):
+            self._video_rate_combo.setItemData(i, float(rate))
+        for i, (rate, _label) in enumerate(rate_options):
+            if abs(rate - float(self._video_rate)) < 1e-6:
+                self._video_rate_combo.setCurrentIndex(i)
+                break
         self._video_rate_combo.currentIndexChanged.connect(
             self._on_video_rate_changed)
         video_lbl = QLabel(tr("Video:"), bar)
+        video_lbl.setObjectName("Sub")
 
-        self._btn_fs = mk_btn("⛶", tr("Toggle fullscreen"),
-                              self._toggle_fullscreen)
+        self._btn_fs = ghost_button("⛶")
+        self._btn_fs.setToolTip(tr("Toggle fullscreen"))
+        self._btn_fs.clicked.connect(self._toggle_fullscreen)
 
         lay.addWidget(btn_stop)
         lay.addWidget(btn_prev_sep)
@@ -1490,14 +1541,12 @@ class CutPlayerDialog(QDialog):
         self._transport = bar
 
         # Hover preview — frameless top-level child so it can pop above
-        # everything without clipping inside the bar.
+        # everything without clipping inside the bar. Styling lives in
+        # QSS under ``QLabel#CutPlayHoverPreview``.
         prev = QLabel(self)
         prev.setObjectName("CutPlayHoverPreview")
         prev.setWindowFlags(Qt.WindowType.ToolTip)
-        prev.setStyleSheet(  # pragma: no-qss — slideshow scrubber preview
-            "background-color: rgba(0, 0, 0, 220);"
-            " border: 1px solid rgba(255, 255, 255, 90);"
-            " color: #ffffff; padding: 4px;")
+        prev.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
         prev.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         prev.hide()
@@ -1645,10 +1694,14 @@ class CutPlayerDialog(QDialog):
         self._show_index(target)
 
     def _update_play_icon(self) -> None:
+        """Flip the transport play/pause glyph. The button is now the
+        canonical :func:`transport_button` (SVG line-icon, theme-tinted),
+        so :func:`set_transport_playing` drives the swap — no inline
+        Unicode glyph dance."""
         b = self._btn_play
         if b is None:
             return
-        b.setText("▶" if self._paused else "⏸")
+        set_transport_playing(b, not self._paused)
 
     # ── ticker + time read-out ───────────────────────────────────────
 

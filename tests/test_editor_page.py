@@ -284,8 +284,8 @@ def test_locked_keymap_edit_extras_routed_to_surface(
         page._surface, "open_look_grid",
         lambda: calls.__setitem__("open_grid", calls["open_grid"] + 1))
     monkeypatch.setattr(
-        page._surface, "_box_rotate",
-        lambda delta: calls["box_rot"].append(delta))
+        page._surface, "_box_transpose",
+        lambda: calls["box_rot"].append("transpose"))
     monkeypatch.setattr(
         page._surface, "_on_reset_all",
         lambda: calls.__setitem__("reset", calls["reset"] + 1))
@@ -305,7 +305,7 @@ def test_locked_keymap_edit_extras_routed_to_surface(
     QTest.keyPress(page, Qt.Key.Key_Backslash)
     assert calls["cycle_look"] == [1, -1]
     assert calls["open_grid"] == 1
-    assert calls["box_rot"] == [-90, 90]
+    assert calls["box_rot"] == ["transpose", "transpose"]
     assert calls["reset"] == 1
     assert calls["compare_toggled"] == 1
 

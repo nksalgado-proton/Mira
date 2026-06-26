@@ -1907,12 +1907,12 @@ class EditorPage(QWidget):
             self._surface.open_look_grid()
             event.accept()
             return
-        if key == Qt.Key.Key_BracketLeft:
-            self._surface._box_rotate(-90)
-            event.accept()
-            return
-        if key == Qt.Key.Key_BracketRight:
-            self._surface._box_rotate(90)
+        if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BracketRight):
+            # Turn the crop box 90° — swap its orientation (landscape ↔
+            # portrait, e.g. 16:9 → 9:16). An orientation swap is its own
+            # inverse, so [ and ] land on the same rectangle; the photo's
+            # pixels are untouched (that's the separate Rotate-photo path).
+            self._surface._box_transpose()
             event.accept()
             return
         if key == Qt.Key.Key_F10:

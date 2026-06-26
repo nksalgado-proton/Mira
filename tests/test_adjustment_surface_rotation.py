@@ -197,6 +197,55 @@ def test_aspect_change_after_rotation_picks_rotated_crop(qapp):
 # can't silently drop them again.
 
 
+def test_box_transpose_swaps_aspect_without_rotating_photo(qapp):
+    """The crop tool's ±90° 'rotate crop box' action swaps the crop
+    ORIENTATION (16:9 → 9:16) and leaves the photo's pixels alone —
+    ``_rotation`` never moves. This is the bug the user hit: pressing the
+    crop-box turn used to straighten-rotate the picture in the Toggle-Crop
+    preview. The two are now isolated: rotate-photo turns pixels;
+    rotate-crop-box only reshapes the crop."""
+    s, _ = _surface(qapp)
+    s._on_aspect_changed("16:9")
+    assert s._rotation == 0
+    s._box_transpose()
+    assert s._aspect_label == "9:16"
+    assert s._aspect_combo.selected_label == "9:16"     # combo reflects it
+    assert s._rotation == 0                              # photo NOT rotated
+    assert s._box_angle == 0.0                           # straighten untouched
+    # The crop rect is now portrait (taller than wide in pixels).
+    x, y, w, h = s._crop_norm
+    src_w, src_h = s._displayed_dims()
+    assert w * src_w < h * src_h
+    # Involutive — turning again returns to landscape.
+    s._box_transpose()
+    assert s._aspect_label == "16:9"
+
+
+def test_box_transpose_emits_aspect_change(qapp):
+    """The transpose routes through the aspect-change path so the host
+    persists it (``changed('aspect')``)."""
+    s, _ = _surface(qapp)
+    s._on_aspect_changed("4:3")
+    seen: list[str] = []
+    s.changed.connect(seen.append)
+    s._box_transpose()
+    assert s._aspect_label == "3:4"
+    assert "aspect" in seen
+
+
+def test_box_transpose_noop_on_original(qapp):
+    """No crop selected (Original) → no orientation to flip; transpose is
+    a clean no-op (no aspect change, no crop materialised)."""
+    s, _ = _surface(qapp)
+    assert s._aspect_label == "Original"
+    seen: list[str] = []
+    s.changed.connect(seen.append)
+    s._box_transpose()
+    assert s._aspect_label == "Original"
+    assert s._crop_norm is None
+    assert seen == []
+
+
 def test_image_rotate_buttons_exist_on_tools_widget(qapp):
     """Widget-exists guard — the two ``Rotate photo`` buttons live on
     the surface and are click-driven by Qt's signal/slot."""

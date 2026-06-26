@@ -57,7 +57,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.aspect_ratio import get_aspect_ratio
+from core.aspect_ratio import get_aspect_ratio, transpose_label
 from core.photo_auto import (
     available_filters,
     available_looks,
@@ -698,15 +698,21 @@ class AdjustmentSurface(QWidget):
         crop_row.addWidget(self._aspect_combo, stretch=1)
 
         b90l = self._btn("↺ 90°")
-        b90l.setToolTip(tr("Rotate the crop box 90° counter-clockwise."))
-        b90l.clicked.connect(lambda: self._box_rotate(-90))
+        b90l.setToolTip(tr(
+            "Turn the crop box 90° — swaps its orientation between "
+            "landscape and portrait (e.g. 16:9 → 9:16). The photo is "
+            "NOT rotated; use 'Rotate photo' for that."))
+        b90l.clicked.connect(self._box_transpose)
         b90r = self._btn("90° ↻")
-        b90r.setToolTip(tr("Rotate the crop box 90° clockwise."))
-        b90r.clicked.connect(lambda: self._box_rotate(90))
+        b90r.setToolTip(tr(
+            "Turn the crop box 90° — swaps its orientation between "
+            "landscape and portrait (e.g. 16:9 → 9:16). The photo is "
+            "NOT rotated; use 'Rotate photo' for that."))
+        b90r.clicked.connect(self._box_transpose)
         self._box_rot_reset = self._btn(tr("Reset"))
         self._box_rot_reset.setToolTip(tr(
-            "Set the box rotation back to 0°. For any other angle, drag "
-            "the round handle above the crop box."))
+            "Set the straighten angle back to 0°. Drag the round handle "
+            "above the crop box to straighten by any other angle."))
         self._box_rot_reset.clicked.connect(self._box_rotate_reset)
         crop_row.addWidget(b90l)
         crop_row.addWidget(b90r)
@@ -1413,16 +1419,33 @@ class AdjustmentSurface(QWidget):
         if not self._loading:
             self.changed.emit("crop")
 
-    def _box_rotate(self, delta: int) -> None:
-        """Rotate the crop BOX by ``delta`` degrees about its own centre
-        (docs/25 §4). Photo stays put; box size + centre preserved.
-        Accumulates + normalises to (-180, 180]."""
+    def _box_transpose(self) -> None:
+        """Turn the crop box 90° — swap its ORIENTATION between landscape
+        and portrait (e.g. 16:9 → 9:16) by transposing the aspect label.
+
+        This is the user-facing "rotate the crop box" action and is
+        deliberately ISOLATED from the photo's pixels: only the crop
+        rectangle's shape flips; the image is never rotated (that's the
+        separate "Rotate photo" control). Both ±90° buttons map here —
+        an orientation swap is its own inverse, so clockwise vs counter-
+        clockwise land on the same portrait/landscape rectangle.
+
+        Reuses :meth:`_on_aspect_changed` (re-locks the overlay, recomputes
+        the centred crop at the swapped ratio, re-renders, persists via the
+        ``"aspect"`` signal). No-op on Original / 1:1, which have no
+        orientation to flip. Straighten (``_box_angle``, the round drag
+        handle) is untouched."""
         if self._preview_array is None:
             return
-        new = (self._box_angle + delta) % 360.0
-        if new > 180.0:
-            new -= 360.0
-        self._set_box_angle(new)
+        new_label = transpose_label(self._aspect_label)
+        if new_label == self._aspect_label:
+            return
+        # Reflect the swap on the combo (display-only; blocks signals so it
+        # doesn't re-enter ``_on_aspect_changed``), then run the canonical
+        # aspect-change path which recomposes the crop + persists.
+        if self._aspect_combo is not None:
+            self._aspect_combo.set_selected_label(new_label)
+        self._on_aspect_changed(new_label)
 
     def _box_rotate_reset(self) -> None:
         if self._preview_array is not None:

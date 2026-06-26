@@ -37,7 +37,12 @@ class AspectRatio:
 
 
 # Order matches the toolbar combo box. Keep "Original" first so it's
-# the no-op default for new events that haven't picked a ratio yet.
+# the no-op default for new events that haven't picked a ratio yet. The
+# portrait block is the transpose of each landscape ratio (1:1 is its own
+# transpose) — reachable from the combo directly AND via the Edit crop
+# tool's ±90° "rotate crop box" buttons, which swap ONLY the crop
+# rectangle's orientation (16:9 → 9:16). The photo's pixels are never
+# rotated by this (that's the separate "Rotate photo" control).
 ASPECT_RATIOS: tuple[AspectRatio, ...] = (
     AspectRatio(ORIGINAL_LABEL, 0, 0),
     AspectRatio("4:3", 4, 3),
@@ -45,6 +50,11 @@ ASPECT_RATIOS: tuple[AspectRatio, ...] = (
     AspectRatio("16:9", 16, 9),
     AspectRatio("1:1", 1, 1),
     AspectRatio("5:4", 5, 4),
+    # Portrait transposes.
+    AspectRatio("3:4", 3, 4),
+    AspectRatio("2:3", 2, 3),
+    AspectRatio("9:16", 9, 16),
+    AspectRatio("4:5", 4, 5),
 )
 
 
@@ -63,6 +73,24 @@ def get_aspect_ratio(label: str) -> AspectRatio:
 def aspect_ratio_labels() -> list[str]:
     """Toolbar combo + wizard picker share this list."""
     return [ar.label for ar in ASPECT_RATIOS]
+
+
+def transpose_label(label: str) -> str:
+    """Swap a crop aspect's ORIENTATION: ``'16:9' → '9:16'``,
+    ``'4:3' → '3:4'``, and back. This is the Edit crop tool's ±90°
+    "rotate crop box" action — it changes only the crop RECTANGLE's
+    orientation, never the photo's pixels (that is the separate
+    "Rotate photo" control). ``'Original'`` (no defined ratio) and the
+    square ``'1:1'`` transpose to themselves, as does any label whose
+    transpose isn't a registered ratio — so the caller can apply it
+    unconditionally and get a no-op where a flip makes no sense."""
+    ar = get_aspect_ratio(label)
+    if ar.is_original or ar.w == ar.h:
+        return ar.label
+    for cand in ASPECT_RATIOS:
+        if cand.w == ar.h and cand.h == ar.w:
+            return cand.label
+    return ar.label
 
 
 def zoom_quarter_size(source_w: int, source_h: int) -> tuple[int, int]:

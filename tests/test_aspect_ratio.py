@@ -9,6 +9,7 @@ from core.aspect_ratio import (
     ORIGINAL_LABEL,
     aspect_ratio_labels,
     get_aspect_ratio,
+    transpose_label,
 )
 
 
@@ -39,6 +40,28 @@ def test_values_match_label_math():
     assert get_aspect_ratio("4:3").value == pytest.approx(4 / 3)
     assert get_aspect_ratio("16:9").value == pytest.approx(16 / 9)
     assert get_aspect_ratio("1:1").value == 1.0
+
+
+def test_transpose_swaps_orientation():
+    """The Edit crop tool's ±90° action: swap a ratio's orientation. The
+    transpose must itself be a registered ratio (so it resolves + persists
+    + shows in the combo) and be involutive."""
+    pairs = [("16:9", "9:16"), ("4:3", "3:4"), ("3:2", "2:3"), ("5:4", "4:5")]
+    for landscape, portrait in pairs:
+        assert transpose_label(landscape) == portrait
+        assert transpose_label(portrait) == landscape          # involutive
+        # Both directions resolve to real ratios with reciprocal values.
+        assert get_aspect_ratio(portrait).value == pytest.approx(
+            1.0 / get_aspect_ratio(landscape).value)
+
+
+def test_transpose_is_noop_for_square_and_original():
+    """A square or no-crop has no orientation to flip — transpose returns
+    the same label so the caller can apply it unconditionally."""
+    assert transpose_label("1:1") == "1:1"
+    assert transpose_label(ORIGINAL_LABEL) == ORIGINAL_LABEL
+    # An unknown label resolves to Original first, then no-ops.
+    assert transpose_label("garbage") == ORIGINAL_LABEL
 
 
 def test_labels_helper_matches_constants():

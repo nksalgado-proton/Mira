@@ -111,23 +111,74 @@ class _CutBudgetBar(QWidget):
         self.update()
 
     def paintEvent(self, ev) -> None:  # noqa: N802
+        """spec/152 §X — TRICOLOR fill: green up to target, amber
+        between target and max, red past max. The user reads the
+        whole composition at a glance: how much is "safe", how much
+        is "stretch", how much is "over". The pre-fix single-colour
+        fill (Highlight role tinted via the zone QSS property) only
+        showed ONE state at a time, so a Cut sitting in the amber
+        zone gave no hint of where the target / max boundaries lay
+        within the fill itself."""
         from PyQt6.QtGui import QPainter, QColor, QPen
+        from PyQt6.QtWidgets import QApplication
+        from mira.ui.palette import PALETTE
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             r = self.rect()
             # Track (background) — semi-transparent neutral fill so the
             # QSS background-color of the parent ``CutBudgetBar``
-            # selector still drives the look. Filled portion uses the
-            # foreground role so theme contrast is preserved.
+            # selector still drives the look.
             pal = self.palette()
             track_col = QColor(pal.color(pal.ColorRole.Mid))
             track_col.setAlpha(110)
             p.fillRect(r, track_col)
-            # Filled portion.
-            fill_w = int(r.width() * (self._value / float(self._scale_max)))
-            fill_col = QColor(pal.color(pal.ColorRole.Highlight))
-            p.fillRect(0, 0, fill_w, r.height(), fill_col)
+
+            # Theme-aware segment colours. Read the active theme via
+            # the QApplication property the rest of the surface uses
+            # (mirrors mira.ui.media.transport_bar / cut_play); falls
+            # back to 'dark' when the app hasn't pushed the property
+            # yet (early construction in stub tests).
+            app = QApplication.instance()
+            mode = (app.property("theme") if app else None) or "dark"
+            palette = PALETTE[mode]
+            c_green = QColor(palette["green"])
+            c_amber = QColor(palette["amber"])
+            c_red = QColor(palette["red"])
+
+            def _x(v: float) -> int:
+                return int(r.width() * (v / float(self._scale_max)))
+
+            # Segment boundaries, all clamped to ``value`` so an
+            # under-target Cut stays purely green, an in-tolerance
+            # one is green + amber, and only an over-max one shows
+            # red. When target / max_hard is None, the corresponding
+            # boundary collapses onto ``value`` so the next segment
+            # absorbs nothing — keeps the math single-pass.
+            value = float(self._value)
+            target = float(self._target) if self._target is not None else value
+            max_hard = (
+                float(self._max_hard) if self._max_hard is not None else value
+            )
+            green_end = min(value, target)
+            amber_end = max(green_end, min(value, max_hard))
+            x_value = _x(value)
+            x_green_end = _x(green_end)
+            x_amber_end = _x(amber_end)
+            # Green: [0, green_end].
+            if x_green_end > 0:
+                p.fillRect(0, 0, x_green_end, r.height(), c_green)
+            # Amber: (green_end, amber_end].
+            if x_amber_end > x_green_end:
+                p.fillRect(
+                    x_green_end, 0, x_amber_end - x_green_end,
+                    r.height(), c_amber)
+            # Red: (amber_end, value].
+            if x_value > x_amber_end:
+                p.fillRect(
+                    x_amber_end, 0, x_value - x_amber_end,
+                    r.height(), c_red)
+
             # Target tick — bright vertical line + 1 px shadow so it
             # reads against any fill colour underneath.
             if self._target is not None:

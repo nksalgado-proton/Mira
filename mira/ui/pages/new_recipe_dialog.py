@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -73,6 +74,7 @@ from mira.shared.recipe_store import (
     RecipeStore,
 )
 from mira.ui.base.binding_badge import BindingBadge
+from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
@@ -2699,6 +2701,29 @@ class NewRecipeDialog(QDialog):
                 v.addWidget(_placeholder(tr("Faces: (Phase 4c)")))
         return host
 
+    def _build_chips_row(self, label_text: str, chips) -> QHBoxLayout:
+        """spec/152 §X — one filter row laid out as ``label + wrapping
+        chips``. The chips ride a :class:`FlowLayout` so they wrap to
+        the next line when the dialog is narrow instead of stretching
+        the whole dialog horizontally (the pre-fix inline ``QHBoxLayout
+        + addStretch`` pushed the floor wider with every additional
+        Style / Camera / Lens). The label stays fixed-width on the
+        left so the rows align visually."""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("Faint")
+        label.setMinimumWidth(64)
+        label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        row.addWidget(label, 0, Qt.AlignmentFlag.AlignTop)
+        chips_host = QWidget()
+        chips_flow = FlowLayout(chips_host, spacing=6)
+        for chip in chips:
+            chips_flow.addWidget(chip)
+        row.addWidget(chips_host, 1)
+        return row
+
     def _build_style_row(self) -> QHBoxLayout:
         """spec/119 — style filters are real :class:`QCheckBox`es so the
         active state is unmistakable. The retired ``#PillToggle`` /
@@ -2708,79 +2733,53 @@ class NewRecipeDialog(QDialog):
         ``DaysTableCheck`` role so the row visually matches the Media
         Photos / Videos checkboxes that have always been real
         QCheckBoxes."""
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        label = QLabel(tr("Style"))
-        label.setObjectName("Faint")
-        label.setMinimumWidth(64)
-        row.addWidget(label)
+        chips = []
         for style in self._ctx.available_styles:
             chip = QCheckBox(style)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(style in self._ctx.selected_styles)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._style_chips[style] = chip
-            row.addWidget(chip)
-        row.addStretch()
-        return row
+            chips.append(chip)
+        return self._build_chips_row(tr("Style"), chips)
 
     def _build_media_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        label = QLabel(tr("Media"))
-        label.setObjectName("Faint")
-        label.setMinimumWidth(64)
-        row.addWidget(label)
         self._photos_cb = QCheckBox(tr("Photos"))
         self._photos_cb.setObjectName("DaysTableCheck")
         self._photos_cb.setChecked(self._ctx.include_photos)
         self._photos_cb.toggled.connect(self._on_filter_chip_toggled)
-        row.addWidget(self._photos_cb)
         self._videos_cb = QCheckBox(tr("Videos"))
         self._videos_cb.setObjectName("DaysTableCheck")
         self._videos_cb.setChecked(self._ctx.include_videos)
         self._videos_cb.toggled.connect(self._on_filter_chip_toggled)
-        row.addWidget(self._videos_cb)
-        row.addStretch()
-        return row
+        return self._build_chips_row(
+            tr("Media"), [self._photos_cb, self._videos_cb])
 
     def _build_camera_row(self) -> QHBoxLayout:
         """spec/119 — camera filter chips are real :class:`QCheckBox`es
         for the same reason as the style row above. Same handler, same
         keying — the read sites read ``.isChecked()`` unchanged."""
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        label = QLabel(tr("Camera"))
-        label.setObjectName("Faint")
-        label.setMinimumWidth(64)
-        row.addWidget(label)
+        chips = []
         for cam in self._ctx.available_cameras:
             chip = QCheckBox(cam)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(cam in self._ctx.selected_cameras)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._camera_chips[cam] = chip
-            row.addWidget(chip)
-        row.addStretch()
-        return row
+            chips.append(chip)
+        return self._build_chips_row(tr("Camera"), chips)
 
     def _build_lens_row(self) -> QHBoxLayout:
         """spec/119 — lens filter chips: see :meth:`_build_camera_row`."""
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        label = QLabel(tr("Lens"))
-        label.setObjectName("Faint")
-        label.setMinimumWidth(64)
-        row.addWidget(label)
+        chips = []
         for lens in self._ctx.available_lenses:
             chip = QCheckBox(lens)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(lens in self._ctx.selected_lenses)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._lens_chips[lens] = chip
-            row.addWidget(chip)
-        row.addStretch()
-        return row
+            chips.append(chip)
+        return self._build_chips_row(tr("Lens"), chips)
 
     # -------- Placeholder sections (Phase 4b/4c/4d) ------------------- #
 
@@ -3006,10 +3005,17 @@ class NewRecipeDialog(QDialog):
         self._budget_check.toggled.connect(self._on_budget_toggled)
         v.addWidget(self._budget_check)
 
-        row = QHBoxLayout()
-        row.setSpacing(10)
+        # spec/152 §X — Runtime controls in a 2-column grid instead of
+        # one wide horizontal row. Eight knobs in a single QHBoxLayout
+        # forced the dialog past ~1100 px wide; pairing them by purpose
+        # (budget · timing · format · presentation) reads better AND
+        # fits at 660 px wide.
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
-        # Target minutes.
+        # Row 0 — budget: Target | Max
         target_box = QWidget()
         tv = QVBoxLayout(target_box)
         tv.setContentsMargins(0, 0, 0, 0)
@@ -3023,7 +3029,7 @@ class NewRecipeDialog(QDialog):
         self._target_spin.setEnabled(self._has_budget)
         self._target_spin.valueChanged.connect(self._on_target_changed)
         tv.addWidget(self._target_spin)
-        row.addWidget(target_box)
+        grid.addWidget(target_box, 0, 0)
 
         # Max minutes.
         max_box = QWidget()
@@ -3039,9 +3045,9 @@ class NewRecipeDialog(QDialog):
         self._max_spin.setEnabled(self._has_budget)
         self._max_spin.valueChanged.connect(self._on_max_changed)
         mv.addWidget(self._max_spin)
-        row.addWidget(max_box)
+        grid.addWidget(max_box, 0, 1)
 
-        # Per-photo seconds.
+        # Row 1 — timing: Per photo | Transition
         pp_box = QWidget()
         pv = QVBoxLayout(pp_box)
         pv.setContentsMargins(0, 0, 0, 0)
@@ -3056,7 +3062,7 @@ class NewRecipeDialog(QDialog):
         self._per_photo_spin.setSuffix(" s")
         self._per_photo_spin.valueChanged.connect(self._on_per_photo_changed)
         pv.addWidget(self._per_photo_spin)
-        row.addWidget(pp_box)
+        grid.addWidget(pp_box, 1, 0)
 
         # spec/152 §3 — crossfade transition between consecutive
         # slides. Sibling to the per-photo seconds (both belong to
@@ -3083,8 +3089,9 @@ class NewRecipeDialog(QDialog):
         self._transition_spin.valueChanged.connect(
             self._on_transition_changed)
         tv.addWidget(self._transition_spin)
-        row.addWidget(tr_box)
+        grid.addWidget(tr_box, 1, 1)
 
+        # Row 2 — format: Aspect | Music
         # spec/111 — aspect picker. Sibling to the per-photo duration:
         # both belong to the *show*, not the event. Drives the
         # separator / opener card dimensions on export AND the PTE
@@ -3109,7 +3116,7 @@ class NewRecipeDialog(QDialog):
         self._aspect_combo.currentIndexChanged.connect(
             self._on_aspect_changed)
         av.addWidget(self._aspect_combo)
-        row.addWidget(aspect_box)
+        grid.addWidget(aspect_box, 2, 0)
 
         # spec/106 — music / soundtrack picker. "No music" sits at the
         # top so a Cut can opt out cleanly; the rest are the mood
@@ -3153,8 +3160,11 @@ class NewRecipeDialog(QDialog):
         self._music_hint_label.setVisible(
             bool(self._music_hint) and not self._music_categories)
         mb.addWidget(self._music_hint_label)
-        row.addWidget(music_box)
+        grid.addWidget(music_box, 2, 1)
 
+        # Row 3 — presentation: Overlays | Separators (when the host
+        # didn't suppress overlays, otherwise Separators alone in the
+        # left column so the row isn't a lonely right-aligned tile).
         # spec/114 — overlay control: mode combo + a fields multi-select
         # next door. ``Off`` = no overlays (today's behaviour); the
         # field pills go disabled. ``Embedded`` writes IPTC into the
@@ -3163,18 +3173,18 @@ class NewRecipeDialog(QDialog):
         # pixels of the rendered copy. The export layer + the spec/107
         # PTE generator both already honour these — only the dialog
         # was missing.
-        if self._overlay_field_options:
-            row.addWidget(self._build_overlay_box())
-
         # spec/143 — separators on/off + card-style control. Sibling to
         # the overlay / aspect / music blocks. Dropped during the spec/
         # 90 Phase 4 sweep; without it the dialog silently fell back to
         # the global ``use_separators`` setting and the user lost the
         # per-Cut choice.
-        row.addWidget(self._build_separators_box())
+        if self._overlay_field_options:
+            grid.addWidget(self._build_overlay_box(), 3, 0)
+            grid.addWidget(self._build_separators_box(), 3, 1)
+        else:
+            grid.addWidget(self._build_separators_box(), 3, 0)
 
-        row.addStretch()
-        v.addLayout(row)
+        v.addLayout(grid)
         return host
 
     def _build_overlay_box(self) -> QWidget:
@@ -3215,9 +3225,12 @@ class NewRecipeDialog(QDialog):
         # indicator; ambiguity is gone permanently. Shares
         # ``DaysTableCheck`` with the Media row's Photos / Videos so the
         # whole dialog reads one way.
-        chips_row = QHBoxLayout()
-        chips_row.setContentsMargins(0, 0, 0, 0)
-        chips_row.setSpacing(6)
+        # spec/152 §X — overlay chips wrap via FlowLayout so a
+        # half-width Runtime column (we pair Overlays + Separators on
+        # one grid row) doesn't get pushed wider by a long
+        # When · Where · How¹ · How² sequence.
+        chips_host = QWidget()
+        chips_flow = FlowLayout(chips_host, spacing=6)
         for entry in self._overlay_field_options:
             try:
                 key, label = entry[0], entry[1]
@@ -3228,9 +3241,8 @@ class NewRecipeDialog(QDialog):
             chip.setChecked(str(key) in self._overlay_fields)
             chip.toggled.connect(self._on_overlay_field_toggled)
             self._overlay_field_chips[str(key)] = chip
-            chips_row.addWidget(chip)
-        chips_row.addStretch()
-        ob.addLayout(chips_row)
+            chips_flow.addWidget(chip)
+        ob.addWidget(chips_host)
         self._sync_overlay_fields_enabled()
         return box
 

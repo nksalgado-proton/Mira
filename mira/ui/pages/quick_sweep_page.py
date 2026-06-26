@@ -328,8 +328,15 @@ class QuickSweepPage(QWidget):
         # both stay first-class — see :meth:`_toggle_fullscreen`.
         self._viewport.set_sweep_ceiling(2048)
         self._viewport.set_prefetch_plan((1, 2, 3, 4, -1))
-        self._expo_overlay = PhotoExposureOverlay(self._viewport)
+        # Pinned to the bottom edge of the displayed photo (not the view),
+        # so it never floats over the letterbox bars — mirrors the Picker /
+        # Editor / Cut-play pills (the source-chip text is already one line).
         vp = self._viewport
+        self._expo_overlay = PhotoExposureOverlay(
+            vp.photo_area_widget(),
+            rect_provider=vp.image_rect_in_photo_area,
+        )
+        vp.photo_geometry_changed.connect(self._expo_overlay.reposition)
         vp.current_changed.connect(self._on_viewport_current_changed)
         vp.pick_requested.connect(
             lambda: self._verb_set_state(STATE_PICKED))

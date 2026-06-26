@@ -192,8 +192,10 @@ def test_overlay_text_draws_for_file_frames(qapp, gw, tmp_path):
     from core.cut_overlay import FrameProvenance
     calls: list[str] = []
 
-    def resolver(relpath):
-        calls.append(relpath)
+    def resolver(payload):
+        # spec/154 — the resolver receives the payload now; record its
+        # lineage relpath so the assertion below still pins the join key.
+        calls.append(getattr(payload, "export_relpath", payload))
         return FrameProvenance(
             when="June 14, 2026 · 14:23",
             city="Cabaceira", country="Portugal",

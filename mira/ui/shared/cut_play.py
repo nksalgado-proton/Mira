@@ -337,7 +337,7 @@ class CutPlayerDialog(QDialog):
         seed_prefix: str = "",
         overlay_fields: Sequence[str] = (),
         provenance_resolver: Optional[
-            Callable[[str], Optional[cut_overlay.FrameProvenance]]
+            Callable[[object], Optional[cut_overlay.FrameProvenance]]
         ] = None,
         resolve_path: Optional[Callable[[object], Path]] = None,
         video_rate: float = 1.0,
@@ -1131,7 +1131,10 @@ class CutPlayerDialog(QDialog):
             lbl.hide()
             return
         try:
-            provenance = self._provenance_resolver(relpath)
+            # spec/154 — the resolver receives the PAYLOAD (not just the
+            # relpath) so cross-event Play can key on (event_uuid, relpath);
+            # event-scope wraps its lineage resolver at the call site.
+            provenance = self._provenance_resolver(payload)
         except Exception:                                          # noqa: BLE001
             log.exception(
                 "rehearsal overlay: provenance_resolver raised for %s",

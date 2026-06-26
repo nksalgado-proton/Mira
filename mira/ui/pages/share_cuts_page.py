@@ -2437,7 +2437,11 @@ class ShareCutsPage(QWidget):
         # regardless of the Cut's ``overlay_mode`` (embedded vs burn_in
         # only matters at export — the rehearsal previews the hand-off).
         overlay_fields = eg.cut_overlay_fields(cut)
-        provenance_resolver = eg.frame_provenance if overlay_fields else None
+        # spec/154 — the player now hands the resolver the PAYLOAD; the
+        # event-scope resolver keys on the lineage export_relpath.
+        provenance_resolver = (
+            (lambda pl: eg.frame_provenance(getattr(pl, "export_relpath", "")))
+            if overlay_fields else None)
         # spec/152 Phase 3 — videos play at 1× in Mira Play. The
         # rehearsal's wall-clock matches PTE's [Times] total because
         # every photo / opener / separator slot is held for

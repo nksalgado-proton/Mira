@@ -246,6 +246,41 @@ def test_separators_carry_source_event_name_title(tmp_path):
         store.close()
 
 
+def test_provenance_resolver_composes_from_projection(tmp_path):
+    """spec/154 — the cross-event caption resolver returns a
+    FrameProvenance built straight from the global_items projection,
+    keyed on (event_uuid, relpath)."""
+    from mira.shared.cross_event_cut_play import (
+        cross_event_provenance_resolver, CrossEventPlayFile)
+    store = _open_user_store(tmp_path)
+    store.upsert(um.GlobalItem(
+        event_uuid="A", item_id="a1", synced_at=NOW,
+        export_relpath="Exported Media/a1.jpg",
+        capture_time="2026-04-01T10:00:00",
+        kind="photo", has_export=True,
+        day_city="Salta", country="Argentina",
+        camera_id="Panasonic DC-G9M2", lens_model="LEICA 12-60",
+        iso=200, aperture_f=2.8, shutter_speed_s=0.004,
+        focal_length_mm=50.0))
+    lg = _make_lg(store)
+    _seed_cross_event_cut(lg, "cut-x", [
+        {"event_id": "A", "kind": "export",
+         "export_relpath": "Exported Media/a1.jpg"}])
+    try:
+        resolve = cross_event_provenance_resolver(lg, "cut-x")
+        prov = resolve(CrossEventPlayFile(
+            event_uuid="A", export_relpath="Exported Media/a1.jpg"))
+        assert prov is not None
+        assert prov.city == "Salta" and prov.country == "Argentina"
+        assert prov.camera == "Panasonic DC-G9M2"
+        assert prov.iso == 200 and prov.aperture_f == 2.8
+        # An unknown (event, relpath) returns None (overlay hides).
+        assert resolve(CrossEventPlayFile(
+            event_uuid="A", export_relpath="nope.jpg")) is None
+    finally:
+        store.close()
+
+
 def test_entries_empty_cut_returns_empty(tmp_path):
     store = _open_user_store(tmp_path)
     lg = _make_lg(store)

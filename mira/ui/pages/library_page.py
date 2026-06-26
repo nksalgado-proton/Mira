@@ -524,6 +524,7 @@ class LibraryPage(QWidget):
         gateway's index."""
         from mira.shared.cross_event_cut_play import (
             build_cross_event_entries,
+            cross_event_provenance_resolver,
             make_resolve_path,
         )
         from mira.ui.shared.cut_play import CutPlayerDialog
@@ -570,6 +571,18 @@ class LibraryPage(QWidget):
         opener_image = None
         if any(k == "opener" for k, _ in entries):
             opener_image = self._cross_event_opener_image(lg, cut)
+        # spec/154 — draw the photo caption (the Cut's selected When /
+        # Where / Camera / Exposure fields) live on each frame, like event
+        # Play. Provenance comes straight from the global_items projection.
+        import json as _json
+        try:
+            overlay_fields = [
+                str(f) for f in _json.loads(cut.overlay_fields_json or "[]")]
+        except Exception:                                          # noqa: BLE001
+            overlay_fields = []
+        provenance_resolver = (
+            cross_event_provenance_resolver(lg, cut_id)
+            if overlay_fields else None)
         dlg = CutPlayerDialog(
             entries,
             event_root=Path(""),   # unused — resolve_path supplies the path
@@ -577,6 +590,8 @@ class LibraryPage(QWidget):
             day_meta=day_meta,
             resolve_path=make_resolve_path(gateway=self._gateway),
             opener_image=opener_image,
+            overlay_fields=overlay_fields,
+            provenance_resolver=provenance_resolver,
             transition_ms=transition_ms,
             parent=self,
         )

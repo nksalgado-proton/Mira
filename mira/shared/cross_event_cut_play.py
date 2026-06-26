@@ -247,8 +247,74 @@ def _read_facts(library_gateway,
     return out
 
 
+def _read_provenance(library_gateway,
+                     keys: Sequence[Tuple[str, str]]) -> dict:
+    """``{(event_uuid, relpath) → FrameProvenance}`` from the global_items
+    projection, which already denormalises every overlay field (spec/154 —
+    no need to open each source event)."""
+    from core.cut_overlay import FrameProvenance
+    if not keys:
+        return {}
+    where = " OR ".join(
+        "(event_uuid = ? AND (export_relpath = ? OR origin_relpath = ?))"
+        for _ in keys)
+    params: list = []
+    for event_uuid, relpath in keys:
+        params.extend([event_uuid, relpath, relpath])
+    sql = (
+        "SELECT event_uuid, export_relpath, origin_relpath, capture_time, "
+        "       country, day_city, day_sublocation, camera_id, lens_model, "
+        "       flash_fired, iso, aperture_f, shutter_speed_s, "
+        "       focal_length_mm "
+        f"FROM global_items WHERE {where}"
+    )
+    rows = library_gateway.user_store.conn.execute(sql, params).fetchall()
+    out: dict = {}
+    for r in rows:
+        prov = FrameProvenance(
+            when=r["capture_time"],
+            city=r["day_city"], sublocation=r["day_sublocation"],
+            country=r["country"], camera=r["camera_id"],
+            lens_model=r["lens_model"],
+            flash_fired=(None if r["flash_fired"] is None
+                         else bool(r["flash_fired"])),
+            aperture_f=r["aperture_f"], shutter_speed_s=r["shutter_speed_s"],
+            iso=r["iso"], focal_length_mm=r["focal_length_mm"])
+        for rel_col in ("export_relpath", "origin_relpath"):
+            relpath = r[rel_col]
+            if relpath:
+                out.setdefault((r["event_uuid"], relpath), prov)
+    return out
+
+
+def cross_event_provenance_resolver(
+    library_gateway, cut_id: str
+) -> Callable[[object], object]:
+    """spec/154 — the resolver the cross-event player hands
+    :class:`CutPlayerDialog`: given a play payload, return its
+    :class:`~core.cut_overlay.FrameProvenance` (or ``None``). Built once —
+    one projection query for all members — so the per-frame closure is
+    O(1). Keys on ``(event_uuid, relpath)`` because the same filename can
+    live in two source events."""
+    members = library_gateway.cross_event_cut_members(cut_id)
+    keys: list = []
+    for m in members:
+        relpath = m.origin_relpath if m.kind == "grab" else m.export_relpath
+        if relpath:
+            keys.append((m.event_id, relpath))
+    prov_by_key = _read_provenance(library_gateway, keys)
+
+    def resolve(payload):
+        relpath = (getattr(payload, "export_relpath", "")
+                   or getattr(payload, "origin_relpath", ""))
+        return prov_by_key.get(
+            (getattr(payload, "event_uuid", ""), relpath))
+    return resolve
+
+
 __all__ = [
     "CrossEventPlayFile",
     "build_cross_event_entries",
+    "cross_event_provenance_resolver",
     "make_resolve_path",
 ]

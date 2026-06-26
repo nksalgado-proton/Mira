@@ -34,7 +34,6 @@ import pytest
 from core import cut_overlay
 from mira.gateway.event_gateway import EventGateway
 from mira.shared.pte_project import (
-    OVERLAY_BURN_IN, OVERLAY_EMBEDDED, OVERLAY_OFF,
     PteAudioTrack, PteMember, bundled_skeleton_path, generate,
     load_skeleton,
 )
@@ -409,7 +408,6 @@ def test_generated_pte_carries_embedded_overlay_text(gw, tmp_path):
         aspect="16:9", photo_seconds=6.0,
         project_path=folder / "slideshow.pte",
         images_folder=folder,
-        overlay_mode=OVERLAY_EMBEDDED,
     )
     for i, member in enumerate(members, start=1):
         body = _slide_section(text, f"Slide{i}")
@@ -437,7 +435,6 @@ def test_generated_pte_strips_text_when_overlay_text_is_none(gw, tmp_path):
         [], aspect="16:9", photo_seconds=6.0,
         project_path=folder / "slideshow.pte",
         images_folder=folder,
-        overlay_mode=OVERLAY_EMBEDDED,
     )
     body = _slide_section(text, "Slide1")
     assert ":Text\r\n" not in body

@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from mira.shared.pte_project import (
-    OVERLAY_OFF,
     PteMember,
     bundled_skeleton_path,
     generate,
@@ -58,7 +57,6 @@ def _generate(skel: str, *members: PteMember) -> str:
         aspect="16:9", photo_seconds=6.0,
         project_path=Path("C:/cut/slideshow.pte"),
         images_folder=Path("C:/cut"),
-        overlay_mode=OVERLAY_OFF,
         transition_ms=0,             # easier arithmetic on [Times]
     )
 
@@ -222,7 +220,6 @@ def test_video_times_slot_excludes_transition(skel):
         aspect="16:9", photo_seconds=6.0,
         project_path=Path("C:/cut/slideshow.pte"),
         images_folder=Path("C:/cut"),
-        overlay_mode=OVERLAY_OFF,
         transition_ms=2000,
     )
     times = _section(out, "Times")

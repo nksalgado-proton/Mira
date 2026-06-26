@@ -65,7 +65,6 @@ def generate_pte_for_folder(
     *,
     aspect: str = "16:9",
     photo_seconds: float = 6.0,
-    overlay_mode: str = "embedded",
     stem: str = "slideshow",
     library_root: Optional[Path] = None,
     bundled_fallback: Optional[Path] = None,
@@ -128,7 +127,6 @@ def generate_pte_for_folder(
         photo_seconds=float(photo_seconds or 6.0),
         library_root=library_root,
         bundled_fallback=bundled_fallback,
-        overlay_mode=overlay_mode or "embedded",
         stem=safe_stem,
         overwrite=True,
     )

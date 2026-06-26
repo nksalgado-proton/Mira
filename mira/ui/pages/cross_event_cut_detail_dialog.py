@@ -268,9 +268,8 @@ class CrossEventCutDetailDialog(QDialog):
 
     def _generate_pte_into_folder(self, folder):
         """spec/149 — call the shared standalone generator with the
-        cross-event Cut's aspect / photo_s / overlay mode. Returns the
-        path written, or ``None`` when generation didn't run (no media
-        / failure)."""
+        cross-event Cut's aspect / photo_s. Returns the path written, or
+        ``None`` when generation didn't run (no media / failure)."""
         from mira.paths import library_root as _library_root_from_paths
         from mira.shared.cut_pte_generation import generate_pte_for_folder
         try:
@@ -279,9 +278,6 @@ class CrossEventCutDetailDialog(QDialog):
                 aspect=getattr(self._cut_row, "aspect", None) or "16:9",
                 photo_seconds=float(
                     getattr(self._cut_row, "photo_s", 6.0) or 6.0),
-                overlay_mode=(
-                    getattr(self._cut_row, "overlay_mode", None)
-                    or "embedded"),
                 stem=(getattr(self._cut_row, "tag", None) or "").strip()
                 or "slideshow",
                 library_root=_library_root_from_paths(),

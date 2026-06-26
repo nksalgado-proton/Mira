@@ -85,11 +85,6 @@ _BUNDLED_SKELETON_RELPATH = Path("assets") / "pte" / "skeleton.pte"
 #: captured skeleton with a different effect time can override.
 DEFAULT_TRANSITION_MS = 2000
 
-#: Overlay modes (mirror :mod:`core.cut_overlay`).
-OVERLAY_EMBEDDED = "embedded"
-OVERLAY_BURN_IN = "burn_in"
-OVERLAY_OFF = "off"
-
 #: spec/153 — text-object style roles. Each maps to a row in
 #: :data:`_TEXT_STYLE` (font / box-scale / position). Mira owns the look;
 #: the user restyles in PTE afterward.
@@ -843,7 +838,6 @@ def generate(
     photo_seconds: float,
     project_path: Path,
     images_folder: Path,
-    overlay_mode: str = OVERLAY_EMBEDDED,
     transition_ms: int = DEFAULT_TRANSITION_MS,
 ) -> str:
     """Build a complete `.pte` text from the skeleton and the Cut's
@@ -858,14 +852,12 @@ def generate(
     ``images_folder`` is the folder containing the media files (the
     member paths typically live under it).
 
-    ``overlay_mode``:
-      * ``embedded`` — populate the nested `:Text` from each member's
-        ``overlay_text`` (or strip the Text when the member has none —
-        a member with no provenance to show shouldn't carry empty text);
-      * ``burn_in`` — strip every nested `:Text` (burn-in already drew
-        the words into pixels at export);
-      * ``off`` — strip every nested `:Text` (the user wants no
-        overlay anywhere)."""
+    Overlay text rides each slide as separate ``:Text`` objects (spec/153):
+    they are emitted from each member's ``texts`` (a member with no texts
+    yields a clean slide). The legacy ``overlay_text`` single string is
+    bridged to one photo-caption object for any caller that hasn't
+    migrated. Burn-in was retired in spec/153, so there is no longer a
+    mode switch — what shows is exactly what each member carries."""
     from core.cut_aspect import aspect_spec
 
     skel = parse_skeleton(skeleton_text)
@@ -989,7 +981,6 @@ def generate_into_folder(
     aspect: str,
     photo_seconds: float,
     library_root: Optional[Path] = None,
-    overlay_mode: str = OVERLAY_EMBEDDED,
     transition_ms: int = DEFAULT_TRANSITION_MS,
     overwrite: bool = False,
     bundled_fallback: Optional[Path] = None,
@@ -1013,7 +1004,7 @@ def generate_into_folder(
         skeleton_text, members, audio_tracks,
         aspect=aspect, photo_seconds=photo_seconds,
         project_path=target, images_folder=folder,
-        overlay_mode=overlay_mode, transition_ms=transition_ms,
+        transition_ms=transition_ms,
     )
     write_pte(text, target)
     log.info("generated PTE project at %s (%d slides, %d audio tracks)",
@@ -1025,7 +1016,6 @@ __all__ = [
     "DEFAULT_OUTPUT_NAME",
     "DEFAULT_OUTPUT_STEM",
     "DEFAULT_TRANSITION_MS",
-    "OVERLAY_EMBEDDED", "OVERLAY_BURN_IN", "OVERLAY_OFF",
     "TEXT_PHOTO_CAPTION", "TEXT_SEP_TITLE", "TEXT_SEP_SUB",
     "TEXT_OPENER_TITLE", "TEXT_OPENER_SUB", "TEXT_ORIGIN",
     "PteMember", "PteText", "PteAudioTrack",

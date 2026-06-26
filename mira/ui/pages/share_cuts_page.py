@@ -2937,8 +2937,6 @@ class ShareCutsPage(QWidget):
                     path=track,
                     duration_ms=self._probe_audio_ms(track),
                 ))
-        overlay_mode = (
-            getattr(cut, "overlay_mode", None) or "embedded")
         aspect = getattr(cut, "aspect", None) or "16:9"
         photo_seconds = float(getattr(cut, "photo_s", 6.0))
         # spec/121 — the .pte takes the Cut's name. cut.tag is the
@@ -2951,7 +2949,6 @@ class ShareCutsPage(QWidget):
             aspect=aspect,
             photo_seconds=photo_seconds,
             library_root=_library_root_from_paths(),
-            overlay_mode=overlay_mode,
             # spec/152 §3 — per-Cut transition (falls back to the
             # global Settings default when the Cut has none) so PTE's
             # [Times] cumulative agrees with the show-length budget +

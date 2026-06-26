@@ -924,8 +924,6 @@ class LibraryPage(QWidget):
                         path=track, duration_ms=dur_ms))
             aspect = getattr(cut, "aspect", None) or "16:9"
             photo_seconds = float(getattr(cut, "photo_s", 6.0))
-            overlay_mode = (
-                getattr(cut, "overlay_mode", None) or "embedded")
             # spec/152 §3 — thread the user-configured transition time
             # through to PTE so its [Times] cumulative + the show
             # length budget + the audio playlist all agree on wall
@@ -942,7 +940,6 @@ class LibraryPage(QWidget):
                 aspect=aspect,
                 photo_seconds=photo_seconds,
                 library_root=_library_root_from_paths(),
-                overlay_mode=overlay_mode,
                 transition_ms=transition_ms,
                 overwrite=overwrite,
             )

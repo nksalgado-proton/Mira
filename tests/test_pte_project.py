@@ -29,7 +29,6 @@ import pytest
 from mira.shared.pte_project import (
     DEFAULT_OUTPUT_NAME,
     DEFAULT_TRANSITION_MS,
-    OVERLAY_BURN_IN, OVERLAY_EMBEDDED, OVERLAY_OFF,
     PteAudioTrack, PteMember,
     bundled_skeleton_path,
     fresh_guid,
@@ -81,7 +80,6 @@ def output(skel, members, tracks) -> str:
         aspect="16:9", photo_seconds=6.0,
         project_path=Path("C:/cut/slideshow.pte"),
         images_folder=Path("C:/cut"),
-        overlay_mode=OVERLAY_EMBEDDED,
     )
 
 
@@ -358,8 +356,7 @@ def test_main_aspect_and_canvas_overridden(skel, members, tracks):
     text = generate(skel, members, tracks,
                     aspect="4:3", photo_seconds=5.0,
                     project_path=Path("C:/cut/slideshow.pte"),
-                    images_folder=Path("C:/cut"),
-                    overlay_mode=OVERLAY_EMBEDDED)
+                    images_folder=Path("C:/cut"))
     main = _section(text, "Main")
     assert "AspectRatio=4-3" in main
     assert "opt_scr_width=1024" in main
@@ -405,8 +402,7 @@ def test_music_block_empty_when_no_audio(skel, members):
     text = generate(skel, members, [],
                     aspect="16:9", photo_seconds=6.0,
                     project_path=Path("C:/cut/slideshow.pte"),
-                    images_folder=Path("C:/cut"),
-                    overlay_mode=OVERLAY_EMBEDDED)
+                    images_folder=Path("C:/cut"))
     music = re.search(
         r"object Music:Music\r\n([\s\S]*?)end\r\nend\r\n", text)
     assert music is not None
@@ -435,8 +431,7 @@ def test_music_block_emits_is_repeat_flag_with_no_audio(skel, members):
     text = generate(skel, members, [],
                     aspect="16:9", photo_seconds=6.0,
                     project_path=Path("C:/cut/slideshow.pte"),
-                    images_folder=Path("C:/cut"),
-                    overlay_mode=OVERLAY_EMBEDDED)
+                    images_folder=Path("C:/cut"))
     music = _music_block(text)
     assert "IsRepeat=1" in music
 
@@ -525,7 +520,6 @@ def test_generate_into_folder_writes_named_file(
         aspect="16:9", photo_seconds=6.0,
         library_root=None,
         bundled_fallback=bundled_skeleton_path(),
-        overlay_mode=OVERLAY_EMBEDDED,
         stem="my-cut",
     )
     assert out == tmp_path / "my-cut.pte"
@@ -541,7 +535,6 @@ def test_generate_into_folder_writes_named_file_project_path_internal(
         aspect="16:9", photo_seconds=6.0,
         library_root=None,
         bundled_fallback=bundled_skeleton_path(),
-        overlay_mode=OVERLAY_EMBEDDED,
         stem="iceland-highlights",
     )
     text = out.read_bytes().decode("utf-8-sig")
@@ -560,7 +553,6 @@ def test_generate_into_folder_writes_into_target(
         aspect="16:9", photo_seconds=6.0,
         library_root=None,
         bundled_fallback=bundled_skeleton_path(),
-        overlay_mode=OVERLAY_EMBEDDED,
     )
     assert out == tmp_path / DEFAULT_OUTPUT_NAME
     assert out.is_file()
@@ -580,13 +572,11 @@ def test_generate_is_deterministic_except_for_guids(
     a = generate(skel, members, tracks,
                  aspect="16:9", photo_seconds=6.0,
                  project_path=Path("C:/cut/slideshow.pte"),
-                 images_folder=Path("C:/cut"),
-                 overlay_mode=OVERLAY_EMBEDDED)
+                 images_folder=Path("C:/cut"))
     b = generate(skel, members, tracks,
                  aspect="16:9", photo_seconds=6.0,
                  project_path=Path("C:/cut/slideshow.pte"),
-                 images_folder=Path("C:/cut"),
-                 overlay_mode=OVERLAY_EMBEDDED)
+                 images_folder=Path("C:/cut"))
     # Strip every GUID to a placeholder before comparing.
     norm_a = re.sub(_GUID, "{GUID}", a)
     norm_b = re.sub(_GUID, "{GUID}", b)
@@ -643,8 +633,7 @@ opt_slidescount=1
         generate(photo_only_skel, members, [],
                  aspect="16:9", photo_seconds=6.0,
                  project_path=Path("C:/cut/slideshow.pte"),
-                 images_folder=Path("C:/cut"),
-                 overlay_mode=OVERLAY_OFF)
+                 images_folder=Path("C:/cut"))
 
 
 # ── Small utils ─────────────────────────────────────────────────

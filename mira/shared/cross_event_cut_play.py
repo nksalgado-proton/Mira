@@ -165,6 +165,43 @@ def build_cross_event_entries(
     return entries, day_meta
 
 
+#: spec/154 — the opener slide's flat-card filename in a cross-event Cut
+#: export folder. Sequence-prefixed ``000_`` so a plain name sort keeps it
+#: first; both the exporter (writes it) and the PTE generator (references
+#: it) read this one constant.
+CROSS_EVENT_OPENER_FILENAME = "000_opener.jpg"
+
+
+def flatten_relpath(relpath: str) -> str:
+    """Flatten a source relpath to the single output filename the
+    cross-event exporter writes (path separators → ``_``). Cross-event
+    members come from many event roots, so the flat output folder needs
+    collision-resistant names. The exporter and the PTE generator both
+    route through this so a member's bytes and its PTE slide agree on the
+    filename."""
+    return (relpath or "").replace("\\", "/").replace("/", "_")
+
+
+def cross_event_member_filename(payload) -> str:
+    """The flat output filename for a play payload — mirrors what the
+    exporter wrote (``flatten_relpath`` of the member's relpath, keyed on
+    its kind: export → ``export_relpath``, grab → ``origin_relpath``)."""
+    relpath = (
+        getattr(payload, "origin_relpath", "")
+        if getattr(payload, "member_kind", "export") == "grab"
+        else getattr(payload, "export_relpath", ""))
+    return flatten_relpath(relpath)
+
+
+def cross_event_separator_filename(token) -> str:
+    """The flat-card filename for a ``(event_uuid, day_iso)`` separator
+    token. Sequence-prefixed so the cards never collide with the
+    ``Exported Media_…`` / ``Original Media_…`` member files, and so the
+    exporter + PTE generator agree on where each separator's bytes live."""
+    event_uuid, day_iso = token
+    return f"_sep_{event_uuid}_{day_iso}.jpg"
+
+
 def make_resolve_path(*, gateway) -> Callable[[object], Path]:
     """Build the ``resolve_path`` callable :class:`CutPlayerDialog`
     accepts. Maps a :class:`CrossEventPlayFile` to its source event's
@@ -296,10 +333,11 @@ _MONTH_ABBR = (
 )
 
 
-def _format_origin_date(capture_time: Optional[str]) -> Optional[str]:
+def format_capture_date(capture_time: Optional[str]) -> Optional[str]:
     """``'2025-09-28T11:26:41'`` → ``'28 Sep 2025'``. Reads the leading
     ISO ``YYYY-MM-DD``; returns ``None`` for a missing / unparseable value
-    (charter §5.3 — tolerate, don't crash)."""
+    (charter §5.3 — tolerate, don't crash). Shared by the origin label and
+    the cross-event separator sub-line (PTE)."""
     if not capture_time:
         return None
     iso = str(capture_time).strip()[:10]
@@ -326,7 +364,7 @@ def compose_origin_label(
     parts = []
     if event_name:
         parts.append(str(event_name))
-    date_text = _format_origin_date(capture_time)
+    date_text = format_capture_date(capture_time)
     if date_text:
         parts.append(date_text)
     return " · ".join(parts) if parts else None
@@ -382,10 +420,15 @@ def cross_event_provenance_resolver(
 
 
 __all__ = [
+    "CROSS_EVENT_OPENER_FILENAME",
     "CrossEventPlayFile",
     "build_cross_event_entries",
     "compose_origin_label",
+    "cross_event_member_filename",
     "cross_event_origin_resolver",
     "cross_event_provenance_resolver",
+    "cross_event_separator_filename",
+    "flatten_relpath",
+    "format_capture_date",
     "make_resolve_path",
 ]

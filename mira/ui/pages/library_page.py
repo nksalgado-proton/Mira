@@ -470,6 +470,55 @@ class LibraryPage(QWidget):
         self.refresh()
 
     @staticmethod
+    def _cut_card_style(cut) -> str:
+        """spec/143/154 — the cross-event Cut's card style from
+        ``extras_json`` (sibling to ``source_label``). Defaults / normalises
+        to ``'black'`` so a stale blob can't park a bogus value on the
+        renderer."""
+        import json as _json
+        try:
+            extras = _json.loads(getattr(cut, "extras_json", "") or "{}")
+        except (ValueError, TypeError):
+            extras = {}
+        style = extras.get("card_style") if isinstance(extras, dict) else None
+        return style if style in ("black", "single", "multi") else "black"
+
+    def _cross_event_card_writers(self, cut_id: str):
+        """spec/154 — build the flat ``opener_writer`` + ``separator_writer``
+        the cross-event exporter calls. Both render a text-less
+        :func:`render_flat_background` (the words ride the generated .pte as
+        :Text); the opener always rides, the separator writer is returned
+        only when the Cut has separators ON (cross-event default OFF,
+        spec/81 §3.1). Returns ``(opener_writer, separator_writer_or_None)``;
+        ``(None, None)`` if the Cut can't be read."""
+        from core.cut_aspect import aspect_dimensions, normalise
+        from mira.ui.shared.separator_card import render_flat_background
+        lg = self._library_gateway()
+        cut = lg.cross_event_cut(cut_id) if lg is not None else None
+        if cut is None:
+            return None, None
+        aspect = normalise(getattr(cut, "aspect", "16:9"))
+        _, canvas_h = aspect_dimensions(aspect)
+        card_style = self._cut_card_style(cut)
+
+        def opener_writer(target: "Path") -> None:
+            img = render_flat_background(
+                aspect=aspect, height=canvas_h,
+                card_style=card_style, seed_key=cut.id)
+            if not img.save(str(target), "JPG", 92):
+                raise OSError(f"could not write {target}")
+
+        separator_writer = None
+        if bool(getattr(cut, "separators", False)):
+            def separator_writer(target: "Path", token) -> None:  # noqa: F811
+                img = render_flat_background(
+                    aspect=aspect, height=canvas_h,
+                    card_style=card_style, seed_key=f"{cut.id}:{token}")
+                if not img.save(str(target), "JPG", 92):
+                    raise OSError(f"could not write {target}")
+        return opener_writer, separator_writer
+
+    @staticmethod
     def _cut_source_label_on(cut) -> bool:
         """spec/154 — read the cross-event Cut's "Source label per slide"
         flag out of ``extras_json`` (the standing house pattern for per-Cut
@@ -713,6 +762,11 @@ class LibraryPage(QWidget):
                 audio_root = self._gateway.settings.load().audio_library_path or ""
             except Exception:                                  # noqa: BLE001
                 audio_root = ""
+            # spec/154 — flat opener + per-(event, day) separator card
+            # writers (the text rides the .pte as :Text). The opener
+            # always rides; separator cards only when the Cut opted in.
+            opener_writer, separator_writer = self._cross_event_card_writers(
+                cut_id)
             summary = export_cross_event_cut(
                 self._gateway, "", cut_id,
                 target=choices.target,
@@ -720,6 +774,8 @@ class LibraryPage(QWidget):
                 copy_mode=choices.copy_mode,
                 overwrite_existing=choices.overwrite_existing,
                 audio_root=audio_root or None,
+                opener_writer=opener_writer,
+                separator_writer=separator_writer,
             )
         except CrossEventExportError as exc:
             QMessageBox.warning(
@@ -834,23 +890,19 @@ class LibraryPage(QWidget):
             return None
         try:
             from mira.shared.pte_project import (
-                PteAudioTrack, PteMember,
-                generate_into_folder,
+                PteAudioTrack, generate_into_folder,
             )
             from mira.paths import library_root as _library_root_from_paths
-            members = []
-            for entry in sorted(folder.iterdir(),
-                                key=lambda p: p.name.lower()):
-                if not entry.is_file():
-                    continue
-                suffix = entry.suffix.lower()
-                if suffix in (".jpg", ".jpeg", ".png"):
-                    members.append(PteMember(kind="photo", path=entry))
-                elif suffix == ".mp4":
-                    members.append(PteMember(
-                        kind="video", path=entry,
-                        duration_ms=0,
-                    ))
+            lg = self._library_gateway()
+            cut = (lg.cross_event_cut(cut_row.cut_id)
+                   if lg is not None else None)
+            if cut is None:
+                return None
+            # spec/154 — build the member list by replaying the SAME
+            # chronological entries Play uses (opener + per-(event, day)
+            # separators + files), with each slide's :Text composed from
+            # the SAME helpers Play feeds its live overlays.
+            members = self._cross_event_pte_members(lg, cut, folder)
             if not members:
                 return None
             audio_dir = folder / "audio"
@@ -870,10 +922,10 @@ class LibraryPage(QWidget):
                         pass
                     tracks.append(PteAudioTrack(
                         path=track, duration_ms=dur_ms))
-            aspect = getattr(cut_row, "aspect", None) or "16:9"
-            photo_seconds = float(getattr(cut_row, "photo_s", 6.0))
+            aspect = getattr(cut, "aspect", None) or "16:9"
+            photo_seconds = float(getattr(cut, "photo_s", 6.0))
             overlay_mode = (
-                getattr(cut_row, "overlay_mode", None) or "embedded")
+                getattr(cut, "overlay_mode", None) or "embedded")
             # spec/152 §3 — thread the user-configured transition time
             # through to PTE so its [Times] cumulative + the show
             # length budget + the audio playlist all agree on wall
@@ -900,6 +952,100 @@ class LibraryPage(QWidget):
                 "PTE generation failed for cross-event cut %s",
                 getattr(cut_row, "tag", "?"))
             return None
+
+    def _cross_event_pte_members(self, lg, cut, folder: "Path"):
+        """spec/154 — the cross-event PTE member list: replay the same
+        chronological entries the in-app Play builds (opener + per-(event,
+        day) separators + files) and compose each slide's separate ``:Text``
+        objects from the SAME helpers Play feeds its live overlays —
+        provenance captions, the origin label, and the opener summary.
+
+        The flat card + member bytes were written by the export; here we
+        only point each slide at its on-disk file and attach the text.
+        Members whose bytes aren't present (skipped at export — missing
+        source, etc.) are dropped so the generated ``.pte`` stays valid."""
+        import json as _json
+        from core import cut_overlay
+        from mira.shared.cross_event_cut_play import (
+            CROSS_EVENT_OPENER_FILENAME,
+            build_cross_event_entries,
+            cross_event_member_filename,
+            cross_event_origin_resolver,
+            cross_event_provenance_resolver,
+            cross_event_separator_filename,
+            format_capture_date,
+        )
+        from mira.shared.pte_project import (
+            PteMember, PteText,
+            TEXT_OPENER_SUB, TEXT_OPENER_TITLE, TEXT_ORIGIN,
+            TEXT_PHOTO_CAPTION, TEXT_SEP_SUB, TEXT_SEP_TITLE,
+        )
+        entries, day_meta = build_cross_event_entries(
+            library_gateway=lg, cut_id=cut.id,
+            separators_on=bool(getattr(cut, "separators", False)))
+        if not entries:
+            return []
+        try:
+            overlay_fields = [
+                str(f) for f in _json.loads(cut.overlay_fields_json or "[]")]
+        except Exception:                                          # noqa: BLE001
+            overlay_fields = []
+        prov_resolve = (
+            cross_event_provenance_resolver(lg, cut.id)
+            if overlay_fields else None)
+        origin_resolve = (
+            cross_event_origin_resolver(lg, cut.id)
+            if self._cut_source_label_on(cut) else None)
+        opener_title, opener_lines = self._cross_event_opener_lines(lg, cut)
+
+        members = []
+        for kind, payload in entries:
+            if kind == "opener":
+                path = folder / CROSS_EVENT_OPENER_FILENAME
+                if not path.is_file():
+                    continue
+                texts = [PteText(opener_title, TEXT_OPENER_TITLE)]
+                sub = "  ·  ".join(str(ln) for ln in opener_lines if ln)
+                if sub:
+                    texts.append(PteText(sub, TEXT_OPENER_SUB))
+                members.append(PteMember(kind="photo", path=path, texts=texts))
+            elif kind == "sep":
+                path = folder / cross_event_separator_filename(payload)
+                if not path.is_file():
+                    continue
+                meta = day_meta.get(payload)
+                texts = [PteText(
+                    getattr(meta, "title", None) or tr("More moments"),
+                    TEXT_SEP_TITLE)]
+                date_text = format_capture_date(getattr(meta, "date", None))
+                if date_text:
+                    texts.append(PteText(date_text, TEXT_SEP_SUB))
+                members.append(PteMember(kind="photo", path=path, texts=texts))
+            else:  # file
+                path = folder / cross_event_member_filename(payload)
+                if not path.is_file():
+                    continue
+                texts = []
+                if prov_resolve is not None:
+                    prov = prov_resolve(payload)
+                    if prov is not None:
+                        lines = cut_overlay.compose_overlay_lines(
+                            overlay_fields, prov)
+                        if lines:
+                            texts.append(PteText(
+                                "  •  ".join(lines), TEXT_PHOTO_CAPTION))
+                if origin_resolve is not None:
+                    origin = origin_resolve(payload)
+                    if origin:
+                        texts.append(PteText(origin, TEXT_ORIGIN))
+                members.append(PteMember(
+                    kind=("video"
+                          if getattr(payload, "kind", "photo") == "video"
+                          else "photo"),
+                    path=path,
+                    duration_ms=int(getattr(payload, "duration_ms", 0) or 0),
+                    texts=texts))
+        return members
 
     def _show_export_complete_box(self, lines, folder: "Path",
                                   pte_file: "Optional[Path]") -> None:

@@ -338,6 +338,97 @@ def test_re_export_overwrites_existing_target_file(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# spec/154 — opener + per-(event, day) separator card writers
+# --------------------------------------------------------------------------- #
+
+
+def _seed_projection_row(gw, *, event_uuid, item_id, export_relpath,
+                         capture_time, kind="photo"):
+    """Insert one global_items projection row so
+    ``build_cross_event_entries`` (used by the separator block) can read
+    capture_time + form the per-(event, day) tokens."""
+    from mira.user_store import models as um
+    gw.library_gateway().user_store.upsert(um.GlobalItem(
+        event_uuid=event_uuid, item_id=item_id, synced_at=NOW,
+        export_relpath=export_relpath, capture_time=capture_time,
+        kind=kind, has_export=True))
+
+
+def test_opener_and_separator_writers_emit_cards(tmp_path):
+    """spec/154 — when the host wires the writers, the export drops a flat
+    ``000_opener.jpg`` plus one flat ``_sep_<event>_<day>.jpg`` per
+    (event, day) boundary (the text rides the .pte). Two days → two
+    separator cards."""
+    gw, photos_base = _make_umbrella(tmp_path)
+    src = _build_event_with_files(
+        photos_base, eid="src", name="Source",
+        exported_files={"a.jpg": b"a", "b.jpg": b"b"})
+    _register(gw, photos_base, src, eid="src", name="Source")
+    _seed_anchor_cut(gw, "src", "cut-x", [
+        {"kind": "export", "export_relpath": "Exported Media/a.jpg",
+         "event_id": "src"},
+        {"kind": "export", "export_relpath": "Exported Media/b.jpg",
+         "event_id": "src"},
+    ])
+    _seed_projection_row(gw, event_uuid="src", item_id="a",
+                         export_relpath="Exported Media/a.jpg",
+                         capture_time="2026-04-01T10:00:00")
+    _seed_projection_row(gw, event_uuid="src", item_id="b",
+                         export_relpath="Exported Media/b.jpg",
+                         capture_time="2026-04-02T10:00:00")
+
+    def opener_writer(target):
+        Path(target).write_bytes(b"OPENER")
+
+    sep_tokens = []
+
+    def separator_writer(target, token):
+        sep_tokens.append(token)
+        Path(target).write_bytes(b"SEP")
+
+    target = tmp_path / "out"
+    summary = export_cross_event_cut(
+        gw, "", "cut-x", target=target,
+        opener_writer=opener_writer, separator_writer=separator_writer)
+    assert (target / "000_opener.jpg").is_file()
+    sep_files = sorted(
+        p.name for p in target.iterdir() if p.name.startswith("_sep_"))
+    assert sep_files == [
+        "_sep_src_2026-04-01.jpg", "_sep_src_2026-04-02.jpg"]
+    # Member bytes still land under their flat names.
+    assert (target / "Exported Media_a.jpg").is_file()
+    # opener (1) + 2 separators counted.
+    assert summary["separators"] == 3
+    assert {t for t in sep_tokens} == {
+        ("src", "2026-04-01"), ("src", "2026-04-02")}
+    gw.close()
+
+
+def test_separator_writer_omitted_writes_no_separator_cards(tmp_path):
+    """No ``separator_writer`` (cross-event default OFF) → only the opener
+    card; no ``_sep_`` files."""
+    gw, photos_base = _make_umbrella(tmp_path)
+    src = _build_event_with_files(
+        photos_base, eid="src", name="Source",
+        exported_files={"a.jpg": b"a"})
+    _register(gw, photos_base, src, eid="src", name="Source")
+    _seed_anchor_cut(gw, "src", "cut-x", [
+        {"kind": "export", "export_relpath": "Exported Media/a.jpg",
+         "event_id": "src"},
+    ])
+    _seed_projection_row(gw, event_uuid="src", item_id="a",
+                         export_relpath="Exported Media/a.jpg",
+                         capture_time="2026-04-01T10:00:00")
+    target = tmp_path / "out"
+    export_cross_event_cut(
+        gw, "", "cut-x", target=target,
+        opener_writer=lambda t: Path(t).write_bytes(b"O"))
+    assert (target / "000_opener.jpg").is_file()
+    assert not any(p.name.startswith("_sep_") for p in target.iterdir())
+    gw.close()
+
+
+# --------------------------------------------------------------------------- #
 # last_exported_at stamping
 # --------------------------------------------------------------------------- #
 

@@ -327,6 +327,39 @@ def test_origin_resolver_composes_event_name_and_date(tmp_path):
         store.close()
 
 
+def test_pte_filename_helpers():
+    """spec/154 — the export and the PTE generator agree on filenames via
+    these shared helpers: flattened member names, the opener card, and the
+    per-(event, day) separator card."""
+    from mira.shared.cross_event_cut_play import (
+        CROSS_EVENT_OPENER_FILENAME,
+        cross_event_member_filename,
+        cross_event_separator_filename,
+        flatten_relpath,
+        format_capture_date,
+    )
+    assert flatten_relpath("Exported Media/Day01/a.jpg") == (
+        "Exported Media_Day01_a.jpg")
+    assert flatten_relpath("Original Media\\b.raw") == "Original Media_b.raw"
+    # Export-kind payload keys on export_relpath.
+    exp = CrossEventPlayFile(
+        event_uuid="A", export_relpath="Exported Media/x.jpg",
+        member_kind="export")
+    assert cross_event_member_filename(exp) == "Exported Media_x.jpg"
+    # Grab-kind payload keys on origin_relpath.
+    grab = CrossEventPlayFile(
+        event_uuid="C", origin_relpath="Original Media/raw.dng",
+        member_kind="grab")
+    assert cross_event_member_filename(grab) == "Original Media_raw.dng"
+    # Separator card name encodes the (event, day) token.
+    assert cross_event_separator_filename(("A", "2026-04-01")) == (
+        "_sep_A_2026-04-01.jpg")
+    assert CROSS_EVENT_OPENER_FILENAME == "000_opener.jpg"
+    # The shared date formatter.
+    assert format_capture_date("2026-04-01T10:00:00") == "1 Apr 2026"
+    assert format_capture_date(None) is None
+
+
 def test_entries_empty_cut_returns_empty(tmp_path):
     store = _open_user_store(tmp_path)
     lg = _make_lg(store)

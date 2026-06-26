@@ -98,6 +98,7 @@ TEXT_SEP_TITLE = "sep_title"           # "Day N" — large, upper-centre
 TEXT_SEP_SUB = "sep_sub"               # date · location · description — smaller
 TEXT_OPENER_TITLE = "opener_title"     # the show title — largest, centre
 TEXT_OPENER_SUB = "opener_sub"         # the show's facts — smaller, below
+TEXT_ORIGIN = "origin_label"           # spec/154 — source event + date, top-centre
 
 
 # ── Data classes ───────────────────────────────────────────────────
@@ -604,6 +605,13 @@ _TEXT_STYLE: Dict[str, dict] = {
     TEXT_OPENER_SUB: dict(
         font="Segoe UI", scale=5.0, pos=(0.0, 12.0),
         align="Center", color="255,255,255"),
+    # spec/154 — the per-slide origin label (cross-event: source event +
+    # capture date). Small, pinned near the TOP edge (the mirror of the
+    # photo caption's +78), so it reads as "where this frame came from"
+    # without colliding with the bottom caption.
+    TEXT_ORIGIN: dict(
+        font="Arial", scale=4.5, pos=(0.0, -82.0),
+        align="Center", color="255,255,255"),
 }
 
 
@@ -1019,7 +1027,7 @@ __all__ = [
     "DEFAULT_TRANSITION_MS",
     "OVERLAY_EMBEDDED", "OVERLAY_BURN_IN", "OVERLAY_OFF",
     "TEXT_PHOTO_CAPTION", "TEXT_SEP_TITLE", "TEXT_SEP_SUB",
-    "TEXT_OPENER_TITLE", "TEXT_OPENER_SUB",
+    "TEXT_OPENER_TITLE", "TEXT_OPENER_SUB", "TEXT_ORIGIN",
     "PteMember", "PteText", "PteAudioTrack",
     "Skeleton",
     "parse_skeleton",

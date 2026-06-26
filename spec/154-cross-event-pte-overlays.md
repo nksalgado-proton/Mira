@@ -94,3 +94,30 @@ text-less, swappable (the spec/153 `render_flat_background`).
   so each member composes its When/Where/Camera/Exposure line.
 
 In-app Play is unchanged throughout.
+
+## PTE side — DONE (slice B, 2026-06-26)
+
+The cross-event export + PTE generation now reach overlay parity with the
+per-event side (spec/153), **composed by the same helpers Play uses** —
+not a parallel implementation:
+
+* **Export (`cross_event_cut_export.export_cross_event_cut`)** writes flat,
+  text-less cards: the opener (`000_opener.jpg`, always) and one
+  `_sep_<event_uuid>_<day_iso>.jpg` per (event, day) boundary (only when
+  the host wires `separator_writer` — cross-event separators default OFF).
+  The card backgrounds come from `render_flat_background`; the words ride
+  the `.pte`. Member bytes keep their flat `Exported Media_…` names.
+* **PTE generation (`LibraryPage._cross_event_pte_members`)** replays the
+  SAME `build_cross_event_entries` Play uses (chronological, opener,
+  per-(event, day) separators) and maps each entry to its on-disk card /
+  member file via the shared filename helpers
+  (`cross_event_cut_play.CROSS_EVENT_OPENER_FILENAME` /
+  `cross_event_separator_filename` / `cross_event_member_filename`). Each
+  slide's `:Text` objects are composed from the shared resolvers:
+  `_cross_event_opener_lines` (opener title + sources), the separator
+  title from the source-event name + `format_capture_date`, the photo
+  caption from `cross_event_provenance_resolver` + `compose_overlay_lines`,
+  and the origin label from `cross_event_origin_resolver`. A new
+  `pte_project.TEXT_ORIGIN` role places the origin text top-centre.
+  Members whose bytes never landed (export skipped them) are dropped so
+  the `.pte` stays valid.

@@ -66,9 +66,13 @@ def _safe_filename(rel: str) -> str:
     output. Cross-event members come from multiple event roots, so a
     member from event A and a member from event B could share a relpath;
     the output folder needs distinct names. Replace path separators with
-    ``_``."""
-    rel = rel.replace("\\", "/")
-    return rel.replace("/", "_")
+    ``_``.
+
+    Delegates to :func:`mira.shared.cross_event_cut_play.flatten_relpath`
+    so the bytes the exporter writes and the filenames the PTE generator
+    references stay in lockstep (spec/154)."""
+    from mira.shared.cross_event_cut_play import flatten_relpath
+    return flatten_relpath(rel)
 
 
 def _hardlink_or_copy(src: Path, dst: Path) -> str:
@@ -333,13 +337,44 @@ def export_cross_event_cut(
     # ``000_opener.jpg`` so plain filename sort keeps it first in the
     # output folder.
     if opener_writer is not None and resolved:
-        opener_path = target / "000_opener.jpg"
+        from mira.shared.cross_event_cut_play import (
+            CROSS_EVENT_OPENER_FILENAME)
+        opener_path = target / CROSS_EVENT_OPENER_FILENAME
         try:
             opener_writer(opener_path)
             separators += 1
         except Exception:                                          # noqa: BLE001
             log.exception("cross-event opener render failed for %s",
                           opener_path)
+    # spec/154 — per-(event, day) flat separator cards. The text rides
+    # the generated .pte as :Text objects; this writes only the
+    # swappable backgrounds (one per boundary the in-app Play shows).
+    # Gated on a wired ``separator_writer`` — the cross-event default is
+    # separators OFF (spec/81 §3.1), so the host passes one only when the
+    # Cut opted in. Token order doesn't matter here (the PTE generator
+    # rebuilds show order from the same entries); we just need each
+    # boundary's card on disk.
+    if separator_writer is not None and resolved:
+        from mira.shared.cross_event_cut_play import (
+            build_cross_event_entries, cross_event_separator_filename)
+        try:
+            entries, _meta = build_cross_event_entries(
+                library_gateway=lg, cut_id=cut_id, separators_on=True)
+        except Exception:                                          # noqa: BLE001
+            log.exception("cross-event separators: entry build failed")
+            entries = []
+        seen_tokens: set = set()
+        for kind, payload in entries:
+            if kind != "sep" or payload in seen_tokens:
+                continue
+            seen_tokens.add(payload)
+            card_path = target / cross_event_separator_filename(payload)
+            try:
+                separator_writer(card_path, payload)
+                separators += 1
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "cross-event separator render failed for %s", card_path)
     # spec/105 §3 — build a per-source-event lineage→origin index ONCE
     # so the per-member loop is O(1). Done only when originals are
     # requested and there's at least one export-kind member from each

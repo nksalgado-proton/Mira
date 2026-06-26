@@ -300,6 +300,29 @@ def test_member_texts_emit_styled_objects(skel, tracks):
     assert body.count(":Text\r\n") == 2
 
 
+def test_origin_role_emits_top_anchored_text(skel, tracks):
+    """spec/154 — a ``TEXT_ORIGIN`` text object emits with the role's
+    top-anchored position so the cross-event PTE's per-slide origin label
+    sits at the top (the mirror of the bottom photo caption)."""
+    from mira.shared.pte_project import (
+        PteMember, PteText, TEXT_ORIGIN, TEXT_PHOTO_CAPTION, _TEXT_STYLE)
+    members = [PteMember(
+        kind="photo", path=Path("C:/cut/003_a.jpg"),
+        texts=[PteText("Salta, Argentina · 28 Sep 2025", TEXT_ORIGIN),
+               PteText("28 Sep 2025", TEXT_PHOTO_CAPTION)])]
+    text = generate(skel, members, tracks,
+                    aspect="16:9", photo_seconds=6.0,
+                    project_path=Path("C:/cut/slideshow.pte"),
+                    images_folder=Path("C:/cut"))
+    body = _section(text, "Slide1")
+    assert 'Text="Salta, Argentina · 28 Sep 2025"' in body
+    assert body.count(":Text\r\n") == 2
+    # The origin role's Y position is negative (top half).
+    ox, oy = _TEXT_STYLE[TEXT_ORIGIN]["pos"]
+    assert oy < 0
+    assert f"Position={ox},{oy}" in body
+
+
 # ── [Times] ─────────────────────────────────────────────────────
 
 

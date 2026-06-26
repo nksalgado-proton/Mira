@@ -131,7 +131,10 @@ def build_cross_event_entries(
     # earns two separators (spec/81 §3.1).
     entries: List[Tuple[str, object]] = []
     day_meta: dict = {}
-    if separators_on and files:
+    # spec/143 + spec/154 — the opener is the show's title slide and
+    # carries the Cut's provenance summary; it is independent of the
+    # separators toggle (mirrors the per-event opener).
+    if files:
         entries.append(("opener", None))
     last_token: object = object()
     for f in files:

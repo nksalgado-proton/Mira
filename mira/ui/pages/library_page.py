@@ -469,6 +469,55 @@ class LibraryPage(QWidget):
         dlg.exec()
         self.refresh()
 
+    def _cross_event_opener_lines(self, lg, cut) -> "tuple[str, list]":
+        """spec/154 — the cross-event opener's title + summary lines: the
+        Cut name, the source EVENTS the frames came from (provenance, not
+        a story — "know where the slides came from without opening it"),
+        and the count. Pure-ish data the caller renders into a card (Play)
+        or emits as PTE text (one composer, two surfaces)."""
+        from core import cut_names
+        title = cut_names.display_tag(cut.tag)
+        try:
+            members = lg.cross_event_cut_members(cut.id)
+        except Exception:                                          # noqa: BLE001
+            members = []
+        names_by_uuid = {}
+        try:
+            for e in lg.list_events_for_scope():
+                names_by_uuid[e.get("uuid")] = e.get("name") or tr("(unnamed)")
+        except Exception:                                          # noqa: BLE001
+            pass
+        seen: list = []
+        for m in members:
+            nm = names_by_uuid.get(getattr(m, "event_id", None))
+            if nm and nm not in seen:
+                seen.append(nm)
+        lines: list = []
+        if seen:
+            lines.append(
+                tr("From: {events}").replace("{events}", " · ".join(seen)))
+        lines.append(
+            tr("{n} frames").replace("{n}", str(len(members))))
+        return title, lines
+
+    def _cross_event_opener_image(self, lg, cut):
+        """spec/154 — render the cross-event opener summary into a card
+        image (reuses the event opener renderer; flat colour, light text).
+        ``None`` on any failure so Play still opens without an opener."""
+        try:
+            from core.cut_aspect import aspect_dimensions, normalise
+            from mira.ui.shared.separator_card import render_cut_opener_image
+            title, lines = self._cross_event_opener_lines(lg, cut)
+            aspect = normalise(getattr(cut, "aspect", "16:9"))
+            _, canvas_h = aspect_dimensions(aspect)
+            return render_cut_opener_image(
+                tag_text=title, lines=lines, aspect=aspect,
+                height=canvas_h, card_style="black", seed_key=cut.id)
+        except Exception:                                          # noqa: BLE001
+            log.exception("cross-event opener render failed for %s",
+                          getattr(cut, "id", "?"))
+            return None
+
     def _on_play_cut(self, cut_id: str) -> None:
         """Open the cross-event player. spec/94 Phase 4a-iii — the
         player resolves each member's bytes via the umbrella
@@ -516,12 +565,18 @@ class LibraryPage(QWidget):
                 transition_ms = max(0, int(round(float(raw_t))))
             except (TypeError, ValueError):
                 transition_ms = 2000
+        # spec/154 — render the opener's provenance summary so the
+        # cross-event rehearsal opens on a real title card (was blank).
+        opener_image = None
+        if any(k == "opener" for k, _ in entries):
+            opener_image = self._cross_event_opener_image(lg, cut)
         dlg = CutPlayerDialog(
             entries,
             event_root=Path(""),   # unused — resolve_path supplies the path
             photo_s=cut.photo_s,
             day_meta=day_meta,
             resolve_path=make_resolve_path(gateway=self._gateway),
+            opener_image=opener_image,
             transition_ms=transition_ms,
             parent=self,
         )

@@ -113,25 +113,26 @@ def test_entries_ordered_chronologically(tmp_path):
     try:
         entries, day_meta = build_cross_event_entries(
             library_gateway=lg, cut_id="cut-x", separators_on=False)
-        # No separators / opener — separators_on False.
+        # spec/154 — the opener (provenance summary) always rides; no day
+        # separators when separators_on is False.
         kinds_only = [k for k, _ in entries]
-        assert kinds_only == ["file", "file", "file"]
+        assert kinds_only == ["opener", "file", "file", "file"]
         keys = [
             (p.event_uuid, p.export_relpath)
-            for _, p in entries
+            for k, p in entries if k == "file"
         ]
         assert keys == [
             ("B", "Exported Media/Day01/b1.jpg"),    # 2025-10
             ("A", "Exported Media/Day01/a1.jpg"),    # 2026-04-01
             ("A", "Exported Media/Day02/a2.mp4"),    # 2026-04-02
         ]
+        files = [p for k, p in entries if k == "file"]
         # Video kind + duration carries through.
-        last = entries[-1][1]
-        assert last.kind == "video"
-        assert last.duration_ms == 12_000
+        assert files[-1].kind == "video"
+        assert files[-1].duration_ms == 12_000
         # Photo videos get 0 duration_ms.
-        assert entries[0][1].kind == "photo"
-        assert entries[0][1].duration_ms == 0
+        assert files[0].kind == "photo"
+        assert files[0].duration_ms == 0
         # day_meta is empty when separators_on=False.
         assert day_meta == {}
     finally:
@@ -152,8 +153,9 @@ def test_entries_grab_kind_uses_origin_relpath(tmp_path):
     try:
         entries, _ = build_cross_event_entries(
             library_gateway=lg, cut_id="cut-x")
-        assert len(entries) == 1
-        payload = entries[0][1]
+        files = [p for k, p in entries if k == "file"]
+        assert len(files) == 1
+        payload = files[0]
         assert payload.member_kind == "grab"
         assert payload.origin_relpath == "Original Media/raw1.dng"
         assert payload.export_relpath == ""
@@ -243,8 +245,9 @@ def test_entries_skip_member_without_relpath(tmp_path):
     try:
         entries, _ = build_cross_event_entries(
             library_gateway=lg, cut_id="cut-x")
-        assert len(entries) == 1
-        assert entries[0][1].export_relpath == "Exported Media/Day01/a1.jpg"
+        files = [p for k, p in entries if k == "file"]
+        assert len(files) == 1
+        assert files[0].export_relpath == "Exported Media/Day01/a1.jpg"
     finally:
         store.close()
 

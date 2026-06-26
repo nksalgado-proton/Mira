@@ -1,4 +1,4 @@
-"""spec/96 §2 — ``show_exposure_overlay`` gates the exposure pill
+"""spec/96 §2 — ``show_photo_overlays`` gates the exposure pill
 in the Picker and Quick Sweep single views.
 
 Pin the contract that:
@@ -9,7 +9,7 @@ Pin the contract that:
   segments in order.
 
 Picker is tested via the same setting helper since the dialog wiring
-goes through `SettingsRepo().load().show_exposure_overlay`.
+goes through `SettingsRepo().load().show_photo_overlays`.
 """
 from __future__ import annotations
 
@@ -58,12 +58,12 @@ def page(qapp, tmp_path):
 def test_default_setting_populates_overlay_with_camera_exposure_type_size(
     qapp, page, monkeypatch,
 ):
-    """spec/96 §2 default — when ``show_exposure_overlay`` is True
+    """spec/96 §2 default — when ``show_photo_overlays`` is True
     (the default), the Quick Sweep single view fills the chip with
     camera + exposure + type + size."""
     # Force the default explicitly so the test isn't sensitive to the
     # ambient settings file.
-    monkeypatch.setattr(QuickSweepPage, "_show_exposure_overlay",
+    monkeypatch.setattr(QuickSweepPage, "_show_photo_overlays",
                         staticmethod(lambda: True))
     page._on_viewport_current_changed(0)             # noqa: SLF001
     text = page._expo_overlay.text()                 # noqa: SLF001
@@ -79,10 +79,10 @@ def test_default_setting_populates_overlay_with_camera_exposure_type_size(
 
 
 def test_setting_off_hides_overlay(qapp, page, monkeypatch):
-    """spec/96 §2 — when ``show_exposure_overlay`` is False, the
+    """spec/96 §2 — when ``show_photo_overlays`` is False, the
     Quick Sweep never populates the pill (set_html(``""``)). The pill
     widget hides itself on empty content."""
-    monkeypatch.setattr(QuickSweepPage, "_show_exposure_overlay",
+    monkeypatch.setattr(QuickSweepPage, "_show_photo_overlays",
                         staticmethod(lambda: False))
     page._on_viewport_current_changed(0)             # noqa: SLF001
     assert page._expo_overlay.text() == ""           # noqa: SLF001
@@ -98,7 +98,7 @@ def test_source_chip_keeps_segment_order_in_live_pill(
     """The live pill renders camera FIRST and the type/size LAST,
     with the exposure quartet in the middle (spec/96 §2 target
     shape)."""
-    monkeypatch.setattr(QuickSweepPage, "_show_exposure_overlay",
+    monkeypatch.setattr(QuickSweepPage, "_show_photo_overlays",
                         staticmethod(lambda: True))
     page._on_viewport_current_changed(0)             # noqa: SLF001
     text = page._expo_overlay.text()                 # noqa: SLF001
@@ -111,7 +111,7 @@ def test_source_chip_keeps_segment_order_in_live_pill(
 # ── helper: settings load failure → default True ───────────────
 
 
-def test_show_exposure_overlay_defaults_true_on_load_failure(monkeypatch):
+def test_show_photo_overlays_defaults_true_on_load_failure(monkeypatch):
     """The helper guards against an early-boot ``SettingsRepo``
     failure (e.g. mid-first-run) by defaulting to True so the chip
     still appears for a brand-new install."""
@@ -122,4 +122,4 @@ def test_show_exposure_overlay_defaults_true_on_load_failure(monkeypatch):
             raise RuntimeError("simulated load failure")
 
     monkeypatch.setattr(repo_mod, "SettingsRepo", _BoomRepo)
-    assert QuickSweepPage._show_exposure_overlay() is True
+    assert QuickSweepPage._show_photo_overlays() is True

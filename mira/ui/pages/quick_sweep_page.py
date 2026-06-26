@@ -509,16 +509,14 @@ class QuickSweepPage(QWidget):
         return path.suffix.lower() in VIDEO_EXTENSIONS
 
     @staticmethod
-    def _show_exposure_overlay() -> bool:
-        """spec/96 §2 — read the roaming Settings flag at call time so
-        a Settings dialog toggle applies on the next item show without
-        a relaunch. Defaults to True (preserves today's behaviour) on
-        load failure / missing field."""
-        try:
-            from mira.settings.repo import SettingsRepo
-            return bool(SettingsRepo().load().show_exposure_overlay)
-        except Exception:                                          # noqa: BLE001
-            return True
+    def _show_photo_overlays() -> bool:
+        """spec/134 — read the master ``show_photo_overlays`` flag at call
+        time so a Settings dialog toggle applies on the next item show
+        without a relaunch. Defaults to True (preserves today's behaviour)
+        on load failure / missing field. Shared with Picker / Editor via
+        :func:`mira.ui.media.viewer_overlay.photo_overlays_enabled`."""
+        from mira.ui.media.viewer_overlay import photo_overlays_enabled
+        return photo_overlays_enabled()
 
     @staticmethod
     def _file_size_text_for(path: Path) -> str:
@@ -558,12 +556,12 @@ class QuickSweepPage(QWidget):
         bits.append(item.path.name)
         self._info_label.setText("   ·   ".join(bits))
         # spec/96 §2 — exposure pill: camera + exposure + type + size.
-        # Gated by the roaming ``show_exposure_overlay`` setting
-        # (default True). The Quick Sweep ``SourceItem`` carries
-        # ``camera_id`` and exposes the COMPARE_PARAMS attrs directly,
-        # so ``caption_html(item)`` still works for the exposure
-        # segment.
-        if is_video or not self._show_exposure_overlay():
+        # Gated by the master ``show_photo_overlays`` setting (spec/134,
+        # default True) — the one flag shared with Picker / Editor. The
+        # Quick Sweep ``SourceItem`` carries ``camera_id`` and exposes the
+        # COMPARE_PARAMS attrs directly, so ``caption_html(item)`` still
+        # works for the exposure segment.
+        if is_video or not self._show_photo_overlays():
             self._expo_overlay.set_html("")
         else:
             type_label = file_type_label(item.path.suffix)

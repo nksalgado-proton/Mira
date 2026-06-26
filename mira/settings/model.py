@@ -265,15 +265,20 @@ class Settings:
         "already have an exported version.", True)
     # spec/96 §2 — the single-view exposure pill (camera · shutter ·
     # aperture · ISO · focal · type · size). Viewing preference, NOT
-    # hardware-bound, so it lives in the roaming Settings (contrast
-    # spec/95's machine-local display_quality). Default ON preserves
-    # today's Picker / Quick Sweep behaviour. spec/134 retired this
-    # as the Picker / Editor gate (those now read viewer_overlay_fields);
-    # Quick Sweep continues to honour it for backwards-compat.
-    show_exposure_overlay: bool = _u(
-        "Show the exposure pill (camera · shutter · aperture · ISO · "
-        "focal length · file type · size) over photos in Quick Sweep "
-        "single views. (Picker / Editor use viewer_overlay_fields.)",
+    # spec/134 — the single master on/off for the on-photo info pill
+    # across the three single-view surfaces (Quick Sweep, Picker, Editor).
+    # Off hides the pill everywhere on those surfaces regardless of
+    # ``viewer_overlay_fields``; on, each surface shows its pill (Picker /
+    # Editor pick fields via ``viewer_overlay_fields``; Quick Sweep shows
+    # its fixed source chip). Cuts are NOT covered — they carry their own
+    # per-Cut overlay control. Supersedes the old Quick-Sweep-only
+    # ``show_exposure_overlay`` (folded in here). Default ON preserves
+    # today's behaviour.
+    show_photo_overlays: bool = _u(
+        "Show the info pill over photos in Quick Sweep, the Picker and "
+        "the Editor (camera / exposure / when / where, per surface). Off "
+        "hides it on all three. Cuts have their own per-Cut overlay "
+        "control. Default on.",
         True)
     # spec/134 — configurable photo-viewer overlay. Reuses the cut
     # overlay vocabulary (core.cut_overlay.OVERLAY_FIELDS): When /

@@ -711,23 +711,23 @@ SETTINGS_SCHEMA: list[dict] = [
                 ),
                 "restart_required": False,
             },
-            # spec/96 §2 — Quick Sweep's exposure pill (legacy gate; the
-            # Picker / Editor moved to viewer_overlay_fields per
-            # spec/134).
+            # spec/134 — the master on/off for the on-photo info pill
+            # across Quick Sweep, the Picker and the Editor. Cuts carry
+            # their own per-Cut overlay control and are not gated here.
             {
-                "key": "show_exposure_overlay",
-                "label": "Exposure overlay (Quick Sweep)",
+                "key": "show_photo_overlays",
+                "label": "Photo info overlays",
                 "widget": "checkbox",
                 "check_label": (
-                    "Show the exposure pill over photos in Quick Sweep"
+                    "Show the info pill over photos (Quick Sweep, Picker, "
+                    "Editor)"
                 ),
                 "tooltip": (
-                    "The pill at the bottom of single-photo views in "
-                    "Quick Sweep shows the camera + shutter / aperture "
-                    "/ ISO / focal length + file type and size. Turn "
-                    "off to hide it; the EXIF in the file is untouched. "
-                    "Defaults to on. (Picker + Editor use the "
-                    "configurable Photo viewer overlay below.)"
+                    "The pill at the bottom of single-photo views — camera, "
+                    "exposure, and (in the Picker / Editor) the fields you "
+                    "pick below. Turn off to hide it on all three surfaces; "
+                    "the EXIF in the file is untouched. Cuts have their own "
+                    "per-Cut overlay control. Defaults to on."
                 ),
                 "restart_required": False,
             },

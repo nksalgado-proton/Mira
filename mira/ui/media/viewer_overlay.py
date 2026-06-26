@@ -27,6 +27,22 @@ log = logging.getLogger(__name__)
 _FIELD_SEPARATOR = "&nbsp;&nbsp;•&nbsp;&nbsp;"
 
 
+def photo_overlays_enabled() -> bool:
+    """spec/134 — the master on/off (``show_photo_overlays``) for the
+    on-photo info pill across Quick Sweep / Picker / Editor. Read at call
+    time so the Settings dialog's Apply path takes effect on the next item
+    landing. Defaults to ``True`` on a load failure so the early-boot path
+    keeps the overlay live."""
+    try:
+        from mira.settings.repo import SettingsRepo
+        return bool(SettingsRepo().load().show_photo_overlays)
+    except Exception:                                              # noqa: BLE001
+        log.debug(
+            "show_photo_overlays: settings load failed; defaulting on",
+            exc_info=True)
+        return True
+
+
 def viewer_overlay_fields_from_settings() -> list:
     """spec/134 — read ``viewer_overlay_fields`` from the roaming
     Settings repo at call time. Picker / Editor call this on each
@@ -65,7 +81,13 @@ def compose_viewer_overlay_html(
     """
     from core.cut_overlay import FrameProvenance, compose_overlay_lines
 
+    # Master gate — when overlays are switched off the pill is hidden on
+    # every surface regardless of the field selection (spec/134). Only
+    # consulted on the settings-driven path; an explicit ``fields`` from a
+    # caller/test bypasses it so unit tests stay deterministic.
     if fields is None:
+        if not photo_overlays_enabled():
+            return ""
         fields = viewer_overlay_fields_from_settings()
     if not fields:
         return ""
@@ -81,6 +103,7 @@ def compose_viewer_overlay_html(
 
 
 __all__ = [
+    "photo_overlays_enabled",
     "viewer_overlay_fields_from_settings",
     "compose_viewer_overlay_html",
 ]

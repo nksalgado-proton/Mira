@@ -13,6 +13,23 @@ via the existing `core.cut_overlay` model. Touches `mira/settings/model.py`
 the setting + compose), and a small item→`FrameProvenance` resolver. Reuses
 `core/cut_overlay.py`. No data-model change beyond one settings field.**
 
+> **Follow-ups (2026-06-26):**
+> - **One-line, photo-anchored pill.** The overlay reads as a single
+>   strip joined by `•` (groups) / `·` (within a group) pinned to the
+>   bottom edge of the *displayed image* (not the view), on Picker,
+>   Editor, Cut play, and Quick Sweep. `PhotoExposureOverlay` grows a
+>   `rect_provider`; the Cut player's `BlurredPhotoCanvas` grows a
+>   `foreground_rect()`.
+> - **Configurable text size.** `overlay_exif_font_px` (default 9)
+>   substitutes into the `GridTileExif` / `CutPlayOverlay` QSS roles via
+>   the `{overlay_exif_font_px}` token; applied live at theme-apply time.
+> - **Master on/off.** `show_photo_overlays` (default ON) is the single
+>   flag gating the pill across Quick Sweep + Picker + Editor (Cuts keep
+>   their per-Cut control). It folds in the old spec/96
+>   `show_exposure_overlay`. Read via
+>   `mira.ui.media.viewer_overlay.photo_overlays_enabled`;
+>   `viewer_overlay_fields` still chooses *which* fields show.
+
 ## 1. Reuse the cut overlay vocabulary
 
 `core/cut_overlay.py` already defines the field set and the composer:

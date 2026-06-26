@@ -891,16 +891,6 @@ class PickerPage(QWidget):
 
     # ── EXIF + AF resolution ───────────────────────────────────────────
 
-    def _show_exposure_overlay(self) -> bool:
-        """spec/96 §2 — legacy QuickSweep gate. spec/134 retired the
-        Picker's use of this flag; kept here for any external caller
-        that still polls the Picker for the legacy answer."""
-        try:
-            from mira.settings.repo import SettingsRepo
-            return bool(SettingsRepo().load().show_exposure_overlay)
-        except Exception:                                          # noqa: BLE001
-            return True
-
     def _compose_viewer_overlay_html(self, item) -> str:
         """spec/134 — build the overlay HTML for the current item via
         the shared orchestration helper. Picker + Editor call the same

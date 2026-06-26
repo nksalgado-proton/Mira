@@ -1,5 +1,14 @@
 # 96 — Always-on activity line + exposure-chip setting & content
 
+> **Superseded note (2026-06-26):** the `show_exposure_overlay` roaming
+> setting introduced here was folded into a single master
+> `show_photo_overlays` flag (default ON) that gates the on-photo pill
+> across **all three** single-view surfaces — Quick Sweep, Picker, and
+> Editor (Cuts keep their own per-Cut overlay control). See spec/134.
+> Quick Sweep now reads the master via
+> `mira.ui.media.viewer_overlay.photo_overlays_enabled`. The chip
+> *content* (camera · exposure · type · size) is unchanged.
+
 **Status: SHIPPED (Nelson accepted 2026-06-22). Two independent
 viewing-feedback changes: (1) the batch progress line is now permanent
 and also reports background preview/proxy building; (2) the new

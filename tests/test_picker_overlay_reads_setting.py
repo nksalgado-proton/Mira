@@ -116,6 +116,29 @@ def test_compose_empty_selection_returns_empty():
     assert compose_viewer_overlay_html(eg, "i1", fields=[]) == ""
 
 
+def test_master_flag_off_hides_overlay(monkeypatch):
+    """spec/134 — the ``show_photo_overlays`` master gate hides the pill
+    on the settings-driven path regardless of the field selection."""
+    import mira.ui.media.viewer_overlay as vo
+    monkeypatch.setattr(vo, "viewer_overlay_fields_from_settings",
+                        lambda: [FIELD_WHEN, FIELD_HOW2])
+    eg = _StubEg(_prov_full())
+    monkeypatch.setattr(vo, "photo_overlays_enabled", lambda: True)
+    assert vo.compose_viewer_overlay_html(eg, "i1") != ""
+    monkeypatch.setattr(vo, "photo_overlays_enabled", lambda: False)
+    assert vo.compose_viewer_overlay_html(eg, "i1") == ""
+
+
+def test_explicit_fields_bypass_master_flag(monkeypatch):
+    """An explicit ``fields=`` (callers / tests) bypasses the settings
+    master gate so unit tests stay deterministic."""
+    import mira.ui.media.viewer_overlay as vo
+    monkeypatch.setattr(vo, "photo_overlays_enabled", lambda: False)
+    eg = _StubEg(_prov_full())
+    assert vo.compose_viewer_overlay_html(
+        eg, "i1", fields=[FIELD_HOW2]) != ""
+
+
 def test_compose_no_gateway_returns_empty():
     """Defensive — paths-only / smoke mode (no gateway) yields an
     empty provenance, which yields ``""`` (overlay hidden)."""

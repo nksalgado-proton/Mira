@@ -698,21 +698,33 @@ class CutSessionPage(QWidget):
     def _effective_transition_s(self, session: CutSession) -> float:
         """spec/152 §3 — resolve the picker's effective transition
         duration: per-Cut override on the session > the global
-        ``Settings.default_transition_ms`` > 0. The gateway exposes a
-        ``settings`` attribute (the umbrella repo) that loads to a
-        Settings dataclass; we coerce defensively so a stubbed-out
-        gateway (mocks / tests) still produces a sane fallback."""
+        ``Settings.default_transition_ms`` > 2.0 (matches
+        ``pte_project.DEFAULT_TRANSITION_MS``).
+
+        The page is opened with an :class:`EventGateway` — the
+        per-event facade — which DOES NOT expose a ``settings``
+        attribute (only the umbrella :class:`Gateway` does). The
+        pre-fix path read ``self._gw.settings``, missed, and returned
+        0.0; the budget bar then ran without the transition slot and
+        the user saw the rehearsal / PTE total disagreeing with the
+        picker by ``N_photo · transition_s``. We now fall through to
+        a directly-constructed :class:`SettingsRepo`, which reads the
+        same ``settings.rebuild.json`` the umbrella does."""
         if session.transition_ms is not None:
             return max(0.0, float(session.transition_ms) / 1000.0)
         repo = getattr(self._gw, "settings", None)
         if repo is None:
-            return 0.0
+            try:
+                from mira.settings.repo import SettingsRepo
+                repo = SettingsRepo()
+            except Exception:                                      # noqa: BLE001
+                return 2.0
         try:
             settings = repo.load() if hasattr(repo, "load") else repo
-            raw = getattr(settings, "default_transition_ms", 0)
+            raw = getattr(settings, "default_transition_ms", 2000)
             return max(0.0, float(raw) / 1000.0)
         except Exception:                                          # noqa: BLE001
-            return 0.0
+            return 2.0
 
     def _load_day_labels(self) -> Dict[int, str]:
         labels: Dict[int, str] = {}

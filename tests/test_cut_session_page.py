@@ -114,6 +114,41 @@ def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):
     assert page._budget.property("zone") == "amber"
 
 
+def test_budget_bar_includes_transition_when_gateway_lacks_settings_attr(
+        qapp, gw, tmp_path, monkeypatch):
+    """spec/152 §X — the picker session is opened with an
+    :class:`EventGateway`, which does NOT expose a ``settings``
+    attribute (only the umbrella :class:`Gateway` does). The pre-fix
+    ``_effective_transition_s`` then fell through to ``return 0.0``
+    and the budget bar's show length disagreed with the rehearsal /
+    PTE total by ``N_photo × transition_s`` — the user opened
+    Adjust on a 53 min Cut and saw 33 min in the budget bar.
+
+    With the fallback to a directly-constructed ``SettingsRepo()``,
+    the picker reads the global ``default_transition_ms`` from the
+    same JSON the umbrella reads, so the budget agrees with the
+    rehearsal again."""
+    # Stub SettingsRepo so the test doesn't depend on the dev
+    # machine's actual settings.rebuild.json.
+    from mira.settings import repo as _settings_repo_mod
+
+    class _StubSettings:
+        default_transition_ms = 2000
+
+    class _StubRepo:
+        def load(self):
+            return _StubSettings()
+
+    monkeypatch.setattr(
+        _settings_repo_mod, "SettingsRepo", lambda: _StubRepo())
+    page = _page(gw, tmp_path)
+    # ``self._gw`` is an EventGateway — confirm the pre-fix lookup
+    # would have missed.
+    assert getattr(page._gw, "settings", None) is None
+    # The fallback chain pulled the 2000 ms default through.
+    assert page._budget._transition_s == 2.0
+
+
 def test_phase_state_untouched_by_grid_clicks(qapp, gw, tmp_path):
     before = gw.store.conn.execute(
         "SELECT COUNT(*) AS n FROM phase_state").fetchone()["n"]

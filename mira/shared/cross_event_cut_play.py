@@ -83,6 +83,17 @@ def build_cross_event_entries(
     if not members:
         return [], {}
 
+    # spec/154 — event_uuid → name, for the separator card title (a
+    # cross-event "day" boundary is labelled by its SOURCE EVENT, not a
+    # "Day N"). Tolerant of a gateway that can't list events.
+    names_by_uuid: dict = {}
+    try:
+        for e in library_gateway.list_events_for_scope():
+            names_by_uuid[e.get("uuid")] = e.get("name") or None
+    except Exception:                                              # noqa: BLE001
+        log.debug("cross_event entries: list_events_for_scope failed",
+                  exc_info=True)
+
     # Pull every projection row for these (event_uuid, relpath) pairs in
     # one query. The match is on (event_uuid, export_relpath) for
     # 'export' members and (event_uuid, origin_relpath) for 'grab' —
@@ -145,7 +156,8 @@ def build_cross_event_entries(
                 last_token = token
                 entries.append(("sep", token))
                 day_meta.setdefault(token, _SeparatorMeta(
-                    date=day_iso, location="", description=""))
+                    date=day_iso, location="", description="",
+                    title=names_by_uuid.get(f.event_uuid)))
                 # day_number on the file is the separator's token —
                 # used by the player only for grouping in the scrubber.
                 object.__setattr__(f, "day_number", token)
@@ -186,14 +198,17 @@ def make_resolve_path(*, gateway) -> Callable[[object], Path]:
 
 @dataclass(frozen=True)
 class _SeparatorMeta:
-    """Minimal shape the separator-card renderer reads. Cross-event
-    Cuts don't carry the per-trip-day's location / description today
-    (those are per-event facts in event.db); the date is enough for
-    the v1 separator. A future slice can join the per-event day data
-    if the user wants the richer card."""
+    """Minimal shape the separator-card renderer reads. ``title`` is the
+    cross-event override (spec/154 — the SOURCE EVENT name, since a
+    cross-event Cut has no single "Day N" timeline); ``date`` is the day
+    of that event the boundary falls on. ``location`` / ``description``
+    aren't carried cross-event today (they're per-event facts in
+    event.db) — a future slice can join them if the user wants a richer
+    card."""
     date: Optional[str]
     location: Optional[str]
     description: str
+    title: Optional[str] = None
 
 
 def _read_facts(library_gateway,

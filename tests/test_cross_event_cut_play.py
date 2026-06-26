@@ -205,6 +205,47 @@ def test_entries_separators_per_event_day(tmp_path):
         store.close()
 
 
+def test_separators_carry_source_event_name_title(tmp_path):
+    """spec/154 — a cross-event separator is labelled by its SOURCE EVENT
+    name (resolved via the event index), not a "Day N" — there's no single
+    timeline. Falls back to a neutral headline when the name is unknown."""
+    store = _open_user_store(tmp_path)
+    rows = [
+        um.GlobalItem(
+            event_uuid="A", item_id="a1", synced_at=NOW,
+            export_relpath="Exported Media/a1.jpg",
+            capture_time="2026-04-01T10:00:00",
+            kind="photo", has_export=True),
+        um.GlobalItem(
+            event_uuid="B", item_id="b1", synced_at=NOW,
+            export_relpath="Exported Media/b1.jpg",
+            capture_time="2026-04-01T11:00:00",
+            kind="photo", has_export=True),
+    ]
+    for r in rows:
+        store.upsert(r)
+    # Event-index rows give the events their display names.
+    store.upsert(um.EventIndex(
+        event_uuid="A", relpath_to_base="Salta",
+        name_cached="Salta, Argentina"))
+    store.upsert(um.EventIndex(
+        event_uuid="B", relpath_to_base="Nepal", name_cached="Nepal"))
+    lg = _make_lg(store)
+    _seed_cross_event_cut(lg, "cut-x", [
+        {"event_id": "A", "kind": "export",
+         "export_relpath": "Exported Media/a1.jpg"},
+        {"event_id": "B", "kind": "export",
+         "export_relpath": "Exported Media/b1.jpg"},
+    ])
+    try:
+        _entries, day_meta = build_cross_event_entries(
+            library_gateway=lg, cut_id="cut-x", separators_on=True)
+        assert day_meta[("A", "2026-04-01")].title == "Salta, Argentina"
+        assert day_meta[("B", "2026-04-01")].title == "Nepal"
+    finally:
+        store.close()
+
+
 def test_entries_empty_cut_returns_empty(tmp_path):
     store = _open_user_store(tmp_path)
     lg = _make_lg(store)

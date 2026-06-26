@@ -1038,7 +1038,10 @@ class CutPlayerDialog(QDialog):
             aspect=self._aspect,
             height=max(480, self.height() or 1080),
             card_style=self._card_style,
-            seed_key=f"{self._seed_prefix}:{day}")
+            seed_key=f"{self._seed_prefix}:{day}",
+            # spec/154 — cross-event separators carry a SOURCE EVENT title
+            # override; event-scope cards leave it None ("Day N").
+            title=getattr(meta, "title", None))
 
     def _resolve_payload_path(self, payload) -> Path:
         """Where the bytes live on disk. Cross-event Play wires

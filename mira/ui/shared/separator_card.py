@@ -97,10 +97,14 @@ def render_separator_image(
     height: int = 720,
     card_style: str = "black",
     seed_key: str = "",
+    title: Optional[str] = None,
 ) -> QImage:
     """The day card as a QImage (export writes it; the grid and the
     rehearsal scale it). ``card_style`` + ``seed_key`` pick the colours
-    (deterministic — see :func:`card_colors`)."""
+    (deterministic — see :func:`card_colors`). ``title`` overrides the
+    headline (spec/154 — cross-event separators use the SOURCE EVENT name
+    instead of "Day N"); when ``None`` the per-event "Day {n}" / "More
+    moments" headline is used."""
     bg, title_c, sub_c, desc_c = card_colors(card_style, seed_key)
     h = max(120, int(height))
     w = max(160, int(round(h * parse_aspect(aspect))))
@@ -110,8 +114,15 @@ def render_separator_image(
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-    title = (tr("Day {n}").replace("{n}", str(day_number))
-             if day_number is not None else tr("More moments"))
+    if title:
+        pass  # explicit override (spec/154 — cross-event source-event name)
+    elif isinstance(day_number, int):
+        title = tr("Day {n}").replace("{n}", str(day_number))
+    else:
+        # No override and no integer day (e.g. a cross-event (event, day)
+        # token with an unresolved event name) → a neutral headline rather
+        # than a garbled "Day (…)".
+        title = tr("More moments")
     sub = " · ".join(b for b in (date, location) if b)
     desc = (description or "").strip()
 

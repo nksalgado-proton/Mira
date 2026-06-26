@@ -29,9 +29,11 @@ from mira.shared.pte_project import (
 
 def _example_pte() -> str:
     """The 1-photo + 1-video + overlay validation artefact (spec/107 §10).
-    Loaded with the same loader the generator uses so CRLF is preserved."""
-    src = Path(__file__).resolve().parent.parent / "PTE example" \
-        / "photo and video example.pte"
+    Lives under ``tests/data/`` (a stable fixture — decoupled from the
+    user-facing ``PTE example/`` sample folder). Loaded with the same
+    loader the generator uses so CRLF is normalised consistently."""
+    src = Path(__file__).resolve().parent / "data" \
+        / "photo_and_video_example.pte"
     return load_skeleton(bundled_fallback=src)
 
 

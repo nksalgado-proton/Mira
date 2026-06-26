@@ -112,10 +112,13 @@ def test_entries_interleave_opener_and_separators(qapp, gw, tmp_path):
     assert "#short_version" in page._tag_lbl.text()
 
 
-def test_separators_off_means_files_only(qapp, gw, tmp_path):
+def test_separators_off_drops_day_cards_but_keeps_opener(qapp, gw, tmp_path):
+    """spec/143 — separators off drops the per-day separator cards, but
+    the opener (the show's title slide) is independent of the toggle and
+    still rides ahead of the files."""
     page = _detail(gw, members=[
         "Exported Media/e1.jpg", "Exported Media/e3a.jpg"], separators_on=False)
-    assert [k for k, _ in page._entries] == ["file", "file"]
+    assert [k for k, _ in page._entries] == ["opener", "file", "file"]
 
 
 def test_single_view_opens_cards_and_steps_in_show_order(qapp, gw, tmp_path):

@@ -118,6 +118,12 @@ class DCSnapshot:
     filters_summary: str = "" # e.g. "macro · photo"
 
 
+#: spec/153 — separator between overlay field GROUPS on the one-line PTE
+#: photo caption (the heavier ``•``; ``·`` stays *within* a group). Mirrors
+#: the in-app cut-play pill so the handoff reads the same.
+_PTE_CAPTION_SEP = "  •  "
+
+
 def _fmt_duration(s: int) -> str:
     m, sec = divmod(max(0, int(s)), 60)
     return f"{m}:{sec:02d}"
@@ -2597,25 +2603,26 @@ class ShareCutsPage(QWidget):
         """The export's separator renderer — the UI layer owns pixels
         (QImage), the export module owns files and order.
 
-        spec/111 — the canvas aspect lives on the Cut, not on a
-        per-install setting. Cards render at the Cut's
-        ``(width, height)`` so cards, photos and the show canvas all
+        spec/153 — the EXPORTED separator is a **flat, text-less**
+        background; the Day-N / date · location · description text rides
+        the generated ``.pte`` as separate ``:Text`` objects (composed in
+        :meth:`_pte_slide_texts`) so the user can swap the flat image for
+        a map or photo in PTE and keep the words. In-app Play is
+        unaffected — it renders the textful card live, never from this
+        file.
+
+        spec/111 — the canvas aspect lives on the Cut; cards render at the
+        Cut's ``(width, height)`` so cards, photos and the show canvas all
         agree."""
         from core.cut_aspect import aspect_dimensions, normalise
-        from mira.ui.shared.separator_card import render_separator_image
+        from mira.ui.shared.separator_card import render_flat_background
         eg = self._eg
-        day_meta = {d.day_number: d for d in eg.trip_days()}
         aspect = normalise(getattr(cut, "aspect", "16:9"))
         _, canvas_h = aspect_dimensions(aspect)
         card_style = eg.cut_card_style(cut)
 
         def write(target: Path, day) -> None:
-            meta = day_meta.get(day)
-            img = render_separator_image(
-                day_number=day,
-                date=getattr(meta, "date", None),
-                location=getattr(meta, "location", None),
-                description=getattr(meta, "description", "") or "",
+            img = render_flat_background(
                 aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=f"{cut.id}:{day}")
             if not img.save(str(target), "JPG", 92):
@@ -2704,25 +2711,22 @@ class ShareCutsPage(QWidget):
         # exported Cut gets its title card; the export pipeline still
         # gates day-separator cards on ``seps``.
         from core.cut_aspect import aspect_dimensions, normalise
-        from mira.ui.shared.separator_card import (
-            cut_opener_lines, render_cut_opener_image,
-        )
+        from mira.ui.shared.separator_card import render_flat_background
         # spec/111 — aspect lives on the Cut. The renderer takes
         # the aspect string + a canvas height (width is derived);
         # we pass the canonical pixel height so the card matches
         # the (width, height) the PTE override (spec/107) writes.
         aspect = normalise(getattr(cut, "aspect", "16:9"))
         _, canvas_h = aspect_dimensions(aspect)
-        totals = eg.cut_show_totals(cut.id)
-        lines = cut_opener_lines(
-            cut, totals, cut.photo_s, self._transition_s(cut))
-        tag_text = cut_names.display_tag(cut.tag)
         card_style = eg.cut_card_style(cut)
         cut_id_seed = cut.id
 
+        # spec/153 — the EXPORTED opener is a flat, text-less background;
+        # the show title + facts ride the .pte as separate :Text objects
+        # (see :meth:`_pte_slide_texts`). In-app Play renders the textful
+        # opener live, unaffected.
         def opener_writer(target: Path) -> None:
-            img = render_cut_opener_image(
-                tag_text=tag_text, lines=lines,
+            img = render_flat_background(
                 aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=cut_id_seed)
             if not img.save(str(target), "JPG", 92):
@@ -2882,6 +2886,10 @@ class ShareCutsPage(QWidget):
         # paying a per-clip ffprobe. Probe is the fallback for legacy
         # members whose lineage row predates the duration column.
         duration_lookup = self._build_clip_duration_lookup(cut)
+        # spec/153 — inputs for the per-slide separate-text overlays,
+        # resolved once: the day plan (separator title/sub), the show
+        # title + facts (opener), reused across the file walk.
+        card_text_ctx = self._pte_card_text_context(cut)
         members: List[PteMember] = []
         for entry in sorted(folder.iterdir(),
                             key=lambda p: p.name.lower()):
@@ -2899,8 +2907,9 @@ class ShareCutsPage(QWidget):
             if suffix in (".jpg", ".jpeg", ".png"):
                 members.append(PteMember(
                     kind="photo", path=entry,
-                    overlay_text=self._cut_overlay_text(
-                        cut, entry, overlay_lookup),
+                    texts=self._pte_slide_texts(
+                        cut, stripped, entry, overlay_lookup,
+                        ctx=card_text_ctx),
                 ))
             elif suffix == ".mp4":
                 members.append(PteMember(
@@ -3028,29 +3037,20 @@ class ShareCutsPage(QWidget):
             return True
         return stripped in overlay_lookup
 
-    def _cut_overlay_text(
+    def _cut_photo_caption(
         self, cut, photo: Path,
         member_lookup: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
-        """Compose the embedded-overlay text for one photo via the
-        gateway's provenance resolver. Returns ``None`` when overlays
-        are off, when burn_in is selected (pixels already carry the
-        text), or when the file has no provenance data.
+        """spec/153 — compose the one-line photo caption (When / Where /
+        Camera / Exposure, the Cut's selected fields) for one photo, joined
+        like the cut-play pill. ``None`` when no fields are selected or the
+        file has no provenance (separator / opener cards have no lineage
+        row → handled by :meth:`_pte_slide_texts`, not here).
 
-        spec/120 — the resolver keys provenance off the lineage row's
-        ``export_relpath`` (e.g. ``Exported Media/IMG_1234.jpg``), not
-        off the Cut-folder path (``<tag>/007_IMG_1234.jpg``). Passing
-        the Cut-folder path silently missed every join → empty
-        provenance → empty text → PTE stripped every nested ``:Text``.
-        ``member_lookup`` (built once per generation) translates the
-        Cut-folder basename back to its lineage key; callers without
-        a lookup get the same one rebuilt on the fly (slow path —
-        used by single-photo callers / tests)."""
+        spec/120 — the resolver keys provenance off the lineage
+        ``export_relpath``; ``member_lookup`` translates the Cut-folder
+        basename back to it (rebuilt on the fly when a caller omits it)."""
         from core import cut_overlay
-        overlay_mode = (
-            getattr(cut, "overlay_mode", None) or "embedded")
-        if overlay_mode != "embedded":
-            return None
         fields = list(self._eg.cut_overlay_fields(cut))
         if not fields:
             return None
@@ -3061,8 +3061,6 @@ class ShareCutsPage(QWidget):
         stripped = self._strip_seq_prefix(photo.name)
         export_relpath = lookup.get(stripped)
         if not export_relpath:
-            # Separator / opener cards (``002_day1.jpg`` etc.) have no
-            # lineage row — correct outcome is no overlay.
             return None
         try:
             prov = self._eg.frame_provenance(export_relpath)
@@ -3071,7 +3069,63 @@ class ShareCutsPage(QWidget):
                 "frame_provenance failed for %s", export_relpath)
             return None
         lines = cut_overlay.compose_overlay_lines(fields, prov)
-        return "\n".join(lines) if lines else None
+        return _PTE_CAPTION_SEP.join(lines) if lines else None
+
+    def _pte_card_text_context(self, cut) -> dict:
+        """spec/153 — resolve the inputs the per-slide separate-text
+        overlays need, once per PTE generation: the day plan (separator
+        title/sub) and the show title + facts (opener)."""
+        from mira.ui.shared.separator_card import cut_opener_lines
+        eg = self._eg
+        day_meta = {d.day_number: d for d in eg.trip_days()}
+        opener_tag = cut_names.display_tag(cut.tag)
+        opener_lines: list = []
+        try:
+            totals = eg.cut_show_totals(cut.id)
+            opener_lines = [
+                str(ln) for ln in cut_opener_lines(
+                    cut, totals, cut.photo_s, self._transition_s(cut))
+                if ln]
+        except Exception:                                          # noqa: BLE001
+            log.exception("opener lines failed for cut %s", cut.tag)
+        return dict(day_meta=day_meta, opener_tag=opener_tag,
+                    opener_lines=opener_lines)
+
+    def _pte_slide_texts(self, cut, stripped: str, entry: Path,
+                         overlay_lookup: Dict[str, str], *, ctx: dict):
+        """spec/153 — the separate ``:Text`` objects for one slide: opener
+        → title + facts; day separator → ``Day N`` + date · location ·
+        description; undated separator → a single title; real photo → the
+        one-line caption (or none when no fields are selected)."""
+        from mira.shared.pte_project import (
+            PteText, TEXT_PHOTO_CAPTION, TEXT_SEP_TITLE, TEXT_SEP_SUB,
+            TEXT_OPENER_TITLE, TEXT_OPENER_SUB,
+        )
+        lower = stripped.lower()
+        if lower == "opener.jpg":
+            texts = [PteText(ctx["opener_tag"], TEXT_OPENER_TITLE)]
+            sub = "  ·  ".join(ctx["opener_lines"])
+            if sub:
+                texts.append(PteText(sub, TEXT_OPENER_SUB))
+            return texts
+        if lower == "undated.jpg":
+            return [PteText(tr("More moments"), TEXT_SEP_TITLE)]
+        if (lower.startswith("day") and lower.endswith(".jpg")
+                and lower[3:-4].isdigit()):
+            n = int(lower[3:-4])
+            meta = ctx["day_meta"].get(n)
+            texts = [PteText(
+                tr("Day {n}").replace("{n}", str(n)), TEXT_SEP_TITLE)]
+            bits = [b for b in (
+                getattr(meta, "date", None),
+                getattr(meta, "location", None),
+                getattr(meta, "description", None)) if b]
+            sub = " · ".join(str(b) for b in bits)
+            if sub:
+                texts.append(PteText(sub, TEXT_SEP_SUB))
+            return texts
+        caption = self._cut_photo_caption(cut, entry, overlay_lookup)
+        return [PteText(caption, TEXT_PHOTO_CAPTION)] if caption else []
 
     def _build_clip_duration_lookup(self, cut) -> Dict[str, int]:
         """spec/144 — basename → ``lineage.duration_ms`` for the Cut's

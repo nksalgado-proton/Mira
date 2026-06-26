@@ -250,16 +250,16 @@ def test_no_skeleton_guids_leak_into_output(output, skel):
 
 
 def test_embedded_overlay_populates_nested_text(output):
-    """Slide 3 has overlay text — the nested `Text="…"` line is set to
-    the supplied string and the style around it is inherited verbatim
-    from the skeleton."""
+    """Slide 3 has overlay text — Mira emits a styled photo-caption
+    ``:Text`` object carrying the supplied string. spec/153: Mira owns
+    the style (font / box-scale / position), not the skeleton."""
+    from mira.shared.pte_project import _TEXT_STYLE, TEXT_PHOTO_CAPTION
     slide3 = _section(output, "Slide3")
     assert 'Text="ZX · 35mm · f/2.8 · 1/250 · ISO 200"' in slide3
-    # The skeleton style around the Text is preserved (size +
-    # position + font + shadow — spec/107 §3.4).
-    assert "FontName=Arial Narrow" in slide3
+    st = _TEXT_STYLE[TEXT_PHOTO_CAPTION]
+    assert f"FontName={st['font']}" in slide3
     assert "TextAlign=Center" in slide3
-    assert "ScaleX=3.901931" in slide3
+    assert f"ScaleX={st['scale']}" in slide3
     assert "ShadowEnable=1" in slide3
 
 
@@ -270,30 +270,34 @@ def test_embedded_overlay_strips_text_when_member_has_none(output):
     assert ":Text\r\n" not in slide1
 
 
-def test_burn_in_mode_strips_every_nested_text(skel, members, tracks):
-    """burn_in mode — pixels carry the overlay; the slide must NOT
-    layer a duplicate `Text` on top."""
+def test_member_without_text_yields_clean_slide(skel, tracks):
+    """spec/153 — overlays are driven by the member's ``texts`` (and the
+    legacy ``overlay_text`` bridge), not by an overlay mode. A member with
+    neither carries no nested ``:Text``."""
+    from mira.shared.pte_project import PteMember
+    members = [PteMember(kind="photo", path=Path("C:/cut/001_a.jpg"))]
     text = generate(skel, members, tracks,
                     aspect="16:9", photo_seconds=6.0,
                     project_path=Path("C:/cut/slideshow.pte"),
-                    images_folder=Path("C:/cut"),
-                    overlay_mode=OVERLAY_BURN_IN)
-    for name in ("Slide1", "Slide2", "Slide3"):
-        body = _section(text, name)
-        assert ":Text\r\n" not in body
+                    images_folder=Path("C:/cut"))
+    assert ":Text\r\n" not in _section(text, "Slide1")
 
 
-def test_off_mode_strips_every_nested_text(skel, members):
-    """off mode — no overlay anywhere. Even when members carry overlay
-    strings, off wins."""
-    text = generate(skel, members, [],
+def test_member_texts_emit_styled_objects(skel, tracks):
+    """spec/153 — a member's ``texts`` become separate styled ``:Text``
+    objects (here a separator's title + subtitle)."""
+    from mira.shared.pte_project import (
+        PteMember, PteText, TEXT_SEP_TITLE, TEXT_SEP_SUB)
+    members = [PteMember(kind="photo", path=Path("C:/cut/002_day1.jpg"),
+                         texts=[PteText("Day 1", TEXT_SEP_TITLE),
+                                PteText("27 Sep · Salta", TEXT_SEP_SUB)])]
+    text = generate(skel, members, tracks,
                     aspect="16:9", photo_seconds=6.0,
                     project_path=Path("C:/cut/slideshow.pte"),
-                    images_folder=Path("C:/cut"),
-                    overlay_mode=OVERLAY_OFF)
-    for name in ("Slide1", "Slide2", "Slide3"):
-        body = _section(text, name)
-        assert ":Text\r\n" not in body
+                    images_folder=Path("C:/cut"))
+    body = _section(text, "Slide1")
+    assert 'Text="Day 1"' in body and 'Text="27 Sep · Salta"' in body
+    assert body.count(":Text\r\n") == 2
 
 
 # ── [Times] ─────────────────────────────────────────────────────

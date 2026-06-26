@@ -1,6 +1,6 @@
 """spec/120 — embedded overlays must reach the generated `.pte`.
 
-The bug: ``share_cuts_page._cut_overlay_text`` resolved provenance with
+The bug: ``share_cuts_page._cut_photo_caption`` resolved provenance with
 the wrong key — the Cut-folder path (``<tag>/007_IMG.jpg``) instead of
 the lineage ``export_relpath`` (``Exported Media/IMG.jpg``). Every
 lookup missed → empty provenance → empty overlay text → PTE stripped
@@ -170,9 +170,9 @@ def _stub_page(gw) -> ShareCutsPage:
     stub._build_overlay_member_lookup = (
         lambda cut: ShareCutsPage._build_overlay_member_lookup(stub, cut))
     stub._strip_seq_prefix = ShareCutsPage._strip_seq_prefix.__get__(stub)
-    stub._cut_overlay_text = (
+    stub._cut_photo_caption = (
         lambda cut, photo, member_lookup=None:
-        ShareCutsPage._cut_overlay_text(stub, cut, photo, member_lookup))
+        ShareCutsPage._cut_photo_caption(stub, cut, photo, member_lookup))
     return stub
 
 
@@ -181,7 +181,7 @@ def _stub_page(gw) -> ShareCutsPage:
 
 def test_lookup_maps_basename_to_lineage_export_relpath(gw):
     """spec/120 — the lookup keyed by ``Path(export_relpath).name``
-    is exactly what :meth:`_cut_overlay_text` needs to translate a
+    is exactly what :meth:`_cut_photo_caption` needs to translate a
     Cut-folder filename (``001_IMG_001.jpg``) back into the lineage
     relpath (``Exported Media/IMG_001.jpg``) the gateway joins on."""
     page = _stub_page(gw)
@@ -255,7 +255,7 @@ def test_is_cut_member_file_admits_cut_members_and_card_slides(gw):
 # ── Per-photo resolution ───────────────────────────────────────
 
 
-def test_cut_overlay_text_uses_member_lookup_to_compose_lines(gw, tmp_path):
+def test_cut_photo_caption_uses_member_lookup_to_compose_lines(gw, tmp_path):
     """The headline fix: a Cut-folder filename resolves through the
     lookup to its lineage relpath; ``frame_provenance`` returns a
     populated record; the composer produces real overlay text."""
@@ -265,7 +265,7 @@ def test_cut_overlay_text_uses_member_lookup_to_compose_lines(gw, tmp_path):
     photo = tmp_path / "show" / "001_IMG_001.jpg"
     photo.parent.mkdir(parents=True, exist_ok=True)
     photo.write_bytes(b"frame")
-    text = page._cut_overlay_text(cut, photo, lookup)
+    text = page._cut_photo_caption(cut, photo, lookup)
     assert text is not None
     # All four overlay fields contribute on a fully-seeded fixture.
     assert "2026-06-23T08:00:00" in text                  # WHEN
@@ -275,7 +275,7 @@ def test_cut_overlay_text_uses_member_lookup_to_compose_lines(gw, tmp_path):
     assert "ISO 400" in text
 
 
-def test_cut_overlay_text_returns_none_for_separator_filename(gw, tmp_path):
+def test_cut_photo_caption_returns_none_for_separator_filename(gw, tmp_path):
     """Separators / opener cards (``002_day1.jpg`` etc.) are NOT in
     the Cut's member list; the lookup misses → ``None`` → PTE strips
     the nested ``:Text`` so the separator slide is clean."""
@@ -285,10 +285,10 @@ def test_cut_overlay_text_returns_none_for_separator_filename(gw, tmp_path):
     sep = tmp_path / "show" / "002_day1.jpg"
     sep.parent.mkdir(parents=True, exist_ok=True)
     sep.write_bytes(b"sep")
-    assert page._cut_overlay_text(cut, sep, lookup) is None
+    assert page._cut_photo_caption(cut, sep, lookup) is None
 
 
-def test_cut_overlay_text_returns_none_when_provenance_empty(tmp_path):
+def test_cut_photo_caption_returns_none_when_provenance_empty(tmp_path):
     """A bare item with no camera / day / EXIF yields a
     near-empty :class:`FrameProvenance`; the composer (fed
     WHERE / HOW1 / HOW2 only — every one needs structured data) returns
@@ -312,37 +312,18 @@ def test_cut_overlay_text_returns_none_when_provenance_empty(tmp_path):
         good = tmp_path / "show" / "001_IMG_001.jpg"
         good.parent.mkdir(parents=True, exist_ok=True)
         good.write_bytes(b"x")
-        assert page._cut_overlay_text(cut, good, lookup) is not None
+        assert page._cut_photo_caption(cut, good, lookup) is not None
         # The bare-provenance third yields None.
         ghost = tmp_path / "show" / "003_IMG_003.jpg"
         ghost.write_bytes(b"x")
-        assert page._cut_overlay_text(cut, ghost, lookup) is None
+        assert page._cut_photo_caption(cut, ghost, lookup) is None
     finally:
         gw.close()
 
 
-def test_cut_overlay_text_returns_none_for_burn_in_mode(tmp_path):
-    """Burn-in mode draws into pixels at export — the generator must
-    NOT layer a ``:Text`` on top. The resolver short-circuits before
-    touching the lookup or the gateway."""
-    store = EventStore.create(tmp_path / "event.db", event_id="evt-o")
-    store.save_document(_doc(overlay_mode="burn_in"))
-    counter = itertools.count(1)
-    gw = EventGateway(store, event_root=tmp_path, now=_now,
-                      new_id=lambda: f"id-{next(counter)}")
-    try:
-        page = _stub_page(gw)
-        cut = gw.cut("cut-o")
-        photo = tmp_path / "show" / "001_IMG_001.jpg"
-        photo.parent.mkdir(parents=True, exist_ok=True)
-        photo.write_bytes(b"x")
-        # No member lookup needed — burn_in returns early.
-        assert page._cut_overlay_text(cut, photo, {}) is None
-    finally:
-        gw.close()
 
 
-def test_cut_overlay_text_returns_none_when_no_overlay_fields(tmp_path):
+def test_cut_photo_caption_returns_none_when_no_overlay_fields(tmp_path):
     """No overlay fields selected → no composed lines either; same
     early-out as the embedded-without-fields case."""
     store = EventStore.create(tmp_path / "event.db", event_id="evt-o")
@@ -356,7 +337,7 @@ def test_cut_overlay_text_returns_none_when_no_overlay_fields(tmp_path):
         photo = tmp_path / "show" / "001_IMG_001.jpg"
         photo.parent.mkdir(parents=True, exist_ok=True)
         photo.write_bytes(b"x")
-        assert page._cut_overlay_text(cut, photo, {}) is None
+        assert page._cut_photo_caption(cut, photo, {}) is None
     finally:
         gw.close()
 
@@ -416,7 +397,7 @@ def test_generated_pte_carries_embedded_overlay_text(gw, tmp_path):
     lookup = page._build_overlay_member_lookup(cut)
     members = [
         PteMember(kind="photo", path=p,
-                  overlay_text=page._cut_overlay_text(cut, p, lookup))
+                  overlay_text=page._cut_photo_caption(cut, p, lookup))
         for p in photos
     ]
     # Every member has a composed string (no empty/None).

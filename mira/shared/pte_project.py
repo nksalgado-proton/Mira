@@ -90,8 +90,31 @@ OVERLAY_EMBEDDED = "embedded"
 OVERLAY_BURN_IN = "burn_in"
 OVERLAY_OFF = "off"
 
+#: spec/153 — text-object style roles. Each maps to a row in
+#: :data:`_TEXT_STYLE` (font / box-scale / position). Mira owns the look;
+#: the user restyles in PTE afterward.
+TEXT_PHOTO_CAPTION = "photo_caption"   # one centred line at the photo's bottom
+TEXT_SEP_TITLE = "sep_title"           # "Day N" — large, upper-centre
+TEXT_SEP_SUB = "sep_sub"               # date · location · description — smaller
+TEXT_OPENER_TITLE = "opener_title"     # the show title — largest, centre
+TEXT_OPENER_SUB = "opener_sub"         # the show's facts — smaller, below
+
 
 # ── Data classes ───────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PteText:
+    """spec/153 — one separate PTE ``:Text`` object to layer over a slide.
+
+    ``role`` selects the Mira-owned default style (:data:`_TEXT_STYLE`);
+    ``text`` is the (single- or multi-line) content. The generator emits
+    one ``object TextN:Text`` per entry, nested in the slide's foreground
+    image, with a fresh GUID — so swapping the image beneath keeps the
+    text (spec/153)."""
+
+    text: str
+    role: str = TEXT_PHOTO_CAPTION
+
 
 @dataclass(frozen=True)
 class PteMember:
@@ -99,13 +122,16 @@ class PteMember:
 
     ``kind`` is ``'photo'`` (.jpg / separator card) or ``'video'`` (.mp4).
     ``duration_ms`` carries the true clip length for videos and is
-    ignored for photos. ``overlay_text`` is the populated string for the
-    embedded overlay (multi-line allowed; ``None`` = no overlay text)."""
+    ignored for photos. ``texts`` are the separate overlay text objects
+    for this slide (spec/153) — empty = a clean slide. ``overlay_text`` is
+    the legacy single-string field (spec/107 §3.4); when ``texts`` is empty
+    it is bridged to one :data:`TEXT_PHOTO_CAPTION` object."""
 
     kind: str
     path: Path
     duration_ms: int = 0
     overlay_text: Optional[str] = None
+    texts: Sequence["PteText"] = ()
 
 
 @dataclass(frozen=True)
@@ -556,14 +582,108 @@ def _format_music_block(audio_tracks: Sequence[PteAudioTrack],
             "end\r\n")
 
 
+#: spec/153 — Mira-owned default style per text role. ``scale`` is the
+#: KeyPoint box scale (PTE sizes text by the box, not a font size — the
+#: load-bearing trick Nelson demonstrated); ``pos`` is ``(x, y)`` in
+#: Percent coords (0,0 = centre, +y = down). Tuned from the hand-authored
+#: example; THIS table is the one place to retune the look.
+_TEXT_STYLE: Dict[str, dict] = {
+    TEXT_PHOTO_CAPTION: dict(
+        font="Arial", scale=4.5, pos=(0.0, 78.0),
+        align="Center", color="255,255,255"),
+    TEXT_SEP_TITLE: dict(
+        font="Segoe UI", scale=13.0, pos=(0.0, -16.0),
+        align="Center", color="255,255,255"),
+    TEXT_SEP_SUB: dict(
+        font="Segoe UI", scale=5.0, pos=(0.0, 9.0),
+        align="Center", color="255,255,255"),
+    # The opener is the show title — a touch larger than a day separator.
+    TEXT_OPENER_TITLE: dict(
+        font="Segoe UI", scale=15.0, pos=(0.0, -14.0),
+        align="Center", color="255,255,255"),
+    TEXT_OPENER_SUB: dict(
+        font="Segoe UI", scale=5.0, pos=(0.0, 12.0),
+        align="Center", color="255,255,255"),
+}
+
+
+def _text_object(idx: int, text: str, role: str) -> str:
+    """Emit one complete ``object TextN:Text`` block (4-space indent —
+    nested in a slide's foreground image) with a fresh GUID and the
+    Mira-owned style for ``role`` (spec/153). Quotes / backslashes in
+    ``text`` are escaped for PTE's parser. ``ScaleX/ScaleY`` carry the
+    size; ``Position`` places the box."""
+    st = _TEXT_STYLE.get(role, _TEXT_STYLE[TEXT_PHOTO_CAPTION])
+    safe = (text or "").replace("\\", "\\\\").replace('"', '\\"')
+    px, py = st["pos"]
+    return (
+        f"    object Text{idx}:Text\r\n"
+        f"      GUID={fresh_guid()}\r\n"
+        f"      FitMode=PlaceInto\r\n"
+        f"      PosMode=Percent\r\n"
+        f"      CenterMode=Percent\r\n"
+        f"      BlurMode=1\r\n"
+        f"      ShadowEnable=1\r\n"
+        f"      ShadowSize=16\r\n"
+        f"      ShadowColor=0,0,0\r\n"
+        f"      ShadowOpacity=59\r\n"
+        f"      ShadowDistance=1.5\r\n"
+        f"      ShadowAngle=45\r\n"
+        f"      ShadowSpreadIndex=0\r\n"
+        f'      Text="{safe}"\r\n'
+        f"      TextColor={st['color']}\r\n"
+        f"      TextColorHover={st['color']}\r\n"
+        f"      TextColorClick={st['color']}\r\n"
+        f"      FontName={st['font']}\r\n"
+        f"      FontStyle=\r\n"
+        f"      TextAlign={st['align']}\r\n"
+        f"      LineSpacing=0\r\n"
+        f"      Filtering=Default\r\n"
+        f"      MipLodBias=-0.5\r\n"
+        f"      NestedOpacity=1\r\n"
+        f"      NestedColorisation=\r\n"
+        f"      TranspForClick=\r\n"
+        f"      HideMode=\r\n"
+        f"      ChildInvis=\r\n"
+        f"      Action=\r\n"
+        f"      TextTransform=\r\n"
+        f"      object KeyPoint1:KeyPoint\r\n"
+        f"        Origin=SlideBegin\r\n"
+        f"        Bokeh=50\r\n"
+        f"        ScaleX={st['scale']}\r\n"
+        f"        ScaleY={st['scale']}\r\n"
+        f"        Opacity=100\r\n"
+        f"        Position={px},{py}\r\n"
+        f"        CenterPos=\r\n"
+        f"        grps=127\r\n"
+        f"      end\r\n"
+        f"    end\r\n"
+    )
+
+
+_NESTED_TEXT_RE = re.compile(
+    r"    object [^:\r\n]+:Text\r\n(?:[\s\S]*?)\r\n    end\r\n")
+
+
+def _inject_texts(slide_body: str, texts: Sequence["PteText"]) -> str:
+    """spec/153 — replace the skeleton's single nested ``:Text`` anchor
+    with the member's generated text objects (one ``:Text`` per
+    :class:`PteText`, styled by role). Empty ``texts`` → strip the anchor
+    so the slide stays clean. The anchor marks WHERE text nests (inside
+    the foreground image); its own style is irrelevant — Mira owns the
+    look now."""
+    blocks = "".join(
+        _text_object(i + 1, t.text, t.role) for i, t in enumerate(texts))
+    m = _NESTED_TEXT_RE.search(slide_body)
+    if m:
+        return slide_body[: m.start()] + blocks + slide_body[m.end():]
+    return slide_body
+
+
 def _strip_nested_text(slide_body: str) -> str:
-    """Remove the single nested `:Text` object (the overlay prototype)
-    from a slide body. Used when overlay mode is `burn_in` or `off` —
-    the slide stays clean (pixels carry the burn-in already, or the
-    user wanted no overlay at all)."""
-    return re.sub(
-        r"    object [^:\r\n]+:Text\r\n(?:[\s\S]*?)\r\n    end\r\n",
-        "", slide_body, count=1)
+    """Remove the single nested `:Text` object (the overlay anchor) from a
+    slide body — the no-overlay path (spec/153: a member with no texts)."""
+    return _NESTED_TEXT_RE.sub("", slide_body, count=1)
 
 
 def _populate_nested_text(slide_body: str, overlay_text: str) -> str:
@@ -808,11 +928,14 @@ def generate(
             body = _regenerate_guids(body)
             body = _set_slide_image_paths(body, path_s)
             slide_durations_ms.append(photo_ms)
-        # Overlay handling.
-        if overlay_mode == OVERLAY_EMBEDDED and m.overlay_text:
-            body = _populate_nested_text(body, m.overlay_text)
-        else:
-            body = _strip_nested_text(body)
+        # Overlay text objects (spec/153) — Mira-styled separate ``:Text``
+        # per member. Empty ``texts`` → a clean slide. The legacy single
+        # ``overlay_text`` is bridged to one photo-caption object for any
+        # caller that hasn't migrated to ``texts`` yet.
+        texts = list(m.texts)
+        if not texts and m.overlay_text:
+            texts = [PteText(m.overlay_text, TEXT_PHOTO_CAPTION)]
+        body = _inject_texts(body, texts)
         slide_bodies.append(body)
 
     # ── [Tracks] body — fresh clips for emitted videos ───────────
@@ -895,7 +1018,9 @@ __all__ = [
     "DEFAULT_OUTPUT_STEM",
     "DEFAULT_TRANSITION_MS",
     "OVERLAY_EMBEDDED", "OVERLAY_BURN_IN", "OVERLAY_OFF",
-    "PteMember", "PteAudioTrack",
+    "TEXT_PHOTO_CAPTION", "TEXT_SEP_TITLE", "TEXT_SEP_SUB",
+    "TEXT_OPENER_TITLE", "TEXT_OPENER_SUB",
+    "PteMember", "PteText", "PteAudioTrack",
     "Skeleton",
     "parse_skeleton",
     "capture_skeleton",

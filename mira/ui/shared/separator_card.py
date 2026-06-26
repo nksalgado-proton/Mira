@@ -66,6 +66,27 @@ def parse_aspect(text: Optional[str]) -> float:
     return 16.0 / 9.0
 
 
+def render_flat_background(
+    *,
+    aspect: str = "16:9",
+    height: int = 720,
+    card_style: str = "black",
+    seed_key: str = "",
+) -> QImage:
+    """spec/153 — a text-less flat-colour slide background for the PTE
+    export's opener / day-separator slides. The card's words ride as
+    separate PTE ``:Text`` objects over this image, so the user can swap
+    it for a map or a photo in PTE and keep the text. Uses the same
+    deterministic background colour as :func:`render_separator_image` so
+    the default look matches the in-app card."""
+    bg, _t, _s, _d = card_colors(card_style, seed_key)
+    h = max(120, int(height))
+    w = max(160, int(round(h * parse_aspect(aspect))))
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    img.fill(bg)
+    return img
+
+
 def render_separator_image(
     *,
     day_number: Optional[int],

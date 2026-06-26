@@ -178,6 +178,17 @@ class OffloadFileRecord:
     day_number: Optional[int] = None
     capture_time_raw: Optional[str] = None       # EXIF ISO string or None
     capture_time_corrected: Optional[str] = None  # calibrated, ISO or None
+    # spec/134 — the exposure quartet + lens + flash from the SAME EXIF pass,
+    # projected onto the captured Item row so the viewer/cut overlay's
+    # "Exposure"/"Camera" fields render (without these the Capture flow stored
+    # NULL exposure and the how2 line never drew). 0 / None = unknown. Older
+    # manifests lack these keys → they default to unknown (back-compatible).
+    aperture_f: Optional[float] = None       # f-number
+    shutter_speed_s: Optional[float] = None  # seconds
+    iso: Optional[int] = None
+    focal_length_mm: Optional[float] = None
+    flash_fired: Optional[bool] = None
+    lens_model: Optional[str] = None
 
 
 @dataclass
@@ -241,6 +252,25 @@ class VerifyResult:
     @property
     def passed(self) -> bool:
         return not self.missing and not self.mismatch
+
+
+# ── EXIF facets ─────────────────────────────────────────────────
+
+
+def _exposure_facets(pe) -> dict:
+    """The exposure quartet + lens + flash from a ``PhotoExif`` entry, in the
+    units the ``Item`` columns expect (seconds / f-number / mm / int ISO).
+    Zero / empty → ``None`` so unknowns persist as NULL (clean range queries
+    + the overlay omits the field). Mirrors ``mira.ingest.engine._exif_facets``
+    so the Capture path and the Create-Event path store identical shapes."""
+    return dict(
+        aperture_f=(getattr(pe, "aperture", 0.0) or 0.0) or None,
+        shutter_speed_s=(getattr(pe, "shutter_speed", 0.0) or 0.0) or None,
+        iso=(getattr(pe, "iso", 0) or 0) or None,
+        focal_length_mm=(getattr(pe, "focal_length", 0.0) or 0.0) or None,
+        flash_fired=bool(getattr(pe, "flash_fired", False)),
+        lens_model=(str(getattr(pe, "lens", "") or "").strip() or None),
+    )
 
 
 # ── Hashing + atomic copy ───────────────────────────────────────
@@ -481,6 +511,12 @@ def offload_to_captured(
     time_by_path: dict[Path, Optional[datetime]] = {
         e.path: e.timestamp for e in exif_entries if e is not None
     }
+    # Map path → the exposure facets from the SAME pass, so each manifest
+    # record (and the Item it becomes) carries the overlay's exposure/lens
+    # fields (spec/134). Read once here — no second per-file EXIF read.
+    facets_by_path: dict[Path, dict] = {
+        e.path: _exposure_facets(e) for e in exif_entries if e is not None
+    }
 
     cal = config.calibration
     days = config.day_by_number  # None ⇒ flat layout
@@ -536,6 +572,7 @@ def offload_to_captured(
                 day_number=0,                  # 0 == quarantined sentinel
                 capture_time_raw=None,
                 capture_time_corrected=None,
+                **facets_by_path.get(photo, {}),
             ))
             continue
 
@@ -604,6 +641,7 @@ def offload_to_captured(
                 corrected_t.isoformat(timespec="seconds")
                 if corrected_t is not None else None
             ),
+            **facets_by_path.get(photo, {}),
         ))
 
     # Persist the manifest at the bucket-session root. (Even when all

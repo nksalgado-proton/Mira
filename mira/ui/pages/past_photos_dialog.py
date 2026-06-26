@@ -53,7 +53,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.fresh_source import SourceItem
 from core.path_builder import sanitize_folder_name
 from core.reconcile_pipeline import (
     CameraInput,
@@ -941,8 +940,13 @@ class PastPhotosDialog(QDialog):
         import uuid
 
         event_root = photos_base / sanitize_folder_name(name)
+        # Keep the full SourceItem objects (don't rebuild with a 3-field
+        # subset) so the exposure quartet + lens + flash the source index
+        # carries survive into ingest — otherwise the Item rows store NULL
+        # exposure and the viewer/cut overlay's "Exposure" line never
+        # renders (spec/134).
         items = [
-            SourceItem(it.path, it.timestamp, it.camera_id)
+            it
             for it in (self._source_index.items if self._source_index else [])
             if it.path not in skip_paths
         ]

@@ -35,6 +35,9 @@ def _roll_back_to_v17(conn: sqlite3.Connection) -> None:
     # spec/144 v18→v19 added lineage.duration_ms; strip it so the
     # ADD COLUMN on the way back up doesn't collide.
     conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
+    # spec/152 v19→v20 added cut.transition_ms; strip it so the ADD
+    # COLUMN on the way back up doesn't collide.
+    conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
     conn.execute("UPDATE schema_info SET schema_version = 17 WHERE id = 1")
 
 

@@ -81,6 +81,17 @@ def record_offload(
             day_number=day_number,
             quarantine_status="no_timestamp" if quarantined else "ok",
             provenance="captured",
+            # spec/134 — project the exposure quartet + lens + flash the
+            # manifest carried (read in the offload's single EXIF pass) so the
+            # captured Item matches the Create-Event shape and the overlay's
+            # Exposure/Camera fields render. ``getattr`` tolerates manifests
+            # written before these fields existed (→ None / unknown).
+            iso=getattr(rec, "iso", None),
+            aperture_f=getattr(rec, "aperture_f", None),
+            shutter_speed_s=getattr(rec, "shutter_speed_s", None),
+            focal_length_mm=getattr(rec, "focal_length_mm", None),
+            flash_fired=getattr(rec, "flash_fired", None),
+            lens_model=getattr(rec, "lens_model", None),
         ))
 
     camera = m.Camera(

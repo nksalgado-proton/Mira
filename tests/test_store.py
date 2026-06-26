@@ -780,6 +780,9 @@ def test_migrate_v16_to_v17_renames_and_scales_minute_columns(tmp_path):
     # spec/144 v18→v19 — strip lineage.duration_ms so the ALTER on
     # the way back up doesn't collide on the column.
     conn.execute("ALTER TABLE lineage DROP COLUMN duration_ms")
+    # spec/152 v19→v20 — strip cut.transition_ms so the ADD on the way
+    # back up doesn't collide.
+    conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
     conn.execute(
         "INSERT INTO camera (camera_id, applied_offset_minutes, "
         "configured_tz_minutes) VALUES "

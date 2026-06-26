@@ -149,6 +149,9 @@ CREATE TABLE cut_member (
     conn.execute("DROP TABLE IF EXISTS recipe")
     conn.execute("ALTER TABLE stack_bracket DROP COLUMN producer")
     conn.execute("ALTER TABLE cut DROP COLUMN aspect")
+    # spec/152 v19→v20 — strip cut.transition_ms so the ADD on the way
+    # back up doesn't collide.
+    conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
     # spec/115 added v15→v16 adjustment.user_exposure; strip so the
     # ALTER ADD on the way back up doesn't collide.
     conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")

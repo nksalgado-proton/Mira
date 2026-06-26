@@ -21,7 +21,7 @@ subprocess overhead.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -266,6 +266,19 @@ def scan_source_tree(
             tz_offset_minutes=pe.tz_offset_minutes,
             gps_lat=pe.gps_lat,
             gps_lon=pe.gps_lon,
+            # spec/134 — carry the exposure quartet + lens + flash from the
+            # same EXIF pass so the ingest stores them on the Item row (the
+            # viewer/cut overlay's "Exposure" / "Camera" fields read them).
+            # Without this they reach ingest as defaults → stored NULL → the
+            # overlay's how2 line never renders. Mirrors
+            # ``fresh_source.read_source_items``.
+            shutter_speed=getattr(pe, "shutter_speed", 0.0) or 0.0,
+            aperture=getattr(pe, "aperture", 0.0) or 0.0,
+            iso=getattr(pe, "iso", 0) or 0,
+            focal_length=getattr(pe, "focal_length", 0.0) or 0.0,
+            flash_fired=bool(getattr(pe, "flash_fired", False)),
+            lens_model=str(getattr(pe, "lens", "") or "").strip(),
+            duration_ms=round((getattr(pe, "duration_seconds", 0.0) or 0.0) * 1000),
         ))
         serial_for_path[pe.path] = _serial_for(pe.raw or {})
     if recovered_from_filename:
@@ -314,17 +327,11 @@ def scan_source_tree(
             else:
                 short = s[-4:] if len(s) > 4 else s
                 new_cid = f"{base_cid} #{short}"
+            # ``replace`` keeps every other field (TZ + GPS for the phone
+            # heuristic, exposure quartet + lens + flash for the overlay) —
+            # only the camera_id changes in a serial-split bucket.
             split_by_cam.setdefault(new_cid, []).append(
-                SourceItem(
-                    path=it.path, timestamp=it.timestamp,
-                    camera_id=new_cid,
-                    # spec/45 — preserve the EXIF-derived TZ + GPS across the
-                    # serial-split rebuild (otherwise the per-camera phone
-                    # heuristic would see all-None for items in a split bucket).
-                    tz_offset_minutes=it.tz_offset_minutes,
-                    gps_lat=it.gps_lat,
-                    gps_lon=it.gps_lon,
-                )
+                replace(it, camera_id=new_cid)
             )
     by_cam = split_by_cam
     # Rebuild ``items`` from the (possibly split) buckets so the

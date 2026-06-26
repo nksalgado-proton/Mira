@@ -1,19 +1,23 @@
 """App-wide wheel guard for input widgets that change value on scroll.
 
-Symptom: hovering the mouse over an unfocused ``QSpinBox`` /
-``QDoubleSpinBox`` / ``QComboBox`` and rolling the wheel silently
-changes its value — accidental edits when the user meant to scroll
-the page. Same gesture also grabs focus (those widgets ship with
+Symptom: hovering the mouse over a ``QSpinBox`` / ``QDoubleSpinBox``
+/ ``QComboBox`` and rolling the wheel silently changes its value —
+accidental edits when the user meant to scroll the page. Same
+gesture also grabs focus (those widgets ship with
 ``Qt.FocusPolicy.WheelFocus`` by default).
 
-Rule established 2026-06-14: focus on input widgets transfers ONLY
-via left-click, Tab, Backtab, or Shortcut. Wheel-over-unfocused
-input must change neither value nor focus.
+Rule established 2026-06-14, **tightened 2026-06-27**: focus on
+input widgets transfers ONLY via left-click, Tab, Backtab, or
+Shortcut. Wheel events over input widgets must **never** change
+their value — regardless of focus. The wheel is for scrolling the
+page; values are typed in, clicked on, or arrow-keyed. A user with
+the keyboard caret already in a spinbox who then rolls the wheel
+to scroll the page should see the page scroll, not the spinbox
+silently increment ten times under the cursor.
 
 Fix — app-wide event filter:
 * On a ``QWheelEvent`` whose receiver is *inside the widget tree of*
-  a guarded type and the guarded widget has no focus (neither it nor
-  any of its descendants), **consume** the event (so the widget's
+  a guarded type, **always consume** the event (so the widget's
   wheelEvent never fires — no value change, no ``WheelFocus`` grab)
   and **forward** the event to the nearest ``QAbstractScrollArea``
   ancestor so the surrounding form/list still scrolls.
@@ -21,9 +25,6 @@ Fix — app-wide event filter:
   combo's internal ``QLineEdit`` (Qt delivers the wheel to whichever
   child is under the cursor; the inner-QLineEdit case is exactly the
   Days Table Country picker symptom that motivated the ancestor walk).
-* On a focused widget (or any focused descendant of it), the wheel
-  works normally — the user explicitly focused the field, so
-  changing the value is intentional.
 
 Pairs with :mod:`mira.ui.base.focus_keeper`: the focus-keeper guards
 against tooltip-churn focus drift; this guard ensures wheel scrolling
@@ -90,24 +91,17 @@ class _WheelGuardFilter(QObject):
         guarded = self._find_guarded(obj)
         if guarded is None:
             return False
-        # The user has engaged the field when focus is on the guarded
-        # widget itself OR on any of its descendants (the internal
-        # ``QLineEdit`` of an editable combo — Qt's focus proxy
-        # mechanism may report either side; ancestry check handles both).
-        try:
-            focused = QApplication.focusWidget()
-            if focused is not None and (
-                focused is guarded or guarded.isAncestorOf(focused)
-            ):
-                return False                                    # honour user
-        except RuntimeError:                                    # C++ gone
-            return False
-        # Forward to the nearest scrollable ancestor so the
-        # surrounding form / scroll area still scrolls instead of
-        # being silently blocked.
+        # Wheel-over-input is ALWAYS consumed and forwarded to the
+        # nearest scrollable ancestor — no focus exemption (the
+        # 2026-06-27 tightening). The pre-tightening rule honoured
+        # the wheel when the field had focus, but the user reported
+        # that even a momentarily-focused field would silently grab
+        # ten wheel ticks while the user just meant to scroll the
+        # page. Values are typed, clicked, or arrow-keyed; the wheel
+        # is exclusively for page scroll.
         try:
             ancestor = guarded.parentWidget()
-        except RuntimeError:
+        except RuntimeError:                                    # C++ gone
             return True
         while ancestor is not None:
             if isinstance(ancestor, QAbstractScrollArea):

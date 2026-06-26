@@ -92,9 +92,13 @@ def test_wheel_on_unfocused_spinbox_does_not_change_value(qapp, guard):
         _teardown(dlg)
 
 
-def test_wheel_on_focused_spinbox_does_change_value(qapp, guard):
-    """Once the user focuses the spin (real click in production), the
-    wheel works normally — the guard MUST NOT block legitimate input."""
+def test_wheel_on_focused_spinbox_also_does_not_change_value(qapp, guard):
+    """Tightened 2026-06-27 — the wheel is exclusively for page scroll;
+    a focused spin must NOT accept wheel ticks either. The pre-fix
+    rule honoured the wheel on focused fields, but the user reported
+    that a momentarily-focused field would silently grab ten ticks
+    while they were just trying to scroll past it. Values are typed,
+    clicked, or arrow-keyed; the wheel never edits."""
     dlg, spin = _build_spin_dialog(initial=50)
     try:
         spin.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -102,8 +106,9 @@ def test_wheel_on_focused_spinbox_does_change_value(qapp, guard):
         assert spin.hasFocus()
         QApplication.sendEvent(spin, _wheel_event(-120))
         QApplication.processEvents()
-        assert spin.value() != 50, (
-            "wheel on focused spin must still change the value"
+        assert spin.value() == 50, (
+            "wheel on focused spin must NOT change the value — the "
+            "wheel-as-scroll-only rule applies regardless of focus"
         )
     finally:
         _teardown(dlg)

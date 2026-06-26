@@ -287,6 +287,75 @@ def _read_provenance(library_gateway,
     return out
 
 
+#: English month abbreviations for :func:`compose_origin_label`. Pure logic
+#: (no Qt → no ``tr()``); a future localisation slice can swap these for a
+#: locale-aware formatter without changing the call sites.
+_MONTH_ABBR = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _format_origin_date(capture_time: Optional[str]) -> Optional[str]:
+    """``'2025-09-28T11:26:41'`` → ``'28 Sep 2025'``. Reads the leading
+    ISO ``YYYY-MM-DD``; returns ``None`` for a missing / unparseable value
+    (charter §5.3 — tolerate, don't crash)."""
+    if not capture_time:
+        return None
+    iso = str(capture_time).strip()[:10]
+    try:
+        year, month, day = (int(x) for x in iso.split("-"))
+        label = _MONTH_ABBR[month - 1]
+    except (ValueError, IndexError):
+        return None
+    return f"{day} {label} {year}"
+
+
+def compose_origin_label(
+    event_name: Optional[str], capture_time: Optional[str]
+) -> Optional[str]:
+    """spec/154 — the per-slide origin string: source event name + capture
+    date, e.g. ``'Salta, Argentina · 28 Sep 2025'``. Either half may be
+    missing (an unnamed event, a frame with no capture time); returns the
+    available part, or ``None`` when both are absent.
+
+    The one composer for the origin label — Play feeds it through
+    :func:`cross_event_origin_resolver`, and the cross-event PTE generator
+    (spec/154 slice B) reuses it to emit the same string as an editable
+    ``:Text`` object."""
+    parts = []
+    if event_name:
+        parts.append(str(event_name))
+    date_text = _format_origin_date(capture_time)
+    if date_text:
+        parts.append(date_text)
+    return " · ".join(parts) if parts else None
+
+
+def cross_event_origin_resolver(
+    library_gateway, cut_id: str
+) -> Callable[[object], Optional[str]]:
+    """spec/154 — the resolver the cross-event player hands
+    :class:`CutPlayerDialog` for the per-slide **origin label** (top of
+    slide): given a play payload, return ``'EventName · 28 Sep 2025'`` (or
+    ``None``). Built once — one ``list_events_for_scope`` call for the
+    event-name map — so the per-frame closure is O(1). Keys on
+    ``event_uuid`` + the payload's ``capture_time``."""
+    names_by_uuid: dict = {}
+    try:
+        for e in library_gateway.list_events_for_scope():
+            names_by_uuid[e.get("uuid")] = e.get("name") or None
+    except Exception:                                              # noqa: BLE001
+        log.debug("cross_event origin: list_events_for_scope failed",
+                  exc_info=True)
+
+    def resolve(payload) -> Optional[str]:
+        return compose_origin_label(
+            names_by_uuid.get(getattr(payload, "event_uuid", "")),
+            getattr(payload, "capture_time", None))
+    return resolve
+
+
 def cross_event_provenance_resolver(
     library_gateway, cut_id: str
 ) -> Callable[[object], object]:
@@ -315,6 +384,8 @@ def cross_event_provenance_resolver(
 __all__ = [
     "CrossEventPlayFile",
     "build_cross_event_entries",
+    "compose_origin_label",
+    "cross_event_origin_resolver",
     "cross_event_provenance_resolver",
     "make_resolve_path",
 ]

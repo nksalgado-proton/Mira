@@ -169,6 +169,7 @@ class CrossEventCutSession:
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
     card_style: str = "black"
+    source_label_on: bool = False              # spec/154 per-slide origin label
     cut_id: Optional[str] = None
     _picked: dict = field(default_factory=dict, repr=False)
     _undo: list = field(default_factory=list, repr=False)
@@ -326,6 +327,7 @@ class CrossEventCutSession:
                 overlay_fields=list(self.overlay_fields),
                 overlay_mode=self.overlay_mode,
                 card_style=self.card_style,
+                source_label=self.source_label_on,
             )
         else:
             current = library_gateway.cross_event_cut(self.cut_id)
@@ -347,6 +349,7 @@ class CrossEventCutSession:
                 overlay_fields_json=json.dumps(list(self.overlay_fields)),
                 overlay_mode=self.overlay_mode,
                 card_style=self.card_style,
+                source_label=self.source_label_on,
             )
             cut = library_gateway.cross_event_cut(self.cut_id)
         library_gateway.set_cross_event_cut_members(cut.id, members)
@@ -398,6 +401,7 @@ class CrossEventCutSession:
             overlay_fields=tuple(getattr(draft, "overlay_fields", ()) or ()),
             overlay_mode=getattr(draft, "overlay_mode", None),
             card_style=getattr(draft, "card_style", "black"),
+            source_label_on=bool(getattr(draft, "source_label", False)),
         )
 
     @staticmethod

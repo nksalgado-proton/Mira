@@ -146,6 +146,11 @@ class CrossEventCutDraft:
     overlay_fields: Tuple[str, ...] = ()
     overlay_mode: Optional[str] = None
     card_style: str = "black"
+    #: spec/154 — the per-slide origin label ("Source label per slide"):
+    #: source event name + capture date at the top of each slide. Off by
+    #: default; independent of the four overlay caption fields. Cross-event
+    #: only (a single-event Cut has no provenance to read out).
+    source_label: bool = False
     # spec/111 — slideshow canvas aspect (sibling to ``photo_s``).
     aspect: str = "16:9"
 

@@ -511,6 +511,8 @@ def recipe_to_cross_event_cut_draft(recipe: um.Recipe) -> CrossEventCutDraft:
     separators = (
         bool(separators_raw) if separators_raw is not None else False
     )
+    # spec/154 — the per-slide origin label flag; OFF by default.
+    source_label = bool(presentation.get("source_label"))
 
     source_dc_id = _infer_source_dc_id(source_expr)
 
@@ -529,6 +531,7 @@ def recipe_to_cross_event_cut_draft(recipe: um.Recipe) -> CrossEventCutDraft:
         overlay_fields=overlay_fields,
         overlay_mode=overlay_mode,
         card_style=card_style,
+        source_label=source_label,
         aspect=aspect,
     )
 
@@ -583,6 +586,10 @@ def cross_event_cut_draft_to_recipe_composition(
         presentation["overlay_fields"] = list(draft.overlay_fields)
     if draft.overlay_mode:
         presentation["overlay_mode"] = draft.overlay_mode
+    # spec/154 — the per-slide origin label flag; emitted only when ON
+    # (absent reads back as OFF) so a default Cut's composition stays lean.
+    if getattr(draft, "source_label", False):
+        presentation["source_label"] = True
     # spec/152 §3 — emit transition_ms only when the draft carried an
     # explicit value (``None`` = defer to the global default at read
     # time). Keeps Recipes round-trip-lossless without polluting them

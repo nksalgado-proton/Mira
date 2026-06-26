@@ -339,6 +339,7 @@ class CutPlayerDialog(QDialog):
         provenance_resolver: Optional[
             Callable[[object], Optional[cut_overlay.FrameProvenance]]
         ] = None,
+        origin_resolver: Optional[Callable[[object], Optional[str]]] = None,
         resolve_path: Optional[Callable[[object], Path]] = None,
         video_rate: float = 1.0,
         transition_ms: Optional[int] = None,
@@ -410,6 +411,12 @@ class CutPlayerDialog(QDialog):
         self._overlay_fields: tuple = tuple(overlay_fields or ())
         self._provenance_resolver = provenance_resolver
         self._overlay_label: Optional[QLabel] = None
+        # spec/154 — the per-slide origin label (cross-event: source event
+        # name + capture date), anchored at the TOP. Independent of the
+        # bottom caption: wired only when ``origin_resolver`` is passed
+        # (event-scope Play leaves it unset, so the label never builds).
+        self._origin_resolver = origin_resolver
+        self._origin_label: Optional[QLabel] = None
 
         # Two-tier layout (Nelson 2026-06-19): the slide canvas sits in a
         # stack-widget on top, the transport bar rides the bottom of the
@@ -501,6 +508,23 @@ class CutPlayerDialog(QDialog):
             self._overlay_label.setAttribute(
                 Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self._overlay_label.hide()
+
+        # spec/154 — the top-anchored origin label. Built lazily on the
+        # same terms as the bottom caption (skipped entirely when no
+        # resolver is wired) so an event-scope Cut is byte-for-byte the
+        # pre-spec/154 player.
+        if self._origin_resolver is not None:
+            self._origin_label = QLabel(self)
+            self._origin_label.setObjectName("CutPlayOrigin")
+            self._origin_label.setAttribute(
+                Qt.WidgetAttribute.WA_StyledBackground, True)
+            self._origin_label.setWordWrap(False)
+            self._origin_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._origin_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.NoTextInteraction)
+            self._origin_label.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._origin_label.hide()
 
         # Pre-compute the per-entry duration table the scrubber walks.
         self._durations: List[int] = []
@@ -733,6 +757,7 @@ class CutPlayerDialog(QDialog):
             self._start_transition_animation()
         # Refresh the overlay AFTER the frame paint.
         self._update_overlay(kind, payload)
+        self._update_origin(kind, payload)
         # Snap the scrubber to the new entry; the ticker keeps it warm.
         if self._scrubber is not None:
             self._scrubber.set_playhead(self._index, 0.0)
@@ -1109,6 +1134,7 @@ class CutPlayerDialog(QDialog):
         super().resizeEvent(ev)
         self._fit_current()
         self._position_overlay()
+        self._position_origin()
         self._hide_hover_preview()
         # spec/152 Phase 2 — keep the crossfade overlay sized to
         # the canvas while a fade is mid-flight; otherwise the user
@@ -1180,6 +1206,57 @@ class CutPlayerDialog(QDialog):
         cx = area.x() + area.width() // 2
         x = max(0, min(cx - w // 2, self.width() - w))
         y = max(0, area.y() + area.height() - lbl.height() - margin)
+        lbl.move(int(x), int(y))
+
+    def _update_origin(self, kind: str, payload) -> None:
+        """spec/154 — refresh the top origin label. Shows on file frames
+        only (opener / separator cards carry their own title), hidden when
+        the resolver yields nothing for this frame."""
+        lbl = self._origin_label
+        if lbl is None or self._origin_resolver is None:
+            return
+        if kind in ("opener", "sep") or not getattr(
+                payload, "export_relpath", None) and not getattr(
+                payload, "origin_relpath", None):
+            lbl.hide()
+            return
+        try:
+            text = self._origin_resolver(payload)
+        except Exception:                                          # noqa: BLE001
+            log.exception("rehearsal origin: origin_resolver raised")
+            lbl.hide()
+            return
+        if not text:
+            lbl.hide()
+            return
+        lbl.setText(text)
+        lbl.adjustSize()
+        self._position_origin()
+        lbl.raise_()
+        lbl.show()
+
+    def _position_origin(self) -> None:
+        """Anchor the origin label to the displayed photo's TOP edge,
+        centred — the mirror of :meth:`_position_overlay`'s bottom anchor."""
+        lbl = self._origin_label
+        if lbl is None or not lbl.isVisible() and not lbl.text():
+            return
+        margin = 8
+        photo_rect = (
+            self._photo.foreground_rect() if self._photo is not None
+            else QRect())
+        if not photo_rect.isEmpty():
+            top_left = self._photo.mapTo(self, photo_rect.topLeft())
+            area = QRect(top_left, photo_rect.size())
+        else:
+            host = self._stack_widget if self._stack_widget is not None else self
+            area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
+        lbl.setMaximumWidth(self.width())
+        lbl.adjustSize()
+        w = min(lbl.width(), self.width())
+        cx = area.x() + area.width() // 2
+        x = max(0, min(cx - w // 2, self.width() - w))
+        y = max(0, area.y() + margin)
         lbl.move(int(x), int(y))
 
     def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802

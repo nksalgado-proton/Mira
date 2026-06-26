@@ -496,6 +496,33 @@ def test_collection_presentation_fields_carry_through():
     assert draft.overlay_mode == "embedded"
 
 
+def test_collection_source_label_reads_and_round_trips():
+    """spec/154 — the per-slide origin-label flag survives composition →
+    draft → composition. Off by default (absent key reads False); emitted
+    only when ON so a default Cut's composition stays lean."""
+    # Absent → OFF.
+    recipe_off = _collection_recipe("curated", {
+        "source": [["+", "exported"]], "otherwise": "skip",
+        "presentation": {},
+    })
+    assert recipe_to_cross_event_cut_draft(recipe_off).source_label is False
+    # Present + True → ON.
+    recipe_on = _collection_recipe("curated", {
+        "source": [["+", "exported"]], "otherwise": "skip",
+        "presentation": {"source_label": True},
+    })
+    draft = recipe_to_cross_event_cut_draft(recipe_on)
+    assert draft.source_label is True
+    # Round-trip: ON survives, OFF stays omitted.
+    comp_on = cross_event_cut_draft_to_recipe_composition(draft)
+    assert comp_on["presentation"]["source_label"] is True
+    off_draft = CrossEventCutDraft(
+        name="x", tag="x", expr=(("+", "exported"),),
+        pin_mode=PIN_PICK_IN, source_label=False)
+    comp_off = cross_event_cut_draft_to_recipe_composition(off_draft)
+    assert "source_label" not in comp_off["presentation"]
+
+
 def test_collection_single_dc_source_populates_source_dc_id():
     """Mirror of the event-scope inference: a single ``+`` over a typed
     DC ref surfaces the DC id on the draft."""

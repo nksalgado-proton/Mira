@@ -1441,6 +1441,17 @@ QLabel#CutPlayOverlay {
     border-radius: 6px;
 }
 
+/* spec/154 — the per-slide origin label (source event + capture date),
+   anchored at the TOP of the displayed photo. Same translucent-black pill
+   look as the bottom caption so the two read as one family. */
+QLabel#CutPlayOrigin {
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 150);
+    padding: 4px 10px;
+    font-size: {overlay_exif_font_px}px;
+    border-radius: 6px;
+}
+
 QLabel#CutPlayMissing {
     color: #cccccc;
     background-color: transparent;

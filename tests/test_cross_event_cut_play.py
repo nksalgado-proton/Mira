@@ -281,6 +281,52 @@ def test_provenance_resolver_composes_from_projection(tmp_path):
         store.close()
 
 
+def test_compose_origin_label():
+    """spec/154 — the per-slide origin string: 'EventName · 28 Sep 2025'.
+    Either half may be missing; both absent → None."""
+    from mira.shared.cross_event_cut_play import compose_origin_label
+    assert compose_origin_label(
+        "Salta, Argentina", "2025-09-28T11:26:41") == "Salta, Argentina · 28 Sep 2025"
+    # Name only (frame with no capture time).
+    assert compose_origin_label("Nepal", None) == "Nepal"
+    # Date only (unnamed event).
+    assert compose_origin_label(None, "2024-12-10T16:00:00") == "10 Dec 2024"
+    # Unparseable date is dropped, not crashed.
+    assert compose_origin_label("Nepal", "garbage") == "Nepal"
+    # Nothing to say.
+    assert compose_origin_label(None, None) is None
+    assert compose_origin_label("", "") is None
+
+
+def test_origin_resolver_composes_event_name_and_date(tmp_path):
+    """spec/154 — the origin resolver maps a play payload to its source
+    event name (from the event index) + capture date. Built from one
+    list_events_for_scope call; keys on the payload's own fields."""
+    from mira.shared.cross_event_cut_play import cross_event_origin_resolver
+    store = _open_user_store(tmp_path)
+    _seed_projection(store)
+    store.upsert(um.EventIndex(
+        event_uuid="A", relpath_to_base="Costa Rica",
+        name_cached="Costa Rica"))
+    lg = _make_lg(store)
+    _seed_cross_event_cut(lg, "cut-x", [
+        {"event_id": "A", "kind": "export",
+         "export_relpath": "Exported Media/Day01/a1.jpg"}])
+    try:
+        resolve = cross_event_origin_resolver(lg, "cut-x")
+        out = resolve(CrossEventPlayFile(
+            event_uuid="A",
+            export_relpath="Exported Media/Day01/a1.jpg",
+            capture_time="2026-04-01T10:00:00"))
+        assert out == "Costa Rica · 1 Apr 2026"
+        # An unknown event still yields the date (origin is best-effort).
+        assert resolve(CrossEventPlayFile(
+            event_uuid="zzz", capture_time="2026-04-01T10:00:00")
+        ) == "1 Apr 2026"
+    finally:
+        store.close()
+
+
 def test_entries_empty_cut_returns_empty(tmp_path):
     store = _open_user_store(tmp_path)
     lg = _make_lg(store)

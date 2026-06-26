@@ -77,10 +77,18 @@ text-less, swappable (the spec/153 `render_flat_background`).
   cross-event PTE generation from the Cut's `expr_json` + `filters_json`
   (reusing the `_format_dc_expr` / `_format_dc_filters` helpers). No
   per-item provenance needed → lowest risk, most distinctive piece.
-* **Phase 2 — Per-slide origin label.** Resolve each member's source
-  event name + capture date (one `event_id → (name)` map + the member's
-  capture time); emit the top `origin_label` when its flag is on. Add the
-  flag to the cross-event dialog.
+* **Phase 2 — Per-slide origin label. DONE (Play side, 2026-06-26).**
+  The pure composer `cross_event_cut_play.compose_origin_label(event_name,
+  capture_time)` builds the one string (`'Salta, Argentina · 28 Sep 2025'`);
+  `cross_event_origin_resolver(lg, cut_id)` wraps it with the
+  `list_events_for_scope` name map for Play. `CutPlayerDialog` grew a
+  second, TOP-anchored `#CutPlayOrigin` label (mirror of the bottom
+  `#CutPlayOverlay`), wired via a new `origin_resolver` param. The
+  "Source label per slide" flag lives in the cross-event Cut's
+  `extras_json` (sibling to `card_style`), threaded
+  dialog → `CrossEventCutDraft.source_label` → session → gateway. The
+  control renders only under `INVENTORY_LIBRARY`. **PTE side reuses
+  `compose_origin_label` in Phase 1's generator (slice B).**
 * **Phase 3 — Photo captions.** A per-source-event provenance index
   (`{relpath → FrameProvenance}`, mirroring `_origin_index_for_source_event`)
   so each member composes its When/Where/Camera/Exposure line.

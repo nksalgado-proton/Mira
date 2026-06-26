@@ -469,6 +469,19 @@ class LibraryPage(QWidget):
         dlg.exec()
         self.refresh()
 
+    @staticmethod
+    def _cut_source_label_on(cut) -> bool:
+        """spec/154 — read the cross-event Cut's "Source label per slide"
+        flag out of ``extras_json`` (the standing house pattern for per-Cut
+        presentation booleans, sibling to ``card_style``). Tolerant of a
+        malformed / absent blob — defaults OFF."""
+        import json as _json
+        try:
+            extras = _json.loads(getattr(cut, "extras_json", "") or "{}")
+        except (ValueError, TypeError):
+            return False
+        return bool(isinstance(extras, dict) and extras.get("source_label"))
+
     def _cross_event_opener_lines(self, lg, cut) -> "tuple[str, list]":
         """spec/154 — the cross-event opener's title + summary lines: the
         Cut name, the source EVENTS the frames came from (provenance, not
@@ -524,6 +537,7 @@ class LibraryPage(QWidget):
         gateway's index."""
         from mira.shared.cross_event_cut_play import (
             build_cross_event_entries,
+            cross_event_origin_resolver,
             cross_event_provenance_resolver,
             make_resolve_path,
         )
@@ -583,6 +597,13 @@ class LibraryPage(QWidget):
         provenance_resolver = (
             cross_event_provenance_resolver(lg, cut_id)
             if overlay_fields else None)
+        # spec/154 — the per-slide origin label (source event name + capture
+        # date) at the top, gated by the Cut's own "Source label per slide"
+        # flag (stored in extras_json). Independent of the four caption
+        # fields; off by default.
+        origin_resolver = (
+            cross_event_origin_resolver(lg, cut_id)
+            if self._cut_source_label_on(cut) else None)
         dlg = CutPlayerDialog(
             entries,
             event_root=Path(""),   # unused — resolve_path supplies the path
@@ -592,6 +613,7 @@ class LibraryPage(QWidget):
             opener_image=opener_image,
             overlay_fields=overlay_fields,
             provenance_resolver=provenance_resolver,
+            origin_resolver=origin_resolver,
             transition_ms=transition_ms,
             parent=self,
         )

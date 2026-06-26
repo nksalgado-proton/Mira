@@ -1255,6 +1255,7 @@ class LibraryGateway:
         overlay_fields: Optional[Sequence[str]] = None,
         overlay_mode: Optional[str] = None,
         card_style: str = "black",
+        source_label: bool = False,
         aspect: str = "16:9",
     ) -> um.Cut:
         """Create a cross-event Cut from a user-typed name (slugified
@@ -1277,8 +1278,16 @@ class LibraryGateway:
         cut_id = self._new_id()
         now = self._now()
         expr_list = [list(t) for t in (expr_snapshot or ())]
-        extras = json.dumps(
-            {"card_style": card_style} if card_style else {})
+        # ``card_style`` + ``source_label`` (spec/154 — the per-slide
+        # origin-label flag) both ride ``extras_json`` per the standing
+        # house pattern (spec/61 §4). ``source_label`` is written only
+        # when ON so a default Cut keeps a minimal blob.
+        extras_obj: Dict[str, Any] = {}
+        if card_style:
+            extras_obj["card_style"] = card_style
+        if source_label:
+            extras_obj["source_label"] = True
+        extras = json.dumps(extras_obj)
         from core.cut_aspect import normalise as _normalise_aspect
         row = um.Cut(
             id=cut_id, tag=slug,
@@ -1338,6 +1347,7 @@ class LibraryGateway:
         overlay_fields_json: Any = _UNSET,
         overlay_mode: Any = _UNSET,
         card_style: Any = _UNSET,
+        source_label: Any = _UNSET,
         aspect: Any = _UNSET,
     ) -> None:
         """Edit-in-place — passes update only the fields the caller
@@ -1371,7 +1381,10 @@ class LibraryGateway:
         if aspect is not _UNSET:
             from core.cut_aspect import normalise as _normalise_aspect
             sets["aspect"] = _normalise_aspect(aspect)
-        if card_style is not _UNSET:
+        # ``card_style`` + ``source_label`` (spec/154) both live in
+        # ``extras_json``; load the blob once so passing both in one call
+        # doesn't have the second clobber the first.
+        if card_style is not _UNSET or source_label is not _UNSET:
             extras = {}
             try:
                 extras = json.loads(cut.extras_json or "{}") or {}
@@ -1379,10 +1392,16 @@ class LibraryGateway:
                     extras = {}
             except (ValueError, TypeError):
                 extras = {}
-            if card_style is None:
-                extras.pop("card_style", None)
-            else:
-                extras["card_style"] = card_style
+            if card_style is not _UNSET:
+                if card_style is None:
+                    extras.pop("card_style", None)
+                else:
+                    extras["card_style"] = card_style
+            if source_label is not _UNSET:
+                if source_label:
+                    extras["source_label"] = True
+                else:
+                    extras.pop("source_label", None)
             sets["extras_json"] = json.dumps(extras)
         if not sets:
             return

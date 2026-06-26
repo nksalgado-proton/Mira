@@ -59,7 +59,8 @@ def _overlay_vocab():
 
 
 def _dialog(qapp, *, overlay_field_options=None,
-            overlay_fields=(), inventory=INVENTORY_EVENT):
+            overlay_fields=(), inventory=INVENTORY_EVENT,
+            source_label=False):
     ctx = NewRecipeContext(
         available_pools=_pools(),
         available_styles=["macro"],
@@ -67,6 +68,7 @@ def _dialog(qapp, *, overlay_field_options=None,
             overlay_field_options if overlay_field_options is not None
             else _overlay_vocab()),
         overlay_fields=list(overlay_fields),
+        source_label=source_label,
     )
     return NewRecipeDialog(
         flavour=FLAVOUR_CUT,
@@ -272,6 +274,46 @@ def test_cross_event_dialog_emits_overlay_in_composition(qapp):
         pres = dlg.composition()["presentation"]
         assert pres["overlay_mode"] == "embedded"
         assert pres["overlay_fields"] == [cut_overlay.FIELD_WHERE]
+    finally:
+        dlg.deleteLater()
+
+
+# --------------------------------------------------------------------- #
+# 5b. spec/154 — the per-slide origin-label flag (cross-event only)
+# --------------------------------------------------------------------- #
+
+
+def test_source_label_control_cross_event_only(qapp):
+    """The 'Source label per slide' checkbox renders only under the
+    library (cross-event) inventory scope; the event-Cut face has no such
+    control (a single-event Cut has no provenance to read out)."""
+    dlg_event = _dialog(qapp, inventory=INVENTORY_EVENT)
+    try:
+        assert dlg_event._source_label_check is None
+        assert "source_label" not in dlg_event.composition()["presentation"]
+    finally:
+        dlg_event.deleteLater()
+    dlg_xe = _dialog(qapp, inventory=INVENTORY_LIBRARY)
+    try:
+        assert dlg_xe._source_label_check is not None
+        from PyQt6.QtWidgets import QCheckBox
+        assert isinstance(dlg_xe._source_label_check, QCheckBox)
+        # Off by default → key omitted.
+        assert "source_label" not in dlg_xe.composition()["presentation"]
+        # Checking it emits the flag.
+        dlg_xe._source_label_check.setChecked(True)
+        assert dlg_xe.composition()["presentation"]["source_label"] is True
+    finally:
+        dlg_xe.deleteLater()
+
+
+def test_source_label_prefill_checks_the_box(qapp):
+    """Adjust prefill (``ctx.source_label=True``) opens with the box
+    checked and re-emits the flag."""
+    dlg = _dialog(qapp, inventory=INVENTORY_LIBRARY, source_label=True)
+    try:
+        assert dlg._source_label_check.isChecked()
+        assert dlg.composition()["presentation"]["source_label"] is True
     finally:
         dlg.deleteLater()
 

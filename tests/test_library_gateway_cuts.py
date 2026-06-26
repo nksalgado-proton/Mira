@@ -162,6 +162,45 @@ def test_update_settings_card_style_rides_extras_json(tmp_path):
         store.close()
 
 
+def test_source_label_rides_extras_json(tmp_path):
+    """spec/154 — the per-slide origin-label flag persists in extras_json
+    alongside card_style, written only when ON and toggled selectively by
+    the settings update."""
+    lg, store = _open_library(tmp_path, ids=["cut-1"])
+    try:
+        # Default OFF → no source_label key in the blob.
+        lg.create_cross_event_cut("x", card_style="single")
+        assert "source_label" not in json.loads(
+            lg.cross_event_cut("cut-1").extras_json)
+        # Create with the flag ON → key present, sits beside card_style.
+        (tmp_path / "two").mkdir()
+        lg2, store2 = _open_library(tmp_path / "two", ids=["cut-2"])
+        try:
+            lg2.create_cross_event_cut(
+                "y", card_style="multi", source_label=True)
+            extras = json.loads(lg2.cross_event_cut("cut-2").extras_json)
+            assert extras == {"card_style": "multi", "source_label": True}
+        finally:
+            store2.close()
+        # Toggle ON via update — card_style untouched.
+        lg.update_cross_event_cut_settings("cut-1", source_label=True)
+        extras = json.loads(lg.cross_event_cut("cut-1").extras_json)
+        assert extras["source_label"] is True
+        assert extras["card_style"] == "single"
+        # Toggle OFF → key removed, card_style preserved.
+        lg.update_cross_event_cut_settings("cut-1", source_label=False)
+        extras = json.loads(lg.cross_event_cut("cut-1").extras_json)
+        assert "source_label" not in extras
+        assert extras["card_style"] == "single"
+        # Both extras keys in one call don't clobber each other.
+        lg.update_cross_event_cut_settings(
+            "cut-1", card_style="black", source_label=True)
+        extras = json.loads(lg.cross_event_cut("cut-1").extras_json)
+        assert extras == {"card_style": "black", "source_label": True}
+    finally:
+        store.close()
+
+
 def test_rename_swaps_tag_and_blocks_collision(tmp_path):
     """Rename keeps the row + members, only the tag changes; the
     collision check excludes this Cut's own tag so a no-op rename is

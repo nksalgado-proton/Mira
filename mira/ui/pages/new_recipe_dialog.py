@@ -319,6 +319,13 @@ class NewRecipeContext:
     separators: bool = True
     card_style: str = "black"
 
+    # spec/154 — the per-slide origin label ("Source label per slide"):
+    # source event name + capture date at the top of each slide. Cross-
+    # event only (the control renders under the library inventory scope);
+    # off by default. The host seeds it from the Cut's ``extras_json`` on
+    # Adjust; a brand-new cross-event Cut starts OFF.
+    source_label: bool = False
+
     # ``is_editing`` flips the Start-button gate to a permissive mode
     # (spec/90 Phase 4e — Nelson 2026-06-20): when True, Start enables
     # as long as Source is non-empty, regardless of probe state. Use
@@ -1786,6 +1793,11 @@ class NewRecipeDialog(QDialog):
             ctx.card_style if ctx.card_style in ("black", "single", "multi")
             else "black"
         )
+        # spec/154 — per-slide origin label flag. The control only renders
+        # for the cross-event (library) inventory scope; ``_source_label_check``
+        # stays ``None`` on the event-Cut face so readers tolerate its absence.
+        self._source_label: bool = bool(ctx.source_label)
+        self._source_label_check: Optional[QCheckBox] = None
 
         # Debounce timer — every section-state mutator calls
         # :meth:`_kick_probe`; the timer restarts on each kick and fires
@@ -3228,7 +3240,29 @@ class NewRecipeDialog(QDialog):
             self._overlay_field_chips[str(key)] = chip
             chips_flow.addWidget(chip)
         ob.addWidget(chips_host)
+
+        # spec/154 — the per-slide origin label ("Source label per slide"):
+        # source event name + capture date at the TOP of each slide. A
+        # cross-event Cut is a search result, so knowing each frame's origin
+        # without opening the Cut is the point; a single-event Cut has no
+        # provenance to read out, so the control only renders under the
+        # library inventory scope. Independent of the four caption fields.
+        if self._inventory_scope == INVENTORY_LIBRARY:
+            self._source_label_check = QCheckBox(tr("Source label per slide"))
+            self._source_label_check.setObjectName("DaysTableCheck")
+            self._source_label_check.setToolTip(tr(
+                "Label each slide at the top with its source event name and "
+                "capture date — where the frame came from."))
+            self._source_label_check.setChecked(self._source_label)
+            self._source_label_check.toggled.connect(
+                self._on_source_label_toggled)
+            ob.addWidget(self._source_label_check)
         return box
+
+    def _on_source_label_toggled(self, checked: bool = False) -> None:
+        """spec/154 — track the per-slide origin-label flag off the
+        checkbox so :meth:`presentation_payload` emits the current value."""
+        self._source_label = bool(checked)
 
     def _on_overlay_field_toggled(self, _checked: bool = False) -> None:
         """spec/114 — read the active field set off the chips so the
@@ -4241,6 +4275,13 @@ class NewRecipeDialog(QDialog):
                 chip.blockSignals(True)
                 chip.setChecked(key in self._overlay_fields)
                 chip.blockSignals(False)
+            # spec/154 — load the per-slide origin-label flag (cross-event
+            # only; the control is absent on the event-Cut face).
+            self._source_label = bool(presentation.get("source_label"))
+            if self._source_label_check is not None:
+                self._source_label_check.blockSignals(True)
+                self._source_label_check.setChecked(self._source_label)
+                self._source_label_check.blockSignals(False)
             # spec/143 — load the Cut's separator on/off + card-style
             # choice into the picker. An absent ``separators`` key keeps
             # the dialog's current value (True / new-cut default); an
@@ -4664,6 +4705,11 @@ class NewRecipeDialog(QDialog):
         if self._overlay_fields:
             out["overlay_mode"] = "embedded"
             out["overlay_fields"] = list(self._overlay_fields)
+        # spec/154 — the per-slide origin-label flag (cross-event only).
+        # Emit only when ON (absent reads back as OFF), matching the
+        # overlay-field lean shape recipe_to_cross_event_cut_draft tolerates.
+        if self._source_label and self._inventory_scope == INVENTORY_LIBRARY:
+            out["source_label"] = True
         # spec/152 §3 — emit transition_ms ONLY when the user actually
         # overrode the global default. Omitting it (the common case)
         # lets the gateway store NULL so a future global-default tweak

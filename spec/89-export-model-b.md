@@ -251,19 +251,29 @@ wires for free:
 - **Reminder** (D3.A): *"border = decision · wordmark = origin · count
   chip = versions"*.
 
-#### Pool inclusion (Block 7 D1.B)
+#### Pool inclusion (Block 7 D1.B — **revised 2026-06-27, Nelson**)
 
-The Export grid shows: **picked keepers ∪ any item with a file in
-`Exported Media/`**. The union covers the edge case where a user
-skipped an item in Pick but later dropped an LRC export for it
-(scanner hardlinks it → it appears in Export so the user can either
-delete the file or re-Pick).
+The Export grid shows: **picked keepers only** — the SAME criteria as
+the Edit grid. A Pick-skipped item never appears in Export.
 
-#### Skipped-but-shipped indicator (Block 7 D2.B)
+> **History.** Slices 1–10 shipped this as **picked keepers ∪ any item
+> with a file in `Exported Media/`**. The union surfaced the edge case
+> where a user skipped an item in Pick but later dropped an LRC export
+> for it (scanner hardlinks it → it appeared in Export so the user
+> could delete the file or re-Pick). Nelson retired that union on
+> 2026-06-27: skipped items leaking into Export was the wrong default.
+> A third-party return for a skipped item still physically exists in
+> `Exported Media/` and still surfaces in Share's **#exported** Cut
+> (the live query over every lineage row) — it just no longer nags in
+> the Export decision grid. To resurrect such a file the user re-Picks
+> the source.
 
-Items that are Pick-skipped but have a shipped file: shown with **red
-border** + a small **"skipped in Pick"** indicator chip so the user
-knows why this is here.
+#### Skipped-but-shipped indicator (Block 7 D2.B — **retired 2026-06-27**)
+
+Retired with the pool union above. There is no longer a "skipped in
+Pick" cell state in Export, because skipped items are not in the pool.
+``skipped_in_pick_ids`` is kept as an always-empty element of
+``_export_pool_filter``'s return tuple for call-shape stability.
 
 #### Exported watermark — repurposed (Block 7 D3.B)
 

@@ -1177,10 +1177,9 @@ class DaysGridPage(QWidget):
         # BUGS.md B-010 — Edit grid pool is the Pick survivors (spec/66
         # §1.1 "Edit pool = all picked keepers"). Restrict the engine
         # via item_ids when the page is in pure Edit mode.
-        # spec/89 §4.2 / Block 7 D1.B — Export's pool is picked keepers
-        # UNION any item with a file under Exported Media/ (the latter
-        # surfaces the "skipped in Pick but a third-party edit exists"
-        # edge case so the user can drop the file or re-Pick).
+        # spec/89 §4.2 (Nelson 2026-06-27) — Export's pool is picked
+        # keepers ONLY, identical to Edit. The earlier picked ∪ shipped
+        # union was retired so Pick-skipped items never appear in Export.
         item_ids_filter = None
         shipped_ids: set = set()
         skipped_in_pick_ids: set = set()
@@ -1482,24 +1481,27 @@ class DaysGridPage(QWidget):
         return out
 
     def _export_pool_filter(self):
-        """spec/89 §4.2 / Block 7 D1.B — the Export grid's pool is
-        **picked keepers ∪ any item with a file under Exported Media/**.
-        The second term surfaces the "third-party return for an item I
-        skipped in Pick" edge case so the user can either drop the
-        file or re-Pick.
+        """spec/89 §4.2 (Nelson 2026-06-27) — the Export grid's pool is
+        **picked keepers only**, the SAME criteria as the Edit grid
+        (:meth:`_picked_item_ids_filter`). The earlier ``picked ∪
+        shipped`` union (Block 7 D1.B) was retired: Pick-skipped items
+        no longer appear in Export even when a third-party return sits
+        on disk for them — those files still surface in Share's
+        #exported Cut.
 
         Returns ``(item_ids_filter, shipped_ids, skipped_in_pick_ids)``:
 
-        * ``item_ids_filter`` — frozenset of item ids the day-grid
-          engine should include (``None`` when the gateway can't tell
-          us, signalling "show everything in the day" as a defensive
-          fallback).
+        * ``item_ids_filter`` — frozenset of picked item ids the
+          day-grid engine should include (``None`` when the gateway
+          can't tell us, signalling "show everything in the day" as a
+          defensive fallback).
         * ``shipped_ids`` — items with at least one ``Exported Media/``
-          lineage row. The flat-cell intent inference uses this to
-          decide a default-green vs default-red border (Block 1 D1.C).
-        * ``skipped_in_pick_ids`` — items in the pool **only** because
-          they have a ship row. The caller stamps the "skipped in Pick"
-          indicator on them (Block 7 D2.B).
+          lineage row. Still computed for the flat-cell intent
+          inference + origin wordmarks (now only ever intersects picked
+          items); no longer widens the pool.
+        * ``skipped_in_pick_ids`` — always empty now (kept in the return
+          shape so callers don't break); the "skipped in Pick"
+          indicator is retired with the union.
         """
         empty = (None, set(), set())
         if self._eg is None:
@@ -1515,8 +1517,16 @@ class DaysGridPage(QWidget):
             log.exception("DaysGridPage: exported_item_ids failed")
             shipped_ids = set()
         picked_set: set = set(picked_filter) if picked_filter is not None else set()
-        pool = picked_set | shipped_ids
-        skipped_in_pick_ids = shipped_ids - picked_set
+        # spec/89 §4.2 (Nelson 2026-06-27) — the Export grid's pool is now
+        # **picked keepers only**, the SAME criteria as the Edit grid. The
+        # earlier ``picked ∪ shipped`` union surfaced Pick-skipped items
+        # that had a third-party return on disk so the user could drop the
+        # file or re-Pick; that nag is retired — such files still live in
+        # Share's #exported Cut. ``shipped_ids`` is still returned for the
+        # flat-cell intent inference + origin wordmarks below (it now only
+        # ever intersects picked items).
+        pool = picked_set
+        skipped_in_pick_ids: set = set()
         # If neither lookup yielded anything (fresh event, gateway hiccup)
         # fall back to the unfiltered day so the user sees the captures.
         if not pool and not shipped_ids and picked_filter is None:

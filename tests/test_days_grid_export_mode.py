@@ -374,13 +374,15 @@ def test_export_mode_stamps_origin_wordmark_on_single_version_cells(
     page.close_event()
 
 
-def test_export_pool_includes_skipped_with_shipped_file_and_flags_it(
+def test_export_pool_excludes_skipped_even_with_shipped_file(
         qapp, app_gateway, event_dir, store_and_gateway):
-    """spec/89 §4.2 / Block 7 D1.B & D2.B — the Export grid's pool is
-    picked keepers ∪ items with a file in ``Exported Media/``. A photo
-    the user skipped in Pick but with a third-party return on disk
-    still appears (so they can drop the file or re-Pick), carrying a
-    ``skipped_in_pick`` flag for the indicator chip."""
+    """spec/89 §4.2 (revised 2026-06-27, Nelson) — the Export grid's
+    pool is picked keepers ONLY, the SAME criteria as the Edit grid. A
+    photo the user skipped in Pick does NOT appear in Export even when
+    a third-party return sits on disk for it (the earlier picked ∪
+    shipped union + "skipped in Pick" indicator are retired). The file
+    still lives in Share's #exported Cut; it just no longer nags in the
+    Export decision grid."""
     _, eg = store_and_gateway
     # Item x2 was Pick-picked; flip it to skipped, then drop a ship
     # row to simulate a third-party return for a skipped photo.
@@ -397,13 +399,10 @@ def test_export_pool_includes_skipped_with_shipped_file_and_flags_it(
     assert page.open_for_day(
         "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
     by_id = {it.item_id: it for it in page._items}
-    # x2 (Pick-skipped + shipped) is in the pool and flagged.
-    assert "x2" in by_id
-    assert by_id["x2"].skipped_in_pick is True
-    # x2 has a shipped row → 1-version default = green.
-    assert by_id["x2"].state == STATE_PICKED
-    # The other picked keepers (x1/x3/x4) still appear, not flagged,
-    # and default red because they have no versions on disk.
+    # x2 (Pick-skipped) is NOT in the pool, despite its shipped file.
+    assert "x2" not in by_id
+    # The picked keepers (x1/x3/x4) still appear, never flagged, and
+    # default red because they have no versions on disk.
     for iid in ("x1", "x3", "x4"):
         assert by_id[iid].skipped_in_pick is False
         assert by_id[iid].state == STATE_SKIPPED

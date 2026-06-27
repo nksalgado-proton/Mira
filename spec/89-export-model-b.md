@@ -304,6 +304,19 @@ The run:
 3. Third-party returns: nothing to do — already hardlinked at scan
    time.
 
+**Scanner clusters descend (Nelson 2026-06-27).** A green-intent item
+includes photos that sit inside a **scanner cluster** cover (burst /
+focus / exposure / **repeat**). The top-level Export now (day + all-days
+scope) walks each scanner cluster's members and ships every green one,
+exactly as if they were flat cells — it no longer skips the cluster.
+Earlier builds skipped scanner clusters entirely ("drill in to ship
+from members"), which meant a picked photo inside a Repeated cluster
+never exported via the bulk run AND the cluster sub-grid's own Export
+now stayed disabled (its button was never recomputed on drill-in). Both
+are fixed: the bulk run descends, and `_open_cluster` now refreshes the
+Export now / Delete now counts for the sub-grid's members on entry (and
+on every per-member P/X).
+
 ### 5.2 Single-item "Export this"
 
 - **Placement** (D4.A): **preview viewer only** — alongside the "Open

@@ -1877,6 +1877,32 @@ class DaysGridPage(QWidget):
         )
         return (picked, skipped)
 
+    def _export_flat_state(
+        self,
+        item_id: str,
+        edit_phase_states: Dict,
+        shipped_ids: set,
+        mira_intent_ids: set,
+    ) -> str:
+        """spec/89 §1.1 / Block 1 D1.C — the Export-mode default state
+        for a PHOTO with no explicit edit decision: green ("Will
+        export") iff it carries ANY ship intent (a file under
+        ``Exported Media/`` OR a non-default Mira edit the next run
+        would render), else red ("Set aside"). An explicit
+        ``phase_state(edit)`` row always wins.
+
+        Single source of truth shared by the flat day-cell inference
+        (:meth:`_refresh_from_gateway`), the scanner-cluster sub-grid
+        member paint (:meth:`_open_cluster`) and the bulk export
+        descent (:meth:`_collect_ship_cells`) so all three agree on
+        which clustered photos are shippable (Nelson 2026-06-27)."""
+        ps = edit_phase_states.get(item_id)
+        if ps is not None:
+            return ps.state
+        if item_id in shipped_ids or item_id in mira_intent_ids:
+            return STATE_PICKED
+        return STATE_SKIPPED
+
     # ── Cluster expansion ──────────────────────────────────────────────
 
     def _open_cluster(self, cluster: CullCluster) -> None:
@@ -1955,6 +1981,24 @@ class DaysGridPage(QWidget):
         edit_pool: Optional[frozenset] = None
         if edit_neutral:
             edit_pool = self._picked_item_ids_filter()
+        # spec/89 Block 1 D1.C (Nelson 2026-06-27) — scanner-cluster
+        # photo members follow the SAME ship-intent default as flat
+        # Export cells (0-version → red, ship-intent → green) instead
+        # of the born-green ``_phase_default``. Without this the
+        # sub-grid painted every member green while the bulk run + its
+        # own Export now collected only intent-green ones — the two
+        # surfaces disagreed.
+        shipped_ids: set = set()
+        mira_intent_ids: set = set()
+        if self._export_mode and not is_video_cluster:
+            try:
+                shipped_ids = set(self._eg.exported_item_ids())
+            except Exception:                                          # noqa: BLE001
+                log.exception("DaysGridPage: exported_item_ids (cluster)")
+            try:
+                mira_intent_ids = set(self._eg.items_with_mira_intent())
+            except Exception:                                          # noqa: BLE001
+                log.exception("DaysGridPage: items_with_mira_intent (cluster)")
         members: list[GridItem] = []
         for ci in cluster.members:
             if edit_pool is not None and ci.item_id not in edit_pool:
@@ -1962,6 +2006,9 @@ class DaysGridPage(QWidget):
             path = ci.path if ci.path.is_absolute() else event_root / ci.path
             if edit_neutral:
                 thumb_state = None
+            elif self._export_mode and not is_video_cluster:
+                thumb_state = self._export_flat_state(
+                    ci.item_id, phase_states, shipped_ids, mira_intent_ids)
             else:
                 color = cell_color_for_item(
                     ci.item_id, ci.kind, self._phase, phase_states,
@@ -1992,6 +2039,19 @@ class DaysGridPage(QWidget):
         self._cluster = cluster
         self._items = members
         self._update_counts()
+        # spec/89 §4.2 (Nelson 2026-06-27) — recompute the Export now /
+        # Delete now live counts for THIS sub-grid's members. Without
+        # this the button kept its day-level state (the day run skips
+        # scanner clusters → count 0 → disabled), so drilling into a
+        # Repeated cluster to ship members left the button greyed out.
+        # ``_open_versions_cluster`` already did this via
+        # ``_apply_phase_chrome``; the scanner path never did.
+        if self._export_mode:
+            try:
+                self._refresh_export_button_counts()
+            except Exception:                                          # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: export button refresh on cluster open")
         self._refresh()
 
     def _open_versions_cluster(self, cluster: CullCluster) -> None:
@@ -3090,6 +3150,16 @@ class DaysGridPage(QWidget):
             else "prog" if self._reviewed > 0
             else None
         )
+        # spec/89 §4.2 (Nelson 2026-06-27) — keep the Export now /
+        # Delete now counts live as the user greens / reds cells (both
+        # the day grid and inside a scanner-cluster sub-grid). Cheap;
+        # early-returns when not in Export mode.
+        if self._export_mode:
+            try:
+                self._refresh_export_button_counts()
+            except Exception:                                          # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: export button refresh after verb")
         return True
 
     def _apply_version_verb_at_index(self, idx: int, verb: str) -> bool:
@@ -3236,10 +3306,60 @@ class DaysGridPage(QWidget):
         except Exception:                                          # noqa: BLE001
             log.exception("DaysGridPage: phase_states('edit') failed")
             phase_states = {}
+        # spec/89 Block 1 D1.C — ship-intent sets for the flat default
+        # of clustered photo members (independent of the
+        # ``_force_include_shipped`` re-export flag, which only governs
+        # the already-shipped render skip below).
+        try:
+            ship_intent_ids = set(self._eg.exported_item_ids())
+        except Exception:                                          # noqa: BLE001
+            ship_intent_ids = set()
+        try:
+            mira_intent_ids = set(self._eg.items_with_mira_intent())
+        except Exception:                                          # noqa: BLE001
+            mira_intent_ids = set()
 
         photo_cells: list[ExportCell] = []
         segment_rows: list = []
         snapshot_cells: list[SnapshotCell] = []
+
+        def _collect_photo_member(member_id: str, raw_path) -> None:
+            """spec/89 §4.2 (Nelson 2026-06-27) — collect ONE
+            scanner-cluster photo member into the render pool if it's
+            green (Will export) and renderable. Mirrors the flat-photo
+            branch below; used when the day-level run DESCENDS into a
+            burst / focus / exposure / repeat cluster instead of
+            skipping it (a picked photo inside a Repeated cluster used
+            to never export). Green-ness is read the same way the
+            cluster sub-grid paints members: ``phase_state(edit)`` with
+            the Export-mode born-green default."""
+            if not member_id:
+                return
+            if self._export_flat_state(
+                    member_id, phase_states,
+                    ship_intent_ids, mira_intent_ids) != STATE_PICKED:
+                return
+            stale = is_cell_stale(self._eg, member_id)
+            if member_id in already_shipped and not stale:
+                return
+            src = None
+            if raw_path is not None:
+                p = Path(raw_path)
+                src = p if p.is_absolute() else event_root / p
+            # A stale re-ship must always render from the ORIGINAL
+            # photo, never the on-disk export; also fall back to the
+            # origin when the member path didn't resolve to a file.
+            if src is None or stale or not Path(src).is_file():
+                src_item = self._eg.item(member_id)
+                if src_item is not None and src_item.origin_relpath:
+                    src = event_root / src_item.origin_relpath
+            if not src or not Path(src).is_file():
+                return
+            photo_cells.append(ExportCell(
+                item_id=member_id,
+                path=Path(src),
+                day_number=self._day_number,
+            ))
 
         def _expand_video(video_id: str) -> None:
             """Expand one source video into its picked segments +
@@ -3325,12 +3445,20 @@ class DaysGridPage(QWidget):
             if it.item_kind == "cluster":
                 # Synthetic video cluster (spec/56) — expand its
                 # source video's children. Scanner clusters
-                # (_video_item_id is None) are skipped; the user drills
-                # in to ship from them.
+                # (burst / focus / exposure / repeat) — DESCEND into
+                # their photo members so the top-level Export now ships
+                # green clustered photos (Nelson 2026-06-27: they were
+                # skipped before, so a picked photo inside a Repeated
+                # cluster never exported via the bulk run).
                 video_id = getattr(it, "_video_item_id", None)
-                if not video_id:
+                if video_id:
+                    _expand_video(video_id)
                     continue
-                _expand_video(video_id)
+                cull = getattr(it, "_cull_cluster", None)
+                if cull is not None:
+                    for m in cull.members:
+                        if getattr(m, "kind", "photo") == "photo":
+                            _collect_photo_member(m.item_id, m.path)
                 continue
             if it.item_kind == "video":
                 # spec/56: a video's PICKED segments + snapshots are the

@@ -1464,6 +1464,69 @@ def test_export_now_modal_text_carries_n_render_only(
     page.close_event()
 
 
+def test_export_repeated_cluster_ships_green_members_and_enables_button(
+        qapp, app_gateway, event_dir, store_and_gateway):
+    """spec/89 §4.2 / Block 1 D1.C (Nelson 2026-06-27) — photos inside a
+    scanner 'repeat' cluster are shippable. The top-level Export now
+    DESCENDS into the cluster cover and collects every green member; the
+    sub-grid paints members by the same ship-intent default as flat
+    cells and its own Export now button enables when ≥1 member is green.
+    A member with no ship intent stays red (Set aside) and is skipped —
+    so the count matches what the user sees."""
+    from mira.picked.model import CullCluster, CullItem
+    from mira.picked.status import CellColor
+    from mira.ui.pages.days_grid_page import GridItem
+    _, eg = store_and_gateway
+    # x1 explicitly marked Will export; x2 left at the default — no ship
+    # intent, so it must read red and never enter the render pool.
+    eg.set_phase_state("x1", "edit", "picked")
+
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+
+    members = tuple(
+        CullItem(
+            item_id=iid,
+            path=event_dir / "Original Media" / f"{iid}.jpg",
+            kind="photo",
+        )
+        for iid in ("x1", "x2")
+    )
+    cluster = CullCluster(
+        bucket_key="repeat:test", kind="repeat", title="",
+        members=members, color=CellColor.MIXED,
+    )
+    cover = GridItem(
+        item_id="cluster:repeat:test", item_kind="cluster",
+        cluster_type="repeated", cluster_count=2,
+        _cull_cluster=cluster, _path=members[0].path,
+    )
+    # Inject the cover as the day's single cell (stand-in for the
+    # classifier's repeat bucket — built directly so the test doesn't
+    # depend on clustering heuristics).
+    page._items = [cover]
+
+    # Bulk descent: only the greened member ships.
+    photo_cells, _segs, _snaps = page._collect_ship_cells()
+    assert {c.item_id for c in photo_cells} == {"x1"}
+
+    # Drill in: members paint per ship intent and the button enables.
+    page._open_cluster(cluster)
+    by_id = {it.item_id: it for it in page._items}
+    assert by_id["x1"].state == STATE_PICKED
+    assert by_id["x2"].state == STATE_SKIPPED
+    assert page._export_btn.isEnabled()
+
+    # Greening x2 in the sub-grid keeps the count live (Fix #2b) — both
+    # members now ship.
+    idx_x2 = next(i for i, it in enumerate(page._items) if it.item_id == "x2")
+    page._apply_verb_at_index(idx_x2, "pick")
+    photo_cells2, _s2, _n2 = page._collect_ship_cells()
+    assert {c.item_id for c in photo_cells2} == {"x1", "x2"}
+    page.close_event()
+
+
 def test_export_now_run_does_not_delete_red_intent_versions(
         qapp, app_gateway, event_dir, store_and_gateway, monkeypatch):
     """spec/147 §2 — Export now no longer carries a delete sweep.

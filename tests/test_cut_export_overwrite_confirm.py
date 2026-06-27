@@ -261,6 +261,67 @@ def test_keep_both_skips_prompt_even_on_non_empty(
     assert any(p.is_file() for p in sibling.iterdir())
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        dict(overwrite_existing=True),                  # Overwrite
+        dict(overwrite_existing=False),                 # Keep both
+        dict(overwrite_existing=False, only_new=True),  # Only new
+    ],
+)
+def test_export_never_writes_pte(
+        qapp, gw, tmp_path, monkeypatch, make_shell, mode):
+    """spec/158 regression — the export NEVER writes the ``.pte`` in any
+    mode. The project is written only via the explicit "Create PTE
+    project" / "Generate PTE" button. (A bug once made the export
+    overwrite a hand-edited project — never again.) ``use_pte`` is on so
+    the old auto-generate path would have fired."""
+    shell = make_shell(gw, use_pte=True)
+    cut = next(iter(gw.cuts()))
+    custom = tmp_path / "Elsewhere" / "pte_mode"
+    custom.mkdir(parents=True)
+    shell._exec_target_dialog = lambda default, c: ExportChoices(  # noqa: SLF001
+        target=custom, **mode)
+    shell._confirm_overwrite = lambda cut_arg, target: True       # noqa: SLF001
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+
+    gen_calls = []
+    shell._generate_pte_into_folder = (                           # noqa: SLF001
+        lambda c, f, **kw: gen_calls.append((c, f, kw)))
+
+    shell._on_export_cut(cut.id)                                  # noqa: SLF001
+
+    # The export produced files but touched no .pte at all.
+    assert gen_calls == []
+    assert not list(custom.glob("*.pte"))
+
+
+def test_generate_pte_asks_before_overwriting_existing(
+        qapp, gw, tmp_path, monkeypatch, make_shell):
+    """spec/158 — the explicit Generate-PTE flow must PROMPT before
+    replacing an existing ``.pte`` and leave it untouched on Cancel."""
+    shell = make_shell(gw, use_pte=True)
+    cut = next(iter(gw.cuts()))
+    folder = tmp_path / "bundle"
+    folder.mkdir()
+    # A hand-edited project the user must not lose. The canonical name
+    # is "<cut.tag>.pte".
+    existing = folder / f"{cut.tag}.pte"
+    existing.write_text("MY 2 HOURS OF EDITS", encoding="utf-8")
+
+    # If generation runs it would clobber the file — fail loudly if so.
+    shell._generate_pte_into_folder = (                           # noqa: SLF001
+        lambda c, f, **kw: pytest.fail("must not regenerate on Cancel"))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+
+    # Cancel the overwrite prompt.
+    shell._confirm_pte_overwrite = lambda p: False                # noqa: SLF001
+    shell._generate_pte_for_folder(cut, folder)                   # noqa: SLF001
+
+    # The user's project is byte-for-byte intact.
+    assert existing.read_text(encoding="utf-8") == "MY 2 HOURS OF EDITS"
+
+
 # --------------------------------------------------------------------------- #
 # Last-choice persistence
 # --------------------------------------------------------------------------- #

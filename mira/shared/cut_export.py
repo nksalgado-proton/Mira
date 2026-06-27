@@ -33,6 +33,7 @@ No Qt imports here (charter invariant 8 posture for the data layer).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -80,6 +81,9 @@ class ExportResult:
     originals_copied: int = 0
     missing: List[str] = field(default_factory=list)
     missing_originals: List[str] = field(default_factory=list)
+    # spec/158 — "Only new files" re-export: members skipped because the
+    # folder's manifest already records them as materialized here.
+    skipped: int = 0
 
 
 def _fresh_folder(base: Path) -> Path:
@@ -109,6 +113,52 @@ def _clear_folder_contents(folder: Path) -> None:
                 child.unlink()
             except IsADirectoryError:                              # noqa: PERF203
                 shutil.rmtree(child)
+
+
+#: spec/158 (Nelson 2026-06-27) — sidecar manifest written into every
+#: export folder so an "Only new files" re-export knows exactly which
+#: Cut members were already materialized THERE. Tied to the folder (not
+#: the Cut row): deleting the folder correctly means "everything is new
+#: again," and exporting to a different folder starts fresh.
+_MANIFEST_NAME = ".mira-cut-export.json"
+_MANIFEST_VERSION = 1
+
+
+def _read_export_manifest(folder: Path, *, cut_id: str) -> dict:
+    """Read the sidecar export manifest. Returns ``{}`` when absent,
+    unreadable, malformed, or written by a DIFFERENT Cut (a folder
+    re-used for another Cut is not an additive base for this one)."""
+    try:
+        data = json.loads((folder / _MANIFEST_NAME).read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or str(data.get("cut_id")) != str(cut_id):
+        return {}
+    return data
+
+
+def _write_export_manifest(
+    folder: Path, *, cut_id: str, members, max_seq: int,
+) -> None:
+    """Atomically write the sidecar manifest (charter invariant #6 —
+    write-then-rename). Best-effort: a failure logs but never fails the
+    export the user came for."""
+    payload = {
+        "version": _MANIFEST_VERSION,
+        "cut_id": str(cut_id),
+        "members": sorted(set(members)),
+        "max_seq": int(max_seq),
+    }
+    tmp = folder / (_MANIFEST_NAME + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2), "utf-8")
+        os.replace(tmp, folder / _MANIFEST_NAME)
+    except OSError:
+        log.exception("could not write export manifest in %s", folder)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _link_or_copy(src: Path, dst: Path) -> bool:
@@ -391,6 +441,7 @@ def export_cut(
     include_originals: bool = False,
     copy_mode: bool = False,
     overwrite_existing: bool = False,
+    only_new: bool = False,
     original_resolver: Optional[OriginalResolver] = None,
     rng=None,
     # spec/152 §3 — global crossfade transition (ms) the audio
@@ -438,7 +489,33 @@ def export_cut(
     if separators_on is None:
         separators_on = bool(getattr(cut, "separators", True))
     base = Path(target) if target is not None else default_target(event_root, cut.tag)
-    if overwrite_existing:
+    # spec/158 — "Only new files" additive re-export. Land in ``base``
+    # (the same folder) and read its sidecar manifest to learn which
+    # members are already materialized here; we then write ONLY the
+    # members not yet present, leaving existing files untouched. With no
+    # manifest for THIS Cut (never exported / folder gone / re-used for
+    # another Cut) every member is new, so it degenerates to a normal
+    # full export into ``base``.
+    prior: dict = {}
+    existing_names: set = set()      # show files already on disk (only_new)
+    max_existing_seq = 0
+    if only_new:
+        dest = base
+        if dest.exists():
+            prior = _read_export_manifest(dest, cut_id=cut.id)
+            max_existing_seq = int(prior.get("max_seq", 0))
+            # Scan the folder so an OLD-build export (no manifest) is
+            # still treated as an additive base — we must NEVER re-link
+            # or overwrite a file already here. It may be open in PTE,
+            # which is the WinError 32 "file in use" crash this fixes.
+            for p in dest.iterdir():
+                if not p.is_file() or p.name.startswith("."):
+                    continue
+                existing_names.add(p.name)
+                head = p.name.split("_", 1)[0]
+                if head.isdigit():
+                    max_existing_seq = max(max_existing_seq, int(head))
+    elif overwrite_existing:
         # spec/148 — write into base; clear any prior bundle so the
         # new export is a clean replacement (no leftover members from
         # a smaller prior version).
@@ -448,7 +525,33 @@ def export_cut(
     else:
         dest = _fresh_folder(base)
     dest.mkdir(parents=True, exist_ok=True)
+    # ``incremental`` is the additive sub-case of ``only_new``: a valid
+    # prior manifest exists, so opener / separators / audio are NOT
+    # re-emitted (they came from the first full export) and already-
+    # materialized members are skipped. A fresh ``only_new`` (no
+    # manifest) runs the full path below.
+    already: set = set(prior.get("members", []))
+    # Incremental = additive re-export onto an existing bundle (manifest
+    # OR show files already on disk): skip the opener / separators /
+    # audio (they're already here) and add only members not yet present.
+    # A truly fresh ``only_new`` (empty folder) runs the full path below.
+    incremental = only_new and (bool(already) or bool(existing_names))
     result = ExportResult(folder=dest)
+    # Members materialized in THIS folder after the run — seeds the
+    # manifest write at the end. Starts from the prior set so an
+    # incremental run accumulates rather than forgets.
+    present_members: set = set(already)
+
+    def _member_present(relpath: str) -> bool:
+        """Is this member already materialized in ``dest``? Manifest set
+        first, then a disk-name fallback so an old-build folder (no
+        manifest) is still recognised — its files are ``NNN_<name>``.
+        Used by ``only_new`` so we never re-link/overwrite an existing
+        (possibly locked) file."""
+        if relpath in already:
+            return True
+        nm = Path(relpath).name
+        return any(n == nm or n.endswith("_" + nm) for n in existing_names)
 
     overlay_fields = list(gateway.cut_overlay_fields(cut))
     iptc_writer = iptc_writer or _exiftool_iptc_writer
@@ -461,7 +564,10 @@ def export_cut(
             return provenance_resolver(relpath)
         return cut_overlay.FrameProvenance()
 
-    seq = 0
+    # Incremental runs continue numbering after the prior bundle's last
+    # sequence (from the manifest AND a disk scan) so new files append
+    # cleanly without renaming what PTE (or the user) already references.
+    seq = max_existing_seq if incremental else 0
     last_day: object = object()
     totals_photos = totals_seps = 0
     totals_video_ms = 0
@@ -470,7 +576,7 @@ def export_cut(
     # ``separators_on`` (which now controls per-day cards only) so a
     # Cut with separators off still gets its initial header — the
     # user's "Separators OFF should keep the title card" report.
-    if opener_writer is not None and files:
+    if opener_writer is not None and files and not incremental:
         seq += 1
         target_path = dest / f"{seq:03d}_opener.jpg"
         try:
@@ -481,7 +587,19 @@ def export_cut(
             log.exception("opener render failed for %s", target_path)
             seq -= 1
     for f in files:
-        if separators_on and f.day_number != last_day:
+        # spec/158 — Only-new-files never touches a member already in
+        # the folder (manifest OR on disk); it keeps the existing copy.
+        # Recording it in ``present_members`` keeps the manifest honest
+        # even when bootstrapping from an old-build (manifest-less)
+        # bundle.
+        if only_new and _member_present(f.export_relpath):
+            result.skipped += 1
+            present_members.add(f.export_relpath)
+            continue
+        # spec/158 — day-separator cards are part of the first full
+        # bundle; an incremental add appends media only (re-run
+        # Overwrite to refresh separators / opener / audio).
+        if separators_on and not incremental and f.day_number != last_day:
             last_day = f.day_number
             if separator_writer is not None:
                 seq += 1
@@ -508,6 +626,10 @@ def export_cut(
             result.linked += 1
         else:
             result.copied += 1
+        # spec/158 — this member is now materialized in the folder;
+        # record it so the manifest write below (and any later
+        # "Only new files" run) knows it's here.
+        present_members.add(f.export_relpath)
         if overlay_fields:
             prov = _provenance(f.export_relpath)
             if cut_overlay.needs_embedded_write(overlay_fields, prov):
@@ -544,34 +666,45 @@ def export_cut(
                 result.missing_originals.append(origin_rel)
 
     # spec/112 — soundtrack via the shared helper so the per-event and
-    # cross-event exporters build identical playlists.
-    result.audio_files, result.audio_short = write_audio_playlist(
-        dest=dest,
-        music_category=cut.music_category,
-        photo_count=totals_photos,
-        separator_count=totals_seps,
-        video_ms_total=totals_video_ms,
-        photo_s=cut.photo_s,
-        audio_root=audio_root,
-        audio_tracks=audio_tracks,
-        copy_mode=copy_mode,
-        rng=rng,
-        # spec/152 §3 — include the transition_ms + opener slot in the
-        # show total so the playlist runs to the same wall time PTE
-        # plays. The opener rides whenever an ``opener_writer`` was
-        # provided AND the Cut has files — decoupled from
-        # ``separators_on`` (which now controls per-day cards only).
-        transition_ms=transition_ms,
-        opener_count=1 if (opener_writer is not None and files) else 0,
-    )
+    # cross-event exporters build identical playlists. spec/158 — an
+    # incremental "Only new files" run leaves the prior playlist alone
+    # (its budget covered the first bundle); a full Overwrite refreshes
+    # it for the new total.
+    if not incremental:
+        result.audio_files, result.audio_short = write_audio_playlist(
+            dest=dest,
+            music_category=cut.music_category,
+            photo_count=totals_photos,
+            separator_count=totals_seps,
+            video_ms_total=totals_video_ms,
+            photo_s=cut.photo_s,
+            audio_root=audio_root,
+            audio_tracks=audio_tracks,
+            copy_mode=copy_mode,
+            rng=rng,
+            # spec/152 §3 — include the transition_ms + opener slot in
+            # the show total so the playlist runs to the same wall time
+            # PTE plays. The opener rides whenever an ``opener_writer``
+            # was provided AND the Cut has files — decoupled from
+            # ``separators_on`` (which now controls per-day cards only).
+            transition_ms=transition_ms,
+            opener_count=1 if (opener_writer is not None and files) else 0,
+        )
+
+    # spec/158 — refresh the sidecar manifest so a later "Only new
+    # files" run knows exactly what this folder now holds. Written for
+    # every mode: a full export records the whole bundle; an incremental
+    # run records the prior set plus the members it just appended.
+    _write_export_manifest(
+        dest, cut_id=cut.id, members=present_members, max_seq=seq)
 
     gateway.mark_cut_exported(cut.id)
     log.info(
         "export_cut %s -> %s (%d linked, %d copied, %d iptc, "
         "%d separators, %d audio, %d originals_linked, %d originals_copied, "
-        "%d missing, %d missing_originals)",
+        "%d skipped, %d missing, %d missing_originals)",
         cut.tag, dest, result.linked, result.copied,
         result.iptc_written, result.separators, result.audio_files,
         result.originals_linked, result.originals_copied,
-        len(result.missing), len(result.missing_originals))
+        result.skipped, len(result.missing), len(result.missing_originals))
     return result

@@ -45,7 +45,11 @@ def _sep_writer(target: Path, day) -> None:
 
 
 def _names(folder: Path) -> list:
-    return sorted(p.name for p in folder.iterdir() if p.is_file())
+    # Ignore dotfiles (the spec/158 ``.mira-cut-export.json`` sidecar
+    # manifest) — only the show files carry sequence-name meaning.
+    return sorted(
+        p.name for p in folder.iterdir()
+        if p.is_file() and not p.name.startswith("."))
 
 
 def test_export_sequence_names_with_opener_and_separators(gw, tmp_path):

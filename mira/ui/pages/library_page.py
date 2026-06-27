@@ -734,6 +734,10 @@ class LibraryPage(QWidget):
             tag_display=cut_names.display_tag(cut_row.tag),
             event_root=None,
             default_overwrite=default_overwrite,
+            # spec/158 — "Only new files" is a per-event feature; the
+            # cross-event exporter doesn't support it yet, so hide the
+            # radio here rather than offer a no-op.
+            allow_only_new=False,
             parent=self,
         )
         from PyQt6.QtWidgets import QDialog

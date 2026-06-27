@@ -279,6 +279,11 @@ class ExportChoices:
     include_originals: bool = False
     copy_mode: bool = False
     overwrite_existing: bool = False
+    # spec/158 — "Only new files": additive re-export into the same
+    # folder, writing just the Cut members not already materialized
+    # there (per the folder's sidecar manifest). Mutually exclusive
+    # with ``overwrite_existing`` — both come off one radio group.
+    only_new: bool = False
 
 
 class _ExportTargetDialog(QDialog):
@@ -297,9 +302,16 @@ class _ExportTargetDialog(QDialog):
         tag_display: str,
         event_root: Optional[Path] = None,
         default_overwrite: bool = False,
+        allow_only_new: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        # spec/158 — the "Only new files" additive re-export is wired
+        # only through the per-event :func:`mira.shared.cut_export`
+        # path; the cross-event exporter doesn't support it yet, so its
+        # caller passes ``allow_only_new=False`` to hide the radio
+        # rather than offer a silent no-op.
+        self._allow_only_new = bool(allow_only_new)
         self.setWindowTitle(tr("Export Cut"))
         self.setModal(True)
         self.setMinimumWidth(520)
@@ -372,6 +384,19 @@ class _ExportTargetDialog(QDialog):
             "Write the new bundle alongside the prior one (folder name "
             "gets a (2), (3), … suffix). The previous export is left "
             "untouched."))
+        # spec/158 — additive re-export: write only the Cut's files that
+        # aren't already in this folder (tracked by the folder's export
+        # manifest), leaving existing files — and any PTE project you've
+        # built on them — untouched. The title slide, day separators and
+        # audio playlist come from the first full export.
+        self._only_new_radio = QRadioButton(
+            tr("Only new files — add files not yet exported here"))
+        self._only_new_radio.setToolTip(tr(
+            "Add just the Cut members that haven't been exported to this "
+            "folder yet. Existing files (and your PTE project) are left "
+            "untouched. Day separators, the title slide and the audio "
+            "playlist come from the first full export — re-run Overwrite "
+            "to refresh those."))
         self._collision_group = QButtonGroup(self)
         self._collision_group.addButton(self._overwrite_radio)
         self._collision_group.addButton(self._keep_both_radio)
@@ -381,6 +406,9 @@ class _ExportTargetDialog(QDialog):
             self._keep_both_radio.setChecked(True)
         cbox.addWidget(self._overwrite_radio)
         cbox.addWidget(self._keep_both_radio)
+        if self._allow_only_new:
+            self._collision_group.addButton(self._only_new_radio)
+            cbox.addWidget(self._only_new_radio)
         box.addWidget(collision)
 
         # spec/105 §3+§5 — the two export options.
@@ -492,6 +520,11 @@ class _ExportTargetDialog(QDialog):
         the prior bundle; False = the historical ``_fresh_folder``
         disambiguation."""
         return self._overwrite_radio.isChecked()
+
+    def only_new(self) -> bool:
+        """spec/158 — Only-new-files additive re-export selected. Always
+        False when the radio is suppressed (``allow_only_new=False``)."""
+        return self._allow_only_new and self._only_new_radio.isChecked()
 
 
 # ── share-state identity header (spec/71) ────────────────────────────
@@ -2275,7 +2308,6 @@ class ShareCutsPage(QWidget):
         exported folder using the files already there. No media is
         re-materialised. Hidden upstream when ``use_pte`` is off or the
         folder is gone, so the handler trusts the call site."""
-        from PyQt6.QtGui import QGuiApplication
         cut = self._eg.cut(cut_id) if self._eg else None
         if cut is None:
             return
@@ -2284,10 +2316,25 @@ class ShareCutsPage(QWidget):
             log.warning(
                 "Generate PTE: bundle folder missing for %s", cut.tag)
             return
+        self._generate_pte_for_folder(cut, loc.folder)
+
+    def _generate_pte_for_folder(self, cut, folder: Path) -> None:
+        """spec/158 — the shared "write the project into ``folder``" flow
+        used by the detail-page Generate PTE button AND the export
+        summary's Create PTE project button. ALWAYS asks before
+        replacing an existing ``.pte`` (cancel leaves it intact), then
+        writes + shows a summary with Open buttons."""
+        from PyQt6.QtGui import QGuiApplication
+        pte_path = self._pte_project_path(cut, folder)
+        if pte_path.exists() and not self._confirm_pte_overwrite(pte_path):
+            return
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            pte_file = self._generate_pte_into_resolved_folder(
-                cut, loc.folder)
+            pte_file = self._generate_pte_into_folder(
+                cut, folder, overwrite=True)
+        except Exception:                                          # noqa: BLE001
+            log.exception("PTE generation failed for cut %s", cut.tag)
+            pte_file = None
         finally:
             QGuiApplication.restoreOverrideCursor()
         box = QMessageBox(self)
@@ -2301,11 +2348,38 @@ class ShareCutsPage(QWidget):
         else:
             box.setText(tr(
                 "Wrote {file}.").replace("{file}", str(pte_file)))
-            self._add_open_buttons(box, loc.folder, pte_file)
+            self._add_open_buttons(box, folder, pte_file)
         box.exec()
         # Refresh the detail page so Open in PTE flips on (a fresh
         # .pte may unlock the launcher button).
         self._sync_exported_actions(cut)
+
+    def _pte_project_path(self, cut, folder: Path) -> Path:
+        """spec/158 — the canonical ``.pte`` path Mira writes for ``cut``
+        in ``folder``. Mirrors the stem logic in
+        :meth:`_generate_pte_into_folder` (``cut.tag`` → ``slideshow``)
+        so the overwrite check looks at the file generation would write."""
+        stem = (getattr(cut, "tag", None) or "").strip() or "slideshow"
+        return Path(folder) / f"{stem}.pte"
+
+    def _confirm_pte_overwrite(self, pte_path: Path) -> bool:
+        """spec/158 — ask before replacing an existing ``.pte``. The user
+        may have spent hours editing it in PTE, so a regenerate must
+        never silently clobber it. True = overwrite, False = leave it."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("Overwrite PTE project?"))
+        box.setText(tr(
+            "A PTE project already exists:\n{file}\n\nOverwrite it? "
+            "Any changes you made in PTE will be lost.").replace(
+                "{file}", str(pte_path)))
+        overwrite_btn = box.addButton(
+            tr("Overwrite"), QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(
+            tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is overwrite_btn
 
     def _generate_pte_into_resolved_folder(
         self, cut, folder: Path,
@@ -2313,7 +2387,11 @@ class ShareCutsPage(QWidget):
         """Wrap :meth:`_generate_pte_into_folder` with the spec/149
         contract: always overwrite (the standalone caller wants the
         canonical ``<stem>.pte`` filename, not a ``(2)`` sibling).
-        Returns the path written, or ``None`` on failure / no media."""
+        Returns the path written, or ``None`` on failure / no media.
+
+        spec/158 — callers that could clobber a hand-edited project
+        (the Generate PTE button, the export-summary "Create PTE
+        project") gate this behind :meth:`_confirm_pte_overwrite`."""
         try:
             return self._generate_pte_into_folder(
                 cut, folder, overwrite=True)
@@ -2535,6 +2613,7 @@ class ShareCutsPage(QWidget):
             include_originals=dlg.include_originals(),
             copy_mode=dlg.copy_mode(),
             overwrite_existing=dlg.overwrite_existing(),
+            only_new=dlg.only_new(),
         )
 
     def _is_non_empty_folder(self, target: Path) -> bool:
@@ -2757,6 +2836,7 @@ class ShareCutsPage(QWidget):
                 include_originals=choices.include_originals,
                 copy_mode=choices.copy_mode,
                 overwrite_existing=choices.overwrite_existing,
+                only_new=choices.only_new,
                 # spec/152 §3 — per-Cut transition value (falls back
                 # to Settings.default_transition_ms when the Cut has
                 # none) so the audio playlist matches the show length.
@@ -2765,11 +2845,15 @@ class ShareCutsPage(QWidget):
         except Exception:  # noqa: BLE001 — disk-level surprises surface honestly
             log.exception("export failed for cut %s", cut_id)
             QGuiApplication.restoreOverrideCursor()
+            import traceback as _tb
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.NoIcon)
             box.setWindowTitle(tr("Export Cut"))
             box.setText(tr("The export failed — see the log for details. "
                            "Nothing in your library was touched."))
+            # Surface the traceback inline (Show Details…) so the cause is
+            # one click away without hunting for the log file.
+            box.setDetailedText(_tb.format_exc())
             box.exec()
             return
         QGuiApplication.restoreOverrideCursor()
@@ -2793,6 +2877,11 @@ class ShareCutsPage(QWidget):
                 .replace("{linked}", str(result.originals_linked))
                 .replace("{copied}", str(result.originals_copied)))
         lines.append(" · ".join(bits))
+        # spec/158 — Only-new-files: report how many were already here.
+        if result.skipped:
+            lines.append(tr(
+                "{n} file(s) were already exported to this folder and "
+                "were skipped.").replace("{n}", str(result.skipped)))
         if result.missing:
             lines.append(tr(
                 "{n} member file(s) were missing on disk and were "
@@ -2807,48 +2896,22 @@ class ShareCutsPage(QWidget):
                 "The '{cat}' music folder is shorter than the show — add "
                 "more songs or pick another folder.").replace(
                 "{cat}", str(cut.music_category)))
-        # spec/107 — generate slideshow.pte when "I use PTE" is on. Best
-        # effort: a generator failure logs but never blocks the export
-        # summary the user came here for. spec/148 — pass the radio
-        # choice through so Overwrite writes ``<stem>.pte`` (not
-        # ``<stem> (2).pte``) when the prior project has been wiped.
-        pte_file = self._generate_pte_if_enabled(
-            cut, result.folder,
-            overwrite=choices.overwrite_existing)
-
+        # spec/158 (Nelson 2026-06-27) — the export NEVER writes the
+        # ``.pte``. Auto-generating it on every export silently
+        # (re)wrote the project file, and a bug once OVERWROTE a
+        # hand-edited project. The slideshow project is now written
+        # ONLY when the user explicitly asks via "Create PTE project"
+        # (here) or the detail page's "Generate PTE" / "Open in PTE" —
+        # and those prompt before overwriting an existing ``.pte``.
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.NoIcon)
         box.setWindowTitle(tr("Export Cut"))
         box.setText("\n".join(lines))
-        self._add_open_buttons(box, result.folder, pte_file)
+        self._add_open_buttons(box, result.folder, None, cut=cut)
         box.exec()
         self.refresh()
 
     # ── spec/107 helpers ────────────────────────────────────────────
-
-    def _generate_pte_if_enabled(
-        self, cut, folder: Path, *, overwrite: bool = False,
-    ) -> Optional[Path]:
-        """When the "I use PTE" toggle is on, build the slideshow's
-        member list + audio tracks from the just-exported folder and
-        write ``slideshow.pte`` into it via :mod:`pte_project`.
-
-        Returns the written path (for the Open-in-PTE button), or
-        ``None`` when generation didn't run (toggle off) or failed
-        (logged; the export-complete summary still shows). spec/148 —
-        ``overwrite=True`` mirrors the cut-export choice so the PTE
-        file lands at ``<stem>.pte`` rather than the disambiguated
-        ``<stem> (2).pte`` (a stale PTE in the Overwrite folder has
-        already been wiped by the exporter)."""
-        settings = self._settings()
-        if not getattr(settings, "use_pte", False):
-            return None
-        try:
-            return self._generate_pte_into_folder(
-                cut, folder, overwrite=overwrite)
-        except Exception:  # noqa: BLE001
-            log.exception("PTE generation failed for cut %s", cut.tag)
-            return None
 
     def _generate_pte_into_folder(
         self, cut, folder: Path, *, overwrite: bool = False,
@@ -3251,16 +3314,25 @@ class ShareCutsPage(QWidget):
         return 0
 
     def _add_open_buttons(self, box, folder: Path,
-                          pte_file: Optional[Path]) -> None:
-        """Add "Open folder" (always) + "Open in PTE" (when the toggle
-        is on, the executable resolves, and we generated a project)
-        buttons to ``box``. The buttons are wired to spawn from
-        :mod:`pte_launch` so this method stays Qt-shaped only."""
-        from PyQt6.QtWidgets import QMessageBox, QPushButton
+                          pte_file: Optional[Path], *, cut=None) -> None:
+        """Add "Open folder" (always) + a PTE button to ``box``.
+
+        * When a project was just written (``pte_file`` set) and the
+          launcher resolves → **Open in PTE**.
+        * spec/158 — otherwise, when ``use_pte`` is on and a ``cut`` is
+          supplied (the export summary), → **Create PTE project**, which
+          writes the ``.pte`` ON DEMAND (asking before overwriting an
+          existing one). The export itself no longer writes the project,
+          so this is the explicit, opt-in way to get one.
+
+        Stays Qt-shaped only; launches spawn from :mod:`pte_launch`."""
+        from PyQt6.QtWidgets import QMessageBox
         from mira.shared.pte_launch import (
             open_in_pte, pte_launch_available, reveal_in_explorer,
         )
         settings = self._settings()
+        use_pte = bool(getattr(settings, "use_pte", False))
+        launcher_ok = pte_launch_available(getattr(settings, "pte_path", ""))
         open_folder_btn = box.addButton(
             tr("Open folder"), QMessageBox.ButtonRole.ActionRole)
 
@@ -3271,9 +3343,7 @@ class ShareCutsPage(QWidget):
                 log.warning("reveal_in_explorer failed: %s", exc)
 
         open_folder_btn.clicked.connect(_open_folder)
-        if (getattr(settings, "use_pte", False)
-                and pte_file is not None
-                and pte_launch_available(getattr(settings, "pte_path", ""))):
+        if use_pte and pte_file is not None and launcher_ok:
             pte_btn = box.addButton(
                 tr("Open in PTE"), QMessageBox.ButtonRole.ActionRole)
 
@@ -3283,6 +3353,13 @@ class ShareCutsPage(QWidget):
                 except OSError as exc:
                     log.warning("open_in_pte failed: %s", exc)
             pte_btn.clicked.connect(_open_pte)
+        elif use_pte and pte_file is None and cut is not None:
+            # spec/158 — explicit, opt-in PTE creation from the export
+            # summary (export no longer auto-writes the project).
+            make_btn = box.addButton(
+                tr("Create PTE project"), QMessageBox.ButtonRole.ActionRole)
+            make_btn.clicked.connect(
+                lambda: self._generate_pte_for_folder(cut, folder))
         box.addButton(QMessageBox.StandardButton.Ok)
 
     def _on_rename_cut(self, cut_id: str) -> None:

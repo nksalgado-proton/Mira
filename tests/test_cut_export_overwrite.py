@@ -59,7 +59,10 @@ def gw(tmp_path):
 
 
 def _names(folder: Path) -> list:
-    return sorted(p.name for p in folder.iterdir() if p.is_file())
+    # Ignore the spec/158 ``.mira-cut-export.json`` sidecar manifest.
+    return sorted(
+        p.name for p in folder.iterdir()
+        if p.is_file() and not p.name.startswith("."))
 
 
 def test_overwrite_writes_into_base_not_2(gw, tmp_path):
@@ -133,6 +136,80 @@ def test_overwrite_on_fresh_target_just_writes_there(gw, tmp_path):
     assert result.folder == target
     assert _names(result.folder) == [
         "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4"]
+
+
+def test_only_new_appends_unexported_members(gw, tmp_path):
+    """spec/158 — "Only new files" adds just the members not already in
+    the folder (per its sidecar manifest), leaving the prior bundle
+    untouched and continuing the sequence numbering. A re-run with no
+    further changes is a pure no-op."""
+    cut = gw.cut("cut-s")
+    first = export_cut(gw, cut, event_root=tmp_path, separators_on=False)
+    folder = first.folder
+    assert _names(folder) == ["001_e1.jpg", "002_e3a.jpg", "003_v1.mp4"]
+
+    # Grow the Cut with a member that was never exported here.
+    gw.set_cut_members("cut-s", MEMBERS + ["Exported Media/e2.jpg"])
+    second = export_cut(
+        gw, gw.cut("cut-s"), event_root=tmp_path, separators_on=False,
+        only_new=True)
+    assert second.folder == folder                 # same folder, additive
+    assert second.skipped == 3                      # e1/e3a/v1 already here
+    assert second.linked + second.copied == 1       # only e2 written
+    assert _names(folder) == [
+        "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4", "004_e2.jpg"]
+
+    # No further changes → every member is already present.
+    third = export_cut(
+        gw, gw.cut("cut-s"), event_root=tmp_path, separators_on=False,
+        only_new=True)
+    assert third.skipped == 4
+    assert third.linked + third.copied == 0
+    assert _names(folder) == [
+        "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4", "004_e2.jpg"]
+
+
+def test_only_new_on_fresh_folder_writes_everything(gw, tmp_path):
+    """spec/158 — "Only new files" with no prior manifest (folder never
+    exported / deleted) degenerates to a full export: every member is
+    new, nothing skipped."""
+    cut = gw.cut("cut-s")
+    result = export_cut(
+        gw, cut, event_root=tmp_path, separators_on=False, only_new=True)
+    assert result.skipped == 0
+    assert _names(result.folder) == [
+        "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4"]
+
+
+def test_only_new_skips_existing_files_without_manifest(gw, tmp_path):
+    """spec/158 regression — an OLD-build export folder has no manifest.
+    "Only new files" must recognise the files already on disk (by their
+    ``NNN_<name>`` names) and SKIP them rather than try to re-link /
+    overwrite — the latter raised WinError 32 ('file in use') when a
+    member was open in PTE. Only genuinely-new members are written."""
+    cut = gw.cut("cut-s")
+    folder = tmp_path / "Cuts" / "short_version"
+    folder.mkdir(parents=True)
+    # Simulate a prior (manifest-less) export: the show files are here,
+    # named with the sequence prefix, but NO .mira-cut-export.json.
+    (folder / "001_e1.jpg").write_bytes(b"OLD1")
+    (folder / "002_e3a.jpg").write_bytes(b"OLD2")
+    (folder / "003_v1.mp4").write_bytes(b"OLD3")
+    assert not (folder / ".mira-cut-export.json").exists()
+
+    # Grow the Cut with a member that was never exported here.
+    gw.set_cut_members("cut-s", MEMBERS + ["Exported Media/e2.jpg"])
+    result = export_cut(
+        gw, gw.cut("cut-s"), event_root=tmp_path, target=folder,
+        separators_on=False, only_new=True)
+
+    # The three pre-existing files are skipped (never re-written); only
+    # e2 is added, numbered AFTER the highest existing sequence (003).
+    assert result.skipped == 3
+    assert result.linked + result.copied == 1
+    assert (folder / "001_e1.jpg").read_bytes() == b"OLD1"   # untouched
+    assert _names(folder) == [
+        "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4", "004_e2.jpg"]
 
 
 def test_overwrite_pte_carries_base_paths_no_2(tmp_path):

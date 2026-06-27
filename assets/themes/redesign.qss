@@ -780,6 +780,7 @@ QLabel#ReadOnlyBannerLabel {
  * (Nelson 2026-06-11: dropdown height = button height, everywhere on
  * the surface — the slim base rule made them read shorter). */
 QComboBox#ProcessStyleCombo, QComboBox#ProcessFilterCombo,
+QComboBox#ProcessFilterStrengthCombo,
 QComboBox#ProcessAspectCombo {
     padding: 6px 16px;
     min-height: 22px;
@@ -1917,6 +1918,7 @@ QPushButton#Primary[dense="true"] {
 QComboBox[dense="true"],
 QComboBox#ProcessStyleCombo[dense="true"],
 QComboBox#ProcessFilterCombo[dense="true"],
+QComboBox#ProcessFilterStrengthCombo[dense="true"],
 QComboBox#ProcessAspectCombo[dense="true"],
 QComboBox#VideoSpeed[dense="true"] {
     padding: 1px 6px;

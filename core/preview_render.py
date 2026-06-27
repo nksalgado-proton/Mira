@@ -77,6 +77,7 @@ def develop_photo_array(
         from core.photo_auto import (
             compute_auto_params,
             creative_filter_amount,
+            filter_strength_scale,
             look_params_from_natural,
             resolve_filter_recipe,
         )
@@ -119,6 +120,7 @@ def develop_photo_array(
         getattr(adjustment, "style", None) or style_fallback)
     creative_filter = getattr(adjustment, "creative_filter", None)
     look_strength = float(getattr(adjustment, "look_strength", 1.0) or 1.0)
+    filter_strength = float(getattr(adjustment, "filter_strength", 0.0) or 0.0)
     rotation = int(getattr(adjustment, "rotation", 0) or 0)
     crop = None
     if all(getattr(adjustment, k, None) is not None
@@ -147,7 +149,8 @@ def develop_photo_array(
                 center = _af_center_for(source_path)
                 out = apply_filter(
                     out, FilterRecipe.from_dict(recipe),
-                    creative_filter_amount(creative_filter),
+                    creative_filter_amount(creative_filter)
+                    * filter_strength_scale(filter_strength),
                     center=center)
         if crop is not None:
             if box_angle:

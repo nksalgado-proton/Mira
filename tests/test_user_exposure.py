@@ -224,6 +224,62 @@ def test_user_exposure_round_trips_via_dataclass(tmp_path):
         store.close()
 
 
+def test_filter_strength_persists_default_and_round_trips(tmp_path):
+    """spec/156 — ``filter_strength`` defaults to 0.0 on both adjustment
+    tables (fresh DDL) and round-trips through the generic repo."""
+    store = _make_event_store(tmp_path)
+    try:
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO adjustment (item_id) VALUES ('it1')")
+            conn.execute(
+                "INSERT INTO video_adjustment (item_id) VALUES ('it1')")
+            for table in ("adjustment", "video_adjustment"):
+                row = conn.execute(
+                    f"SELECT filter_strength FROM {table} "
+                    "WHERE item_id = 'it1'").fetchone()
+                assert row["filter_strength"] == 0.0
+        # Dataclass round-trip on both.
+        store.upsert(Adjustment(item_id="it1", filter_strength=2.0))
+        assert store.get(Adjustment, "it1").filter_strength == pytest.approx(2.0)
+        store.upsert(m.VideoAdjustment(item_id="it1", filter_strength=-2.0))
+        assert store.get(
+            m.VideoAdjustment, "it1").filter_strength == pytest.approx(-2.0)
+    finally:
+        store.close()
+
+
+def test_surface_filter_strength_round_trips_and_gates_on_filter(qapp):
+    """spec/156 — the surface holds the strength, round-trips it through
+    get/set_state, reflects it on the dropdown, and greys the dropdown
+    when no filter is chosen (nothing to scale)."""
+    s = _surface()
+    s.set_state(
+        look="natural", crop_norm=None, box_angle=0.0, style="general",
+        aspect_label="Original", creative_filter="vivid",
+        filter_strength=-1.0)
+    assert s.get_state().filter_strength == pytest.approx(-1.0)
+    assert s._filter_strength_combo.currentData() == pytest.approx(-1.0)
+    assert s._filter_strength_combo.isEnabled()
+    # No filter → the strength control disables.
+    s.set_state(
+        look="natural", crop_norm=None, box_angle=0.0, style="general",
+        aspect_label="Original", creative_filter=None, filter_strength=0.0)
+    assert not s._filter_strength_combo.isEnabled()
+
+
+def test_filter_strength_check_constraint_on_fresh_install(tmp_path):
+    """Fresh DDL carries CHECK (filter_strength BETWEEN -2 AND 2)."""
+    store = _make_event_store(tmp_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            with store.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO adjustment (item_id, filter_strength) "
+                    "VALUES ('it1', 3.0)")
+    finally:
+        store.close()
+
+
 def test_user_exposure_check_constraint_on_fresh_install(tmp_path):
     """Fresh DDL carries CHECK (user_exposure BETWEEN -2 AND 2). A
     fresh install rejects out-of-range values; the gateway seam's
@@ -262,6 +318,11 @@ def test_migration_v15_to_v16_adds_user_exposure(tmp_path):
             # spec/152 v19→v20 — strip cut.transition_ms so the ADD on
             # the way back up doesn't collide.
             conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
+            # spec/156 v20→v21 — strip filter_strength from both
+            # adjustment tables so the ADD COLUMN steps don't collide.
+            conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+            conn.execute(
+                "ALTER TABLE video_adjustment DROP COLUMN filter_strength")
             conn.execute(
                 "UPDATE schema_info SET schema_version = 15 WHERE id = 1")
 

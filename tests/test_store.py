@@ -491,6 +491,10 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     # spec/115 — strip the v16 user_exposure column so the v15→v16
     # ADD COLUMN doesn't collide on the way back up.
     conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
+    # spec/156 v20→v21 — strip filter_strength from both adjustment
+    # tables so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
     # Reverse the v5→v6 event qualifier swap so v5→v6 finds the v5
     # shape it expects (spec/64). The fresh store ships at the current
     # SCHEMA_VERSION; rolling back to v2 means restoring scope / mood /
@@ -585,6 +589,10 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     # spec/115 — strip v15→v16 adjustment.user_exposure too so the
     # ADD COLUMN on the way back up doesn't collide.
     conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
+    # spec/156 v20→v21 — strip filter_strength from both adjustment
+    # tables so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
     # spec/123 v16→v17 — rename the *_seconds columns back to *_minutes
     # so the rename + ×60 migration has the v16 shape to work with.
     conn.execute(
@@ -783,6 +791,10 @@ def test_migrate_v16_to_v17_renames_and_scales_minute_columns(tmp_path):
     # spec/152 v19→v20 — strip cut.transition_ms so the ADD on the way
     # back up doesn't collide.
     conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
+    # spec/156 v20→v21 — strip filter_strength from both adjustment
+    # tables so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
     conn.execute(
         "INSERT INTO camera (camera_id, applied_offset_minutes, "
         "configured_tz_minutes) VALUES "

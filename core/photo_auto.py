@@ -403,6 +403,36 @@ def creative_filter_amount(key: Optional[str]) -> float:
     return _trim_multiplier(f"filter_scale_{key}")
 
 
+#: spec/156 — the per-image creative-filter STRENGTH graduation. A −2..+2
+#: dropdown in the Edit filter group lets the user dial a filter's effect
+#: up or down; today's shipped recipe is the **+2 (maximum)** look. The
+#: default is **0 (medium)**, which lands at ~70 % of the full effect so
+#: the filters (which read a touch strong at full) sit gentler out of the
+#: box. The scale never reaches 0 — even −2 keeps the filter present
+#: (~40 %) — so a selected filter always does something.
+FILTER_STRENGTH_MIN = -2.0
+FILTER_STRENGTH_MAX = 2.0
+FILTER_STRENGTH_DEFAULT = 0.0
+
+
+def filter_strength_scale(strength: float) -> float:
+    """Map a −2..+2 filter-strength step to the multiplier applied on top
+    of :func:`creative_filter_amount` (so the final ``apply_filter``
+    amount is ``creative_filter_amount(key) * filter_strength_scale(s)``).
+
+    Gentle linear curve (Nelson 2026-06-27): ``+2 → 1.00`` (today's full
+    recipe), ``0 → 0.70``, ``−2 → 0.40``. Out-of-range values clamp to the
+    stops. This is the single source of truth for the graduation — retune
+    here and every render path (preview, F10 lens, photo/batch export,
+    video export) follows."""
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        s = FILTER_STRENGTH_DEFAULT
+    s = max(FILTER_STRENGTH_MIN, min(FILTER_STRENGTH_MAX, s))
+    return 0.7 + 0.15 * s
+
+
 def available_filters() -> tuple[str, ...]:
     """The creative-filter keys in display order (spec/55, the locked
     nine). ``None``/no-filter is the chooser's first option but not a

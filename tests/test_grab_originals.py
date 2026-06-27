@@ -155,6 +155,10 @@ CREATE TABLE cut_member (
     # spec/115 added v15→v16 adjustment.user_exposure; strip so the
     # ALTER ADD on the way back up doesn't collide.
     conn.execute("ALTER TABLE adjustment DROP COLUMN user_exposure")
+    # spec/156 v20→v21 — strip filter_strength from both adjustment
+    # tables so the ADD COLUMN steps on the way back up don't collide.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
     # spec/123 v16→v17 — rename *_seconds back to *_minutes so the
     # rename + ×60 step succeeds on the way back up.
     conn.execute(

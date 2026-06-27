@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -433,6 +433,12 @@ CREATE TABLE adjustment (
   -- recovery in either direction; the slider's double-click resets to 0.
   user_exposure REAL NOT NULL DEFAULT 0.0
                 CHECK (user_exposure >= -2 AND user_exposure <= 2),
+  -- spec/156 — per-image creative-filter STRENGTH (−2..+2 graduation in
+  -- the Edit filter group). Scales the filter's blend amount: +2 = the
+  -- shipped recipe, 0 (default) ≈ 70 %, −2 ≈ 40 %. Inert when
+  -- ``creative_filter`` is NULL.
+  filter_strength REAL NOT NULL DEFAULT 0.0
+                CHECK (filter_strength >= -2 AND filter_strength <= 2),
   edit_exported INTEGER NOT NULL DEFAULT 0 CHECK (edit_exported IN (0,1)),
   CHECK ( (crop_x IS NULL) = (crop_y IS NULL)
       AND (crop_x IS NULL) = (crop_w IS NULL)
@@ -464,6 +470,10 @@ CREATE TABLE video_adjustment (
   audio_fade_ms       INTEGER NOT NULL DEFAULT 0 CHECK (audio_fade_ms >= 0),
   speed               REAL NOT NULL DEFAULT 1.0 CHECK (speed > 0),
   stabilise           REAL NOT NULL DEFAULT 0 CHECK (stabilise >= 0 AND stabilise <= 1),
+  -- spec/156 — per-segment creative-filter STRENGTH (−2..+2), the video
+  -- twin of ``adjustment.filter_strength``.
+  filter_strength     REAL NOT NULL DEFAULT 0.0
+                      CHECK (filter_strength >= -2 AND filter_strength <= 2),
   CHECK ( (crop_x IS NULL) = (crop_y IS NULL)
       AND (crop_x IS NULL) = (crop_w IS NULL)
       AND (crop_x IS NULL) = (crop_h IS NULL) )
@@ -1531,6 +1541,25 @@ def _migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
+    """spec/156 — per-image creative-filter STRENGTH.
+
+    Adds ``filter_strength`` to both ``adjustment`` (photos) and
+    ``video_adjustment`` (segments): the −2..+2 graduation the Edit
+    filter group exposes. Existing rows default to 0.0 (medium ≈ 70 %),
+    so a re-export of an already-filtered photo dials the effect back a
+    touch from the previous full-strength bake — the deliberate
+    spec/156 behaviour (filters read a little strong at full)."""
+    conn.execute(
+        "ALTER TABLE adjustment ADD COLUMN filter_strength REAL NOT NULL "
+        "DEFAULT 0.0 CHECK (filter_strength >= -2 AND filter_strength <= 2)"
+    )
+    conn.execute(
+        "ALTER TABLE video_adjustment ADD COLUMN filter_strength REAL NOT NULL "
+        "DEFAULT 0.0 CHECK (filter_strength >= -2 AND filter_strength <= 2)"
+    )
+
+
 def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
     """spec/144 — record the clip-segment's TRUE on-disk duration on the
     lineage row.
@@ -1572,6 +1601,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v17_to_v18,
     _migrate_v18_to_v19,
     _migrate_v19_to_v20,
+    _migrate_v20_to_v21,
 ]
 
 

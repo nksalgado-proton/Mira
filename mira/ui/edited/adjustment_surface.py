@@ -59,10 +59,12 @@ from PyQt6.QtWidgets import (
 
 from core.aspect_ratio import get_aspect_ratio, transpose_label
 from core.photo_auto import (
+    FILTER_STRENGTH_DEFAULT,
     available_filters,
     available_looks,
     compute_auto_params,
     creative_filter_amount,
+    filter_strength_scale,
     look_params_from_natural,
     resolve_filter_recipe,
 )
@@ -163,6 +165,10 @@ class SurfaceState(NamedTuple):
     # ``Params.exposure`` AFTER the Look's strength scaling. Default
     # 0.0 = no nudge. Range −2..+2 stops, clamped on read.
     user_exposure: float = 0.0
+    # spec/156 — per-image creative-filter STRENGTH (−2..+2). Scales the
+    # filter's blend amount: +2 = the shipped recipe, 0 (default) ≈ 70 %,
+    # −2 ≈ 40 %. Inert when ``creative_filter`` is None.
+    filter_strength: float = 0.0
 
 
 class AdjustmentSurface(QWidget):
@@ -212,6 +218,9 @@ class AdjustmentSurface(QWidget):
         # the Look. 0.0 = no nudge, ±2 EV swing covers a one-stop
         # recovery in either direction.
         self._user_exposure = 0.0
+        # spec/156 — per-image creative-filter STRENGTH (−2..+2 step). The
+        # dropdown lives under the filter combo in the Filter group.
+        self._filter_strength = FILTER_STRENGTH_DEFAULT
         # spec/116 §2 — the photo's AF point (the Subject Spotlight's
         # subject anchor) in normalised image coords. ``None`` falls
         # back to the frame centre at render time. The host pushes it
@@ -671,6 +680,30 @@ class AdjustmentSurface(QWidget):
         self._filter_combo.currentIndexChanged.connect(
             self._on_filter_changed)
         col.addWidget(self._filter_combo)
+        # spec/156 — filter STRENGTH graduation, directly below the filter
+        # in the same group. +2 = the filter's full effect (today's
+        # recipe); 0 (default) eases it to ~70 %; −2 ≈ 40 %. Disabled
+        # while no filter is chosen (nothing to scale).
+        self._filter_strength_combo = QComboBox()
+        self._filter_strength_combo.setObjectName("ProcessFilterStrengthCombo")
+        self._filter_strength_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._filter_strength_combo.setCursor(
+            QCursor(Qt.CursorShape.PointingHandCursor))
+        for value, label in (
+            (-2.0, tr("Strength −2 (subtle)")),
+            (-1.0, tr("Strength −1")),
+            (0.0, tr("Strength 0 (medium)")),
+            (1.0, tr("Strength +1")),
+            (2.0, tr("Strength +2 (full)")),
+        ):
+            self._filter_strength_combo.addItem(label, value)
+        self._filter_strength_combo.setToolTip(tr(
+            "How strongly the chosen filter is applied. +2 is the filter's "
+            "full effect; 0 (the default) eases it back to about 70 %."))
+        self._filter_strength_combo.currentIndexChanged.connect(
+            self._on_filter_strength_changed)
+        col.addWidget(self._filter_strength_combo)
+        self._sync_filter_strength_combo()
         col.addStretch(1)
         box.setMinimumHeight(box.minimumSizeHint().height())
         self._filter_box = box
@@ -865,6 +898,7 @@ class AdjustmentSurface(QWidget):
         creative_filter: Optional[str] = None,
         look_strength: float = 1.0,
         user_exposure: float = 0.0,
+        filter_strength: float = 0.0,
     ) -> None:
         """Push a saved CHOICE into the widgets (no ``changed`` emitted)
         and render. ``rotation`` carries the per-item 90° image rotation
@@ -892,10 +926,13 @@ class AdjustmentSurface(QWidget):
             self._look_strength = max(0.0, min(2.0, float(look_strength)))
             self._user_exposure = max(
                 -2.0, min(2.0, float(user_exposure or 0.0)))
+            self._filter_strength = max(
+                -2.0, min(2.0, float(filter_strength or 0.0)))
             self._sync_look_buttons()
             self._sync_strength_widgets()
             self._sync_exposure_widgets()
             self._sync_filter_combo()
+            self._sync_filter_strength_combo()
             self._crop_norm = crop_norm
             self._box_angle = box_angle or 0.0
             self.set_rotation(rotation)
@@ -923,6 +960,7 @@ class AdjustmentSurface(QWidget):
             creative_filter=self._creative_filter,
             look_strength=self._look_strength,
             user_exposure=self._user_exposure,
+            filter_strength=self._filter_strength,
         )
 
     def set_af_point(self, af) -> None:
@@ -1061,7 +1099,8 @@ class AdjustmentSurface(QWidget):
                         if recipe is not None:
                             out = apply_filter(
                                 out, FilterRecipe.from_dict(recipe),
-                                creative_filter_amount(self._creative_filter),
+                                creative_filter_amount(self._creative_filter)
+                                * filter_strength_scale(self._filter_strength),
                                 center=self._spotlight_center())
                     except Exception:                      # noqa: BLE001
                         log.exception("apply_filter failed")
@@ -1110,7 +1149,8 @@ class AdjustmentSurface(QWidget):
                 if recipe is not None:
                     out = apply_filter(
                         out, FilterRecipe.from_dict(recipe),
-                        creative_filter_amount(self._creative_filter),
+                        creative_filter_amount(self._creative_filter)
+                        * filter_strength_scale(self._filter_strength),
                         center=self._spotlight_center())
             except Exception:                          # noqa: BLE001
                 log.exception("apply_filter failed")
@@ -1185,6 +1225,7 @@ class AdjustmentSurface(QWidget):
             int(self._rotation or 0),
             self._look,
             self._creative_filter,
+            float(self._filter_strength or 0.0),
             self._style,
             self._aspect_label,
             tuple(crop_norm) if crop_norm is not None else None,
@@ -1241,17 +1282,50 @@ class AdjustmentSurface(QWidget):
         self._filter_combo.setCurrentIndex(max(0, idx))
         self._filter_combo.blockSignals(False)
 
+    def _sync_filter_strength_combo(self) -> None:
+        """spec/156 — reflect ``self._filter_strength`` on the strength
+        dropdown without echoing a change, and grey it out when no filter
+        is chosen (there's nothing to scale). Built lazily, so guard for
+        callers that run before ``_build_filter_group``."""
+        combo = getattr(self, "_filter_strength_combo", None)
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        idx = combo.findData(float(self._filter_strength))
+        combo.setCurrentIndex(idx if idx >= 0 else combo.findData(
+            FILTER_STRENGTH_DEFAULT))
+        combo.blockSignals(False)
+        combo.setEnabled(bool(self._creative_filter))
+
     def _on_filter_changed(self, _idx: int) -> None:
         """The Filter combo changed — apply, render, persist."""
         if self._loading:
             return
         self._creative_filter = self._filter_combo.currentData()
+        # The strength control only bites when a filter is set — keep its
+        # enabled state in step with the selection.
+        self._sync_filter_strength_combo()
         if self._preview_array is None:
             return
         # Flush the combo NOW — its display text otherwise keeps the
         # previous filter's name through the render lag (Nelson
         # 2026-06-10).
         self._filter_combo.repaint()
+        self.render_now()
+        self.changed.emit("filter")
+
+    def _on_filter_strength_changed(self, _idx: int) -> None:
+        """spec/156 — the strength dropdown changed. Persist via the same
+        ``"filter"`` signal the host already routes (the strength rides
+        the Adjustment row next to ``creative_filter``)."""
+        if self._loading:
+            return
+        data = self._filter_strength_combo.currentData()
+        self._filter_strength = (FILTER_STRENGTH_DEFAULT if data is None
+                                 else float(data))
+        if self._preview_array is None:
+            return
+        self._filter_strength_combo.repaint()
         self.render_now()
         self.changed.emit("filter")
 
@@ -1320,8 +1394,10 @@ class AdjustmentSurface(QWidget):
             self._creative_filter = None
             self._look_strength = 1.0
             self._user_exposure = 0.0
+            self._filter_strength = FILTER_STRENGTH_DEFAULT
             self._sync_look_buttons()
             self._sync_filter_combo()
+            self._sync_filter_strength_combo()
             self._sync_exposure_widgets()
             self._crop_norm = None
             self._box_angle = 0.0

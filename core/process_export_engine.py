@@ -59,6 +59,7 @@ from core.photo_auto import (
     compute_auto_params,
     compute_look_params,
     creative_filter_amount,
+    filter_strength_scale,
     resolve_filter_recipe,
 )
 from core.photo_decoder import decode_image, is_supported
@@ -242,9 +243,12 @@ def _render_one(
             # photo's AF point. ``_af_center_for`` reads EXIF + brand
             # profile; missing data falls back to the frame centre.
             center = _af_center_for(src)
+            # spec/156 — scale the filter by the per-image strength the
+            # CHOICE carries (absent → 0.0 = medium, the new default).
+            strength = float(look_choice.get("filter_strength", 0.0) or 0.0)
             out = apply_filter(
                 out, FilterRecipe.from_dict(recipe),
-                creative_filter_amount(key),
+                creative_filter_amount(key) * filter_strength_scale(strength),
                 center=center)
 
     # Crop. ``crop_angle`` is the Box Rotation (docs/25 §4): the crop

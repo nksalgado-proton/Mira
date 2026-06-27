@@ -272,3 +272,18 @@ def test_creative_filter_amount_reads_trims(_trims):
     assert creative_filter_amount("vivid") == pytest.approx(0.5)
     assert creative_filter_amount("bw") == 1.0
     assert creative_filter_amount(None) == 1.0
+
+
+def test_filter_strength_scale_gentle_curve():
+    """spec/156 — the −2..+2 graduation → multiplier. Gentle linear:
+    +2 = full (today's recipe), 0 = ~70 %, −2 = ~40 % (never off)."""
+    from core.photo_auto import filter_strength_scale
+    assert filter_strength_scale(2.0) == pytest.approx(1.0)
+    assert filter_strength_scale(1.0) == pytest.approx(0.85)
+    assert filter_strength_scale(0.0) == pytest.approx(0.70)
+    assert filter_strength_scale(-1.0) == pytest.approx(0.55)
+    assert filter_strength_scale(-2.0) == pytest.approx(0.40)
+    # Monotonic + clamps out-of-range to the stops; bad input → default.
+    assert filter_strength_scale(5.0) == pytest.approx(1.0)
+    assert filter_strength_scale(-9.0) == pytest.approx(0.40)
+    assert filter_strength_scale(None) == pytest.approx(0.70)  # type: ignore[arg-type]

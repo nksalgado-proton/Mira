@@ -205,6 +205,11 @@ class Adjustment:
     # isolation. Clamped to [-2, +2] at the gateway seam (the v15→v16
     # migration omits the CHECK on existing rows).
     user_exposure: float = 0.0
+    # spec/156 — per-image creative-filter STRENGTH (−2..+2). Scales the
+    # filter's blend amount on top of the global trim: +2 = the shipped
+    # recipe (full), 0 (default) ≈ 70 %, −2 ≈ 40 %. Inert when
+    # ``creative_filter`` is None. Clamped at the gateway seam.
+    filter_strength: float = 0.0
     edit_exported: bool = False
 
 
@@ -227,6 +232,9 @@ class VideoAdjustment:
     audio_fade_ms: int = 0
     speed: float = 1.0
     stabilise: float = 0.0
+    # spec/156 — per-segment creative-filter STRENGTH (−2..+2), the video
+    # twin of ``Adjustment.filter_strength``. Same scale + default.
+    filter_strength: float = 0.0
 
 
 @dataclass

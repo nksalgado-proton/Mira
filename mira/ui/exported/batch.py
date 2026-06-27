@@ -177,6 +177,7 @@ class _SegmentOverride:
     def __init__(self, adj, params) -> None:
         from core.photo_auto import (
             creative_filter_amount,
+            filter_strength_scale,
             resolve_filter_recipe,
         )
         self.params = params
@@ -208,8 +209,11 @@ class _SegmentOverride:
                     "resolve_filter_recipe failed for %r",
                     adj.creative_filter)
                 self.filter_recipe = None
+            # spec/156 — fold the per-segment filter strength into the
+            # amount so the baked clip matches the Edit preview.
             self.filter_amount = creative_filter_amount(
-                adj.creative_filter)
+                adj.creative_filter) * filter_strength_scale(
+                    float(getattr(adj, "filter_strength", 0.0) or 0.0))
         else:
             self.filter_recipe = None
             self.filter_amount = 1.0
@@ -230,6 +234,10 @@ def recipe_for_item(eg: EventGateway, item_id: str) -> dict:
         recipe["creative_filter"] = adj.creative_filter
     if abs(float(adj.look_strength or 1.0) - 1.0) > 1e-6:
         recipe["look_strength"] = float(adj.look_strength)
+    # spec/156 — per-image filter strength (only when set; the reader
+    # defaults absent → 0.0 = medium, the new global default).
+    if abs(float(getattr(adj, "filter_strength", 0.0) or 0.0)) > 1e-6:
+        recipe["filter_strength"] = float(adj.filter_strength)
     if all(v is not None for v in (
             adj.crop_x, adj.crop_y, adj.crop_w, adj.crop_h)):
         recipe["crop_norm"] = [

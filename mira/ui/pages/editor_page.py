@@ -1132,6 +1132,10 @@ class EditorPage(QWidget):
         user_exposure = max(-2.0, min(2.0,
             float(getattr(adj, "user_exposure", 0.0) or 0.0)
             if adj is not None else 0.0))
+        # spec/156 — per-image filter strength (−2..+2), clamped on read.
+        filter_strength = max(-2.0, min(2.0,
+            float(getattr(adj, "filter_strength", 0.0) or 0.0)
+            if adj is not None else 0.0))
         if style != result.style:
             # The router style moved between request and delivery
             # (defensive: cannot happen while tools are greyed). Re-prep.
@@ -1153,6 +1157,7 @@ class EditorPage(QWidget):
             creative_filter=creative_filter,
             look_strength=look_strength,
             user_exposure=user_exposure,
+            filter_strength=filter_strength,
         )
         # spec/58 §2 — the STYLE combo's classification badge follows
         # the ITEM's stored classification (not Adjustment.style).
@@ -1365,6 +1370,9 @@ class EditorPage(QWidget):
             # (v15→v16 migration also omits the CHECK).
             adj.user_exposure = max(-2.0, min(2.0, float(
                 getattr(state, "user_exposure", 0.0))))
+            # spec/156 — per-image filter strength, clamped on write.
+            adj.filter_strength = max(-2.0, min(2.0, float(
+                getattr(state, "filter_strength", 0.0))))
             self._eg.save_adjustment(adj)
         except Exception:                                          # noqa: BLE001
             log.exception("persist failed for %s", ci.item_id)
@@ -1387,6 +1395,9 @@ class EditorPage(QWidget):
             vadj.style = state.style
             vadj.look = state.look
             vadj.creative_filter = state.creative_filter
+            # spec/156 — per-segment filter strength, clamped on write.
+            vadj.filter_strength = max(-2.0, min(2.0, float(
+                getattr(state, "filter_strength", 0.0))))
         elif kind == "crop":
             rect = self._surface._crop_norm
             if rect is not None:
@@ -1412,6 +1423,7 @@ class EditorPage(QWidget):
             vadj.rotation_degrees = 0
             vadj.look = "natural"
             vadj.creative_filter = None
+            vadj.filter_strength = 0.0
             vadj.style = None
             vadj.aspect_ratio_label = None
         else:
@@ -1440,6 +1452,8 @@ class EditorPage(QWidget):
                 getattr(state, "look_strength", 1.0))))
             adj.user_exposure = max(-2.0, min(2.0, float(
                 getattr(state, "user_exposure", 0.0))))
+            adj.filter_strength = max(-2.0, min(2.0, float(
+                getattr(state, "filter_strength", 0.0))))
         elif kind == "crop":
             rect = self._surface._crop_norm
             if rect is not None:
@@ -1578,6 +1592,7 @@ class EditorPage(QWidget):
             from core.photo_auto import (
                 compute_auto_params,
                 creative_filter_amount,
+                filter_strength_scale,
                 look_params_from_natural,
                 resolve_filter_recipe,
             )
@@ -1604,6 +1619,8 @@ class EditorPage(QWidget):
             box_angle = float(vadj.box_angle) if vadj else 0.0
             rotation = int(vadj.rotation_degrees) if vadj else 0
             look_strength = 1.0                                     # video looks: uncalibrated
+            filter_strength = float(
+                getattr(vadj, "filter_strength", 0.0)) if vadj else 0.0
         else:                                                       # snapshot
             adj = self._eg.adjustment(item_id) if self._eg else None
             look_key = (adj.look if adj else "natural") or "natural"
@@ -1618,6 +1635,8 @@ class EditorPage(QWidget):
             rotation = int(adj.rotation) if adj else 0
             look_strength = float(getattr(adj, "look_strength", 1.0)) \
                 if adj else 1.0
+            filter_strength = float(
+                getattr(adj, "filter_strength", 0.0)) if adj else 0.0
 
         try:
             out = arr
@@ -1652,7 +1671,8 @@ class EditorPage(QWidget):
                         center = (0.5, 0.5)
                     out = apply_filter(
                         out, FilterRecipe.from_dict(recipe),
-                        creative_filter_amount(creative_filter),
+                        creative_filter_amount(creative_filter)
+                        * filter_strength_scale(filter_strength),
                         center=center)
             if crop is not None:
                 if box_angle:
@@ -2283,6 +2303,9 @@ class EditorPage(QWidget):
                 angle = (vadj.box_angle if vadj else 0.0) or 0.0
                 aspect = (vadj.aspect_ratio_label if vadj else None) or "Original"
                 rotation = int(vadj.rotation_degrees if vadj else 0) or 0
+                filter_strength = max(-2.0, min(2.0, float(
+                    getattr(vadj, "filter_strength", 0.0) or 0.0)
+                    if vadj else 0.0))
                 # Push state into the panel. Per-segment extras (mute /
                 # volume / speed / fade / stabilise) drive the workshop
                 # bar's cluster — push them too.
@@ -2292,6 +2315,7 @@ class EditorPage(QWidget):
                     creative_filter=creative_filter,
                     look_strength=1.0,
                     user_exposure=0.0,
+                    filter_strength=filter_strength,
                 )
                 volume_pct = int(round((vadj.audio_volume if vadj else 1.0) * 100))
                 volume_pct = max(0, min(200, volume_pct))   # the schema goes to 2.0
@@ -2323,12 +2347,16 @@ class EditorPage(QWidget):
                 user_exposure = max(-2.0, min(2.0,
                     float(getattr(adj, "user_exposure", 0.0) or 0.0)
                     if adj else 0.0))
+                filter_strength = max(-2.0, min(2.0,
+                    float(getattr(adj, "filter_strength", 0.0) or 0.0)
+                    if adj else 0.0))
                 self._surface.set_state(
                     look=look, crop_norm=crop, box_angle=angle or 0.0,
                     style=style, aspect_label=aspect, rotation=rotation,
                     creative_filter=creative_filter,
                     look_strength=look_strength,
                     user_exposure=user_exposure,
+                    filter_strength=filter_strength,
                 )
         finally:
             self._suppress_persist = False

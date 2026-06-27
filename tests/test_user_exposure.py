@@ -126,16 +126,16 @@ def test_plus_one_ev_doubles_linear_gain(qapp):
 # ── Double-click resets to 0 ─────────────────────────────────────
 
 
-def test_exposure_double_click_resets_to_zero(qapp):
+def test_exposure_combo_picks_value_and_resets_to_zero(qapp):
+    """spec/157 — the Exposure dropdown maps its −5..+5 steps to EV
+    values; the +5 step is +2 EV and the middle (0) step resets to 0."""
     s = _surface()
-    s._exposure_slider.setValue(120)         # +1.20 EV
-    assert s._user_exposure == pytest.approx(1.20)
-
-    class _Ev:
-        def accept(self): pass
-    s._exposure_double_click(_Ev())
+    # +5 step (last item) → +2 EV.
+    s._exposure_combo.setCurrentIndex(s._exposure_combo.count() - 1)
+    assert s._user_exposure == pytest.approx(2.0)
+    # 0 step (middle item) → no nudge.
+    s._exposure_combo.setCurrentIndex(s._exposure_combo.count() // 2)
     assert s._user_exposure == 0.0
-    assert s._exposure_slider.value() == 0
 
 
 def test_reset_all_clears_user_exposure(qapp):
@@ -161,7 +161,9 @@ def test_set_state_loads_user_exposure(qapp):
         look_strength=1.0, user_exposure=0.75,
     )
     assert s._user_exposure == pytest.approx(0.75)
-    assert s._exposure_slider.value() == 75
+    # The dropdown snaps its DISPLAY to the nearest step (0.75 → +2 = 0.8)
+    # while the surface keeps the exact value for rendering.
+    assert s._exposure_combo.currentData() == pytest.approx(0.8)
 
 
 def test_set_state_clamps_wild_user_exposure(qapp):

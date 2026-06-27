@@ -1554,10 +1554,19 @@ def _migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
         "ALTER TABLE adjustment ADD COLUMN filter_strength REAL NOT NULL "
         "DEFAULT 0.0 CHECK (filter_strength >= -2 AND filter_strength <= 2)"
     )
-    conn.execute(
-        "ALTER TABLE video_adjustment ADD COLUMN filter_strength REAL NOT NULL "
-        "DEFAULT 0.0 CHECK (filter_strength >= -2 AND filter_strength <= 2)"
-    )
+    # ``video_adjustment`` lives only in the base DDL (no migration creates
+    # it), so a genuinely old event.db that predates it may not have the
+    # table. Guard the ALTER — a DB without the table simply has no
+    # segments to carry the column; a fresh install gets it from the DDL.
+    has_video_adjustment = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'video_adjustment'").fetchone()
+    if has_video_adjustment:
+        conn.execute(
+            "ALTER TABLE video_adjustment ADD COLUMN filter_strength REAL "
+            "NOT NULL DEFAULT 0.0 "
+            "CHECK (filter_strength >= -2 AND filter_strength <= 2)"
+        )
 
 
 def _migrate_v18_to_v19(conn: sqlite3.Connection) -> None:

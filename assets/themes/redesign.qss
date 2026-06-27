@@ -781,6 +781,7 @@ QLabel#ReadOnlyBannerLabel {
  * the surface — the slim base rule made them read shorter). */
 QComboBox#ProcessStyleCombo, QComboBox#ProcessFilterCombo,
 QComboBox#ProcessFilterStrengthCombo,
+QComboBox#LookStrengthCombo, QComboBox#UserExposureCombo,
 QComboBox#ProcessAspectCombo {
     padding: 6px 16px;
     min-height: 22px;
@@ -1919,6 +1920,8 @@ QComboBox[dense="true"],
 QComboBox#ProcessStyleCombo[dense="true"],
 QComboBox#ProcessFilterCombo[dense="true"],
 QComboBox#ProcessFilterStrengthCombo[dense="true"],
+QComboBox#LookStrengthCombo[dense="true"],
+QComboBox#UserExposureCombo[dense="true"],
 QComboBox#ProcessAspectCombo[dense="true"],
 QComboBox#VideoSpeed[dense="true"] {
     padding: 1px 6px;

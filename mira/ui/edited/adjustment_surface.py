@@ -415,92 +415,51 @@ class AdjustmentSurface(QWidget):
         col.addLayout(look_row)
         self._sync_look_buttons()
 
-        # ── Strength slider (Nelson 2026-06-13) ─────────────────────
-        # Continuous 0..2 multiplier on the chosen Look. The internal
-        # range is 0..200 so SliderMoved ticks are 0.01 apart; the
-        # 1.0 default position has a centred tick on the slider.
-        # Live re-resolve on each move: the surface re-runs
-        # look_params_from_natural at the new strength every tick —
-        # the cached Natural makes this near-free, the debounced
-        # render absorbs the per-tick cost.
-        strength_row = QHBoxLayout()
-        strength_row.setSpacing(8)
+        # ── Strength + Exposure dropdowns (spec/157) ─────────────────
+        # Replaced the continuous sliders (Nelson 2026-06-27) with two
+        # side-by-side −5..+5 graduations (0 = default), matching the
+        # filter-strength dropdown idiom but at higher resolution (11
+        # steps). STRENGTH scales the chosen Look across 0..2 (−5 →
+        # identity, 0 → the Look as authored, +5 → 2×); EXPOSURE is an
+        # independent EV nudge across −2..+2 (−5 → −2 EV, 0 → none, +5 →
+        # +2 EV). The underlying value ranges + render path are unchanged
+        # — only the control is. A combo pick is a settled change, so it
+        # renders immediately (no slider drag-debounce).
+        tone_row = QHBoxLayout()
+        tone_row.setSpacing(12)
+
+        strength_col = QVBoxLayout()
+        strength_col.setSpacing(2)
         self._strength_label = QLabel(tr("Strength"))
         self._strength_label.setObjectName("LookStrengthLabel")
-        strength_row.addWidget(self._strength_label)
-        self._strength_slider = QSlider(Qt.Orientation.Horizontal)
-        self._strength_slider.setObjectName("LookStrengthSlider")
-        self._strength_slider.setRange(0, 200)
-        self._strength_slider.setValue(100)
-        self._strength_slider.setSingleStep(5)
-        self._strength_slider.setPageStep(25)
-        self._strength_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._strength_slider.setTickInterval(100)   # tick at 1.0
-        self._strength_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._strength_slider.setToolTip(tr(
-            "How much of the Look to apply — 0 leaves the photo "
-            "alone, 1.0 is the Look as designed, 2.0 doubles its "
-            "effect. Double-click to snap back to 1.0."))
-        self._strength_slider.valueChanged.connect(
-            self._on_strength_changed)
-        # spec/115 §1 — render-on-release. Pressed → enter drag; live
-        # ``valueChanged`` updates the label only. Released → leave
-        # drag, stop the keyboard-debounce, fire one render.
-        self._strength_slider.sliderPressed.connect(self._on_drag_pressed)
-        self._strength_slider.sliderReleased.connect(
-            self._on_drag_released)
-        self._strength_slider.mouseDoubleClickEvent = (
-            self._strength_double_click)
-        strength_row.addWidget(self._strength_slider, stretch=1)
-        self._strength_value = QLabel("1.00")
-        self._strength_value.setObjectName("LookStrengthValue")
-        self._strength_value.setMinimumWidth(36)
-        self._strength_value.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        strength_row.addWidget(self._strength_value)
-        col.addLayout(strength_row)
-        self._sync_strength_widgets()
+        strength_col.addWidget(self._strength_label)
+        self._strength_combo = self._build_graduation_combo(
+            object_name="LookStrengthCombo",
+            values=[round(1.0 + step * 0.2, 4) for step in range(-5, 6)],
+            tooltip=tr(
+                "How much of the Look to apply. 0 = the Look as designed; "
+                "+5 doubles it; −5 leaves the photo untouched."),
+            on_changed=self._on_strength_changed)
+        strength_col.addWidget(self._strength_combo)
+        tone_row.addLayout(strength_col, stretch=1)
 
-        # ── Exposure slider (spec/115 §2) ────────────────────────────
-        # Independent per-image EV nudge. Lives BESIDE Strength in the
-        # same Look group, but is NOT scaled by Strength and is NOT a
-        # property of the Look — it adds to ``Params.exposure`` after
-        # the Look has been resolved (in :meth:`_params_for_look`).
-        # Slider ticks are 1/100 EV (range -200..+200 → -2..+2 EV);
-        # default 0.0, tick mark at 0 (the centre), double-click resets.
-        exposure_row = QHBoxLayout()
-        exposure_row.setSpacing(8)
+        exposure_col = QVBoxLayout()
+        exposure_col.setSpacing(2)
         self._exposure_label = QLabel(tr("Exposure"))
         self._exposure_label.setObjectName("UserExposureLabel")
-        exposure_row.addWidget(self._exposure_label)
-        self._exposure_slider = QSlider(Qt.Orientation.Horizontal)
-        self._exposure_slider.setObjectName("UserExposureSlider")
-        self._exposure_slider.setRange(-200, 200)
-        self._exposure_slider.setValue(0)
-        self._exposure_slider.setSingleStep(5)             # 0.05 EV
-        self._exposure_slider.setPageStep(25)              # 0.25 EV
-        self._exposure_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._exposure_slider.setTickInterval(200)         # tick at 0 EV
-        self._exposure_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._exposure_slider.setToolTip(tr(
-            "Per-image exposure nudge in EV stops (−2..+2). Adds on "
-            "top of the Look — independent of both the Look and "
-            "Strength. Double-click to reset to 0."))
-        self._exposure_slider.valueChanged.connect(
-            self._on_exposure_changed)
-        self._exposure_slider.sliderPressed.connect(self._on_drag_pressed)
-        self._exposure_slider.sliderReleased.connect(
-            self._on_drag_released)
-        self._exposure_slider.mouseDoubleClickEvent = (
-            self._exposure_double_click)
-        exposure_row.addWidget(self._exposure_slider, stretch=1)
-        self._exposure_value = QLabel("0.00 EV")
-        self._exposure_value.setObjectName("UserExposureValue")
-        self._exposure_value.setMinimumWidth(56)
-        self._exposure_value.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        exposure_row.addWidget(self._exposure_value)
-        col.addLayout(exposure_row)
+        exposure_col.addWidget(self._exposure_label)
+        self._exposure_combo = self._build_graduation_combo(
+            object_name="UserExposureCombo",
+            values=[round(step * 0.4, 4) for step in range(-5, 6)],
+            tooltip=tr(
+                "Per-image exposure nudge. 0 = none; +5 ≈ +2 EV, −5 ≈ "
+                "−2 EV. Independent of the Look and Strength."),
+            on_changed=self._on_exposure_changed)
+        exposure_col.addWidget(self._exposure_combo)
+        tone_row.addLayout(exposure_col, stretch=1)
+
+        col.addLayout(tone_row)
+        self._sync_strength_widgets()
         self._sync_exposure_widgets()
 
         col.addStretch(1)
@@ -508,52 +467,68 @@ class AdjustmentSurface(QWidget):
         box.setMinimumHeight(box.minimumSizeHint().height())
         return box
 
-    def _on_strength_changed(self, raw: int) -> None:
-        """Slider tick → ``self._look_strength``. Live label update only;
-        the render fires on slider release (mid-drag) or after a settling
-        debounce (keyboard / field / programmatic). Suppressed while
-        ``set_state`` is loading.
+    def _build_graduation_combo(self, *, object_name, values, tooltip,
+                                on_changed):
+        """spec/157 — build a −5..+5 graduation dropdown. Each item's DATA
+        is the underlying continuous value; the label is the signed step
+        (``-5`` … ``0`` … ``+5``). The middle item (``len // 2``) is the
+        0/default. Used for both Strength and Exposure so they read
+        identically."""
+        combo = QComboBox()
+        combo.setObjectName(object_name)
+        combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        mid = len(values) // 2
+        for i, value in enumerate(values):
+            step = i - mid
+            label = "0" if step == 0 else f"{step:+d}"
+            combo.addItem(label, float(value))
+        combo.setToolTip(tooltip)
+        combo.currentIndexChanged.connect(on_changed)
+        return combo
 
-        spec/115 §1 — the previous behaviour re-resolved + restarted the
-        debounce on EVERY tick, which combined with a 40 ms timer and a
-        synchronous whole-frame render meant a drag = a stream of
-        blocking renders (the felt sluggishness)."""
-        s = float(raw) / 100.0
-        self._look_strength = s
-        self._sync_strength_value_label()
+    @staticmethod
+    def _select_nearest_combo(combo, value: float) -> None:
+        """Select the graduation step whose value is closest to ``value``
+        (a legacy slider value may sit between steps). Display-only — the
+        signal is blocked so it never echoes a change; the surface keeps
+        the exact ``value`` for rendering until the user picks a step."""
+        best_i, best_d = 0, None
+        for i in range(combo.count()):
+            data = combo.itemData(i)
+            if data is None:
+                continue
+            d = abs(float(data) - float(value))
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        combo.blockSignals(True)
+        combo.setCurrentIndex(best_i)
+        combo.blockSignals(False)
+
+    def _on_strength_changed(self, _idx: int) -> None:
+        """spec/157 — Strength dropdown picked. A combo change is settled,
+        so render + persist immediately (no drag-debounce). Suppressed
+        while ``set_state`` is loading."""
+        data = self._strength_combo.currentData()
+        if data is not None:
+            self._look_strength = float(data)
         if self._loading:
             return
-        self._note_value_changed()
-
-    def _strength_double_click(self, ev) -> None:
-        """Double-click anywhere on the slider → snap to 1.0
-        (the default; the Look as authored). Double-click is a SETTLED
-        change — render immediately rather than wait for a debounce."""
-        self._strength_slider.setValue(100)
-        ev.accept()
-        # The setValue above fires valueChanged; force a release-shaped
-        # render NOW so the user sees the snap-back take effect.
-        self._render_timer.stop()
+        self._strength_combo.repaint()
         self.render_now()
+        self.changed.emit("tone")
 
-    def _on_exposure_changed(self, raw: int) -> None:
-        """Slider tick → ``self._user_exposure`` (EV, range −2..+2).
-        Live label update only; same render-on-release / debounce
-        rules as the Strength slider (spec/115 §1)."""
-        ev_val = float(raw) / 100.0
-        self._user_exposure = ev_val
-        self._sync_exposure_value_label()
+    def _on_exposure_changed(self, _idx: int) -> None:
+        """spec/157 — Exposure dropdown picked (EV value as the item
+        data). Same settled-change render/persist as Strength."""
+        data = self._exposure_combo.currentData()
+        if data is not None:
+            self._user_exposure = float(data)
         if self._loading:
             return
-        self._note_value_changed()
-
-    def _exposure_double_click(self, ev) -> None:
-        """Double-click anywhere on the slider → snap to 0 EV (no
-        nudge)."""
-        self._exposure_slider.setValue(0)
-        ev.accept()
-        self._render_timer.stop()
+        self._exposure_combo.repaint()
         self.render_now()
+        self.changed.emit("tone")
 
     # ── Render-on-release state machine (spec/115 §1) ────────────────
 
@@ -597,45 +572,20 @@ class AdjustmentSurface(QWidget):
         self.changed.emit("tone")
 
     def _sync_strength_widgets(self) -> None:
-        """Reflect the current strength on the slider + value label,
-        without firing valueChanged."""
-        self._strength_slider.blockSignals(True)
-        try:
-            self._strength_slider.setValue(
-                int(round(self._look_strength * 100)))
-        finally:
-            self._strength_slider.blockSignals(False)
-        self._sync_strength_value_label()
-        # Strength is inert on Original — disable to make that clear.
+        """Reflect the current strength on the dropdown (nearest step),
+        without firing a change. Strength is inert on Original — grey the
+        control + caption to make that clear."""
+        self._select_nearest_combo(self._strength_combo, self._look_strength)
         on_original = (self._look == "original")
-        self._strength_slider.setEnabled(not on_original)
+        self._strength_combo.setEnabled(not on_original)
         self._strength_label.setEnabled(not on_original)
-        self._strength_value.setEnabled(not on_original)
-
-    def _sync_strength_value_label(self) -> None:
-        self._strength_value.setText(f"{self._look_strength:.2f}")
 
     def _sync_exposure_widgets(self) -> None:
-        """Reflect the current ``_user_exposure`` on the slider + value
-        label without firing valueChanged. Unlike Strength, Exposure
-        STAYS ENABLED on Original — a user can nudge brightness on
-        any photo, Look or no Look."""
-        self._exposure_slider.blockSignals(True)
-        try:
-            self._exposure_slider.setValue(
-                int(round(self._user_exposure * 100)))
-        finally:
-            self._exposure_slider.blockSignals(False)
-        self._sync_exposure_value_label()
-
-    def _sync_exposure_value_label(self) -> None:
-        # Always carry a sign so 0.00 doesn't read as "−0.00" / "+0.00"
-        # randomly; use a small format that fits the 56-px field.
-        ev = self._user_exposure
-        if ev == 0.0:
-            self._exposure_value.setText("0.00 EV")
-        else:
-            self._exposure_value.setText(f"{ev:+.2f} EV")
+        """Reflect the current ``_user_exposure`` on the dropdown (nearest
+        step) without firing a change. Unlike Strength, Exposure STAYS
+        ENABLED on Original — a user can nudge brightness on any photo,
+        Look or no Look."""
+        self._select_nearest_combo(self._exposure_combo, self._user_exposure)
 
     def _build_style_group(self) -> QWidget:
         """The STYLE box — what is this photo? Re-routes the Natural."""
@@ -1262,10 +1212,10 @@ class AdjustmentSurface(QWidget):
             b.blockSignals(True)
             b.setChecked(key == self._look)
             b.blockSignals(False)
-        # The strength slider exists once _build_look_group has run;
+        # The strength dropdown exists once _build_look_group has run;
         # _sync_look_buttons fires from inside that build too (before
-        # the slider exists), so guard the call.
-        if hasattr(self, "_strength_slider"):
+        # the combo exists), so guard the call.
+        if hasattr(self, "_strength_combo"):
             self._sync_strength_widgets()
 
     def _on_look_clicked(self, key: str) -> None:

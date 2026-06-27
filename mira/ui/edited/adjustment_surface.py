@@ -427,14 +427,14 @@ class AdjustmentSurface(QWidget):
         # column's ±2 cap). The underlying value range + render path are
         # unchanged — only the control is. A combo pick is a settled
         # change, so it renders immediately (no slider drag-debounce).
+        # Labels sit INLINE beside their combos so the whole pair fits one
+        # row (the slider era stacked two full rows here; spec/157 reclaims
+        # that vertical budget — the top group boxes shrink accordingly).
         tone_row = QHBoxLayout()
-        tone_row.setSpacing(12)
-
-        strength_col = QVBoxLayout()
-        strength_col.setSpacing(2)
+        tone_row.setSpacing(6)
         self._strength_label = QLabel(tr("Strength"))
         self._strength_label.setObjectName("LookStrengthLabel")
-        strength_col.addWidget(self._strength_label)
+        tone_row.addWidget(self._strength_label)
         self._strength_combo = self._build_graduation_combo(
             object_name="LookStrengthCombo",
             values=[round(1.0 + step * 0.2, 4) for step in range(-5, 6)],
@@ -442,14 +442,11 @@ class AdjustmentSurface(QWidget):
                 "How much of the Look to apply. 0 = the Look as designed; "
                 "+5 doubles it; −5 leaves the photo untouched."),
             on_changed=self._on_strength_changed)
-        strength_col.addWidget(self._strength_combo)
-        tone_row.addLayout(strength_col, stretch=1)
-
-        exposure_col = QVBoxLayout()
-        exposure_col.setSpacing(2)
+        tone_row.addWidget(self._strength_combo, stretch=1)
+        tone_row.addSpacing(10)
         self._exposure_label = QLabel(tr("Exposure"))
         self._exposure_label.setObjectName("UserExposureLabel")
-        exposure_col.addWidget(self._exposure_label)
+        tone_row.addWidget(self._exposure_label)
         self._exposure_combo = self._build_graduation_combo(
             object_name="UserExposureCombo",
             values=[round(step * 0.08, 4) for step in range(-5, 6)],
@@ -457,8 +454,7 @@ class AdjustmentSurface(QWidget):
                 "Per-image exposure nudge. 0 = none; +5 ≈ +0.4 EV, −5 ≈ "
                 "−0.4 EV. Independent of the Look and Strength."),
             on_changed=self._on_exposure_changed)
-        exposure_col.addWidget(self._exposure_combo)
-        tone_row.addLayout(exposure_col, stretch=1)
+        tone_row.addWidget(self._exposure_combo, stretch=1)
 
         col.addLayout(tone_row)
         self._sync_strength_widgets()

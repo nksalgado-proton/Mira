@@ -14,8 +14,11 @@ discrete dropdowns (consistent with the filter control) with a clear
 
 ## The controls
 
-Both live in the Look group, laid out side by side (caption above each
-combo). Eleven steps, the middle one is 0 / default:
+Both live in the Look group on a SINGLE row — caption inline beside each
+combo (``Strength [▾]   Exposure [▾]``). The slider era stacked two full
+rows here; collapsing to one row reclaims that vertical budget, so the
+top-row group boxes (and the adjustments top block as a whole) shrink.
+Eleven steps, the middle one is 0 / default:
 
 | | −5 | 0 (default) | +5 |
 |---|---|---|---|

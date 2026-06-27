@@ -421,10 +421,11 @@ class AdjustmentSurface(QWidget):
         # filter-strength dropdown idiom but at higher resolution (11
         # steps). STRENGTH scales the chosen Look across 0..2 (−5 →
         # identity, 0 → the Look as authored, +5 → 2×); EXPOSURE is an
-        # independent EV nudge across −2..+2 (−5 → −2 EV, 0 → none, +5 →
-        # +2 EV). The underlying value ranges + render path are unchanged
-        # — only the control is. A combo pick is a settled change, so it
-        # renders immediately (no slider drag-debounce).
+        # independent EV nudge across ±1 (−5 → −1 EV, 0 → none, +5 → +1
+        # EV — kept well inside the column's ±2 cap so the absolute swing
+        # stays gentle). The underlying value range + render path are
+        # unchanged — only the control is. A combo pick is a settled
+        # change, so it renders immediately (no slider drag-debounce).
         tone_row = QHBoxLayout()
         tone_row.setSpacing(12)
 
@@ -450,10 +451,10 @@ class AdjustmentSurface(QWidget):
         exposure_col.addWidget(self._exposure_label)
         self._exposure_combo = self._build_graduation_combo(
             object_name="UserExposureCombo",
-            values=[round(step * 0.4, 4) for step in range(-5, 6)],
+            values=[round(step * 0.2, 4) for step in range(-5, 6)],
             tooltip=tr(
-                "Per-image exposure nudge. 0 = none; +5 ≈ +2 EV, −5 ≈ "
-                "−2 EV. Independent of the Look and Strength."),
+                "Per-image exposure nudge. 0 = none; +5 = +1 EV, −5 = "
+                "−1 EV. Independent of the Look and Strength."),
             on_changed=self._on_exposure_changed)
         exposure_col.addWidget(self._exposure_combo)
         tone_row.addLayout(exposure_col, stretch=1)

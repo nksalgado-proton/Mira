@@ -128,11 +128,11 @@ def test_plus_one_ev_doubles_linear_gain(qapp):
 
 def test_exposure_combo_picks_value_and_resets_to_zero(qapp):
     """spec/157 — the Exposure dropdown maps its −5..+5 steps to EV
-    values; the +5 step is +2 EV and the middle (0) step resets to 0."""
+    values; the +5 step is +1 EV and the middle (0) step resets to 0."""
     s = _surface()
-    # +5 step (last item) → +2 EV.
+    # +5 step (last item) → +1 EV (the gentle ±1 range).
     s._exposure_combo.setCurrentIndex(s._exposure_combo.count() - 1)
-    assert s._user_exposure == pytest.approx(2.0)
+    assert s._user_exposure == pytest.approx(1.0)
     # 0 step (middle item) → no nudge.
     s._exposure_combo.setCurrentIndex(s._exposure_combo.count() // 2)
     assert s._user_exposure == 0.0

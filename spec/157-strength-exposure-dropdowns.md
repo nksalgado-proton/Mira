@@ -20,11 +20,11 @@ combo). Eleven steps, the middle one is 0 / default:
 | | −5 | 0 (default) | +5 |
 |---|---|---|---|
 | **Strength** (`_look_strength`, 0..2) | 0.0 (identity) | **1.0** (Look as authored) | 2.0 (2×) |
-| **Exposure** (`_user_exposure`, EV) | −1 EV | **0** (no nudge) | +1 EV |
+| **Exposure** (`_user_exposure`, EV) | −0.4 EV | **0** (no nudge) | +0.4 EV |
 
-Step → value is linear: strength `1.0 + 0.2·step`, exposure `0.2·step`
-(Nelson 2026-06-27 — the ±2 EV swing read too strong, so the dropdown
-covers a gentle ±1 EV, well inside the column's ±2 cap).
+Step → value is linear: strength `1.0 + 0.2·step`, exposure `0.08·step`
+(Nelson 2026-06-27 — the ±2 EV swing read far too strong, so the dropdown
+covers a deliberately subtle ±0.4 EV, well inside the column's ±2 cap).
 The item's combo DATA is the underlying continuous value; the label is
 the signed step (`-5` … `0` … `+5`).
 
@@ -34,8 +34,8 @@ The persisted columns (`adjustment.look_strength` 0..2,
 `adjustment.user_exposure` ±2 EV, + the video twins), their clamps, and
 every render/export path are **unchanged** — only the control. So no
 schema migration. Strength samples its full 0..2 range at 11 steps;
-Exposure samples a gentle ±1 EV window (the column still permits ±2, so a
-legacy value up to ±2 loads + renders fine — the combo just snaps its
+Exposure samples a subtle ±0.4 EV window (the column still permits ±2, so
+a legacy value up to ±2 loads + renders fine — the combo just snaps its
 DISPLAY to the nearest available step). A value that sits between steps
 keeps its exact value for rendering and only the combo display snaps.
 

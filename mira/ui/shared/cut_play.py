@@ -630,6 +630,18 @@ class CutPlayerDialog(QDialog):
         self._show_index(max(0, self._index - 1))
 
     def _show_index(self, index: int) -> None:
+        # TEMP DIAGNOSTIC (pause-jump investigation 2026-06-27) — every
+        # slide change funnels through here. Log the move + who called
+        # it so a pause-then-jump repro shows whether advance() fired
+        # from the timer, a video status, or the watchdog. Remove once
+        # the cause is pinned.
+        import traceback as _tb
+        log.warning(
+            "CUTPLAY _show_index: %d -> %d  paused=%s  caller=%s",
+            self._index, index, self._paused,
+            " <- ".join(
+                f.name for f in reversed(_tb.extract_stack()[-5:-1])),
+        )
         # spec/152 Phase 2 — capture the OUTGOING entry's pixels
         # BEFORE we tear down the timer / player so the crossfade has
         # a real frame to fade from. ``_index >= 0`` skips capture on
@@ -1363,6 +1375,12 @@ class CutPlayerDialog(QDialog):
 
     def _on_video_status(self, status) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer
+        # TEMP DIAGNOSTIC (pause-jump investigation 2026-06-27) — log
+        # EVERY status the backend emits, with the paused flag, so a
+        # pause-triggered spurious EndOfMedia/InvalidMedia shows up.
+        log.warning(
+            "CUTPLAY _on_video_status: status=%s  index=%d  paused=%s",
+            status, self._index, self._paused)
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             # spec/150 §2 — primary advance path. Tear the end
             # watchdog down before advancing so a late timer fire
@@ -1392,6 +1410,12 @@ class CutPlayerDialog(QDialog):
     # ── controls ─────────────────────────────────────────────────────
 
     def _toggle_pause(self) -> None:
+        # TEMP DIAGNOSTIC (pause-jump investigation 2026-06-27).
+        _k = (self._entries[self._index][0]
+              if 0 <= self._index < len(self._entries) else "?")
+        log.warning(
+            "CUTPLAY _toggle_pause: now_paused=%s  index=%d  kind=%s",
+            (not self._paused), self._index, _k)
         self._paused = not self._paused
         if self._paused:
             self._timer.stop()

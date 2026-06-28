@@ -550,7 +550,10 @@ class EventTile(Card):
         et = (self._data.event_type or "").strip()
         if et and et.lower() != "unclassified":
             bits.append(et.title())
-        year = _year_str(self._data.start_date)
+        # spec/77 (Nelson 2026-06-28) — header start_date wins; otherwise
+        # fall back to the derived year_hint (capture / creation) so the
+        # meta line always carries a year, not just for dated events.
+        year = _year_str(self._data.start_date) or (self._data.year_hint or "")
         if year:
             bits.append(year)
         if self._data.event_subtype:

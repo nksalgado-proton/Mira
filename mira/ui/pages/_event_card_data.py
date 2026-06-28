@@ -30,6 +30,27 @@ def _parse_date(s: Optional[str]) -> Optional[date]:
         return None
 
 
+def _derive_year_hint(base, trip_days, eg) -> Optional[str]:
+    """spec/77 (Nelson 2026-06-28) — a fallback year for the tile meta
+    line when the event has no header ``start_date`` yet, so every tile
+    shows a year consistently instead of flickering between
+    "Type · Subtype" and "Type · year · Subtype". Priority: end date →
+    earliest capture day → creation date. ``None`` only when nothing is
+    knowable."""
+    if base.end_date:
+        return str(base.end_date.year)
+    day_dates = sorted(d.date for d in trip_days if getattr(d, "date", None))
+    if day_dates:
+        dt = _parse_date(day_dates[0])
+        if dt:
+            return str(dt.year)
+    try:
+        created = _parse_date(eg.event().created_at)
+    except Exception:                                              # noqa: BLE001
+        created = None
+    return str(created.year) if created else None
+
+
 def _tz_display(trip_days) -> str:
     offs = [d.tz_minutes for d in trip_days if d.tz_minutes is not None]
     if not offs:
@@ -249,6 +270,12 @@ def card_data(gateway: Gateway, row: Dict[str, Any]) -> EventCardData:
         else:
             base.total_days = len(trip_days)
         base.tz_display = _tz_display(trip_days)
+        # spec/77 (Nelson 2026-06-28) — fill a year for tiles whose
+        # event has no header start_date yet, so the meta line is
+        # consistent across the list. ``start_date.year`` still wins
+        # in the tile when present.
+        if base.start_date is None:
+            base.year_hint = _derive_year_hint(base, trip_days, eg)
         base.status_by_phase = _status_by_phase(
             eg, trip_days, eg.day_tree()
         )

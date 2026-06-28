@@ -134,6 +134,12 @@ class EventCardData:
     event_subtype: Optional[str] = None
     description: str = ""
     tags: list[str] = field(default_factory=list)
+    # Fallback year for the tile meta line when the event has no header
+    # ``start_date`` yet — derived from the end date, the earliest
+    # capture day, or (last resort) the creation date so every tile
+    # shows a year consistently (Nelson 2026-06-28). ``start_date.year``
+    # always wins when present.
+    year_hint: Optional[str] = None
     # spec/64 §2.4 — closed-tile body data. Three side-by-side widgets
     # (Nelson 2026-06-13 v3): phase bar chart (counts cascade from
     # Collected → … → Exported as % of Collected) · classification

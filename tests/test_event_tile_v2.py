@@ -317,6 +317,53 @@ def test_meta_line_omits_duration_after_split(qapp):
     assert "wildlife" in meta
 
 
+def test_meta_line_uses_year_hint_when_no_start_date(qapp):
+    """spec/77 (Nelson 2026-06-28) — an undated event still shows a year
+    in the meta line via the derived year_hint, so the list reads
+    consistently instead of flickering between "Type · Subtype" and
+    "Type · year · Subtype"."""
+    tile = EventTile(_open_card(
+        start_date=None, year_hint="2024",
+        event_type="session", event_subtype="Macro"))
+    assert tile._compose_meta() == "Session · 2024 · Macro"
+
+
+def test_meta_line_start_date_year_wins_over_hint(qapp):
+    """The header start_date is authoritative — year_hint is only a
+    fallback for events that don't have one."""
+    tile = EventTile(_open_card(
+        start_date=date(2026, 5, 1), year_hint="2024",
+        event_type="session", event_subtype="Macro"))
+    assert tile._compose_meta() == "Session · 2026 · Macro"
+
+
+def test_derive_year_hint_priority():
+    """spec/77 — fallback year priority: end date → earliest capture
+    day → creation date."""
+    from mira.ui.pages._event_card_data import _derive_year_hint
+
+    class _Day:
+        def __init__(self, d):
+            self.date = d
+
+    class _Ev:
+        created_at = "2020-01-02T00:00:00+00:00"
+
+    class _EG:
+        def event(self):
+            return _Ev()
+
+    def _base(end):
+        return EventCardData(
+            event_id="e", name="n", start_date=None, end_date=end,
+            is_closed=False, total_days=0)
+
+    assert _derive_year_hint(_base(date(2023, 3, 4)), [], _EG()) == "2023"
+    assert _derive_year_hint(
+        _base(None), [_Day("2022-06-01"), _Day("2022-06-03")], _EG()) == "2022"
+    assert _derive_year_hint(_base(None), [], _EG()) == "2020"
+
+
 @pytest.mark.parametrize("days,expected", [
     (0, ""),                       # no plan dates → no row
     (1, "1 day"),

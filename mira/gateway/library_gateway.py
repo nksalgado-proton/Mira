@@ -547,21 +547,27 @@ class LibraryGateway:
         start_iso: Any,
         end_iso: Any,
     ) -> Set[str]:
-        """Events whose cached date range overlaps ``[start_iso, end_iso]``.
+        """Events whose date range overlaps ``[start_iso, end_iso]``.
         Either bound may be missing (open-ended on that side); undated
-        events have NULL ``start_date_cached`` / ``end_date_cached`` and
-        correctly stay out of the result (NULL comparisons are false)."""
+        events have NULL ``event_start`` / ``event_end`` and correctly stay
+        out of the result (NULL comparisons are false).
+
+        Reads ``event_start`` / ``event_end`` off the ``global_items``
+        projection (denormalised per spec/86 §5 = min/max of the event's
+        ``trip_day.date``) rather than the stale ``event_index`` table — so
+        a date-range Scope chip resolves against the live event set, the
+        same universe :meth:`list_events_for_scope` lists."""
         start = start_iso if isinstance(start_iso, str) and start_iso else None
         end = end_iso if isinstance(end_iso, str) and end_iso else None
         clauses: List[str] = []
         params: list = []
         if start is not None:
-            clauses.append("(end_date_cached >= ? OR start_date_cached >= ?)")
+            clauses.append("(event_end >= ? OR event_start >= ?)")
             params.extend([start, start])
         if end is not None:
-            clauses.append("(start_date_cached <= ? OR end_date_cached <= ?)")
+            clauses.append("(event_start <= ? OR event_end <= ?)")
             params.extend([end, end])
-        sql = "SELECT event_uuid FROM event_index"
+        sql = "SELECT DISTINCT event_uuid FROM global_items"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         rows = self.user_store.conn.execute(sql, params).fetchall()
@@ -587,11 +593,13 @@ class LibraryGateway:
         return None
 
     def _event_exists(self, uuid: str) -> bool:
-        """An event uuid is "known" iff it has an ``event_index`` row. The
-        cross-event surface uses this index (spec/53 §2.3) as the authoritative
-        list of events the library knows about."""
+        """An event uuid is "known" to the cross-event surface iff it has
+        ``global_items`` rows — i.e. the live projection the resolver
+        actually queries. (Not the ``event_index`` table, which is seeded
+        once at migration and drifts; an EVENT_KIND operand must validate
+        against the same universe the resolution runs over.)"""
         row = self.user_store.conn.execute(
-            "SELECT 1 FROM event_index WHERE event_uuid = ? LIMIT 1",
+            "SELECT 1 FROM global_items WHERE event_uuid = ? LIMIT 1",
             (uuid,),
         ).fetchone()
         return row is not None
@@ -822,31 +830,40 @@ class LibraryGateway:
 
     def list_events_for_scope(self) -> List[dict]:
         """Inventory of events for the Recipe dialog's Scope picker
-        (spec/90 §1.1, §3.1). Returns one dict per known event with:
+        (spec/90 §1.1, §3.1). Returns one dict per event with:
 
         * ``uuid`` — the stable event id used in the spec/90 operand
           encoding ``{"kind": "event", "uuid": …}``.
-        * ``name`` — the cached event name (or ``"(unnamed)"`` fallback).
+        * ``name`` — the event name (or ``"(unnamed)"`` fallback).
         * ``item_count`` — count of ``global_items`` rows in this event;
           the dialog renders this as the live count beside each chip.
 
-        Ordered newest-first when start_date is available — the dialog's
-        Scope picker reads "what did I shoot recently" most often, so the
-        common case lands at the top. Events without a start_date trail.
-        spec/53 §2.3 — ``event_index`` is the authoritative list of
-        library-known events; counts ride the ``global_items`` projection
-        the cross-event resolver already syncs to."""
+        Ordered newest-first when ``event_start`` is available — the
+        dialog's Scope picker reads "what did I shoot recently" most often,
+        so the common case lands at the top. Events without a start trail.
+
+        Source is the ``global_items`` projection, NOT the ``event_index``
+        table. ``event_index`` is populated once at migration
+        (``import_legacy``) and never reconciled, so it drifts: after a
+        library move or any create/delete it lists stale/deleted events.
+        ``global_items`` is kept current by the startup reconcile +
+        on-close sync (``global_items_sync``), and it is the exact universe
+        the cross-event resolver queries — so the Scope list and the
+        resolution can never disagree. ``event_name`` / ``event_start`` are
+        denormalised onto every projection row (spec/86), so the names +
+        dates come along for free; an event with zero projected items
+        simply doesn't appear (it contributes nothing to a cross-event
+        Cut)."""
         rows = self.user_store.conn.execute(
-            "SELECT ei.event_uuid AS uuid, "
-            "       ei.name_cached AS name, "
-            "       ei.start_date_cached AS start_date, "
-            "       COUNT(gi.item_id) AS item_count "
-            "FROM event_index ei "
-            "LEFT JOIN global_items gi ON gi.event_uuid = ei.event_uuid "
-            "GROUP BY ei.event_uuid, ei.name_cached, ei.start_date_cached "
+            "SELECT event_uuid AS uuid, "
+            "       event_name AS name, "
+            "       MIN(event_start) AS start_date, "
+            "       COUNT(item_id) AS item_count "
+            "FROM global_items "
+            "GROUP BY event_uuid, event_name "
             "ORDER BY "
-            "  CASE WHEN ei.start_date_cached IS NULL THEN 1 ELSE 0 END, "
-            "  ei.start_date_cached DESC, ei.name_cached"
+            "  CASE WHEN MIN(event_start) IS NULL THEN 1 ELSE 0 END, "
+            "  MIN(event_start) DESC, event_name"
         ).fetchall()
         return [
             {

@@ -84,6 +84,7 @@ def _seed(store: UserStore) -> None:
         um.GlobalItem(
             event_uuid="A", item_id="a1", synced_at=NOW,
             event_name="Costa Rica",
+            event_start="2026-04-01", event_end="2026-04-07",
             capture_time="2026-04-02T10:00:00",
             kind="photo", classification="macro",
             has_export=True, export_relpath="A/a1.jpg",
@@ -91,6 +92,7 @@ def _seed(store: UserStore) -> None:
         um.GlobalItem(
             event_uuid="A", item_id="a2", synced_at=NOW,
             event_name="Costa Rica",
+            event_start="2026-04-01", event_end="2026-04-07",
             capture_time="2026-04-03T14:00:00",
             kind="photo", classification="wildlife",
             has_export=True, export_relpath="A/a2.jpg",
@@ -98,6 +100,7 @@ def _seed(store: UserStore) -> None:
         um.GlobalItem(
             event_uuid="B", item_id="b1", synced_at=NOW,
             event_name="Nepal",
+            event_start="2025-10-10", event_end="2025-10-20",
             capture_time="2025-10-15T08:00:00",
             kind="photo", classification="landscape",
             has_export=True, export_relpath="B/b1.jpg",
@@ -105,6 +108,7 @@ def _seed(store: UserStore) -> None:
         um.GlobalItem(
             event_uuid="C", item_id="c1", synced_at=NOW,
             event_name="Patagonia",
+            event_start="2024-12-01", event_end="2024-12-15",
             capture_time="2024-12-10T16:00:00",
             kind="photo", classification="landscape",
             has_export=True, export_relpath="C/c1.jpg",

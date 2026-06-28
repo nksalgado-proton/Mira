@@ -213,23 +213,21 @@ def test_separators_carry_source_event_name_title(tmp_path):
     rows = [
         um.GlobalItem(
             event_uuid="A", item_id="a1", synced_at=NOW,
+            event_name="Salta, Argentina",
             export_relpath="Exported Media/a1.jpg",
             capture_time="2026-04-01T10:00:00",
             kind="photo", has_export=True),
         um.GlobalItem(
             event_uuid="B", item_id="b1", synced_at=NOW,
+            event_name="Nepal",
             export_relpath="Exported Media/b1.jpg",
             capture_time="2026-04-01T11:00:00",
             kind="photo", has_export=True),
     ]
     for r in rows:
         store.upsert(r)
-    # Event-index rows give the events their display names.
-    store.upsert(um.EventIndex(
-        event_uuid="A", relpath_to_base="Salta",
-        name_cached="Salta, Argentina"))
-    store.upsert(um.EventIndex(
-        event_uuid="B", relpath_to_base="Nepal", name_cached="Nepal"))
+    # The projection's denormalised event_name gives the events their
+    # display names (read via list_events_for_scope).
     lg = _make_lg(store)
     _seed_cross_event_cut(lg, "cut-x", [
         {"event_id": "A", "kind": "export",

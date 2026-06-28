@@ -27,6 +27,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Optional
 
+from core import gear_normalize
 from mira.store.repo import EventStore
 from mira.user_store import models as um
 from mira.user_store.repo import UserStore
@@ -196,6 +197,12 @@ def project_event(
         country, country_code, day_city, day_sublocation = _split_day_location(
             r["td_location"], r["td_extras"]
         )
+        # Collapse phone-camera EXIF "lens" strings to the phone name so the
+        # cross-event Lens facet shows one row per phone, not one per sensor
+        # (gear_normalize). Real lenses pass through. The raw string stays in
+        # event.db; the projection carries the curated label.
+        lens_model = gear_normalize.normalize_lens(
+            r["lens_model"], r["camera_id"])
         rows.append(um.GlobalItem(
             event_uuid=event_uuid,
             event_name=event_name,
@@ -212,7 +219,7 @@ def project_event(
             shutter_speed_s=r["shutter_speed_s"],
             focal_length_mm=r["focal_length_mm"],
             flash_fired=r["flash_fired"],
-            lens_model=r["lens_model"],
+            lens_model=lens_model,
             camera_id=r["camera_id"],
             duration_ms=r["duration_ms"],
             pick_state=r["pick_state"],

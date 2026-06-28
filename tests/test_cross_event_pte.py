@@ -58,11 +58,13 @@ def _seed(lg, *, source_label=True, separators=True,
         event_uuid="src", relpath_to_base="Source", name_cached="Source"))
     lg.user_store.upsert(um.GlobalItem(
         event_uuid="src", item_id="a", synced_at=NOW,
+        event_name="Source",
         export_relpath="Exported Media/a.jpg",
         capture_time="2026-04-01T10:00:00", kind="photo", has_export=True,
         day_city="Salta", country="Argentina"))
     lg.user_store.upsert(um.GlobalItem(
         event_uuid="src", item_id="b", synced_at=NOW,
+        event_name="Source",
         export_relpath="Exported Media/b.jpg",
         capture_time="2026-04-02T10:00:00", kind="photo", has_export=True,
         day_city="Salta", country="Argentina"))

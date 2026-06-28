@@ -447,7 +447,8 @@ class LibraryGateway:
         passed-in event uuids. Mirrors the contract of
         :meth:`resolve_recipe`'s ``scope`` parameter so the cross-event
         session path threads a single shape end-to-end."""
-        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        keys = cev.resolve_cross_event(
+            self.user_store, expr, filters, dc_lookup=self._cev_dc_lookup)
         if scope is None:
             return keys
         scope_set = frozenset(scope)
@@ -625,7 +626,7 @@ class LibraryGateway:
         if kind == "dc":
             sf = None
             if operand.get("id"):
-                sf = self.user_store.get(um.SavedFilter, operand["id"])
+                sf = self.dynamic_collection(operand["id"])
             if sf is None and operand.get("tag"):
                 sf = self.dc_by_tag(operand["tag"])
             if sf is None:
@@ -667,15 +668,39 @@ class LibraryGateway:
         self, operand: Mapping[str, Any],
     ) -> Optional[list]:
         """Live DC expression lookup for the strict walk's transitive
-        recursion."""
+        recursion. JSON-tree-aware (spec/94 Phase 1b)."""
         sf = None
         if operand.get("id"):
-            sf = self.user_store.get(um.SavedFilter, operand["id"])
+            sf = self.dynamic_collection(operand["id"])
         if sf is None and operand.get("tag"):
             sf = self.dc_by_tag(operand["tag"])
         if sf is None:
             return None
         return self.dc_expr(sf)
+
+    def _cev_dc_lookup(
+        self, ref: Mapping[str, Any],
+    ) -> Optional["collection_resolver.DCExpr"]:
+        """JSON-tree-aware ``dc`` operand resolver for the cross-event
+        resolver (spec/94 Phase 1b). Collections live in the definition
+        library, so the resolver's own ``saved_filter`` table read returns
+        nothing — a DC referenced as a source operand would resolve to the
+        empty set (and a pin would report "zero items"). This injects the
+        JSON-tree expr + filters. ``None`` on a deleted ref → graceful
+        shrink, unchanged."""
+        sf = None
+        rid = ref.get("id")
+        if rid:
+            sf = self.dynamic_collection(rid)
+        if sf is None and ref.get("tag"):
+            sf = self.dc_by_tag(ref["tag"])
+        if sf is None:
+            return None
+        return collection_resolver.DCExpr(
+            id=sf.id,
+            expr=list(self.dc_expr(sf)),
+            filters=dict(self.dc_filters(sf)),
+        )
 
     def _person_member_keys(self, person_id: str) -> Optional[Set[str]]:
         """Resolve a Person id to the set of cross-event packed keys where
@@ -727,13 +752,16 @@ class LibraryGateway:
         )
 
         def _resolve_pool(expr, filters):
-            keys = cev.resolve_cross_event(self.user_store, expr, filters)
+            keys = cev.resolve_cross_event(
+                self.user_store, expr, filters,
+                dc_lookup=self._cev_dc_lookup)
             if scope_uuids is None:
                 return list(keys)
             return [k for k in keys if cev.unpack_key(k)[0] in scope_uuids]
 
         def _resolve_predicate_keys(predicate_expr):
-            acc = cev.CrossEventAccessors(self.user_store)
+            acc = cev.CrossEventAccessors(
+                self.user_store, dc_lookup=self._cev_dc_lookup)
             keys = collection_resolver.resolve(
                 [list(t) for t in predicate_expr],
                 {},
@@ -767,7 +795,8 @@ class LibraryGateway:
         default separators OFF (spec/81 §3.1), so the field reads the day
         count the formula resolved to and the dialog zeroes it when the
         per-Cut separators setting is off (same shape as event scope)."""
-        keys = cev.resolve_cross_event(self.user_store, expr, filters)
+        keys = cev.resolve_cross_event(
+            self.user_store, expr, filters, dc_lookup=self._cev_dc_lookup)
         if not keys:
             return cut_budget.ShowTotals()
         # Resolve cross-event keys back to rows; one query joins on the

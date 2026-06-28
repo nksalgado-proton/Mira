@@ -224,3 +224,50 @@ def test_dual_home_migration_runs_once_per_session(
     # row stays in SQL untouched.
     g.library_gateway()
     assert len(g.user_store.query_raw(um.SavedFilter, "SELECT * FROM saved_filter")) == 1
+
+
+def _seed_two_items(g):
+    """One wildlife + one macro exported item across two events."""
+    g.user_store.upsert(um.GlobalItem(
+        event_uuid="A", item_id="a1", synced_at="2026-06-21T00:00:00Z",
+        event_name="Alpha", kind="photo", classification="wildlife",
+        has_export=True, export_relpath="A/a1.jpg",
+        capture_time="2026-04-01T10:00:00"))
+    g.user_store.upsert(um.GlobalItem(
+        event_uuid="B", item_id="b1", synced_at="2026-06-21T00:00:00Z",
+        event_name="Beta", kind="photo", classification="macro",
+        has_export=True, export_relpath="B/b1.jpg",
+        capture_time="2026-04-02T10:00:00"))
+
+
+def test_dc_operand_resolves_from_json_tree(isolated_gateway):
+    """Regression (spec/94 Phase 1b): a Collection referenced as a *source
+    operand* must resolve through the JSON-tree library, not the empty
+    ``saved_filter`` table. Before the fix the resolver's ``dc_by_ref`` read
+    the SQL table and a DC operand resolved to the empty set — so pinning a
+    Collection reported "zero items"."""
+    g, _root = isolated_gateway
+    lg = g.library_gateway()
+    _seed_two_items(g)
+    sf = lg.create_dc(
+        "wild", expr=[["+", "exported"]], filters={"styles": ["wildlife"]})
+    # SQL table is empty — the Collection lives only in the JSON tree.
+    assert g.user_store.query_raw(
+        um.SavedFilter, "SELECT * FROM saved_filter") == []
+
+    by_id = lg.resolve_dc_keys([["+", {"kind": "dc", "id": sf.id}]], {})
+    by_tag = lg.resolve_dc_keys([["+", {"kind": "dc", "tag": sf.tag}]], {})
+    direct = lg.resolve_dc_keys(lg.dc_expr(sf), lg.dc_filters(sf))
+    # The operand applies the Collection's own style=wildlife filter → just A.
+    assert by_id == by_tag == direct
+    assert {k.split("::", 1)[0] for k in by_id} == {"A"}
+
+
+def test_missing_dc_operand_shrinks_gracefully(isolated_gateway):
+    """A reference to a deleted Collection contributes the empty set rather
+    than raising — same graceful-shrink contract as before the JSON-tree
+    swap."""
+    g, _root = isolated_gateway
+    lg = g.library_gateway()
+    _seed_two_items(g)
+    assert lg.resolve_dc_keys([["+", {"kind": "dc", "id": "gone"}]], {}) == []

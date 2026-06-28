@@ -277,8 +277,21 @@ class CrossEventAccessors:
     bound to an open :class:`UserStore`. Build one per resolution pass (cheap
     — no caching; the resolver memoises within the pass)."""
 
-    def __init__(self, user_store: UserStore) -> None:
+    def __init__(
+        self,
+        user_store: UserStore,
+        *,
+        dc_lookup: Optional[
+            Callable[[Mapping[str, Any]],
+                     Optional["collection_resolver.DCExpr"]]] = None,
+    ) -> None:
         self.user_store = user_store
+        # spec/94 Phase 1b — Collections moved to the JSON-tree definition
+        # library, so the ``saved_filter`` table :meth:`dc_by_ref` reads is
+        # empty in production. ``dc_lookup`` lets the LibraryGateway inject a
+        # JSON-tree-aware resolver; absent it (direct callers / unit tests
+        # that seed ``saved_filter`` rows), the table read stays the default.
+        self._dc_lookup = dc_lookup
 
     # --- base universe (the ladder rungs, spec/81 §2.1) -------------------- #
 
@@ -304,9 +317,14 @@ class CrossEventAccessors:
     # --- DC operand (a saved_filter row) ----------------------------------- #
 
     def dc_by_ref(self, ref: Mapping[str, Any]) -> Optional[collection_resolver.DCExpr]:
-        """Resolve a ``{"kind":"dc","id"|"tag":…}`` operand against
-        ``saved_filter``. Looks up by id first, falls back to tag. Returns
-        ``None`` if the row is gone (graceful shrink)."""
+        """Resolve a ``{"kind":"dc","id"|"tag":…}`` operand to its
+        ``DCExpr``. When the LibraryGateway injected a ``dc_lookup`` (the
+        production path — Collections live in the JSON-tree definition
+        library, spec/94 Phase 1b), defer to it. Otherwise read the
+        ``saved_filter`` table by id, then tag (direct callers / tests).
+        Returns ``None`` if the Collection is gone (graceful shrink)."""
+        if self._dc_lookup is not None:
+            return self._dc_lookup(ref)
         sf: Optional[um.SavedFilter] = None
         ref_id = ref.get("id")
         if ref_id:
@@ -376,6 +394,10 @@ def resolve_cross_event(
     user_store: UserStore,
     expr: Iterable[Iterable[Any]],
     filters: Optional[Mapping[str, Any]] = None,
+    *,
+    dc_lookup: Optional[
+        Callable[[Mapping[str, Any]],
+                 Optional[collection_resolver.DCExpr]]] = None,
 ) -> List[str]:
     """Run the resolver against ``mira.db``. Returns packed keys
     (``event_uuid::item_id``) in chronological show order.
@@ -383,8 +405,9 @@ def resolve_cross_event(
     Convenience over :class:`CrossEventAccessors`: builds the accessors,
     converts ``expr`` to a list of lists, and dispatches to
     :func:`core.collection_resolver.resolve`. Cycle-safe + memoised within
-    the pass (the resolver does both)."""
-    acc = CrossEventAccessors(user_store)
+    the pass (the resolver does both). ``dc_lookup`` threads the
+    JSON-tree-aware DC resolver (spec/94 Phase 1b) when the caller has it."""
+    acc = CrossEventAccessors(user_store, dc_lookup=dc_lookup)
     return collection_resolver.resolve(
         [list(t) for t in expr],
         dict(filters or {}),

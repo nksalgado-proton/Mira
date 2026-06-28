@@ -265,6 +265,14 @@ class BatchProgressLine(QWidget):
         self._cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         outer.addWidget(self._cancel)
         self._queue: Optional[BatchJobQueue] = None
+        #: spec/96 (Nelson 2026-06-28) — a transient "busy" message for
+        #: surface transitions (open/close an event, switch surface,
+        #: Back). Set by the shell around a navigation handler so the
+        #: user gets a visible "working…" cue during the lag — the
+        #: wait CURSOR can't repaint while the GUI thread is busy on
+        #: Windows, but this already-painted line stays on screen.
+        #: Priority sits below a running batch job, above previews/Ready.
+        self._transient: Optional[str] = None
         #: Host-supplied callable returning the proxy builder's
         #: ``pending_count``. ``None`` while unwired (tests / early
         #: startup); :meth:`_sync` treats that as zero previews
@@ -294,6 +302,20 @@ class BatchProgressLine(QWidget):
         if not self._previews_poll.isActive():
             self._previews_poll.start()
         self._sync()
+
+    def set_busy(self, label: str) -> None:
+        """spec/96 — show a transient busy message (e.g. "Loading…")
+        during a surface transition. Re-syncs immediately so the line
+        repaints before the caller's (often blocking) work begins."""
+        self._transient = label or tr("Loading…")
+        self._sync()
+
+    def clear_busy(self) -> None:
+        """Drop the transient busy message; the line falls back to the
+        running batch job / previews / Ready, whichever applies."""
+        if self._transient is not None:
+            self._transient = None
+            self._sync()
 
     def set_previews_source(
         self, source: Optional[Callable[[], int]],
@@ -360,6 +382,20 @@ class BatchProgressLine(QWidget):
                 tr("+{n} waiting").replace("{n}", str(q.queued_count))
                 if q.queued_count else "")
             self._cancel.setVisible(True)
+            self._set_idle_styling(False)
+            self.setVisible(True)
+            return
+        # ── (1b) transient navigation busy → "Loading…" with an
+        # indeterminate bar. Below a running batch job, above previews.
+        if self._transient:
+            self._label.setText(self._transient)
+            self._bar.setRange(0, 0)            # indeterminate "busy"
+            self._bar.setVisible(True)
+            self._bar.setProperty("idle", False)
+            self._file_bar.setVisible(False)
+            self._file_label.setVisible(False)
+            self._queued.setText("")
+            self._cancel.setVisible(False)
             self._set_idle_styling(False)
             self.setVisible(True)
             return

@@ -82,6 +82,61 @@ from mira.ui.shell.sidebar import (
 )
 
 
+def _nav_busy(method):
+    """spec/96 (Nelson 2026-06-28) — show the app activity line's
+    transient "Loading…" cue for the duration of a synchronous
+    navigation handler (open/close an event, switch surface, Back), so
+    the user gets feedback during the transition lag. The line is an
+    already-painted widget, so it stays visible while the GUI thread is
+    busy — unlike a wait cursor, which Windows can't repaint mid-work.
+
+    Signature-safe for Qt slots: PyQt delivers a signal's args by the
+    slot's arity, but a naive ``*args`` wrapper looks variadic and gets
+    EVERY arg — crashing e.g. a ``def _on_back(self)`` slot wired to
+    ``clicked(bool)``. We trim positional args the wrapped method
+    doesn't declare, mirroring PyQt's own behaviour."""
+    import functools
+    import inspect
+    try:
+        params = list(inspect.signature(method).parameters.values())
+        varargs = any(
+            p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        max_pos = sum(
+            1 for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                          inspect.Parameter.POSITIONAL_OR_KEYWORD))
+    except (TypeError, ValueError):                                # noqa: BLE001
+        varargs, max_pos = True, None
+
+    @functools.wraps(method)
+    def _wrapper(*args, **kwargs):
+        if not varargs and max_pos is not None:
+            args = args[:max_pos]
+        self = args[0] if args else None
+        line = getattr(self, "batch_line", None)
+        if line is not None:
+            try:
+                from PyQt6.QtCore import QEventLoop
+                from PyQt6.QtWidgets import QApplication
+                line.set_busy(tr("Loading…"))
+                # Flush ONE paint round (no user input, so this can't
+                # re-enter the navigation) so the line repaints before
+                # the handler's blocking work begins.
+                QApplication.processEvents(
+                    QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            except Exception:                                      # noqa: BLE001
+                line = None
+        try:
+            return method(*args, **kwargs)
+        finally:
+            if line is not None:
+                try:
+                    line.clear_busy()
+                except Exception:                                  # noqa: BLE001
+                    pass
+    return _wrapper
+
+
 class MainWindow(QMainWindow):
     # spec/46 Slice 2+3 (2026-06-06): event-card click goes direct to the
     # activity dashboard. EventPlanPage + EventDashboardPage retired; their
@@ -493,6 +548,7 @@ class MainWindow(QMainWindow):
         # Land on Dashboard, shown explicitly (single source of truth for the start page).
         self.page_stack.show_page(ENTRY_DASHBOARD)
 
+    @_nav_busy
     def _on_entry(self, key: str) -> None:
         """Library sidebar Actions-band dispatch — switch pages, or fire an action
         for action-style entries (modals, standalone tools, settings)."""
@@ -1159,6 +1215,7 @@ class MainWindow(QMainWindow):
         from mira.ui.design.about_dialog import show_about
         show_about(self)
 
+    @_nav_busy
     def _go_to_library(self) -> None:
         """App → Library (Ctrl+L) — return to the events list from any
         per-event surface. Clears the cached event id + refreshes the menu
@@ -2027,6 +2084,7 @@ class MainWindow(QMainWindow):
 
         return provider
 
+    @_nav_busy
     def _open_event(self, event_id: str) -> bool:
         """Click an event card body → land where spec/64 §2.2 says.
 
@@ -2670,6 +2728,7 @@ class MainWindow(QMainWindow):
             self.gateway.refresh_index_entry(event_id)
             self._refresh_menu_state()
 
+    @_nav_busy
     def _open_event_cuts_list(self, event_id: str) -> bool:
         """Closed event body click (spec/64 §2.4) → land on the Cuts list.
         Same shape as the ``"share"`` route in :meth:`_on_phase_activated`,
@@ -2869,6 +2928,7 @@ class MainWindow(QMainWindow):
             target=_run, name=f"classify-{event_id[:8]}", daemon=True,
         ).start()
 
+    @_nav_busy
     def _on_phase_tile_activated(self, phase: str) -> None:
         """Dashboard phase tile click → route to the corresponding surface.
 
@@ -2882,6 +2942,7 @@ class MainWindow(QMainWindow):
     # is cheap (two GROUP BYs + one bucket_cache read per day) so the page
     # is rebuilt at every entry instead of stale-cached.
 
+    @_nav_busy
     def _open_days_lists_for(
         self, event_id: str,
         *, anchor_day_number: Optional[int] = None,
@@ -3086,6 +3147,7 @@ class MainWindow(QMainWindow):
             log.exception("event-name lookup failed for %s", event_id)
         return None
 
+    @_nav_busy
     def _on_days_lists_back(self) -> None:
         """Back from Days Lists. During a QS session this is the
         outermost-back → confirm and finalize (copy_kept for standalone,
@@ -3188,6 +3250,7 @@ class MainWindow(QMainWindow):
                 pass
         return "", ""
 
+    @_nav_busy
     def _on_days_grid_back(self) -> None:
         """Back from the Days Grid returns to Days Lists. Releases the
         page's event gateway (no-op in paths mode) so the next day-card
@@ -6137,6 +6200,7 @@ class MainWindow(QMainWindow):
         merged.sort(key=lambda r: r.date)
         return merged
 
+    @_nav_busy
     def _on_event_back(self) -> None:
         """Back from the activity dashboard → the (refreshed) events list. Also
         refreshes the menu state so per-event entries hide and the events-list
@@ -6751,6 +6815,7 @@ class MainWindow(QMainWindow):
             dlg.deleteLater()
         self.events_page.refresh()
 
+    @_nav_busy
     def _on_phase_activated(self, phase: str) -> None:
         """A phase tile was clicked — route to the corresponding surface.
 
@@ -7169,6 +7234,7 @@ class MainWindow(QMainWindow):
         box.setText("\n".join(lines))
         box.exec()
 
+    @_nav_busy
     def _on_select_closed(self) -> None:
         """Back from the Select surface → the per-event phase grid
         (refreshed). spec/70 Phase 3: when the bridge from the redesigned
@@ -7969,6 +8035,7 @@ class MainWindow(QMainWindow):
         behaviour (hide the menu bar)."""
         self.menuBar().setVisible(not on)
 
+    @_nav_busy
     def _on_process_closed(self) -> None:
         """Back from the Process (Edit) surface. spec/70 Phase 3 §3 —
         when the Days Grid bridge is active the user entered EditorPage
@@ -8022,6 +8089,7 @@ class MainWindow(QMainWindow):
     # _on_days_grid_back / _on_days_lists_back which clear
     # _export_phase_active on the way out.
 
+    @_nav_busy
     def _on_curate_closed(self) -> None:
         """Back from the Cuts shell → the door the user came in through
         (spec/64 §2.4, Nelson 2026-06-13): events list when the user

@@ -212,6 +212,49 @@ def test_only_new_skips_existing_files_without_manifest(gw, tmp_path):
         "001_e1.jpg", "002_e3a.jpg", "003_v1.mp4", "004_e2.jpg"]
 
 
+def test_only_new_copies_member_absent_from_disk_despite_manifest(gw, tmp_path):
+    """spec/158 data-loss regression (Nelson 2026-06-28) — a member the
+    manifest CLAIMS is present but whose file is NOT actually on disk
+    MUST be copied, never silently skipped. The old loose ``endswith``
+    match marked Repeated-cluster members 'present' against a different
+    same-suffix file and never copied them. Skip is now driven by an
+    EXACT, 1:1 on-disk check, so a decoy can't satisfy it and a poisoned
+    manifest self-heals."""
+    cut = gw.cut("cut-s")          # members: e1, e3a, v1
+    folder = tmp_path / "Cuts" / "short_version"
+    folder.mkdir(parents=True)
+    # On disk: e1 genuinely present, plus a DECOY whose name merely ends
+    # with "_e3a.jpg" (the loose-match trap). e3a + v1 are NOT here.
+    (folder / "001_e1.jpg").write_bytes(b"E1")
+    (folder / "002_decoy_e3a.jpg").write_bytes(b"DECOY")
+    # A poisoned manifest that wrongly lists every member as present.
+    import json
+    (folder / ".mira-cut-export.json").write_text(
+        json.dumps({
+            "version": 1, "cut_id": cut.id,
+            "members": [
+                "Exported Media/e1.jpg",
+                "Exported Media/e3a.jpg",
+                "Exported Media/v1.mp4",
+            ],
+            "max_seq": 2,
+        }),
+        encoding="utf-8")
+
+    result = export_cut(
+        gw, gw.cut("cut-s"), event_root=tmp_path, target=folder,
+        separators_on=False, only_new=True)
+
+    names = _names(folder)
+    # e1 (really on disk) skipped; e3a + v1 copied (the decoy must NOT
+    # count as e3a). Both real files now exist; nothing was lost.
+    assert result.skipped == 1
+    assert result.linked + result.copied == 2
+    assert any(n.endswith("_e3a.jpg") and "decoy" not in n for n in names)
+    assert any(n.endswith("_v1.mp4") for n in names)
+    assert (folder / "002_decoy_e3a.jpg").read_bytes() == b"DECOY"  # untouched
+
+
 def test_overwrite_pte_carries_base_paths_no_2(tmp_path):
     """The ``.pte`` written under Overwrite carries the base folder in
     ProjectFilePath / ImagesFolder / per-slide FileName — no ``(2)``

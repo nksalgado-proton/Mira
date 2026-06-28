@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -497,21 +498,29 @@ def export_cut(
     # another Cut) every member is new, so it degenerates to a normal
     # full export into ``base``.
     prior: dict = {}
-    existing_names: set = set()      # show files already on disk (only_new)
+    # spec/158 (Nelson 2026-06-28 data-loss fix) — a multiset of the
+    # show-files ACTUALLY on disk, keyed by name minus the ``NNN_``
+    # sequence prefix. A manifest claim that a member is "already here"
+    # is VERIFIED against this before we skip it, so we can never mark a
+    # file copied that isn't really on disk (the Repeated-cluster bug:
+    # the old loose ``endswith`` match skipped brand-new members against
+    # a different same-suffix file and never copied them).
+    disk_basenames: "Counter[str]" = Counter()
     max_existing_seq = 0
+
+    def _strip_seq(name: str) -> str:
+        head, sep, rest = name.partition("_")
+        return rest if (sep and head.isdigit()) else name
+
     if only_new:
         dest = base
         if dest.exists():
             prior = _read_export_manifest(dest, cut_id=cut.id)
             max_existing_seq = int(prior.get("max_seq", 0))
-            # Scan the folder so an OLD-build export (no manifest) is
-            # still treated as an additive base — we must NEVER re-link
-            # or overwrite a file already here. It may be open in PTE,
-            # which is the WinError 32 "file in use" crash this fixes.
             for p in dest.iterdir():
                 if not p.is_file() or p.name.startswith("."):
                     continue
-                existing_names.add(p.name)
+                disk_basenames[_strip_seq(p.name)] += 1
                 head = p.name.split("_", 1)[0]
                 if head.isdigit():
                     max_existing_seq = max(max_existing_seq, int(head))
@@ -530,28 +539,18 @@ def export_cut(
     # re-emitted (they came from the first full export) and already-
     # materialized members are skipped. A fresh ``only_new`` (no
     # manifest) runs the full path below.
-    already: set = set(prior.get("members", []))
-    # Incremental = additive re-export onto an existing bundle (manifest
-    # OR show files already on disk): skip the opener / separators /
-    # audio (they're already here) and add only members not yet present.
-    # A truly fresh ``only_new`` (empty folder) runs the full path below.
-    incremental = only_new and (bool(already) or bool(existing_names))
+    # Incremental = additive re-export onto an existing bundle (there are
+    # show files already on disk): skip the opener / separators / audio
+    # (they're already here) and add only members not yet present. A
+    # truly fresh ``only_new`` (empty folder) runs the full path below.
+    incremental = only_new and bool(disk_basenames)
     result = ExportResult(folder=dest)
-    # Members materialized in THIS folder after the run — seeds the
-    # manifest write at the end. Starts from the prior set so an
-    # incremental run accumulates rather than forgets.
-    present_members: set = set(already)
-
-    def _member_present(relpath: str) -> bool:
-        """Is this member already materialized in ``dest``? Manifest set
-        first, then a disk-name fallback so an old-build folder (no
-        manifest) is still recognised — its files are ``NNN_<name>``.
-        Used by ``only_new`` so we never re-link/overwrite an existing
-        (possibly locked) file."""
-        if relpath in already:
-            return True
-        nm = Path(relpath).name
-        return any(n == nm or n.endswith("_" + nm) for n in existing_names)
+    # Members confirmed present in THIS folder after the run — seeds the
+    # manifest write at the end. Built FRESH (not from ``already``) so a
+    # stale/poisoned prior manifest can't carry a phantom entry forward:
+    # an entry only lands here once we've either verified its file on
+    # disk (skip path) or actually copied it (write path).
+    present_members: set = set()
 
     overlay_fields = list(gateway.cut_overlay_fields(cut))
     iptc_writer = iptc_writer or _exiftool_iptc_writer
@@ -587,15 +586,25 @@ def export_cut(
             log.exception("opener render failed for %s", target_path)
             seq -= 1
     for f in files:
-        # spec/158 — Only-new-files never touches a member already in
-        # the folder (manifest OR on disk); it keeps the existing copy.
-        # Recording it in ``present_members`` keeps the manifest honest
-        # even when bootstrapping from an old-build (manifest-less)
-        # bundle.
-        if only_new and _member_present(f.export_relpath):
-            result.skipped += 1
-            present_members.add(f.export_relpath)
-            continue
+        # spec/158 — Only-new-files skips a member ONLY when the manifest
+        # records it AND its file is VERIFIED on disk (exact show-name,
+        # consumed 1:1). Anything unverified — a new member, or a stale
+        # manifest entry whose file is missing — falls through and is
+        # copied. This can never mark a file "copied" that isn't really
+        # there (the data-loss fix) and self-heals a poisoned manifest.
+        if only_new:
+            nm = _strip_seq(Path(f.export_relpath).name)
+            if disk_basenames.get(nm, 0) > 0:
+                # A file with this exact show-name is really on disk —
+                # consume it 1:1 and skip the copy. Disk presence (not
+                # the manifest) is the authority, so a poisoned manifest
+                # can never make us skip a member whose file is absent.
+                disk_basenames[nm] -= 1
+                result.skipped += 1
+                present_members.add(f.export_relpath)
+                continue
+            # Not on disk → copy it (new member, or self-heal a stale
+            # manifest entry whose file went missing).
         # spec/158 — day-separator cards are part of the first full
         # bundle; an incremental add appends media only (re-run
         # Overwrite to refresh separators / opener / audio).

@@ -58,6 +58,25 @@ into the destination folder:
   and is swallowed — it never fails the export.
 - A dotfile, so it stays out of folder listings / PTE member scans.
 
+## Skip is disk-verified, never manifest-only (data-loss fix)
+
+**Critical (Nelson 2026-06-28).** A member is skipped **only when a file
+with its exact show-name is really on disk** (the folder is catalogued
+by name minus the `NNN_` sequence prefix, and matches are consumed
+1:1). The manifest is a record, **not** the authority for skipping —
+anything not verified on disk is copied.
+
+This replaced a loose `endswith("_" + name)` match that wasn't 1:1:
+brand-new **Repeated-cluster** members (near-duplicate frames) matched a
+*different* same-suffix file already in the folder, so they were marked
+"copied" in the manifest and **never actually written** — a silent
+data-loss. Driving the skip off a verified, exact, 1:1 on-disk check
+means we can never record a file as copied that isn't there, and a
+poisoned manifest **self-heals** on the next run (the missing members
+fail verification and get copied). `present_members` is rebuilt fresh
+each run from genuine skips + actual writes, so a stale entry can't
+propagate. Regression: `test_only_new_copies_member_absent_from_disk_despite_manifest`.
+
 ## Behaviour
 
 `only_new=True`:

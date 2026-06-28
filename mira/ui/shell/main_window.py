@@ -1140,9 +1140,11 @@ class MainWindow(QMainWindow):
         dlg.exec()
         dlg.deleteLater()
 
+    @_nav_busy
     def _on_close_toggled(self) -> None:
         """Event menu Close↔Re-open → flip ``event.is_closed`` via the gateway,
-        refresh the activity dashboard + Event menu state + events list."""
+        refresh the activity dashboard + Event menu state + events list.
+        Wrapped in :func:`_nav_busy` for the events_page.refresh() lag."""
         if self._current_event_id is None:
             return
         new_state = not self._event_is_closed_now()
@@ -2864,10 +2866,16 @@ class MainWindow(QMainWindow):
         self._current_event_id = event_id
         self._on_delete_event()
 
+    @_nav_busy
     def _on_card_status_toggle_requested(self, event_id: str) -> None:
         """Status-badge click on an event tile (spec/64 §2.3) → flip
         ``event.is_closed`` instantly (no confirm) and refresh the events
-        list so the tile picks up its new body content + badge state."""
+        list so the tile picks up its new body content + badge state.
+
+        Wrapped in :func:`_nav_busy` — the events_page.refresh() rebuilds
+        every tile (one event.db open each), a perceptible lag the user
+        asked to see feedback for (Nelson 2026-06-28: "closing/reopening
+        an event with the menu in the event tile")."""
         try:
             eg = self.gateway.open_event(event_id)
             try:

@@ -715,6 +715,12 @@ class EventsPage(QWidget):
             # minus faces (spec/91 is its own track; ``show_faces``
             # stays False until it lands).
             show_hardware=True,
+            # path A — filters belong to the Collection, not the Cut. The
+            # pinned Collection already carries (and applies, via the source
+            # operand) its filters; authoring them lives in + New Collection.
+            # Dropping the inline wall is the spec/81 §3 model: a Cut is a
+            # pinned Collection + budget/attachments, not a filter editor.
+            show_filters=False,
             inventory_scope=INVENTORY_LIBRARY,
             ctx=ctx,
             pool_probe=lambda expr: library_gateway.dc_probe(expr),

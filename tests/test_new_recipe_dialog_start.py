@@ -118,6 +118,36 @@ def test_start_disabled_when_probe_returns_empty_pool(qapp):
     assert dlg._start_btn.isEnabled() is False
 
 
+# --------------------------------------------------------------------------- #
+# path A — the Pin → Cut flow drops the inline filter wall
+# --------------------------------------------------------------------------- #
+
+
+def test_show_filters_false_drops_the_filter_section(qapp):
+    """The cross-event Pin → Cut flow passes show_filters=False: the dialog
+    builds no Style / Camera / Lens / Media widgets, and composition carries
+    empty filters (the pinned Collection filters via the source operand)."""
+    dlg = NewRecipeDialog(
+        flavour=FLAVOUR_COLLECTION, show_scope=True, show_hardware=True,
+        show_filters=False, inventory_scope=INVENTORY_LIBRARY,
+        ctx=_ctx(with_source=True))
+    assert dlg._style_chips == {}
+    assert dlg._camera_chips == {}
+    assert dlg._lens_chips == {}
+    assert dlg._photos_cb is None and dlg._videos_cb is None
+    comp = dlg.composition()
+    assert comp["filters"].get("styles") == []
+    assert comp["filters"].get("media_type") == "both"
+
+
+def test_show_filters_true_keeps_the_filter_section(qapp):
+    """The default (event-scope Cut + inline Collection authoring) keeps the
+    thin Style + Media filters."""
+    dlg = _dialog(qapp, ctx=_ctx(with_source=True))
+    assert "macro" in dlg._style_chips
+    assert dlg._photos_cb is not None and dlg._videos_cb is not None
+
+
 def test_start_enabled_with_non_empty_pool(qapp):
     """A successful probe with at least one pool member enables Start."""
     dlg = _dialog(qapp, ctx=_ctx(with_source=True),

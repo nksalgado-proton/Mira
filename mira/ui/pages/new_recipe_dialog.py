@@ -1664,6 +1664,7 @@ class NewRecipeDialog(QDialog):
         recipe_resolver_by_ref: Optional[
             Callable[[Any], Optional[Any]]] = None,
         show_faces: bool = False,
+        show_filters: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1684,6 +1685,15 @@ class NewRecipeDialog(QDialog):
         # spec/91-deferred face surface with them. Defaults to
         # False; callers flip True only when the face track lands.
         self._show_faces = bool(show_faces)
+        # spec/81 §3 / path A — filters belong to the Collection, not the
+        # Cut. The cross-event Pin → Cut flow passes ``show_filters=False``
+        # so the dialog drops the (redundant, non-scaling) inline Style /
+        # Camera / Lens / Media wall; the pinned Collection already carries
+        # its filters and they apply through the source operand. The rich
+        # "+ New Collection" dialog (NewCrossEventDcDialog + _filter_family)
+        # is where filters are authored. Event-scope Cuts keep their thin
+        # Style + Media filters (default True).
+        self._show_filters = bool(show_filters)
         self._inventory_scope = inventory_scope
         self._ctx = ctx
         self._pool_probe = pool_probe
@@ -2161,9 +2171,12 @@ class NewRecipeDialog(QDialog):
         sections = [
             self._wrap_as_section_card(
                 self._build_source_section(), object_name="SourceSection"),
-            self._wrap_as_section_card(
-                self._build_filters_section(), object_name="FiltersSection"),
         ]
+        # path A — the Pin → Cut flow drops the inline Filters wall; filters
+        # ride the pinned Collection (and are authored in + New Collection).
+        if self._show_filters:
+            sections.append(self._wrap_as_section_card(
+                self._build_filters_section(), object_name="FiltersSection"))
         return self._build_band_group(
             question=tr("Which items?"),
             sections=sections,

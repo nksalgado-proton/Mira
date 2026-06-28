@@ -448,6 +448,7 @@ class DaysGridPage(QWidget):
         # user marks members inside).
         self._paths_state_lookup = None      # Callable[[Path], Optional[str]]
         self._paths_day_rebuild = None       # Callable[[], list[GridItem]]
+        self._paths_state_write = None       # Callable[[Path, str], None]
         # Counts displayed in the toolbar progress block.
         self._reviewed = 0
         self._total = 0
@@ -1098,6 +1099,7 @@ class DaysGridPage(QWidget):
         self,
         state_lookup=None,
         day_rebuild=None,
+        state_write=None,
     ) -> None:
         """Register the paths-mode (no-gateway) callbacks. The Quick
         Sweep host calls this once before `setDay` to plug:
@@ -1109,11 +1111,18 @@ class DaysGridPage(QWidget):
         * ``day_rebuild() -> list[GridItem]`` — called by
           `_close_cluster` so the cluster cover repaints with its
           fresh aggregate state after the user marked members inside.
+        * ``state_write(path, new_state)`` — persists a per-cell
+          decision to the QS ledger when there's no gateway. Without
+          it, a border / P / X verb in Quick Sweep was a silent no-op
+          (Nelson 2026-06-28 — "clicking the border to change status
+          does not work"). ``new_state`` is the Thumb wire value
+          (``"picked"`` / ``"skipped"`` / ``"compare"``).
 
-        Both default to ``None`` (gateway-mode pages skip both
-        paths). Pass ``None`` to clear when the QS session ends."""
+        All default to ``None`` (gateway-mode pages skip them). Pass
+        ``None`` to clear when the QS session ends."""
         self._paths_state_lookup = state_lookup
         self._paths_day_rebuild = day_rebuild
+        self._paths_state_write = state_write
 
     # ── Gateway → grid items ───────────────────────────────────────────
 
@@ -3047,6 +3056,42 @@ class DaysGridPage(QWidget):
             self._thumb_widgets[idx].setExported(True)
         self._update_counts()
 
+    def _apply_paths_verb(self, idx: int, item, verb: str) -> bool:
+        """Quick Sweep / paths-mode (no gateway) per-cell verb. Computes
+        the next state with the same :meth:`_next_state` grammar the
+        gateway path uses, writes it to the QS ledger via the registered
+        ``state_write`` callback, and repaints the cell + counts in
+        place. Returns ``True`` (handled) even when no write callback is
+        registered, so the caller still treats the verb as consumed."""
+        cur_state = item.state
+        new_state = self._next_state(item.item_kind, cur_state, verb)
+        if new_state is None or new_state == cur_state:
+            return True
+        if self._paths_state_write is not None and item._path is not None:
+            try:
+                self._paths_state_write(item._path, new_state)
+            except Exception:                                          # noqa: BLE001
+                log.exception(
+                    "paths-mode state_write failed for %s", item._path)
+                return True
+        item.state = new_state
+        widgets = self._thumb_widgets
+        if 0 <= idx < len(widgets):
+            widgets[idx].setState(new_state)
+        self._update_counts()
+        pct = (
+            int(round(self._reviewed / self._total * 100))
+            if self._total else 0
+        )
+        self._progress_label.setText(
+            f"{self._reviewed} / {self._total} reviewed")
+        self._progress_bar.setValue(pct)
+        self._progress_bar.setState(
+            "done" if self._reviewed == self._total and self._total > 0
+            else "prog" if self._reviewed > 0
+            else None)
+        return True
+
     def _apply_verb_at_index(self, idx: int, verb: str) -> bool:
         """Apply a §4 verb to the cell at ``idx``. Returns ``True`` if
         a verb landed (so a caller using this from keyPressEvent can
@@ -3073,7 +3118,11 @@ class DaysGridPage(QWidget):
             # at the day level).
             return False
         if self._eg is None:
-            return False
+            # Quick Sweep / paths mode (no gateway) — record the decision
+            # in the QS ledger via the registered write callback and
+            # repaint in place. Previously this returned False, so a
+            # border / P / X verb did nothing in Quick Sweep.
+            return self._apply_paths_verb(idx, item, verb)
         # spec/89 Slice 5 — when the user is inside a versions cluster
         # sub-grid, each cell IS a lineage row (item_id = the row's
         # export_relpath). Route P/X/Space to set_lineage_intent so the
@@ -4046,17 +4095,41 @@ class DaysGridPage(QWidget):
         (the toolbar's "Delete now · M" verb). Setting Set aside
         never touches the on-disk file."""
         if self._eg is None:
-            # Mock mode — apply against in-memory items so smokes/tests
-            # see the visual change. No gateway round trip.
+            # Paths mode (Quick Sweep) / mock. Apply against in-memory
+            # items for the immediate visual change AND — when a
+            # ``state_write`` callback is registered (QS) — PERSIST every
+            # affected path to the ledger. Without the persist, Skip all
+            # only repainted the cells: opening the viewer or stepping
+            # back rebuilt from the unchanged ledger and everything
+            # reverted to the green default (Nelson 2026-06-28). Cluster
+            # covers expand to their members so the aggregate survives a
+            # rebuild. No write callback (a smoke/test) → in-memory only,
+            # exactly as before.
             thumb_state = _CELL_TO_THUMB_STATE[
                 CellColor.KEPT if state == STATE_PICKED
                 else CellColor.DISCARDED
             ]
+            write = self._paths_state_write
+
+            def _persist(path) -> None:
+                if write is None or path is None:
+                    return
+                try:
+                    write(path, thumb_state)
+                except Exception:                                  # noqa: BLE001
+                    log.exception("paths-mode bulk write failed for %s", path)
+
             for i, it in enumerate(self._items):
                 if it.item_kind == "cluster":
                     it.cluster_split = None
+                    if it._cull_cluster is not None:
+                        for m in it._cull_cluster.members:
+                            _persist(getattr(m, "path", None))
+                else:
+                    _persist(it._path)
                 it.state = thumb_state
-                self._thumb_widgets[i].setState(thumb_state)
+                if 0 <= i < len(self._thumb_widgets):
+                    self._thumb_widgets[i].setState(thumb_state)
             self._update_counts()
             self._refresh()
             return

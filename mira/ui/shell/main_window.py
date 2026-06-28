@@ -5110,6 +5110,7 @@ class MainWindow(QMainWindow):
             grid_page.set_paths_mode_callbacks(
                 state_lookup=self._qs_lookup_thumb_state,
                 day_rebuild=lambda: self._qs_build_grid_items(day_number),
+                state_write=self._qs_write_thumb_state,
             )
             grid_page.setDay(day_number, title, date_iso, grid_items)
             stack.setCurrentWidget(grid_page)
@@ -7477,6 +7478,7 @@ class MainWindow(QMainWindow):
             self.days_grid_page.set_paths_mode_callbacks(
                 state_lookup=self._qs_lookup_thumb_state,
                 day_rebuild=lambda: self._qs_build_grid_items(day_number),
+                state_write=self._qs_write_thumb_state,
             )
             self.days_grid_page.setDay(
                 day_number, title, date_iso, grid_items)
@@ -7575,6 +7577,25 @@ class MainWindow(QMainWindow):
         if s == _C:
             return "compare"
         return None
+
+    def _qs_write_thumb_state(self, path: Path, wire_state: str) -> None:
+        """Persist a Quick Sweep grid decision back into the session
+        ledger. The inverse of :meth:`_qs_lookup_thumb_state`: maps the
+        Thumb wire value to a ``core.cull_state`` code keyed by path.
+        Registered as the paths-mode ``state_write`` callback so border /
+        P / X verbs in the QS days grid actually land (Nelson
+        2026-06-28)."""
+        from core.cull_state import (
+            STATE_CANDIDATE as _C,
+            STATE_DISCARDED as _D,
+            STATE_KEPT as _K,
+        )
+        if self._quick_sweep is None:
+            return
+        code = {"picked": _K, "skipped": _D, "compare": _C}.get(wire_state)
+        if code is None:
+            return
+        self._quick_sweep["state"][path] = code
 
     def _qs_build_grid_items(self, day_number: int) -> list:
         """Build the day grid's GridItems from the session's PickDay
@@ -7816,6 +7837,7 @@ class MainWindow(QMainWindow):
             self.days_grid_page.set_paths_mode_callbacks(
                 state_lookup=self._qs_lookup_thumb_state,
                 day_rebuild=lambda: self._qs_build_grid_items(day_number),
+                state_write=self._qs_write_thumb_state,
             )
             self.days_grid_page.setDay(
                 day_number, title, date_iso, grid_items)

@@ -1051,6 +1051,35 @@ def test_set_classification_refreshes_index_cache(tmp_path):
     assert entry["event_subtype"] == "Documentary"
 
 
+def test_set_classification_renames_event_and_refreshes_index(tmp_path):
+    """spec/77 §5 (Nelson 2026-06-28) — editing the name in the Header
+    dialog must reach BOTH event.db and the index cache, so the
+    events-list tile updates. The rename used to be dropped (name was
+    never passed to set_classification) and the tile kept the old name."""
+    gw = _populated_library(tmp_path)
+    gw.set_classification("e-cr", name="Renamed Trip")
+    eg = gw.open_event("e-cr")
+    try:
+        assert eg.event().name == "Renamed Trip"     # reached event.db
+    finally:
+        eg.close()
+    assert gw.index.get("e-cr")["name"] == "Renamed Trip"  # + the cache
+
+
+def test_set_classification_blank_name_keeps_existing(tmp_path):
+    """Name is the required identity — a blank/whitespace value never
+    clears it (the Header dialog disables Save on empty, but the gateway
+    guards too)."""
+    gw = _populated_library(tmp_path)
+    before = gw.index.get("e-cr")["name"]
+    gw.set_classification("e-cr", name="   ")
+    eg = gw.open_event("e-cr")
+    try:
+        assert eg.event().name == before
+    finally:
+        eg.close()
+
+
 def test_set_classification_rejects_unknown_event_type(tmp_path):
     """Validation lives at the gateway boundary — silent coercion would mask
     bugs in the dialog code that produces the value."""

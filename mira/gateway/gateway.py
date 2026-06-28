@@ -886,6 +886,7 @@ class Gateway:
         self,
         event_id: str,
         *,
+        name: Optional[str] = None,
         event_type: Optional[str] = None,
         event_subtype: Optional[str] = None,
         description: Optional[str] = None,
@@ -973,6 +974,14 @@ class Gateway:
         try:
             updates: List[str] = []
             values: List[Any] = []
+            # The event's identity name (spec/77 §5 — editable from the
+            # Event Header dialog). Only a non-blank value updates it;
+            # name is required identity, so an empty string never clears
+            # it. Without this the rename was dropped and the tile kept
+            # showing the old name (Nelson 2026-06-28).
+            if name is not None and name.strip():
+                updates.append("name = ?")
+                values.append(name.strip())
             if event_type is not None:
                 updates.append("event_type = ?")
                 values.append(event_type)

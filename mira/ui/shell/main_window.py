@@ -6236,6 +6236,10 @@ class MainWindow(QMainWindow):
         try:
             self.gateway.set_classification(
                 event_id,
+                # spec/77 §5 — persist the (required) identity name so a
+                # rename from the Header dialog reaches event.db + the
+                # index, and the tile updates on refresh.
+                name=edited.get("name") or "",
                 event_type=edited.get("event_type"),
                 event_subtype=edited.get("event_subtype") or "",
                 description=edited.get("description") or "",

@@ -1294,6 +1294,17 @@ class DaysGridPage(QWidget):
         self._items = list(self._day_items)
         self._update_counts()
         self._refresh()
+        # spec/89 §4.2 — keep the Export now / Delete now button counts
+        # in step with the rebuilt grid. Any rebuild (bulk "Mark all to
+        # export", close-cluster, re-open day) re-syncs the button here;
+        # without it, bulk-marking all to export left "Export now" greyed
+        # out (Nelson 2026-06-28). No-op fast when not in Export mode.
+        if self._export_mode:
+            try:
+                self._refresh_export_button_counts()
+            except Exception:                                          # noqa: BLE001
+                log.exception(
+                    "DaysGridPage: export button refresh after rebuild")
 
     def _reshape_for_versions(
         self,

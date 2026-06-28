@@ -1255,6 +1255,24 @@ def test_bulk_mark_all_to_export_uses_intent_verb_in_confirm(
     page.close_event()
 
 
+def test_mark_all_to_export_enables_export_now_button(
+        qapp, app_gateway, monkeypatch):
+    """spec/89 §4.2 (Nelson 2026-06-28) — after "Mark all to export"
+    confirms, the Export now button must ENABLE. The bulk verb rebuilds
+    via _refresh_from_gateway, which now re-syncs the button count;
+    previously that path skipped the refresh and the button stayed
+    greyed out even though every cell was green."""
+    monkeypatch.setattr(
+        "mira.ui.pages.days_grid_page.confirm", lambda *a, **k: True)
+    page = DaysGridPage(app_gateway)
+    page.open_for_day(
+        "evt-x", 1, title="Day", date_iso="2026-04-01", phase="export")
+    page._on_pick_all_clicked()
+    assert page._export_btn.isEnabled()
+    assert "Export now" in page._export_btn.text()
+    page.close_event()
+
+
 # --------------------------------------------------------------------------- #
 # Single X-on-shipped — silent, fast, UNDOABLE (spec/63 §4 Ctrl+Z
 # + re-press-P quick-recover).

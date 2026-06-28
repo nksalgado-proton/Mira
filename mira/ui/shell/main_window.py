@@ -469,6 +469,12 @@ class MainWindow(QMainWindow):
             lambda: self._on_entry(ENTRY_DASHBOARD))
         self.library_page.new_cut_requested.connect(
             self._open_new_cross_event_cut_from_library)
+        # Manage Collections… opens the SAME wired Collections dialog as
+        # + New Cut — the events-page opener connects pin_requested, so
+        # Pin → Cut fires. (The Library page used to open this dialog
+        # inline without that wiring, leaving Pin → Cut dead.)
+        self.library_page.manage_collections_requested.connect(
+            self._open_new_cross_event_cut_from_library)
         self.new_event_page.event_created.connect(self._on_new_event_created)
         self.new_event_page.cancelled.connect(self._on_new_event_cancelled)
         self.phases_page.back_requested.connect(self._on_event_back)

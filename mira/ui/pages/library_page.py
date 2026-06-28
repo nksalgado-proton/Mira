@@ -192,6 +192,13 @@ class LibraryPage(QWidget):
     #: events page already builds, so the LibraryPage stays page-
     #: shaped (no dialog construction inline).
     new_cut_requested = pyqtSignal()
+    #: Emitted when the user clicks **Manage Collections…** in the
+    #: Collections band. Routes to the SAME host-driven Collections
+    #: dialog as ``new_cut_requested`` — the one the events page wires
+    #: with ``pin_requested`` so **Pin → Cut** actually fires. Opening
+    #: the dialog inline here (the prior behaviour) left that signal
+    #: unconnected, so Pin → Cut was a silent no-op.
+    manage_collections_requested = pyqtSignal()
 
     def __init__(self, gateway, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -455,19 +462,17 @@ class LibraryPage(QWidget):
         self.new_cut_requested.emit()
 
     def _on_manage_collections(self) -> None:
-        """Open the Collections list dialog (spec/93 §9 — the file
-        manager is the management surface; this dialog is the in-app
-        view of the same tree)."""
-        from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
-        lg = self._library_gateway()
-        if lg is None:
-            QMessageBox.warning(self, tr("Collections"),
-                                tr("The library gateway is unavailable."))
-            return
-        dlg = CrossEventDcsDialog(
-            lg, umbrella_gateway=self._gateway, parent=self)
-        dlg.exec()
-        self.refresh()
+        """Manage Collections… — opens the Collections list dialog via
+        the host (spec/93 §9 — the file manager is the management
+        surface; this dialog is the in-app view of the same tree).
+
+        Emits a signal rather than constructing the dialog inline: the
+        host opens the SAME dialog the events page already wires with
+        ``pin_requested`` → ``_pin_cross_event_dc``, so **Pin → Cut**
+        fires. Building it here left that signal unconnected, making
+        Pin → Cut a silent no-op. Tests connect to the signal; absent a
+        connection, the click is a quiet no-op."""
+        self.manage_collections_requested.emit()
 
     @staticmethod
     def _cut_card_style(cut) -> str:

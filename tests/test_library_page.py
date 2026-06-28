@@ -253,6 +253,19 @@ def test_new_cut_button_emits_signal(qapp):
     page.deleteLater()
 
 
+def test_manage_collections_emits_signal(qapp):
+    """Manage Collections… must route through the host (the wired
+    Collections dialog) rather than opening an inline, unwired copy —
+    otherwise its Pin → Cut button is a silent no-op."""
+    gw = _FakeUmbrella()
+    page = LibraryPage(gw)
+    fired = []
+    page.manage_collections_requested.connect(lambda: fired.append("manage"))
+    page._on_manage_collections()
+    assert fired == ["manage"]
+    page.deleteLater()
+
+
 # --------------------------------------------------------------------------- #
 # Defensive: a gateway failure on cross_event_cuts degrades to empty
 # --------------------------------------------------------------------------- #

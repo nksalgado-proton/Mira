@@ -1427,11 +1427,22 @@ class CutPlayerDialog(QDialog):
         lbl.raise_()
         lbl.show()
 
-    # ── spec/155 v5 — 70 / 30 layout for video sep & opener ────────
+    # ── spec/155 v7 — slide-inset layout for video sep & opener ────
 
-    #: Fraction of the canvas height occupied by the sep / opener video.
-    #: The caption fills the remaining top 30 % so the two never overlap.
-    _SEP_VIDEO_HEIGHT_FRAC = 0.70
+    #: Fraction of the slide's inner rect occupied by the video. The
+    #: top ``1 − this − bottom_margin`` band holds the caption.
+    _SEP_VIDEO_HEIGHT_FRAC = 0.60
+
+    #: Horizontal margin (fraction of inner width) between the slide's
+    #: inner-card edge and the video / caption — so the slide border
+    #: stays visible around the video on the left + right.
+    _SEP_VIDEO_MARGIN_X_FRAC = 0.05
+
+    #: Bottom margin so the slide's lower border shows under the video.
+    _SEP_VIDEO_MARGIN_BOTTOM_FRAC = 0.05
+
+    #: Fraction of the slide's inner width the caption occupies.
+    _SEP_CAPTION_WIDTH_FRAC = 0.90
 
     def _sep_video_bg_image(self) -> QImage:
         """Flat slide-background QImage for sep / opener video slots.
@@ -1475,22 +1486,24 @@ class CutPlayerDialog(QDialog):
                      max(1, ph.height() - 2 * pad))
 
     def _fit_sep_video_geometry(self) -> None:
-        """Position the sep / opener video into the bottom 70 % of the
-        slide's INNER card area (photo canvas's foreground rect). That
-        way the rounded-card frame stays visible around the video and
-        the top 30 % of the same card holds the caption.
+        """Position the sep / opener video inside the slide's inner
+        rect with margins on the sides + bottom so the slide border
+        stays visible all around (spec/155 v7 — Nelson 2026-06-29).
 
-        Called from :meth:`_do_video_swap` and :meth:`resizeEvent` so
-        the layout survives window resizes.
+        Called from :meth:`_do_video_swap` and :meth:`resizeEvent`.
         """
         if self._video_widget is None or self._stack_widget is None:
             return
         inner = self._slide_inner_rect()
         if inner.isEmpty():
             return
+        margin_x = int(inner.width() * self._SEP_VIDEO_MARGIN_X_FRAC)
+        margin_b = int(inner.height() * self._SEP_VIDEO_MARGIN_BOTTOM_FRAC)
         video_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
-        y = inner.bottom() + 1 - video_h
-        self._video_widget.setGeometry(inner.x(), y, inner.width(), video_h)
+        video_w = inner.width() - 2 * margin_x
+        x = inner.x() + margin_x
+        y = inner.bottom() + 1 - margin_b - video_h
+        self._video_widget.setGeometry(x, y, video_w, video_h)
 
     # ── spec/155 v2 — sep / opener video caption overlay ──────────
 
@@ -1575,28 +1588,31 @@ class CutPlayerDialog(QDialog):
         lbl.show()
 
     def _position_caption(self) -> None:
-        """Anchor the caption label inside the SLIDE's top 30 % band —
-        the slot that sits above the sep / opener video INSIDE the
-        rounded-card frame (spec/155 v6). The label is a child of the
-        dialog; we map stack-widget-local coords (where
-        ``_slide_inner_rect`` is anchored) into dialog coords."""
+        """Anchor the caption label inside the slide's top band — the
+        slot ABOVE the video, inside the rounded-card frame. Width is
+        fixed at 90 % of the slide's inner width and the background is
+        transparent (only the text reads) per spec/155 v7."""
         lbl = self._caption_label
         if lbl is None:
             return
         inner = self._slide_inner_rect()
         if inner.isEmpty() or self._stack_widget is None:
             return
-        # Project inner-rect's top-left into dialog coords.
         top_left = self._stack_widget.mapTo(self, inner.topLeft())
-        band_h = max(48, int(inner.height() * (1.0 - self._SEP_VIDEO_HEIGHT_FRAC)))
+        # The caption band fills the top portion of the slide that the
+        # video doesn't claim. With v7 margins the video sits at
+        # ``video_h + margin_b`` from the slide bottom; everything
+        # above that is the caption's territory.
+        margin_b = int(inner.height() * self._SEP_VIDEO_MARGIN_BOTTOM_FRAC)
+        video_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
+        band_h = max(48, inner.height() - video_h - margin_b)
+        w = int(inner.width() * self._SEP_CAPTION_WIDTH_FRAC)
         lbl.setWordWrap(True)
-        lbl.setMaximumWidth(inner.width())
+        lbl.setFixedWidth(w)
         lbl.adjustSize()
         lbl_h = min(lbl.height(), band_h)
-        # Vertically centre within the band so a single-line caption
-        # doesn't hug the top edge of the slide frame.
+        # Vertically centre within the band.
         y_local = max(0, (band_h - lbl_h) // 2)
-        w = min(lbl.width(), inner.width())
         x_local = max(0, (inner.width() - w) // 2)
         lbl.resize(w, lbl_h)
         lbl.move(top_left.x() + x_local, top_left.y() + y_local)

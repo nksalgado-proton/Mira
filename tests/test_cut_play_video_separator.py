@@ -95,34 +95,35 @@ def test_caption_label_stays_child_of_dialog_on_ensure_video(
         p.close()
 
 
-def test_fit_sep_video_geometry_sizes_to_bottom_70_percent_of_slide(
+def test_fit_sep_video_geometry_insets_video_from_slide_borders(
         qapp, gw, tmp_path):
-    """The video widget occupies the bottom 70 % of the SLIDE's inner
-    rect (the rounded-card foreground of the photo canvas) — not the
-    full stack widget. Pinned via the photo canvas's fallback rect so
-    the math is deterministic without forcing a pixmap-driven layout."""
+    """spec/155 v7 — the video sits inside the slide's inner rect with
+    horizontal + bottom margins so the slide border stays visible
+    around it. Pinned via the photo canvas's fallback rect (no pixmap
+    needed) so the math is deterministic."""
     p = _player(gw, tmp_path)
     try:
         p._ensure_video()
         p.show()
-        # Resize stack + photo so the math is computable. With no
-        # pixmap, _slide_inner_rect falls back to (pad, pad,
-        # photo_w-2pad, photo_h-2pad).
         p._stack_widget.resize(1000, 1000)
         p._photo.resize(1000, 1000)
-        pad = 28
+        pad = 28  # BlurredPhotoCanvas DEFAULT_INNER_PAD
         inner_w = 1000 - 2 * pad
         inner_h = 1000 - 2 * pad
         p._fit_sep_video_geometry()
         g = p._video_widget.geometry()
-        # Width spans the inner rect; left edge at pad.
-        assert g.x() == pad
-        assert g.width() == inner_w
-        # 70 % of inner_h, bottom-anchored to the inner rect's bottom.
-        expected_video_h = int(inner_h * 0.70)
-        assert g.height() == expected_video_h
-        # Top of video = inner.bottom - video_h + 1.
-        assert g.y() == pad + inner_h - expected_video_h
+        margin_x = int(inner_w * 0.05)
+        margin_b = int(inner_h * 0.05)
+        expected_w = inner_w - 2 * margin_x
+        expected_h = int(inner_h * 0.60)
+        # Centred horizontally inside the slide border.
+        assert g.x() == pad + margin_x
+        assert g.width() == expected_w
+        # Bottom edge sits ``margin_b`` above the inner rect's bottom
+        # so the slide border shows below the video too.
+        assert g.height() == expected_h
+        inner_bottom = pad + inner_h - 1
+        assert g.y() == inner_bottom + 1 - margin_b - expected_h
     finally:
         p.close()
 

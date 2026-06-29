@@ -95,35 +95,55 @@ def test_caption_label_stays_child_of_dialog_on_ensure_video(
         p.close()
 
 
-def test_fit_sep_video_geometry_insets_video_from_slide_borders(
+def test_fit_sep_video_geometry_matches_video_aspect_within_inset(
         qapp, gw, tmp_path):
-    """spec/155 v7 — the video sits inside the slide's inner rect with
-    horizontal + bottom margins so the slide border stays visible
-    around it. Pinned via the photo canvas's fallback rect (no pixmap
-    needed) so the math is deterministic."""
+    """spec/155 v8 — the video widget is sized to the video's OWN
+    aspect inside the 90 % × 60 % cap so QVideoWidget paints no
+    internal black bars. Horizontally centred; bottom-anchored with a
+    5 % margin so the slide border shows around it."""
     p = _player(gw, tmp_path)
     try:
         p._ensure_video()
         p.show()
         p._stack_widget.resize(1000, 1000)
         p._photo.resize(1000, 1000)
-        pad = 28  # BlurredPhotoCanvas DEFAULT_INNER_PAD
+        pad = 28
         inner_w = 1000 - 2 * pad
         inner_h = 1000 - 2 * pad
+        # Force a known aspect via the cache so we don't need a real
+        # MP4 / probe in this test.
+        p._sep_current_video_path = tmp_path / "fake.mp4"
+        p._sep_video_aspect_cache[str(p._sep_current_video_path)] = 16.0 / 9.0
         p._fit_sep_video_geometry()
         g = p._video_widget.geometry()
         margin_x = int(inner_w * 0.05)
         margin_b = int(inner_h * 0.05)
-        expected_w = inner_w - 2 * margin_x
-        expected_h = int(inner_h * 0.60)
-        # Centred horizontally inside the slide border.
-        assert g.x() == pad + margin_x
+        max_w = inner_w - 2 * margin_x
+        max_h = int(inner_h * 0.60)
+        # max_w / max_h = 866 / 568 ≈ 1.524 < 16/9 (1.778), so width is
+        # the binding edge; height comes from width / aspect.
+        expected_w = max_w
+        expected_h = int(round(max_w / (16.0 / 9.0)))
         assert g.width() == expected_w
-        # Bottom edge sits ``margin_b`` above the inner rect's bottom
-        # so the slide border shows below the video too.
         assert g.height() == expected_h
+        # Horizontally centred inside the inner card.
+        assert g.x() == pad + (inner_w - expected_w) // 2
+        # Bottom-anchored with the 5 % margin so the slide border shows
+        # under the video.
         inner_bottom = pad + inner_h - 1
         assert g.y() == inner_bottom + 1 - margin_b - expected_h
+    finally:
+        p.close()
+
+
+def test_sep_video_aspect_falls_back_to_16_9_when_unprobed(
+        qapp, gw, tmp_path):
+    """Without a current video path or a probe result, the aspect
+    helper returns 16:9 so the geometry math stays sensible."""
+    p = _player(gw, tmp_path)
+    try:
+        # No _sep_current_video_path set → fallback.
+        assert p._sep_video_aspect() == pytest.approx(16.0 / 9.0)
     finally:
         p.close()
 

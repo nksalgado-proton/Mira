@@ -399,6 +399,11 @@ class CutPlayerDialog(QDialog):
         # video widget sizes to the bottom 70 % of the photo's
         # foreground rect, and the caption rides the top 30 %.
         self._sep_video_active: bool = False
+        # spec/155 v8 — current sep / opener video path + cached aspect
+        # so :meth:`_fit_sep_video_geometry` can match the widget to
+        # the video's own aspect (no black bars inside the widget).
+        self._sep_current_video_path: Optional[Path] = None
+        self._sep_video_aspect_cache: Dict[str, float] = {}
         # spec/155 v2 — built lazily below, paints over the video widget
         # on sep / opener video slots so the day metadata + Cut title
         # stay visible while the clip plays.
@@ -783,6 +788,7 @@ class CutPlayerDialog(QDialog):
                 # the video. Caption rides the top 30 % of the inner
                 # card; video fills the bottom 70 %.
                 self._sep_video_active = True
+                self._sep_current_video_path = self._opener_video_path
                 bg = self._sep_video_bg_image()
                 self._show_image(bg)
                 self._ensure_video()
@@ -791,6 +797,7 @@ class CutPlayerDialog(QDialog):
                 self._show_video(self._opener_video_path)
             elif self._opener_image is not None:
                 self._sep_video_active = False
+                self._sep_current_video_path = None
                 self._show_image(self._opener_image)
                 if not self._paused:
                     self._timer.start(slot_ms)
@@ -807,6 +814,7 @@ class CutPlayerDialog(QDialog):
             if sep_vid is not None:
                 # spec/155 v6 — same slide-frame treatment as opener.
                 self._sep_video_active = True
+                self._sep_current_video_path = sep_vid
                 bg = self._sep_video_bg_image()
                 self._show_image(bg)
                 self._ensure_video()
@@ -815,11 +823,13 @@ class CutPlayerDialog(QDialog):
                 self._show_video(sep_vid)
             else:
                 self._sep_video_active = False
+                self._sep_current_video_path = None
                 self._show_image(self._separator_image(payload))
                 if not self._paused:
                     self._timer.start(slot_ms)
         elif getattr(payload, "kind", "photo") == "video":
             self._sep_video_active = False
+            self._sep_current_video_path = None
             # spec/144 — videos NEVER ride :attr:`_timer`. Advance is
             # event-driven via :data:`QMediaPlayer.MediaStatus.EndOfMedia`
             # in :meth:`_on_video_status`, so the show moves on the
@@ -856,6 +866,7 @@ class CutPlayerDialog(QDialog):
             self._show_video(self._resolve_payload_path(payload))
         else:
             self._sep_video_active = False
+            self._sep_current_video_path = None
             pm = load_pixmap(self._resolve_payload_path(payload))
             self._show_pixmap(pm)
             if not self._paused:
@@ -1485,10 +1496,40 @@ class CutPlayerDialog(QDialog):
         return QRect(pad, pad, max(1, ph.width() - 2 * pad),
                      max(1, ph.height() - 2 * pad))
 
+    def _sep_video_aspect(self) -> float:
+        """Aspect (width / height) of the current sep / opener video,
+        cached per path. Falls back to 16:9 when probing fails — never
+        returns 0.
+        """
+        path = self._sep_current_video_path
+        if path is None:
+            return 16.0 / 9.0
+        key = str(path)
+        if key in self._sep_video_aspect_cache:
+            return self._sep_video_aspect_cache[key]
+        ratio = 16.0 / 9.0
+        try:
+            from core.video_extract import probe_video
+            meta = probe_video(path)
+            dw = getattr(meta, "display_width", None) or meta.width
+            dh = getattr(meta, "display_height", None) or meta.height
+            if dw and dh and dh > 0:
+                ratio = float(dw) / float(dh)
+        except Exception:                                          # noqa: BLE001
+            pass
+        if ratio <= 0:
+            ratio = 16.0 / 9.0
+        self._sep_video_aspect_cache[key] = ratio
+        return ratio
+
     def _fit_sep_video_geometry(self) -> None:
         """Position the sep / opener video inside the slide's inner
-        rect with margins on the sides + bottom so the slide border
-        stays visible all around (spec/155 v7 — Nelson 2026-06-29).
+        rect with margins on the sides + bottom AND match the widget
+        to the video's own aspect so QVideoWidget paints no internal
+        letterbox bars (spec/155 v8 — Nelson 2026-06-29). The widget
+        is sized to fit inside the 90 % × 60 % cap while preserving
+        the video's aspect; remaining space stays slide-background
+        (the rounded-card frame around the video).
 
         Called from :meth:`_do_video_swap` and :meth:`resizeEvent`.
         """
@@ -1499,9 +1540,21 @@ class CutPlayerDialog(QDialog):
             return
         margin_x = int(inner.width() * self._SEP_VIDEO_MARGIN_X_FRAC)
         margin_b = int(inner.height() * self._SEP_VIDEO_MARGIN_BOTTOM_FRAC)
-        video_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
-        video_w = inner.width() - 2 * margin_x
-        x = inner.x() + margin_x
+        max_w = inner.width() - 2 * margin_x
+        max_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
+        if max_w <= 0 or max_h <= 0:
+            return
+        aspect = self._sep_video_aspect()
+        # Fit within max_w × max_h preserving aspect — letterbox-fit
+        # logic applied to the widget itself rather than to the video
+        # inside the widget, so the widget shows no black bars.
+        if max_w / max_h > aspect:
+            video_h = max_h
+            video_w = max(1, int(round(max_h * aspect)))
+        else:
+            video_w = max_w
+            video_h = max(1, int(round(max_w / aspect)))
+        x = inner.x() + (inner.width() - video_w) // 2
         y = inner.bottom() + 1 - margin_b - video_h
         self._video_widget.setGeometry(x, y, video_w, video_h)
 

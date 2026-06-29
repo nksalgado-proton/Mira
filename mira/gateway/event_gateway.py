@@ -3892,13 +3892,14 @@ class EventGateway:
         accepted extension, write the relative path to
         ``trip_day.map_image_path``, and return the relative path.
 
-        ``src_path`` must point at a JPEG or PNG (extensions per
-        :data:`core.path_builder.MAP_IMAGE_EXTENSIONS`). Anything else
-        raises ``ValueError``. The source file is left untouched; we
-        copy, never link, so the slot is independent of the user's
-        original (which might be cleaned up later)."""
+        ``src_path`` must point at JPEG, PNG, or MP4 (extensions per
+        :data:`core.path_builder.MAP_MEDIA_EXTENSIONS`). MP4 attach
+        also extracts a first-frame sidecar (``…thumb.jpg``) so chip
+        thumbnails + dialog previews don't re-run ffmpeg on every paint.
+        Anything else raises ``ValueError``. The source file is left
+        untouched."""
         from core.path_builder import (
-            MAP_IMAGE_EXTENSIONS,
+            MAP_MEDIA_EXTENSIONS,
             day_map_slot_basename,
             maps_dir,
         )
@@ -3908,16 +3909,17 @@ class EventGateway:
             src_path=src_path,
             update_sql="UPDATE trip_day SET map_image_path = ? WHERE day_number = ?",
             update_params_factory=lambda rel: (rel, day_number),
-            accepted_exts=MAP_IMAGE_EXTENSIONS,
+            accepted_exts=MAP_MEDIA_EXTENSIONS,
             maps_dir_factory=maps_dir,
         )
 
     def attach_event_map(self, src_path: str | Path) -> str:
         """Copy ``src_path`` into ``Maps/event.<ext>`` and write the
-        relative path to ``event.map_image_path``. Returns the relative
-        path."""
+        relative path to ``event.map_image_path``. Accepts JPEG, PNG
+        or MP4; on MP4, also writes the first-frame sidecar. Returns
+        the relative path."""
         from core.path_builder import (
-            MAP_IMAGE_EXTENSIONS,
+            MAP_MEDIA_EXTENSIONS,
             event_map_slot_basename,
             maps_dir,
         )
@@ -3927,7 +3929,7 @@ class EventGateway:
             src_path=src_path,
             update_sql="UPDATE event SET map_image_path = ? WHERE id = 1",
             update_params_factory=lambda rel: (rel,),
-            accepted_exts=MAP_IMAGE_EXTENSIONS,
+            accepted_exts=MAP_MEDIA_EXTENSIONS,
             maps_dir_factory=maps_dir,
         )
 
@@ -3994,6 +3996,7 @@ class EventGateway:
         os.replace(tmp, dest)
         # Sweep any stale sibling with a different accepted extension
         # (e.g. an old day-02.png when the new attach is day-02.jpg).
+        from core.path_builder import MAP_VIDEO_THUMB_SUFFIX
         for stale_ext in accepted_exts:
             stale_on_disk = ".jpg" if stale_ext == ".jpeg" else stale_ext
             if stale_on_disk == on_disk_ext:
@@ -4001,11 +4004,50 @@ class EventGateway:
             stale = dest_dir / f"{slot_basename}{stale_on_disk}"
             if stale.exists():
                 stale.unlink()
+            # spec/155 v2 — if the stale sibling was an MP4, its
+            # first-frame sidecar also rides alongside; sweep it.
+            if stale_on_disk == ".mp4":
+                stale_sidecar = dest_dir / (
+                    f"{slot_basename}{stale_on_disk}{MAP_VIDEO_THUMB_SUFFIX}")
+                if stale_sidecar.exists():
+                    stale_sidecar.unlink()
         rel = dest.relative_to(event_root).as_posix()
+        # spec/155 v2 — MP4 maps get a first-frame sidecar so chip thumbs
+        # and dialog previews can load a cheap QImage without ffmpeg.
+        # Best-effort: if extraction fails (corrupt file, broken codec),
+        # the attach still succeeds; the chip falls back to a generic
+        # "video" placeholder.
+        if on_disk_ext == ".mp4":
+            try:
+                self._write_video_map_thumb(dest)
+            except Exception:                                       # noqa: BLE001
+                log.warning(
+                    "video map sidecar generation failed for %s",
+                    dest, exc_info=True)
         with self.store.transaction() as conn:
             conn.execute(update_sql, update_params_factory(rel))
             self._touch()
         return rel
+
+    @staticmethod
+    def _video_map_thumb_path(map_abs_path: Path) -> Path:
+        """The first-frame sidecar for a video map slot — same dir,
+        same basename, ``.mp4.thumb.jpg`` suffix."""
+        from core.path_builder import MAP_VIDEO_THUMB_SUFFIX
+        return map_abs_path.with_suffix(
+            map_abs_path.suffix + MAP_VIDEO_THUMB_SUFFIX)
+
+    @classmethod
+    def _write_video_map_thumb(cls, map_abs_path: Path) -> Optional[Path]:
+        """Extract frame 0 of the MP4 to its sidecar. Returns the
+        sidecar path on success, None on failure."""
+        from core.video_extract import extract_frame
+        sidecar = cls._video_map_thumb_path(map_abs_path)
+        try:
+            extract_frame(map_abs_path, 0, sidecar)
+        except (FileNotFoundError, RuntimeError):
+            return None
+        return sidecar if sidecar.is_file() else None
 
     def _clear_map_slot(
         self,
@@ -4022,13 +4064,22 @@ class EventGateway:
         event_root = Path(self.event_root)
         # Delete by walking the accepted-extensions in case the DB and
         # disk fell out of sync — sweep anything sitting in the slot.
-        from core.path_builder import MAP_IMAGE_EXTENSIONS
+        from core.path_builder import (
+            MAP_MEDIA_EXTENSIONS,
+            MAP_VIDEO_THUMB_SUFFIX,
+        )
         dest_dir = maps_dir_factory(event_root)
-        for ext in MAP_IMAGE_EXTENSIONS:
+        for ext in MAP_MEDIA_EXTENSIONS:
             on_disk_ext = ".jpg" if ext == ".jpeg" else ext
             candidate = dest_dir / f"{slot_basename}{on_disk_ext}"
             if candidate.exists():
                 candidate.unlink()
+            # spec/155 v2 — sweep the MP4 sidecar that rode alongside.
+            if on_disk_ext == ".mp4":
+                sidecar = dest_dir / (
+                    f"{slot_basename}{on_disk_ext}{MAP_VIDEO_THUMB_SUFFIX}")
+                if sidecar.exists():
+                    sidecar.unlink()
         # Belt-and-braces: if the DB pointed at a path outside the
         # standard slot (legacy / external edit), unlink that too.
         if current_path:

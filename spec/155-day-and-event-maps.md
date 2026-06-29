@@ -240,7 +240,67 @@ on a flat card).
   bounding box of the sharp inset matches the map's aspect, not the
   canvas's). Intro-slide parity with event-level map.
 
-## 8. Out of scope (parked)
+## 8. v2 — MP4 maps (Nelson 2026-06-29)
+
+**Status: LANDED.** A map can be an MP4 in addition to JPEG/PNG. The
+Cut Play day-separator slot then **plays the clip** instead of holding
+the still QImage.
+
+- **Accepted extensions** expand from `(.jpg, .jpeg, .png)` to
+  `(.jpg, .jpeg, .png, .mp4)`. The constant `MAP_IMAGE_EXTENSIONS` is
+  renamed to `MAP_MEDIA_EXTENSIONS`; the old name lives as an alias.
+- **Storage**: the slot file lands at `Maps/day-NN.mp4` /
+  `Maps/event.mp4`. The schema column stays `map_image_path` (a mild
+  name lie — the rename would cost a migration that buys nothing).
+- **First-frame sidecar**: on attach, the gateway extracts frame 0
+  of the MP4 (via the bundled ffmpeg, `core.video_extract.extract_frame`)
+  to `Maps/day-NN.mp4.thumb.jpg`. Sidecar suffix is
+  `MAP_VIDEO_THUMB_SUFFIX = ".thumb.jpg"`. Lives alongside the source;
+  swept on clear and on extension flip.
+- **MapChip + MapAttachDialog**: the chip's thumb + the dialog's
+  preview load the sidecar (never run ffmpeg on every paint). The
+  dialog's meta line reads `Maps/day-02.mp4 · MP4 · 4 s · 184 KB` for
+  video slots vs the existing `… · 1280 × 720 · …` for stills.
+  Picker filter widens to `*.jpg *.jpeg *.png *.mp4`.
+- **Cut Play** (the substantive piece):
+  - At the day boundary, when `trip_day.map_image_path` ends in
+    `.mp4`, the slot plays the clip via the existing QMediaPlayer
+    machinery instead of `_show_image(...)`.
+  - **Muted** (Cuts have music; the video's own audio would compete).
+    Audio output's mute flag is set on sep-video entry; cleared on
+    file-video entry so user clips keep their audio.
+  - **Native duration** (not `photo_s`-clamped). The slot's
+    contribution to the budget becomes the probed `duration_ms`. The
+    probe is cached per day in the dialog instance.
+  - **One play, no loop**. Advance is EndOfMedia-driven, same as a
+    file video.
+  - The `_entry_class` helper returns `'video'` for sep MP4 slots so
+    the spec/152 boundary crossfade math reads the right shape (half
+    transition on photo↔sep-video, zero on sep-video↔file-video).
+- **Cut Export**: writes the **first-frame sidecar** as the separator
+  JPG. PTE bundle integration with a video slot is **parked** —
+  Nelson is preparing a manual PTE example to design the contract
+  against. Until then, video maps degrade gracefully to a single
+  first-frame still at export.
+- **Event-level video maps**: same v2 storage/dialog/chip behaviour;
+  Cut Play does NOT yet play an event-map MP4 as the opener (the
+  opener still renders as the letterboxed first-frame still). Lifting
+  this to playback is mechanical once the day-separator playback
+  lands, but the design call is "ship day, learn, then expand."
+- **Helpers added**: `core.path_builder.is_video_map_path(rel)`,
+  `core.path_builder.MAP_VIDEO_THUMB_SUFFIX`,
+  `EventGateway._video_map_thumb_path()`,
+  `EventGateway._write_video_map_thumb()`,
+  `CutPlayerDialog._sep_video_path()`,
+  `CutPlayerDialog._sep_video_duration_ms()` (cached).
+- **Tests added**: per-extension acceptance in
+  `tests/test_path_builder.py` + `tests/test_gateway_maps.py`,
+  sidecar generation + sweep, dialog preview meta line for MP4,
+  and a dedicated `tests/test_cut_play_video_separator.py` covering
+  `_sep_video_path` / `_sep_video_duration_ms` / `_entry_class` /
+  `_entry_total_ms` for sep MP4 slots.
+
+## 9. Out of scope (parked)
 
 - **Mira-rendered GPS traces** from EXIF (the "constellation diagram"
   considered in the 2026-06-29 design session). Stays parked: a trace

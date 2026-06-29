@@ -231,6 +231,101 @@ def test_clear_day_map_does_not_touch_other_days(tmp_path):
 
 # ── isolation between day and event slots ───────────────────────
 
+# ── MP4 (spec/155 v2) ────────────────────────────────────────────
+
+def _write_tiny_mp4(path: Path) -> Path:
+    """Write a 1-second silent grey MP4 via the bundled ffmpeg —
+    enough for first-frame extraction + duration probing."""
+    import subprocess
+    from core.video_extract import _FFMPEG_EXE
+    cmd = [
+        _FFMPEG_EXE, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=gray:s=64x36:d=1:r=24",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", "1",
+        str(path),
+    ]
+    subprocess.run(cmd, check=True, timeout=30)
+    return path
+
+
+def test_attach_day_map_accepts_mp4(tmp_path):
+    """spec/155 v2 — MP4 is a first-class map medium. The slot lands
+    at ``Maps/day-NN.mp4`` and the DB carries the relative path."""
+    src = _write_tiny_mp4(tmp_path / "outside.mp4")
+    eg = _make_gateway(tmp_path)
+    try:
+        rel = eg.attach_day_map(2, src)
+        assert rel == "Maps/day-02.mp4"
+        assert eg.get_day_map_path(2) == "Maps/day-02.mp4"
+        slot = tmp_path / "Maps" / "day-02.mp4"
+        assert slot.is_file()
+    finally:
+        eg.close()
+
+
+def test_attach_mp4_writes_first_frame_sidecar(tmp_path):
+    """The first-frame sidecar (``…thumb.jpg``) lives alongside the
+    MP4 so chip thumbnails + dialog previews can load a cheap QImage
+    without re-running ffmpeg."""
+    src = _write_tiny_mp4(tmp_path / "outside.mp4")
+    eg = _make_gateway(tmp_path)
+    try:
+        eg.attach_day_map(2, src)
+        sidecar = tmp_path / "Maps" / "day-02.mp4.thumb.jpg"
+        assert sidecar.is_file()
+        # The sidecar is a real image, not an empty placeholder.
+        assert sidecar.stat().st_size > 100
+    finally:
+        eg.close()
+
+
+def test_clear_day_map_sweeps_mp4_and_sidecar(tmp_path):
+    """Clearing an MP4 day map removes both the source AND the sidecar."""
+    src = _write_tiny_mp4(tmp_path / "outside.mp4")
+    eg = _make_gateway(tmp_path)
+    try:
+        eg.attach_day_map(2, src)
+        assert (tmp_path / "Maps" / "day-02.mp4").exists()
+        assert (tmp_path / "Maps" / "day-02.mp4.thumb.jpg").exists()
+        eg.clear_day_map(2)
+        assert not (tmp_path / "Maps" / "day-02.mp4").exists()
+        assert not (tmp_path / "Maps" / "day-02.mp4.thumb.jpg").exists()
+        assert eg.get_day_map_path(2) is None
+    finally:
+        eg.close()
+
+
+def test_attach_mp4_overwrites_existing_jpeg_slot(tmp_path):
+    """Switching a slot from JPEG to MP4 sweeps the stale JPEG."""
+    jpg = _write_jpeg(tmp_path / "old.jpg")
+    mp4 = _write_tiny_mp4(tmp_path / "new.mp4")
+    eg = _make_gateway(tmp_path)
+    try:
+        eg.attach_day_map(2, jpg)
+        assert (tmp_path / "Maps" / "day-02.jpg").exists()
+        eg.attach_day_map(2, mp4)
+        assert not (tmp_path / "Maps" / "day-02.jpg").exists()
+        assert (tmp_path / "Maps" / "day-02.mp4").exists()
+        assert eg.get_day_map_path(2) == "Maps/day-02.mp4"
+    finally:
+        eg.close()
+
+
+def test_attach_jpeg_after_mp4_sweeps_video_and_sidecar(tmp_path):
+    """Switching back from MP4 to JPEG also sweeps the orphan sidecar."""
+    mp4 = _write_tiny_mp4(tmp_path / "vid.mp4")
+    jpg = _write_jpeg(tmp_path / "still.jpg")
+    eg = _make_gateway(tmp_path)
+    try:
+        eg.attach_day_map(2, mp4)
+        eg.attach_day_map(2, jpg)
+        assert (tmp_path / "Maps" / "day-02.jpg").exists()
+        assert not (tmp_path / "Maps" / "day-02.mp4").exists()
+        assert not (tmp_path / "Maps" / "day-02.mp4.thumb.jpg").exists()
+    finally:
+        eg.close()
+
+
 def test_attach_day_and_event_maps_are_independent(tmp_path):
     """Day-2 and event slots coexist without colliding."""
     src1 = _write_jpeg(tmp_path / "day.jpg")

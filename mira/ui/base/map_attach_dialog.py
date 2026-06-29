@@ -31,7 +31,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.path_builder import MAP_IMAGE_EXTENSIONS, maps_dir
+from core.path_builder import (
+    MAP_MEDIA_EXTENSIONS,
+    MAP_VIDEO_THUMB_SUFFIX,
+    is_video_map_path,
+    maps_dir,
+)
 from mira.ui.design.buttons import (
     danger_ghost_button,
     ghost_button,
@@ -156,7 +161,15 @@ class MapAttachDialog(QDialog):
 
     def _render_preview(self, rel: str) -> None:
         abs_path = self._event_root / rel
-        pix = QPixmap(str(abs_path))
+        is_video = is_video_map_path(rel)
+        if is_video:
+            # MP4 preview source = the first-frame sidecar the gateway
+            # wrote on attach; cheaper + sync vs. running ffmpeg.
+            sidecar = abs_path.with_suffix(
+                abs_path.suffix + MAP_VIDEO_THUMB_SUFFIX)
+            pix = QPixmap(str(sidecar))
+        else:
+            pix = QPixmap(str(abs_path))
         if pix.isNull():
             self._preview.setText(
                 tr("Preview unavailable for {p}.").replace("{p}", rel))
@@ -171,10 +184,22 @@ class MapAttachDialog(QDialog):
         self._preview.setText("")
         self._preview.setProperty("attached", True)
         self._reapply_style(self._preview)
-        # Meta line: "Maps/day-02.jpg · 1280 × 720 · 184 KB"
-        size_kb = max(1, abs_path.stat().st_size // 1024) if abs_path.exists() else 0
-        self._meta.setText(
-            f"{rel} · {pix.width()} × {pix.height()} · {size_kb:,} KB")
+        # Meta line for images: "Maps/day-02.jpg · 1280 × 720 · 184 KB"
+        # For MP4: "Maps/day-02.mp4 · MP4 · 4 s · 184 KB"
+        if is_video:
+            try:
+                from core.video_extract import probe_video
+                meta = probe_video(abs_path)
+                duration_s = meta.duration_ms // 1000
+            except Exception:                                       # noqa: BLE001
+                duration_s = 0
+            size_kb = max(1, abs_path.stat().st_size // 1024) if abs_path.exists() else 0
+            self._meta.setText(
+                f"{rel} · {tr('MP4')} · {duration_s} s · {size_kb:,} KB")
+        else:
+            size_kb = max(1, abs_path.stat().st_size // 1024) if abs_path.exists() else 0
+            self._meta.setText(
+                f"{rel} · {pix.width()} × {pix.height()} · {size_kb:,} KB")
 
     @staticmethod
     def _reapply_style(widget: QWidget) -> None:
@@ -184,8 +209,8 @@ class MapAttachDialog(QDialog):
 
     def _on_pick(self) -> None:
         # Filter string Qt expects: "JPEG / PNG (*.jpg *.jpeg *.png)"
-        filt = tr("Map image") + " (" + " ".join(
-            f"*{ext}" for ext in MAP_IMAGE_EXTENSIONS) + ")"
+        filt = tr("Map (image or video)") + " (" + " ".join(
+            f"*{ext}" for ext in MAP_MEDIA_EXTENSIONS) + ")"
         chosen, _ = QFileDialog.getOpenFileName(
             self, self._title_text(), str(self._suggested_start_dir()), filt)
         if not chosen:

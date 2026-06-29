@@ -8,6 +8,8 @@ from core.path_builder import (
     EDITED_MEDIA_DIR_NAME,
     EXPORTED_MEDIA_DIR_NAME,
     MAP_IMAGE_EXTENSIONS,
+    MAP_MEDIA_EXTENSIONS,
+    MAP_VIDEO_THUMB_SUFFIX,
     MAPS_DIR_NAME,
     RESERVED_DIR_NAMES,
     day_folder_name,
@@ -18,6 +20,7 @@ from core.path_builder import (
     event_map_slot_basename,
     event_root_path,
     exported_media_dir,
+    is_video_map_path,
     maps_dir,
     sanitize_folder_name,
 )
@@ -202,7 +205,27 @@ def test_event_map_slot_basename_is_event():
     assert event_map_slot_basename() == "event"
 
 
-def test_map_image_extensions_are_jpg_and_png():
-    """spec/155 §1 — the picker accepts JPEG and PNG; anything else is
-    rejected. Extensions are lower-case with leading dot."""
-    assert MAP_IMAGE_EXTENSIONS == (".jpg", ".jpeg", ".png")
+def test_map_media_extensions_include_jpg_png_and_mp4():
+    """spec/155 v2 — the picker accepts JPEG, PNG and MP4. Extensions
+    are lower-case with leading dot. The legacy ``MAP_IMAGE_EXTENSIONS``
+    alias resolves to the same tuple so old call sites keep working."""
+    assert MAP_MEDIA_EXTENSIONS == (".jpg", ".jpeg", ".png", ".mp4")
+    assert MAP_IMAGE_EXTENSIONS is MAP_MEDIA_EXTENSIONS
+
+
+def test_is_video_map_path_detects_mp4():
+    """The .mp4 extension flag the renderer reads to swap the still
+    QImage path for a video-playback path. Case-insensitive."""
+    assert is_video_map_path("Maps/day-02.mp4") is True
+    assert is_video_map_path("Maps/day-02.MP4") is True
+    assert is_video_map_path("Maps/day-02.jpg") is False
+    assert is_video_map_path("Maps/event.png") is False
+    assert is_video_map_path("") is False
+    assert is_video_map_path(None) is False  # type: ignore[arg-type]
+
+
+def test_map_video_thumb_suffix_is_jpg():
+    """First-frame sidecar that backs chip thumbs + dialog preview for
+    MP4 maps. Suffix appended to the slot path (so it sweeps cleanly on
+    clear)."""
+    assert MAP_VIDEO_THUMB_SUFFIX == ".thumb.jpg"

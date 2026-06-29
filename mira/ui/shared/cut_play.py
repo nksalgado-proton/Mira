@@ -724,9 +724,23 @@ class CutPlayerDialog(QDialog):
                 self.advance()
                 return
         elif kind == "sep":
-            self._show_image(self._separator_image(payload))
-            if not self._paused:
-                self._timer.start(slot_ms)
+            # spec/155 v2 — when the day has an MP4 map attached, the
+            # separator PLAYS the clip (muted, native duration, one
+            # play) instead of holding the still QImage. Advance is
+            # EndOfMedia-driven, same as a file video; the timer stays
+            # idle.
+            sep_vid = self._sep_video_path(payload)
+            if sep_vid is not None:
+                if outgoing_pm is not None and not outgoing_pm.isNull():
+                    self._photo.setPixmap(QPixmap())
+                self._ensure_video()
+                if self._video_audio is not None:
+                    self._video_audio.setMuted(True)
+                self._show_video(sep_vid)
+            else:
+                self._show_image(self._separator_image(payload))
+                if not self._paused:
+                    self._timer.start(slot_ms)
         elif getattr(payload, "kind", "photo") == "video":
             # spec/144 — videos NEVER ride :attr:`_timer`. Advance is
             # event-driven via :data:`QMediaPlayer.MediaStatus.EndOfMedia`
@@ -754,6 +768,13 @@ class CutPlayerDialog(QDialog):
                 # the very first slide there's no overlay so we
                 # leave the photo widget alone (no transition).
                 self._photo.setPixmap(QPixmap())
+            # spec/155 v2 — file videos play with their own audio. A
+            # preceding sep video may have muted the audio output;
+            # restore it here so the user's actual clip audio isn't
+            # silenced by accident.
+            self._ensure_video()
+            if self._video_audio is not None:
+                self._video_audio.setMuted(False)
             self._show_video(self._resolve_payload_path(payload))
         else:
             pm = load_pixmap(self._resolve_payload_path(payload))
@@ -789,6 +810,11 @@ class CutPlayerDialog(QDialog):
             return "photo"
         kind, payload = self._entries[idx]
         if kind == "file" and getattr(payload, "kind", "") == "video":
+            return "video"
+        # spec/155 v2 — a video-map separator behaves like a file video
+        # for crossfade math: the transition uses the video boundary
+        # variant (half on photo↔video, zero on video↔video).
+        if kind == "sep" and self._sep_video_path(payload) is not None:
             return "video"
         return "photo"
 
@@ -1065,9 +1091,58 @@ class CutPlayerDialog(QDialog):
             except Exception:                                      # noqa: BLE001
                 pass
 
+    # ── spec/155 v2 — video-map separator helpers ──────────────
+
+    def _sep_video_path(self, day) -> Optional[Path]:
+        """Returns the absolute MP4 path when this day's map slot is a
+        video and the file exists; ``None`` otherwise (image map or no
+        map). The Cut Play branches on this to swap the still-render
+        path for video playback."""
+        meta = self._day_meta.get(day)
+        rel = getattr(meta, "map_image_path", None)
+        if not rel:
+            return None
+        from core.path_builder import is_video_map_path
+        if not is_video_map_path(rel):
+            return None
+        abs_p = self._root / rel
+        return abs_p if abs_p.is_file() else None
+
+    def _sep_video_duration_ms(self, day) -> int:
+        """Probed duration of the day's video-map separator, cached.
+        Returns 0 for non-video / missing slots."""
+        if not hasattr(self, "_sep_video_duration_cache"):
+            self._sep_video_duration_cache: dict = {}
+        if day in self._sep_video_duration_cache:
+            return self._sep_video_duration_cache[day]
+        path = self._sep_video_path(day)
+        if path is None:
+            self._sep_video_duration_cache[day] = 0
+            return 0
+        try:
+            from core.video_extract import probe_video
+            ms = int(probe_video(path).duration_ms or 0)
+        except Exception:                                          # noqa: BLE001
+            ms = 0
+        self._sep_video_duration_cache[day] = ms
+        return ms
+
     def _separator_image(self, day) -> QImage:
         meta = self._day_meta.get(day)
         map_rel = getattr(meta, "map_image_path", None)
+        # spec/155 v2 — when the map slot is .mp4 the live separator
+        # plays the clip (the still QImage path doesn't fire here),
+        # but ``_separator_image`` is also called by the small-thumb
+        # preview in the scrubber hover. Substitute the first-frame
+        # sidecar so the hover thumb still has something to show.
+        if map_rel:
+            from core.path_builder import (
+                MAP_VIDEO_THUMB_SUFFIX,
+                is_video_map_path,
+            )
+            if is_video_map_path(map_rel):
+                sidecar_rel = map_rel + MAP_VIDEO_THUMB_SUFFIX
+                map_rel = sidecar_rel
         map_abs = (self._root / map_rel) if map_rel else None
         return render_separator_image(
             day_number=day,
@@ -1883,6 +1958,13 @@ class CutPlayerDialog(QDialog):
             d = int(getattr(payload, "duration_ms", 0) or 0)
             return d if d > 0 else (
                 self._photo_ms + self._transition_ms_value())
+        # spec/155 v2 — video-map separators hold for the MP4's native
+        # duration (probed once and cached). Falls back to the photo
+        # slot's hold when the probe fails (corrupt file).
+        if kind == "sep":
+            sep_d = self._sep_video_duration_ms(payload)
+            if sep_d > 0:
+                return sep_d
         if kind == "opener" and self._opener_image is None:
             return 0
         return self._photo_ms + self._transition_ms_value()

@@ -288,9 +288,30 @@ def maps_dir(event_root: Path) -> Path:
 
 # ── Map-slot filename helpers (spec/155) ─────────────────────────
 
-# Accepted source extensions for map images. Saved with the source's
+# Accepted source extensions for map MEDIA. Saved with the source's
 # extension — no re-encoding. The picker rejects anything else.
-MAP_IMAGE_EXTENSIONS: tuple[str, ...] = (".jpg", ".jpeg", ".png")
+# spec/155 v2: MP4 video joins as a first-class map medium; the Cut Play
+# day-separator plays the clip (muted, native duration, one play)
+# instead of showing the still image.
+MAP_MEDIA_EXTENSIONS: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".mp4")
+
+# Back-compat alias for callers that still ask for the image-only set
+# while the surrounding code is being migrated.
+MAP_IMAGE_EXTENSIONS: tuple[str, ...] = MAP_MEDIA_EXTENSIONS
+
+# Sidecar suffix for an MP4 map's pre-extracted first-frame thumbnail.
+# Lives alongside the source so chips + dialog previews can load a
+# cheap QImage without re-running ffmpeg every paint. Generated on
+# attach (and on read if the source is present but the sidecar isn't).
+MAP_VIDEO_THUMB_SUFFIX = ".thumb.jpg"
+
+
+def is_video_map_path(rel_or_abs: str) -> bool:
+    """True when the slot path points at an MP4 (the only video format
+    spec/155 v2 accepts)."""
+    if not rel_or_abs:
+        return False
+    return rel_or_abs.lower().endswith(".mp4")
 
 
 def event_map_slot_basename() -> str:

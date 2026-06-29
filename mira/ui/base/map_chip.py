@@ -102,7 +102,7 @@ class MapChip(QPushButton):
         attached = self._map_rel is not None
         self.setProperty("attached", "true" if attached else "false")
         if attached:
-            pix = QPixmap(str(self._event_root / self._map_rel))  # type: ignore[arg-type]
+            pix = self._load_thumb_pixmap(self._map_rel)  # type: ignore[arg-type]
             if not pix.isNull():
                 self._thumb.setPixmap(pix.scaled(
                     _THUMB_SIZE,
@@ -128,3 +128,22 @@ class MapChip(QPushButton):
         style.polish(self)
         style.unpolish(self._thumb)
         style.polish(self._thumb)
+
+    def _load_thumb_pixmap(self, rel: str) -> QPixmap:
+        """Resolve the chip's thumbnail source.
+
+        For JPEG / PNG maps the source IS the image. For MP4 maps the
+        source is the pre-extracted first-frame sidecar that
+        ``EventGateway.attach_*_map`` wrote alongside the video — this
+        keeps chip paints cheap (no ffmpeg invocation per repaint).
+        """
+        from core.path_builder import (
+            MAP_VIDEO_THUMB_SUFFIX,
+            is_video_map_path,
+        )
+        abs_path = self._event_root / rel
+        if is_video_map_path(rel):
+            sidecar = abs_path.with_suffix(
+                abs_path.suffix + MAP_VIDEO_THUMB_SUFFIX)
+            return QPixmap(str(sidecar))
+        return QPixmap(str(abs_path))

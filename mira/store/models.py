@@ -35,6 +35,8 @@ class Event:
     experience_type: Optional[str] = None
     creative_focus: str = '[]'
     extras_json: str = '{}'
+    # spec/155 — event-level map slot. Used by the Cut intro slide.
+    map_image_path: Optional[str] = None
 
 
 @dataclass
@@ -46,6 +48,10 @@ class TripDay:
     tz_minutes: Optional[int] = None
     hidden: bool = False
     extras_json: str = '{}'
+    # spec/155 — per-day map slot, relative to event_root (e.g.
+    # ``Maps/day-02.jpg``). NULL/None when no map is attached. The
+    # Cut day-separator pipeline reads this; v2 adds MP4 support.
+    map_image_path: Optional[str] = None
 
 
 @dataclass

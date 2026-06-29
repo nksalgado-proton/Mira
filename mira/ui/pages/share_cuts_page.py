@@ -2504,8 +2504,18 @@ class ShareCutsPage(QWidget):
             totals = eg.cut_show_totals(cut.id)
             # spec/155 — when the event has an attached map, the opener
             # renders the letterboxed-map form with the Cut title riding
-            # the caption strip.
+            # the caption strip. spec/155 v2 — for an MP4 event map the
+            # opener still uses the first-frame sidecar; the in-app
+            # rehearsal's Cut Play handles video playback for day-level
+            # separators only (event-level video opener is a follow-up
+            # once the PTE bundle story is settled).
+            from core.path_builder import (
+                MAP_VIDEO_THUMB_SUFFIX,
+                is_video_map_path,
+            )
             evt_map_rel = eg.get_event_map_path()
+            if evt_map_rel and is_video_map_path(evt_map_rel):
+                evt_map_rel = evt_map_rel + MAP_VIDEO_THUMB_SUFFIX
             evt_map_abs = (
                 Path(eg.event_root) / evt_map_rel
                 if evt_map_rel else None)
@@ -2709,8 +2719,17 @@ class ShareCutsPage(QWidget):
         spec/155 — when the day has an attached map (or the export
         opener day=None falls back to the event-level map), the flat
         background is replaced by the letterboxed map (still text-less;
-        the PTE :Text objects still ride on top)."""
+        the PTE :Text objects still ride on top).
+
+        spec/155 v2 — when the map slot is an MP4, the export writes
+        the first-frame still (via the pre-extracted sidecar) rather
+        than the raw video. PTE bundle video integration is parked
+        pending the manual-PTE design exchange Nelson is running."""
         from core.cut_aspect import aspect_dimensions, normalise
+        from core.path_builder import (
+            MAP_VIDEO_THUMB_SUFFIX,
+            is_video_map_path,
+        )
         from mira.ui.shared.separator_card import render_flat_background
         eg = self._eg
         aspect = normalise(getattr(cut, "aspect", "16:9"))
@@ -2728,7 +2747,13 @@ class ShareCutsPage(QWidget):
             if evt_root is None:
                 return None
             rel = day_map_rel.get(day) if isinstance(day, int) else evt_map_rel
-            return (evt_root / rel) if rel else None
+            if not rel:
+                return None
+            # spec/155 v2 — for MP4 maps the export's letterboxed-map
+            # form needs a still; substitute the pre-extracted sidecar.
+            if is_video_map_path(rel):
+                rel = rel + MAP_VIDEO_THUMB_SUFFIX
+            return evt_root / rel
 
         def write(target: Path, day) -> None:
             img = render_flat_background(

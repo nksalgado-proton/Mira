@@ -626,12 +626,13 @@ _TEXT_STYLE: Dict[str, dict] = {
 # variants — only the y-position changes. Keyed by the regular role.
 _VIDEO_OVERLAY_TEXT_POS: Dict[str, Tuple[float, float]] = {
     # The top 30 % band runs y=-100 → y=-40 in PTE percent coords.
-    # Title sits around -82 (centred 9 % from the slide top); sub
-    # right below at -55 (well above the y=-40 boundary).
+    # Title sits at -82 (centred ~9 % from the slide top); sub sits
+    # right under it at -68 (Nelson 2026-06-29 round 6 — earlier -55
+    # left too much air between the lines).
     TEXT_SEP_TITLE:     (0.0, -82.0),
-    TEXT_SEP_SUB:       (0.0, -55.0),
+    TEXT_SEP_SUB:       (0.0, -68.0),
     TEXT_OPENER_TITLE:  (0.0, -82.0),
-    TEXT_OPENER_SUB:    (0.0, -55.0),
+    TEXT_OPENER_SUB:    (0.0, -68.0),
 }
 
 

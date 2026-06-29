@@ -315,6 +315,24 @@ def test_color_label_facet(qapp):
     d.deleteLater()
 
 
+def test_show_all_event_group_adds_every_classifier(qapp):
+    """add_filter_group('event') reveals all event classifiers at once,
+    each defaulting to all (no selection) — the "open the Event filter and
+    all classifiers show" ask (Nelson 2026-06-28)."""
+    from mira.ui.pages._filter_family import GROUP_EVENT
+    d = _make_dialog(qapp)
+    rows = d.add_filter_group(GROUP_EVENT)
+    assert len(rows) == 5
+    active = set(d.active_dimension_ids())
+    assert {"event_type", "event_subtype", "scope",
+            "participants", "event_date"} <= active
+    # Defaulting to all: no event filter key committed until the user picks.
+    assert d.info().filters == {}
+    # Idempotent — re-adding the group adds nothing new.
+    assert d.add_filter_group(GROUP_EVENT) == []
+    d.deleteLater()
+
+
 # --------------------------------------------------------------------------- #
 # spec/94 Phase 4b — gate lifted; production default offers every dim
 # --------------------------------------------------------------------------- #

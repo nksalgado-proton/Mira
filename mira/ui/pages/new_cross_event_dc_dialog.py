@@ -760,6 +760,22 @@ class NewCrossEventDcDialog(QDialog):
             if not dims:
                 continue
             sub = menu.addMenu(_group_label(group_id))
+            # "Show all <group>" — one click reveals every classifier in the
+            # group at once, each defaulting to all (Nelson 2026-06-28: "open
+            # the Event filter and all event classifiers show, defaulting to
+            # all"). Only when the group has more than one dimension; disabled
+            # once every dimension is already active.
+            if len(dims) > 1:
+                inactive = [d for d in dims
+                            if d.dim_id not in self._active_rows]
+                all_act = sub.addAction(
+                    tr("Show all {group}").format(
+                        group=_group_label(group_id)))
+                all_act.setEnabled(bool(inactive))
+                all_act.triggered.connect(
+                    lambda checked=False, gid=group_id:
+                    self.add_filter_group(gid))
+                sub.addSeparator()
             for dim in dims:
                 act = sub.addAction(dim.label)
                 already = dim.dim_id in self._active_rows
@@ -770,6 +786,18 @@ class NewCrossEventDcDialog(QDialog):
                         self.add_filter_dimension(did))
         menu.exec(self._add_btn.mapToGlobal(
             self._add_btn.rect().bottomLeft()))
+
+    def add_filter_group(self, group_id: str) -> List["_ActiveFilterRow"]:
+        """Add a row for every not-yet-active dimension in ``group_id`` at
+        once — each defaulting to all (no selection). Honours the ask that
+        engaging a group (e.g. Event) reveals all its classifiers together.
+        Returns the rows added (idempotent — already-active dims are
+        skipped)."""
+        rows: List["_ActiveFilterRow"] = []
+        for dim in self._dimensions.values():
+            if dim.group == group_id and dim.dim_id not in self._active_rows:
+                rows.append(self.add_filter_dimension(dim.dim_id))
+        return rows
 
     def add_filter_dimension(self, dim_id: str) -> "_ActiveFilterRow":
         """Add an active filter row for ``dim_id``. Returns the row so

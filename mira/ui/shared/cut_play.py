@@ -612,6 +612,16 @@ class CutPlayerDialog(QDialog):
         self._video_widget.setAspectRatioMode(
             Qt.AspectRatioMode.KeepAspectRatioByExpanding)
         self._stack_layout.addWidget(self._video_widget)
+        # Nelson 2026-06-29 round 4 — reparent the sep / opener caption
+        # to the video widget so it renders ON TOP of the native video
+        # surface. On Windows, QVideoWidget's surface paints above
+        # sibling QLabels (even after raise_()), so the only reliable
+        # way to overlay text is to make it a CHILD of the video
+        # widget itself. Done here (lazy) so the constructor stays
+        # cheap and the still-only Cut never builds a video widget.
+        if self._caption_label is not None:
+            self._caption_label.setParent(self._video_widget)
+            self._caption_label.raise_()
         self._player = QMediaPlayer(self)
         self._video_audio = QAudioOutput(self)
         self._player.setAudioOutput(self._video_audio)
@@ -1490,21 +1500,31 @@ class CutPlayerDialog(QDialog):
         lbl.show()
 
     def _position_caption(self) -> None:
-        """Anchor the caption label to the canvas's TOP edge, centred —
-        same arithmetic as :meth:`_position_origin` but uses the video
-        widget's geometry when the video is the active stack child."""
+        """Anchor the caption label to the canvas's TOP edge, centred.
+
+        When ``_ensure_video`` has run the label is reparented to the
+        video widget (so it composites on top of the native video
+        surface on Windows). In that case position is in the video
+        widget's LOCAL coordinate space — area is just ``(0, 0,
+        video_w, video_h)``. Before reparent (and on still-only Cuts
+        without a video), the label's parent is still the dialog and
+        we project the photo's foreground rect into dialog coords.
+        """
         lbl = self._caption_label
         if lbl is None:
             return
         margin = 16
-        # Prefer the video widget's rect while it's active (the photo
-        # widget may be empty mid-swap); fall back to the photo's
-        # foreground_rect / the stack widget like the origin label does.
-        if (self._video_widget is not None
+        parent = lbl.parentWidget()
+        if (parent is not None and self._video_widget is not None
+                and parent is self._video_widget):
+            # Reparented onto the video widget — local coords.
+            area = QRect(QPoint(0, 0), parent.size())
+            host_for_max_width = parent
+        elif (self._video_widget is not None
                 and self._video_widget.isVisible()):
             host = self._video_widget
-            area = QRect(
-                host.mapTo(self, QPoint(0, 0)), host.size())
+            area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
+            host_for_max_width = self
         else:
             photo_rect = (
                 self._photo.foreground_rect() if self._photo is not None
@@ -1517,11 +1537,12 @@ class CutPlayerDialog(QDialog):
                     self._stack_widget if self._stack_widget is not None
                     else self)
                 area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
-        lbl.setMaximumWidth(self.width())
+            host_for_max_width = self
+        lbl.setMaximumWidth(host_for_max_width.width())
         lbl.adjustSize()
-        w = min(lbl.width(), self.width())
+        w = min(lbl.width(), host_for_max_width.width())
         cx = area.x() + area.width() // 2
-        x = max(0, min(cx - w // 2, self.width() - w))
+        x = max(0, min(cx - w // 2, host_for_max_width.width() - w))
         y = max(0, area.y() + margin)
         lbl.move(int(x), int(y))
 

@@ -78,6 +78,24 @@ def test_sep_video_path_returns_none_when_no_map(qapp, gw, tmp_path):
         p.close()
 
 
+def test_caption_label_reparents_to_video_widget_on_ensure(
+        qapp, gw, tmp_path):
+    """Nelson 2026-06-29 round 4 — QVideoWidget's native surface paints
+    above sibling QLabels on Windows, so the caption MUST be a child of
+    the video widget to render on top. ``_ensure_video`` lazily
+    reparents it."""
+    p = _player(gw, tmp_path)
+    try:
+        # Before _ensure_video: caption is a child of the dialog.
+        assert p._caption_label.parentWidget() is p
+        p._ensure_video()
+        # After: caption's parent is the video widget so it composites
+        # on top of the native video surface.
+        assert p._caption_label.parentWidget() is p._video_widget
+    finally:
+        p.close()
+
+
 def test_video_widget_fills_canvas_by_expanding(qapp, gw, tmp_path):
     """Nelson 2026-06-29 round 2 — the video widget crops-to-fill so
     aspect-mismatched sep / opener videos never letterbox. The caption
@@ -394,6 +412,37 @@ def test_update_caption_hides_for_still_sep(qapp, gw, tmp_path):
         p.show()
         p._update_caption("sep", 1)
         assert p._caption_label.isHidden() is True
+    finally:
+        p.close()
+
+
+def test_show_index_on_opener_video_shows_caption_with_text(
+        qapp, gw, tmp_path, monkeypatch):
+    """Integration: _show_index for an opener with a video AND tag/lines
+    populated must end with the caption label visible AND carrying the
+    title text. Pins the exact path the user reports failing."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
+    day_meta = {d.day_number: d for d in gw.trip_days()}
+    p = CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta=day_meta, aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32),
+        opener_video_path=src,
+        opener_caption_tag="My Show",
+        opener_caption_lines=("12 items · 1:30", "music: travel"))
+    try:
+        # Prevent _show_video from blocking on the QMediaPlayer dance.
+        monkeypatch.setattr(p, "_show_video", lambda _path: None)
+        p.show()
+        p._show_index(0)  # opener slot
+        # The caption label should be visible AND carry text.
+        assert p._caption_label is not None
+        assert p._caption_label.isHidden() is False
+        text = p._caption_label.text()
+        assert "My Show" in text, (
+            f"expected the opener caption to carry 'My Show', got: {text!r}")
+        assert "12 items" in text
     finally:
         p.close()
 

@@ -619,15 +619,39 @@ _TEXT_STYLE: Dict[str, dict] = {
 }
 
 
-def _text_object(idx: int, text: str, role: str) -> str:
+# spec/155 v3 — when a slide has a video overlay (the MP4 fills the
+# whole canvas), the separator / opener title + sub move to the TOP of
+# the slide so the text rides above the video instead of competing
+# with the centre of the frame. Same scale + font as the flat-card
+# variants — only the y-position changes. Keyed by the regular role.
+_VIDEO_OVERLAY_TEXT_POS: Dict[str, Tuple[float, float]] = {
+    TEXT_SEP_TITLE:     (0.0, -78.0),
+    TEXT_SEP_SUB:       (0.0, -62.0),
+    TEXT_OPENER_TITLE:  (0.0, -78.0),
+    TEXT_OPENER_SUB:    (0.0, -62.0),
+}
+
+
+def _text_object(
+    idx: int, text: str, role: str,
+    *, video_overlay: bool = False,
+) -> str:
     """Emit one complete ``object TextN:Text`` block (4-space indent —
     nested in a slide's foreground image) with a fresh GUID and the
     Mira-owned style for ``role`` (spec/153). Quotes / backslashes in
     ``text`` are escaped for PTE's parser. ``ScaleX/ScaleY`` carry the
-    size; ``Position`` places the box."""
+    size; ``Position`` places the box.
+
+    spec/155 v3 — when ``video_overlay`` is True the position is taken
+    from :data:`_VIDEO_OVERLAY_TEXT_POS` (top of the slide) so the
+    text rides above the full-bleed MP4 instead of competing with the
+    middle of the frame."""
     st = _TEXT_STYLE.get(role, _TEXT_STYLE[TEXT_PHOTO_CAPTION])
     safe = (text or "").replace("\\", "\\\\").replace('"', '\\"')
-    px, py = st["pos"]
+    if video_overlay and role in _VIDEO_OVERLAY_TEXT_POS:
+        px, py = _VIDEO_OVERLAY_TEXT_POS[role]
+    else:
+        px, py = st["pos"]
     return (
         f"    object Text{idx}:Text\r\n"
         f"      GUID={fresh_guid()}\r\n"
@@ -772,9 +796,14 @@ def _inject_texts(
     z-orders later-listed objects on TOP, so this keeps the day /
     opener caption visible above a full-bleed (100 % scale) video
     overlay (Nelson 2026-06-29 round 3 — earlier ``+= video_overlay``
-    let the 100 % video cover the title)."""
+    let the 100 % video cover the title). The text-position table
+    also flips to the top-of-slide variant when a video overlay is
+    present (round 4 — Nelson asked for the text "at the top, not
+    centre")."""
+    is_video = bool(video_overlay)
     text_blocks = "".join(
-        _text_object(i + 1, t.text, t.role) for i, t in enumerate(texts))
+        _text_object(i + 1, t.text, t.role, video_overlay=is_video)
+        for i, t in enumerate(texts))
     blocks = (video_overlay or "") + text_blocks
     m = _NESTED_TEXT_RE.search(slide_body)
     if m:

@@ -74,6 +74,25 @@ def test_video_overlay_block_is_well_formed():
     assert block.endswith("    end\r\n")
 
 
+def test_text_objects_use_top_position_when_video_overlay_present():
+    """spec/155 v3 round 4 — when a video overlay rides on a sep /
+    opener slide, the title + sub move to the top of the slide so the
+    text doesn't compete with the centre of the full-bleed video."""
+    from mira.shared.pte_project import (
+        TEXT_SEP_TITLE, TEXT_SEP_SUB,
+        _VIDEO_OVERLAY_TEXT_POS, _text_object,
+    )
+    # Sanity on the table itself.
+    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_TITLE][1] < -50
+    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_SUB][1] < -50
+    # The emitted block carries that position when video_overlay=True.
+    block = _text_object(1, "Day 1", TEXT_SEP_TITLE, video_overlay=True)
+    assert "Position=0.0,-78.0" in block
+    # Without the flag the position is the centred default.
+    block = _text_object(1, "Day 1", TEXT_SEP_TITLE, video_overlay=False)
+    assert "Position=0.0,-16.0" in block
+
+
 def test_video_overlay_block_has_a_fresh_guid():
     """Each emitted block carries a fresh PTE-shaped GUID — two calls
     never collide."""

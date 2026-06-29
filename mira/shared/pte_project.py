@@ -767,13 +767,15 @@ def _inject_texts(
     look now.
 
     spec/155 v3 — when ``video_overlay`` is provided (a fully-rendered
-    ``:Video`` block from :func:`_video_overlay_object`), it is appended
-    after the text blocks so the slide carries both the day metadata
-    text AND the playable MP4 map."""
-    blocks = "".join(
+    ``:Video`` block from :func:`_video_overlay_object`), it is
+    PREPENDED so the texts render after it in source order. PTE
+    z-orders later-listed objects on TOP, so this keeps the day /
+    opener caption visible above a full-bleed (100 % scale) video
+    overlay (Nelson 2026-06-29 round 3 — earlier ``+= video_overlay``
+    let the 100 % video cover the title)."""
+    text_blocks = "".join(
         _text_object(i + 1, t.text, t.role) for i, t in enumerate(texts))
-    if video_overlay:
-        blocks += video_overlay
+    blocks = (video_overlay or "") + text_blocks
     m = _NESTED_TEXT_RE.search(slide_body)
     if m:
         return slide_body[: m.start()] + blocks + slide_body[m.end():]

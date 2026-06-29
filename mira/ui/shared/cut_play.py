@@ -1411,21 +1411,24 @@ class CutPlayerDialog(QDialog):
 
     @staticmethod
     def _caption_html(title: str, sub: str) -> str:
-        """Compose the top-centre caption HTML with inline-styled
-        :func:`html.escape`-d title + sub. Inline ``font-size`` /
-        ``font-weight`` because Qt rich-text renders via QTextDocument
-        and doesn't honour QSS pseudo-class selectors on label
-        children."""
+        """Compose the top-centre caption HTML.
+
+        Qt's rich-text renderer handles a subset of HTML4 reliably —
+        ``<b>``, ``<br>``, ``<span style="…">`` — but block-element
+        styling on ``<div>`` doesn't always apply (the title looked the
+        same size as the sub in Nelson's first eyeball). Sticking to
+        the supported subset keeps the title visibly weighted and the
+        sub visibly smaller."""
         from html import escape
         parts: list[str] = []
         if title:
-            parts.append(
-                f'<div style="font-weight:700;">'
-                f'{escape(title)}</div>')
+            parts.append(f"<b>{escape(title)}</b>")
         if sub:
+            if parts:
+                parts.append("<br>")
             parts.append(
-                f'<div style="font-size:14px;color:#dddddd;">'
-                f'{escape(sub)}</div>')
+                f'<span style="font-size:14px; color:#dddddd;">'
+                f'{escape(sub)}</span>')
         return "".join(parts)
 
     def _compose_sep_caption_html(self, day) -> str:
@@ -1647,6 +1650,19 @@ class CutPlayerDialog(QDialog):
         if (self._transition_overlay is not None
                 and self._transition_overlay.isVisible()):
             self._transition_overlay.raise_()
+        # spec/155 v2 — same risk for the sep / opener caption: the
+        # QVideoWidget can restack on top of sibling QLabels when its
+        # native surface paints in. Re-raise so the caption stays
+        # visible the moment the first frame arrives.
+        if (self._caption_label is not None
+                and self._caption_label.isVisible()):
+            self._caption_label.raise_()
+        if (self._origin_label is not None
+                and self._origin_label.isVisible()):
+            self._origin_label.raise_()
+        if (self._overlay_label is not None
+                and self._overlay_label.isVisible()):
+            self._overlay_label.raise_()
 
     def _on_video_status(self, status) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer

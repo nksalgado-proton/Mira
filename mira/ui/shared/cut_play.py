@@ -604,24 +604,16 @@ class CutPlayerDialog(QDialog):
         from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
         from PyQt6.QtMultimediaWidgets import QVideoWidget
         self._video_widget = QVideoWidget(self._stack_widget)
-        # Nelson 2026-06-29 — fill the whole canvas (crop-fit) so an
-        # aspect-mismatched sep / opener video never letterboxes. The
-        # caption overlay is the only thing on top; the video fills.
-        # KeepAspectRatioByExpanding preserves the video's aspect AND
-        # fills the bounds — overflow gets cropped, no distortion.
         self._video_widget.setAspectRatioMode(
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-        self._stack_layout.addWidget(self._video_widget)
-        # Nelson 2026-06-29 round 4 — reparent the sep / opener caption
-        # to the video widget so it renders ON TOP of the native video
-        # surface. On Windows, QVideoWidget's surface paints above
-        # sibling QLabels (even after raise_()), so the only reliable
-        # way to overlay text is to make it a CHILD of the video
-        # widget itself. Done here (lazy) so the constructor stays
-        # cheap and the still-only Cut never builds a video widget.
-        if self._caption_label is not None:
-            self._caption_label.setParent(self._video_widget)
-            self._caption_label.raise_()
+            Qt.AspectRatioMode.KeepAspectRatio)
+        # Nelson 2026-06-29 round 5 — sep / opener videos occupy the
+        # BOTTOM 70 % of the canvas with the caption riding the top
+        # 30 % as a sibling (NOT a child) of the video. The video is
+        # NOT added to ``_stack_layout`` so the layout doesn't fight
+        # our manual geometry; :meth:`_fit_sep_video_geometry` sizes
+        # + positions it. Photo / opener stills stay full-canvas via
+        # the layout for the non-video paths.
+        self._video_widget.hide()
         self._player = QMediaPlayer(self)
         self._video_audio = QAudioOutput(self)
         self._player.setAudioOutput(self._video_audio)
@@ -1313,6 +1305,7 @@ class CutPlayerDialog(QDialog):
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
+        self._fit_sep_video_geometry()
         self._position_caption()
         self._fit_current()
         self._position_overlay()
@@ -1417,6 +1410,32 @@ class CutPlayerDialog(QDialog):
         lbl.raise_()
         lbl.show()
 
+    # ── spec/155 v5 — 70 / 30 layout for video sep & opener ────────
+
+    #: Fraction of the canvas height occupied by the sep / opener video.
+    #: The caption fills the remaining top 30 % so the two never overlap.
+    _SEP_VIDEO_HEIGHT_FRAC = 0.70
+
+    def _fit_sep_video_geometry(self) -> None:
+        """Resize + position the sep / opener video widget into the
+        bottom 70 % of the slideshow canvas. Caption uses the remaining
+        top 30 %. Called from :meth:`_do_video_swap` and the dialog's
+        resize handler so the layout survives window resizes.
+
+        The video widget is intentionally NOT in ``_stack_layout`` —
+        the layout would clobber our manual geometry on every layout
+        pass. The photo widget stays in the layout so still cards
+        keep their full-canvas paint.
+        """
+        if self._video_widget is None or self._stack_widget is None:
+            return
+        sw = self._stack_widget.size()
+        if sw.width() <= 0 or sw.height() <= 0:
+            return
+        video_h = int(sw.height() * self._SEP_VIDEO_HEIGHT_FRAC)
+        y = sw.height() - video_h
+        self._video_widget.setGeometry(0, y, sw.width(), video_h)
+
     # ── spec/155 v2 — sep / opener video caption overlay ──────────
 
     @staticmethod
@@ -1500,51 +1519,34 @@ class CutPlayerDialog(QDialog):
         lbl.show()
 
     def _position_caption(self) -> None:
-        """Anchor the caption label to the canvas's TOP edge, centred.
-
-        When ``_ensure_video`` has run the label is reparented to the
-        video widget (so it composites on top of the native video
-        surface on Windows). In that case position is in the video
-        widget's LOCAL coordinate space — area is just ``(0, 0,
-        video_w, video_h)``. Before reparent (and on still-only Cuts
-        without a video), the label's parent is still the dialog and
-        we project the photo's foreground rect into dialog coords.
-        """
+        """Anchor the caption label inside the slideshow canvas's TOP
+        30 % band — the slot that sits ABOVE the sep / opener video
+        (spec/155 v5). The label is a child of the dialog; we map the
+        stack widget's local rect into dialog coords."""
         lbl = self._caption_label
         if lbl is None:
             return
-        margin = 16
-        parent = lbl.parentWidget()
-        if (parent is not None and self._video_widget is not None
-                and parent is self._video_widget):
-            # Reparented onto the video widget — local coords.
-            area = QRect(QPoint(0, 0), parent.size())
-            host_for_max_width = parent
-        elif (self._video_widget is not None
-                and self._video_widget.isVisible()):
-            host = self._video_widget
-            area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
-            host_for_max_width = self
-        else:
-            photo_rect = (
-                self._photo.foreground_rect() if self._photo is not None
-                else QRect())
-            if not photo_rect.isEmpty():
-                top_left = self._photo.mapTo(self, photo_rect.topLeft())
-                area = QRect(top_left, photo_rect.size())
-            else:
-                host = (
-                    self._stack_widget if self._stack_widget is not None
-                    else self)
-                area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
-            host_for_max_width = self
-        lbl.setMaximumWidth(host_for_max_width.width())
+        host = (
+            self._stack_widget if self._stack_widget is not None
+            else self)
+        top_left = host.mapTo(self, QPoint(0, 0))
+        sw_w = host.width()
+        sw_h = host.height()
+        band_h = max(48, int(sw_h * (1.0 - self._SEP_VIDEO_HEIGHT_FRAC)))
+        # The caption fits inside the band; clamp width to the canvas
+        # so a long subtitle wraps to multiple lines instead of running
+        # off the side.
+        lbl.setWordWrap(True)
+        lbl.setMaximumWidth(sw_w)
         lbl.adjustSize()
-        w = min(lbl.width(), host_for_max_width.width())
-        cx = area.x() + area.width() // 2
-        x = max(0, min(cx - w // 2, host_for_max_width.width() - w))
-        y = max(0, area.y() + margin)
-        lbl.move(int(x), int(y))
+        lbl_h = min(lbl.height(), band_h)
+        # Vertically centre within the top band so a short caption
+        # sits nicely between the canvas top and the video's top edge.
+        y_local = max(0, (band_h - lbl_h) // 2)
+        w = min(lbl.width(), sw_w)
+        x_local = max(0, (sw_w - w) // 2)
+        lbl.resize(w, lbl_h)
+        lbl.move(top_left.x() + x_local, top_left.y() + y_local)
 
     def _position_origin(self) -> None:
         """Anchor the origin label to the displayed photo's TOP edge,
@@ -1660,9 +1662,12 @@ class CutPlayerDialog(QDialog):
         if self._video_widget is None:
             return
         self._photo.hide()
+        # spec/155 v5 — sep / opener videos occupy the bottom 70 %. The
+        # video widget lives outside ``_stack_layout`` for this reason;
+        # set its geometry explicitly before showing it.
+        self._fit_sep_video_geometry()
         self._video_widget.show()
         self._video_widget.raise_()
-        self._stack_layout.setCurrentWidget(self._video_widget)
         # spec/152 Phase 2 — the ``video_widget.raise_()`` above
         # restacks the video on top of the crossfade overlay; if a
         # fade is still mid-flight we'd see the new video pop in at

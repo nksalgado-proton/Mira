@@ -78,37 +78,40 @@ def test_sep_video_path_returns_none_when_no_map(qapp, gw, tmp_path):
         p.close()
 
 
-def test_caption_label_reparents_to_video_widget_on_ensure(
+def test_caption_label_stays_child_of_dialog_on_ensure_video(
         qapp, gw, tmp_path):
-    """Nelson 2026-06-29 round 4 — QVideoWidget's native surface paints
-    above sibling QLabels on Windows, so the caption MUST be a child of
-    the video widget to render on top. ``_ensure_video`` lazily
-    reparents it."""
+    """Nelson 2026-06-29 round 5 — the video occupies bottom 70 % and
+    the caption rides the top 30 % as a SIBLING (not child) of the
+    video, so the two never overlap and there is no native-surface
+    compositing fight."""
     p = _player(gw, tmp_path)
     try:
-        # Before _ensure_video: caption is a child of the dialog.
         assert p._caption_label.parentWidget() is p
         p._ensure_video()
-        # After: caption's parent is the video widget so it composites
-        # on top of the native video surface.
-        assert p._caption_label.parentWidget() is p._video_widget
+        # The caption stays a child of the dialog — the 70/30 split
+        # keeps it OUT of the video's bounds so no reparent is needed.
+        assert p._caption_label.parentWidget() is p
     finally:
         p.close()
 
 
-def test_video_widget_fills_canvas_by_expanding(qapp, gw, tmp_path):
-    """Nelson 2026-06-29 round 2 — the video widget crops-to-fill so
-    aspect-mismatched sep / opener videos never letterbox. The caption
-    overlay is the only thing on top."""
-    from PyQt6.QtCore import Qt as _Qt
-    src = _write_tiny_mp4(tmp_path / "map.mp4")
-    gw.attach_day_map(1, src)
+def test_fit_sep_video_geometry_sizes_to_bottom_70_percent(
+        qapp, gw, tmp_path):
+    """The video widget occupies the bottom 70 % of the canvas; the
+    top 30 % is reserved for the caption. Pinned via a known canvas
+    size so the math is verifiable."""
     p = _player(gw, tmp_path)
     try:
-        p._ensure_video()  # lazy-build the QVideoWidget
-        assert p._video_widget is not None
-        assert p._video_widget.aspectRatioMode() == (
-            _Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        p._ensure_video()
+        # Force a known canvas size.
+        p._stack_widget.resize(1000, 1000)
+        p._fit_sep_video_geometry()
+        g = p._video_widget.geometry()
+        assert g.width() == 1000
+        # 70 % of 1000 = 700, positioned at y=300 (top edge of bottom 70 %).
+        assert g.height() == 700
+        assert g.y() == 300
+        assert g.x() == 0
     finally:
         p.close()
 

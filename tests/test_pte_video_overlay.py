@@ -58,15 +58,17 @@ def test_video_overlay_block_is_well_formed():
     assert block.startswith("    object MapVideo1:Video\r\n")
     # The locked rule: muted by default.
     assert "      Mute=1\r\n" in block
-    # Scale defaults to 100 % so the video fills the slide (Nelson
-    # 2026-06-29 round 2 — earlier 65 % made the still card show
-    # around the inset, but the caption overlay was meant to be the
-    # only thing on top).
-    assert "        ScaleX=100.0\r\n" in block
-    assert "        ScaleY=100.0\r\n" in block
-    # Centred (Position=0,0); the user's manual example had an off-
-    # centre placement but that was an artefact of hand-editing.
-    assert "        Position=0,0\r\n" in block
+    # Scale: 70 % (Nelson 2026-06-29 round 5 — video occupies the
+    # bottom 70 % so the caption rides the empty top 30 %, no
+    # overlap).
+    assert "        ScaleX=70.0\r\n" in block
+    assert "        ScaleY=70.0\r\n" in block
+    # Position shifts down by 15 % so the 70 %-tall box ends flush
+    # with the slide bottom (top of box at 30 % from top).
+    assert "        Position=0,15.0\r\n" in block
+    # Position 0,+15 — horizontally centred, vertically shifted down
+    # 15 % so the 70 %-tall video box ends flush with the slide bottom.
+    assert "        Position=0,15.0\r\n" in block
     # File path + duration ride straight through.
     assert r"      FileName=C:\maps\day-02.mp4" in block
     assert "      Duration=15000\r\n" in block
@@ -82,12 +84,13 @@ def test_text_objects_use_top_position_when_video_overlay_present():
         TEXT_SEP_TITLE, TEXT_SEP_SUB,
         _VIDEO_OVERLAY_TEXT_POS, _text_object,
     )
-    # Sanity on the table itself.
-    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_TITLE][1] < -50
-    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_SUB][1] < -50
-    # The emitted block carries that position when video_overlay=True.
+    # Sanity on the table itself — both title + sub sit in the top 30 %
+    # band (PTE y < -40) so they don't overlap the bottom-70 % video.
+    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_TITLE][1] < -40
+    assert _VIDEO_OVERLAY_TEXT_POS[TEXT_SEP_SUB][1] < -40
+    # The emitted block carries the top position when video_overlay=True.
     block = _text_object(1, "Day 1", TEXT_SEP_TITLE, video_overlay=True)
-    assert "Position=0.0,-78.0" in block
+    assert "Position=0.0,-82.0" in block
     # Without the flag the position is the centred default.
     block = _text_object(1, "Day 1", TEXT_SEP_TITLE, video_overlay=False)
     assert "Position=0.0,-16.0" in block

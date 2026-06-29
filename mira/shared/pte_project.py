@@ -625,10 +625,13 @@ _TEXT_STYLE: Dict[str, dict] = {
 # with the centre of the frame. Same scale + font as the flat-card
 # variants — only the y-position changes. Keyed by the regular role.
 _VIDEO_OVERLAY_TEXT_POS: Dict[str, Tuple[float, float]] = {
-    TEXT_SEP_TITLE:     (0.0, -78.0),
-    TEXT_SEP_SUB:       (0.0, -62.0),
-    TEXT_OPENER_TITLE:  (0.0, -78.0),
-    TEXT_OPENER_SUB:    (0.0, -62.0),
+    # The top 30 % band runs y=-100 → y=-40 in PTE percent coords.
+    # Title sits around -82 (centred 9 % from the slide top); sub
+    # right below at -55 (well above the y=-40 boundary).
+    TEXT_SEP_TITLE:     (0.0, -82.0),
+    TEXT_SEP_SUB:       (0.0, -55.0),
+    TEXT_OPENER_TITLE:  (0.0, -82.0),
+    TEXT_OPENER_SUB:    (0.0, -55.0),
 }
 
 
@@ -701,14 +704,13 @@ _NESTED_TEXT_RE = re.compile(
     r"    object [^:\r\n]+:Text\r\n(?:[\s\S]*?)\r\n    end\r\n")
 
 
-# spec/155 v3 — Mira's default overlay scale for video maps. The
-# user's manual PTE example sized the inset at 63.479877 % and Mira
-# initially shipped at 65 %, but Nelson 2026-06-29 (eyeball round 2)
-# asked for the video to fill the whole slide so the caption text is
-# the only "on top" element. ``Position=0,0`` (PosMode=Percent)
-# centres it; FitMode=PlaceInto preserves the video's aspect (no
-# stretch).
-_VIDEO_OVERLAY_SCALE_PERCENT = 100.0
+# spec/155 v5 — sep / opener video occupies the BOTTOM 70 % of the
+# slide so the caption text rides the empty top 30 % WITHOUT
+# overlapping the video. The video is shifted down by 15 % of the
+# canvas (Position=0,+15) so its 70 %-tall box ends flush with the
+# slide bottom: top of box = 30 % from top, bottom of box = bottom.
+_VIDEO_OVERLAY_SCALE_PERCENT = 70.0
+_VIDEO_OVERLAY_POSITION_Y = 15.0
 
 
 def _video_overlay_object(
@@ -758,7 +760,7 @@ def _video_overlay_object(
         f"        ScaleX={scale_percent}\r\n"
         f"        ScaleY={scale_percent}\r\n"
         f"        Opacity=100\r\n"
-        f"        Position=0,0\r\n"
+        f"        Position=0,{_VIDEO_OVERLAY_POSITION_Y}\r\n"
         f"        CenterPos=\r\n"
         f"        grps=255\r\n"
         f"      end\r\n"

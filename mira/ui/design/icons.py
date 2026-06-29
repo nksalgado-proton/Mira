@@ -185,6 +185,9 @@ GLYPH_TO_START = GLYPHS_DIR / "to_start.svg"
 GLYPH_TO_END = GLYPHS_DIR / "to_end.svg"
 GLYPH_CLIP = GLYPHS_DIR / "clip.svg"
 GLYPH_SNAPSHOT = GLYPHS_DIR / "snapshot.svg"
+# spec/155 — per-day + event map slot glyph; the EventDaysTableDialog
+# Map column reuses the PlanBrowseCell chrome with this icon.
+GLYPH_MAP = GLYPHS_DIR / "map.svg"
 
 # Phase glyphs — drawn for Surface 01's open-card pipeline rows so the
 # mockup's `📥 / ⭐ / 🎨 / 📤` emojis become real line-icons (spec/65
@@ -208,6 +211,7 @@ __all__ = [
     "GLYPH_CUT",
     "GLYPH_EVENT",
     "GLYPH_EYE",
+    "GLYPH_MAP",
     "GLYPH_PAUSE",
     "GLYPH_PLAY",
     "GLYPH_SEARCH",

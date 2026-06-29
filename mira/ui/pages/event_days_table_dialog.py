@@ -69,6 +69,7 @@ from mira.ui.design import (
     GLYPH_CROSS,
     GLYPH_EVENT,
     GLYPH_EYE,
+    GLYPH_MAP,
     tinted_svg_pixmap,
 )
 from mira.ui.i18n import tr
@@ -474,19 +475,25 @@ class EventDaysTableDialog(QDialog):
         text_col.addWidget(hint)
         h.addLayout(text_col, 1)
 
-        # spec/155 — event-level map chip. Hidden when the host didn't
-        # wire the gateway (new-event scan path; no event.db yet).
+        # spec/155 — event-level map button. Mirrors the per-row Map
+        # button's chrome (#PlanBrowseCell + tinted 16 px line glyph) so
+        # both controls speak the same visual language. Hidden when the
+        # host didn't wire the gateway (new-event scan path; no event.db
+        # yet).
         if self._maps_enabled and self._event_root is not None:
-            from mira.ui.base.map_chip import MapChip
-            self._event_map_chip = MapChip(
-                event_root=self._event_root,
-                empty_label=tr("Event map"),
-                attached_label=tr("Event map"),
-                tooltip_empty=tr("Attach a map for the whole event."),
-                tooltip_attached=tr(
-                    "Replace or remove the event map."),
-            )
-            self._event_map_chip.set_map_path(self._event_map_rel)
+            self._event_map_chip = QPushButton()
+            self._event_map_chip.setObjectName("PlanBrowseCell")
+            attached_e = bool(self._event_map_rel)
+            tint_e = (QColor(p["accent"]) if attached_e
+                      else QColor(p["ink_soft"]))
+            self._event_map_chip.setIcon(QIcon(
+                tinted_svg_pixmap(GLYPH_MAP, 16, tint_e)))
+            self._event_map_chip.setIconSize(QSize(16, 16))
+            self._event_map_chip.setToolTip(
+                tr("Replace or remove the event map.") if attached_e
+                else tr("Attach a map for the whole event."))
+            self._event_map_chip.setCursor(
+                QCursor(Qt.CursorShape.PointingHandCursor))
             self._event_map_chip.clicked.connect(
                 self._open_event_map_dialog)
             h.addWidget(self._event_map_chip)
@@ -741,33 +748,60 @@ class EventDaysTableDialog(QDialog):
     # ── Map chip (spec/155) ───────────────────────────────────────
 
     def _make_map_cell(self, row: ScanDayRow, idx: int) -> QWidget:
-        """The per-day map slot chip. Hidden (placeholder cell) when the
-        gateway isn't wired in (new-event scan path); otherwise it's a
-        :class:`MapChip` whose ``clicked`` opens the
-        :class:`MapAttachDialog` nested inside this dialog."""
+        """The per-day map slot button. Mirrors :meth:`_make_browse_cell`'s
+        chrome (``#PlanBrowseCell`` QSS role + tinted 16 px line glyph) so
+        it lives within the cell space cleanly. Click opens
+        :class:`MapAttachDialog`. Hidden (placeholder cell) when the
+        gateway isn't wired in (new-event scan path)."""
         cell = QWidget()
         lay = QHBoxLayout(cell)
         lay.setContentsMargins(4, 2, 4, 2)
         lay.setSpacing(0)
         if not self._maps_enabled:
             return cell
-        from mira.ui.base.map_chip import MapChip
-        chip = MapChip(event_root=self._event_root)  # type: ignore[arg-type]
-        chip.set_map_path(row.map_image_path)
-        chip.clicked.connect(
+        btn = QPushButton()
+        btn.setObjectName("PlanBrowseCell")
+        p = PALETTE[_palette_mode()]
+        # Attached state tints the glyph accent so the user can tell at a
+        # glance which days have a map; empty state is ink-soft, matching
+        # the Browse / Override buttons.
+        attached = bool(row.map_image_path)
+        tint = QColor(p["accent"]) if attached else QColor(p["ink_soft"])
+        btn.setIcon(QIcon(tinted_svg_pixmap(GLYPH_MAP, 16, tint)))
+        btn.setIconSize(QSize(16, 16))
+        btn.setToolTip(
+            tr("Replace or remove the day's map.") if attached
+            else tr("Attach a map for this day (JPEG, PNG or MP4)."))
+        btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        btn.clicked.connect(
             lambda _checked=False, i=idx: self._open_map_dialog_for_row(i))
-        # Stash on the cell so the in-place refresh after attach/clear
-        # can locate it by row index.
-        cell.setProperty("_map_chip", chip)
-        lay.addWidget(chip)
-        lay.addStretch(1)
+        # Stash on the cell so :meth:`_open_map_dialog_for_row`'s
+        # ``mapChanged`` handler can re-tint the button + refresh tooltip.
+        cell.setProperty("_map_button", btn)
+        lay.addWidget(btn)
         return cell
 
-    def _row_map_chip(self, idx: int):
+    def _row_map_button(self, idx: int):
         cell = self._table.cellWidget(idx, COL_MAP)
         if cell is None:
             return None
-        return cell.property("_map_chip")
+        return cell.property("_map_button")
+
+    def _refresh_row_map_button(self, idx: int) -> None:
+        """Re-tint the per-row map button + refresh tooltip after the
+        attach dialog reports a change. Mirrors the chip's previous
+        in-place refresh — same role, smaller surface."""
+        btn = self._row_map_button(idx)
+        if btn is None:
+            return
+        attached = bool(self._rows[idx].map_image_path)
+        p = PALETTE[_palette_mode()]
+        tint = QColor(p["accent"]) if attached else QColor(p["ink_soft"])
+        btn.setIcon(QIcon(tinted_svg_pixmap(GLYPH_MAP, 16, tint)))
+        btn.setIconSize(QSize(16, 16))
+        btn.setToolTip(
+            tr("Replace or remove the day's map.") if attached
+            else tr("Attach a map for this day (JPEG, PNG or MP4)."))
 
     def _open_map_dialog_for_row(self, idx: int) -> None:
         if not self._maps_enabled or self._gateway is None:
@@ -783,9 +817,7 @@ class EventDaysTableDialog(QDialog):
         def _on_changed() -> None:
             new_rel = self._gateway.get_day_map_path(day_number)
             row.map_image_path = new_rel
-            chip = self._row_map_chip(idx)
-            if chip is not None:
-                chip.set_map_path(new_rel)
+            self._refresh_row_map_button(idx)
 
         dlg.mapChanged.connect(_on_changed)
         dlg.exec()
@@ -798,11 +830,25 @@ class EventDaysTableDialog(QDialog):
 
         def _on_changed() -> None:
             self._event_map_rel = self._gateway.get_event_map_path()
-            if self._event_map_chip is not None:
-                self._event_map_chip.set_map_path(self._event_map_rel)
+            self._refresh_event_map_button()
 
         dlg.mapChanged.connect(_on_changed)
         dlg.exec()
+
+    def _refresh_event_map_button(self) -> None:
+        """Re-tint the header event-map button + refresh tooltip after
+        the attach dialog reports a change."""
+        if self._event_map_chip is None:
+            return
+        attached = bool(self._event_map_rel)
+        p = PALETTE[_palette_mode()]
+        tint = QColor(p["accent"]) if attached else QColor(p["ink_soft"])
+        self._event_map_chip.setIcon(QIcon(
+            tinted_svg_pixmap(GLYPH_MAP, 16, tint)))
+        self._event_map_chip.setIconSize(QSize(16, 16))
+        self._event_map_chip.setToolTip(
+            tr("Replace or remove the event map.") if attached
+            else tr("Attach a map for the whole event."))
 
     def _make_override_cell(
         self, marker: Optional[OverrideMarker], day: date,

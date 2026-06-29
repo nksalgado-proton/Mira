@@ -86,17 +86,22 @@ def test_map_column_visible_when_gateway_present(qapp, tmp_path):
         try:
             assert dlg._maps_enabled is True
             assert dlg._table.isColumnHidden(COL_MAP) is False
+            # Header event-map button is rendered + reads empty (no
+            # event_map_path passed).
             assert dlg._event_map_chip is not None
-            assert dlg._event_map_chip.property("attached") == "false"
+            assert dlg._event_map_rel is None
+            assert dlg._event_map_chip.toolTip() == (
+                "Attach a map for the whole event.")
         finally:
             dlg.deleteLater()
     finally:
         eg.close()
 
 
-def test_per_day_chip_paints_attached_state_from_scan_row(qapp, tmp_path):
-    """When the ScanDayRow carries a map_image_path, the row's chip
-    starts in attached state (no extra fetch)."""
+def test_per_day_button_paints_attached_state_from_scan_row(qapp, tmp_path):
+    """When the ScanDayRow carries a map_image_path, the row's button
+    starts in attached state — tooltip flips from "Attach…" to
+    "Replace or remove…" so the user knows it's already set."""
     (tmp_path / "Maps").mkdir()
     _write_jpeg(tmp_path / "Maps" / "day-02.jpg")
     rows = [
@@ -115,21 +120,27 @@ def test_per_day_chip_paints_attached_state_from_scan_row(qapp, tmp_path):
             },
         )
         try:
-            chip_empty = dlg._row_map_chip(0)
-            chip_attached = dlg._row_map_chip(1)
-            assert chip_empty.property("attached") == "false"
-            assert chip_attached.property("attached") == "true"
-            assert chip_attached.map_path() == "Maps/day-02.jpg"
+            btn_empty = dlg._row_map_button(0)
+            btn_attached = dlg._row_map_button(1)
+            assert btn_empty is not None and btn_attached is not None
+            assert btn_empty.toolTip() == (
+                "Attach a map for this day (JPEG, PNG or MP4).")
+            assert btn_attached.toolTip() == (
+                "Replace or remove the day's map.")
+            assert dlg._rows[1].map_image_path == "Maps/day-02.jpg"
+            # The button uses the dialog's PlanBrowseCell chrome — same
+            # object name as the Browse column control.
+            assert btn_attached.objectName() == "PlanBrowseCell"
         finally:
             dlg.deleteLater()
     finally:
         eg.close()
 
 
-def test_event_map_chip_paints_attached_state_from_constructor(
+def test_event_map_button_paints_attached_state_from_constructor(
         qapp, tmp_path):
-    """The header's Event map chip respects ``event_map_path`` on first
-    paint."""
+    """The header's Event map button respects ``event_map_path`` on
+    first paint — tooltip is the "Replace or remove…" variant."""
     (tmp_path / "Maps").mkdir()
     _write_jpeg(tmp_path / "Maps" / "event.jpg")
     eg = _make_gateway(tmp_path)
@@ -144,8 +155,10 @@ def test_event_map_chip_paints_attached_state_from_constructor(
             event_map_path="Maps/event.jpg",
         )
         try:
-            assert dlg._event_map_chip.property("attached") == "true"
-            assert dlg._event_map_chip.map_path() == "Maps/event.jpg"
+            assert dlg._event_map_rel == "Maps/event.jpg"
+            assert dlg._event_map_chip.toolTip() == (
+                "Replace or remove the event map.")
+            assert dlg._event_map_chip.objectName() == "PlanBrowseCell"
         finally:
             dlg.deleteLater()
     finally:
@@ -185,10 +198,12 @@ def test_per_day_chip_click_attaches_and_refreshes(
                 dlg._open_map_dialog_for_row(1)
             finally:
                 monkeypatch.setattr(MapAttachDialog, "exec", orig_exec)
-            # DB now carries the path; chip refreshed; ScanDayRow updated.
+            # DB now carries the path; ScanDayRow updated; button's
+            # tooltip flipped to the "Replace or remove…" variant.
             assert eg.get_day_map_path(2) == "Maps/day-02.jpg"
             assert dlg._rows[1].map_image_path == "Maps/day-02.jpg"
-            assert dlg._row_map_chip(1).property("attached") == "true"
+            assert dlg._row_map_button(1).toolTip() == (
+                "Replace or remove the day's map.")
         finally:
             dlg.deleteLater()
     finally:
@@ -226,7 +241,8 @@ def test_event_map_chip_click_attaches_and_refreshes(
                 monkeypatch.setattr(MapAttachDialog, "exec", orig_exec)
             assert eg.get_event_map_path() == "Maps/event.jpg"
             assert dlg._event_map_rel == "Maps/event.jpg"
-            assert dlg._event_map_chip.property("attached") == "true"
+            assert dlg._event_map_chip.toolTip() == (
+                "Replace or remove the event map.")
         finally:
             dlg.deleteLater()
     finally:
@@ -242,6 +258,6 @@ def test_dialog_renders_in_smoke_path_without_gateway(qapp):
         assert dlg._table.rowCount() == 2
         for r in range(2):
             assert dlg._table.cellWidget(r, COL_MAP) is not None
-            assert dlg._row_map_chip(r) is None
+            assert dlg._row_map_button(r) is None
     finally:
         dlg.deleteLater()

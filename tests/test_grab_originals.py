@@ -159,6 +159,10 @@ CREATE TABLE cut_member (
     # tables so the ADD COLUMN steps on the way back up don't collide.
     conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
     conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 — strip map_image_path from trip_day + event
+    # so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     # spec/123 v16→v17 — rename *_seconds back to *_minutes so the
     # rename + ×60 step succeeds on the way back up.
     conn.execute(

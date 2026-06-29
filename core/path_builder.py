@@ -90,6 +90,12 @@ PICKED_MEDIA_DIR_NAME = "Picked Media"
 # (spec/51 vocabulary + spec/57 placement; was "04 - Cuts").
 CUTS_DIR_NAME = "Cuts"
 
+# spec/155 — per-day and per-event map images live under this tier.
+# Filenames are slot-named: ``event.<ext>`` and ``day-NN.<ext>``
+# (zero-padded to 2 digits). The user supplies the image (JPEG/PNG);
+# Mira never fetches map tiles (charter rule #3 — strict offline-first).
+MAPS_DIR_NAME = "Maps"
+
 # Subfolder under each day folder where Process Videos drops
 # extracted frames (snapped JPEGs picked up by Process Photos).
 EXTRACTED_FRAMES_FOLDER_NAME = "extracted"
@@ -271,6 +277,34 @@ def cuts_dir(event_root: Path) -> Path:
     return event_root / CUTS_DIR_NAME
 
 
+def maps_dir(event_root: Path) -> Path:
+    """``Maps/`` — per-day and per-event map images (spec/155). User-supplied
+    JPEG/PNG only; strict offline-first holds (no tile fetch). Filenames are
+    slot-named (``event.<ext>``, ``day-NN.<ext>``); replacement overwrites
+    the slot atomically (write-then-rename) and deletes any stale sibling
+    with a different extension."""
+    return event_root / MAPS_DIR_NAME
+
+
+# ── Map-slot filename helpers (spec/155) ─────────────────────────
+
+# Accepted source extensions for map images. Saved with the source's
+# extension — no re-encoding. The picker rejects anything else.
+MAP_IMAGE_EXTENSIONS: tuple[str, ...] = (".jpg", ".jpeg", ".png")
+
+
+def event_map_slot_basename() -> str:
+    """The event-level map slot's base filename (without extension)."""
+    return "event"
+
+
+def day_map_slot_basename(day_number: int) -> str:
+    """The per-day map slot's base filename (without extension), e.g.
+    ``day-02`` for day 2. Two-digit zero pad — widen to 3 here if any
+    real event ever holds >99 days."""
+    return f"day-{day_number:02d}"
+
+
 # ── Stage helpers (legacy-era; see the RETIRED block above) ──────
 
 def captured_dir(event_root: Path) -> Path:
@@ -407,6 +441,7 @@ def ensure_event_tree(event_root: Path) -> None:
     edited_media_dir(event_root).mkdir(exist_ok=True)
     exported_media_dir(event_root).mkdir(exist_ok=True)
     cuts_dir(event_root).mkdir(exist_ok=True)
+    maps_dir(event_root).mkdir(exist_ok=True)
 
 
 # ── Reserved-name helpers (used to skip stage dirs during scans) ──
@@ -423,6 +458,7 @@ RESERVED_DIR_NAMES = frozenset({
     EDITED_MEDIA_DIR_NAME,
     EXPORTED_MEDIA_DIR_NAME,
     CUTS_DIR_NAME,
+    MAPS_DIR_NAME,
     MERGED_SUBDIR_NAME,
     "00 - Captured",
     CULLED_DIR_NAME,

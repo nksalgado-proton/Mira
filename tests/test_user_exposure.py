@@ -326,6 +326,10 @@ def test_migration_v15_to_v16_adds_user_exposure(tmp_path):
             conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
             conn.execute(
                 "ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+            # spec/155 v21→v22 — strip map_image_path from trip_day +
+            # event so the ADD COLUMN steps don't collide.
+            conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+            conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
             conn.execute(
                 "UPDATE schema_info SET schema_version = 15 WHERE id = 1")
 

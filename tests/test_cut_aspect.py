@@ -214,6 +214,15 @@ def test_per_event_migration_adds_aspect_column_to_legacy_db(tmp_path):
             # collide on the way back up.
             conn.execute("DROP INDEX IF EXISTS ix_camera_tz_correction_tz")
             conn.execute("DROP TABLE IF EXISTS camera_tz_correction")
+            # spec/156 v20→v21 — strip filter_strength from both
+            # adjustment tables so the ADD COLUMN steps don't collide.
+            conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+            conn.execute(
+                "ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+            # spec/155 v21→v22 — strip map_image_path from trip_day +
+            # event so the ADD COLUMN steps don't collide.
+            conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+            conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
             conn.execute(
                 "UPDATE schema_info SET schema_version = 14 WHERE id = 1")
 

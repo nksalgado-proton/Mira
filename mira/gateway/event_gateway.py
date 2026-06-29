@@ -3862,6 +3862,186 @@ class EventGateway:
             )
             self._touch()
 
+    # ----- maps (spec/155) ----------------------------------------------- #
+
+    def get_day_map_path(self, day_number: int) -> Optional[str]:
+        """Return the per-day map's path relative to ``event_root``
+        (e.g. ``Maps/day-02.jpg``), or ``None`` when no map is attached.
+        Cheap PK lookup."""
+        row = self.store.conn.execute(
+            "SELECT map_image_path FROM trip_day WHERE day_number = ?",
+            (day_number,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["map_image_path"]
+
+    def get_event_map_path(self) -> Optional[str]:
+        """Return the event-level map's path relative to ``event_root``
+        (e.g. ``Maps/event.jpg``), or ``None`` when no map is attached."""
+        row = self.store.conn.execute(
+            "SELECT map_image_path FROM event WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return row["map_image_path"]
+
+    def attach_day_map(self, day_number: int, src_path: str | Path) -> str:
+        """Copy ``src_path`` into ``Maps/day-NN.<ext>`` (atomic
+        write-then-rename), null any stale sibling with a different
+        accepted extension, write the relative path to
+        ``trip_day.map_image_path``, and return the relative path.
+
+        ``src_path`` must point at a JPEG or PNG (extensions per
+        :data:`core.path_builder.MAP_IMAGE_EXTENSIONS`). Anything else
+        raises ``ValueError``. The source file is left untouched; we
+        copy, never link, so the slot is independent of the user's
+        original (which might be cleaned up later)."""
+        from core.path_builder import (
+            MAP_IMAGE_EXTENSIONS,
+            day_map_slot_basename,
+            maps_dir,
+        )
+
+        return self._attach_map_slot(
+            slot_basename=day_map_slot_basename(day_number),
+            src_path=src_path,
+            update_sql="UPDATE trip_day SET map_image_path = ? WHERE day_number = ?",
+            update_params_factory=lambda rel: (rel, day_number),
+            accepted_exts=MAP_IMAGE_EXTENSIONS,
+            maps_dir_factory=maps_dir,
+        )
+
+    def attach_event_map(self, src_path: str | Path) -> str:
+        """Copy ``src_path`` into ``Maps/event.<ext>`` and write the
+        relative path to ``event.map_image_path``. Returns the relative
+        path."""
+        from core.path_builder import (
+            MAP_IMAGE_EXTENSIONS,
+            event_map_slot_basename,
+            maps_dir,
+        )
+
+        return self._attach_map_slot(
+            slot_basename=event_map_slot_basename(),
+            src_path=src_path,
+            update_sql="UPDATE event SET map_image_path = ? WHERE id = 1",
+            update_params_factory=lambda rel: (rel,),
+            accepted_exts=MAP_IMAGE_EXTENSIONS,
+            maps_dir_factory=maps_dir,
+        )
+
+    def clear_day_map(self, day_number: int) -> None:
+        """Delete the per-day map file (if any) and null
+        ``trip_day.map_image_path``. Idempotent — calling on a day
+        without a map is a no-op."""
+        from core.path_builder import day_map_slot_basename, maps_dir
+
+        self._clear_map_slot(
+            slot_basename=day_map_slot_basename(day_number),
+            current_path=self.get_day_map_path(day_number),
+            update_sql="UPDATE trip_day SET map_image_path = NULL WHERE day_number = ?",
+            update_params=(day_number,),
+            maps_dir_factory=maps_dir,
+        )
+
+    def clear_event_map(self) -> None:
+        """Delete the event-level map file (if any) and null
+        ``event.map_image_path``. Idempotent."""
+        from core.path_builder import event_map_slot_basename, maps_dir
+
+        self._clear_map_slot(
+            slot_basename=event_map_slot_basename(),
+            current_path=self.get_event_map_path(),
+            update_sql="UPDATE event SET map_image_path = NULL WHERE id = 1",
+            update_params=(),
+            maps_dir_factory=maps_dir,
+        )
+
+    def _attach_map_slot(
+        self,
+        *,
+        slot_basename: str,
+        src_path: str | Path,
+        update_sql: str,
+        update_params_factory: Callable[[str], Tuple],
+        accepted_exts: Tuple[str, ...],
+        maps_dir_factory: Callable[[Path], Path],
+    ) -> str:
+        """Shared core for attach_day_map / attach_event_map."""
+        import shutil
+
+        if self.event_root is None:
+            raise RuntimeError("attach_*_map needs a resolvable event_root")
+        src = Path(src_path)
+        if not src.is_file():
+            raise FileNotFoundError(src)
+        ext = src.suffix.lower()
+        if ext not in accepted_exts:
+            raise ValueError(
+                f"map image must be one of {accepted_exts}, got {ext!r}")
+        # Normalize .jpeg -> .jpg on disk so slot files are consistently named.
+        on_disk_ext = ".jpg" if ext == ".jpeg" else ext
+        event_root = Path(self.event_root)
+        dest_dir = maps_dir_factory(event_root)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{slot_basename}{on_disk_ext}"
+        # Atomic write-then-rename: copy to a .tmp sibling then os.replace
+        # so the slot is never observed half-written.
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        shutil.copy2(src, tmp)
+        import os
+        os.replace(tmp, dest)
+        # Sweep any stale sibling with a different accepted extension
+        # (e.g. an old day-02.png when the new attach is day-02.jpg).
+        for stale_ext in accepted_exts:
+            stale_on_disk = ".jpg" if stale_ext == ".jpeg" else stale_ext
+            if stale_on_disk == on_disk_ext:
+                continue
+            stale = dest_dir / f"{slot_basename}{stale_on_disk}"
+            if stale.exists():
+                stale.unlink()
+        rel = dest.relative_to(event_root).as_posix()
+        with self.store.transaction() as conn:
+            conn.execute(update_sql, update_params_factory(rel))
+            self._touch()
+        return rel
+
+    def _clear_map_slot(
+        self,
+        *,
+        slot_basename: str,
+        current_path: Optional[str],
+        update_sql: str,
+        update_params: Tuple,
+        maps_dir_factory: Callable[[Path], Path],
+    ) -> None:
+        """Shared core for clear_day_map / clear_event_map."""
+        if self.event_root is None:
+            raise RuntimeError("clear_*_map needs a resolvable event_root")
+        event_root = Path(self.event_root)
+        # Delete by walking the accepted-extensions in case the DB and
+        # disk fell out of sync — sweep anything sitting in the slot.
+        from core.path_builder import MAP_IMAGE_EXTENSIONS
+        dest_dir = maps_dir_factory(event_root)
+        for ext in MAP_IMAGE_EXTENSIONS:
+            on_disk_ext = ".jpg" if ext == ".jpeg" else ext
+            candidate = dest_dir / f"{slot_basename}{on_disk_ext}"
+            if candidate.exists():
+                candidate.unlink()
+        # Belt-and-braces: if the DB pointed at a path outside the
+        # standard slot (legacy / external edit), unlink that too.
+        if current_path:
+            legacy = event_root / current_path
+            if legacy.exists() and legacy.is_file():
+                try:
+                    legacy.unlink()
+                except OSError:
+                    pass
+        with self.store.transaction() as conn:
+            conn.execute(update_sql, update_params)
+            self._touch()
+
     def set_day_hidden(self, day_number: int, hidden: bool) -> None:
         """Soft-hide / unhide a whole trip day (spec/14 §5C.1). Items derive their
         visibility from this flag via the ``visible_item`` view — phase work + completion

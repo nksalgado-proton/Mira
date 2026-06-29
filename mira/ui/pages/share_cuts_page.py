@@ -2502,12 +2502,20 @@ class ShareCutsPage(QWidget):
                 cut_opener_lines, render_cut_opener_image,
             )
             totals = eg.cut_show_totals(cut.id)
+            # spec/155 — when the event has an attached map, the opener
+            # renders the letterboxed-map form with the Cut title riding
+            # the caption strip.
+            evt_map_rel = eg.get_event_map_path()
+            evt_map_abs = (
+                Path(eg.event_root) / evt_map_rel
+                if evt_map_rel else None)
             opener_image = render_cut_opener_image(
                 tag_text=cut_names.display_tag(cut.tag),
                 lines=cut_opener_lines(
                     cut, totals, cut.photo_s, self._transition_s(cut)),
                 aspect=aspect, height=canvas_h,
-                card_style=card_style, seed_key=cut.id)
+                card_style=card_style, seed_key=cut.id,
+                map_image_path=evt_map_abs)
         # Spec/81 §3.1 — live overlays in Play. When the Cut has any
         # overlay field selected, the dialog draws ``when / where / how¹
         # / how²`` over each frame; the resolver is the same gateway
@@ -2696,18 +2704,37 @@ class ShareCutsPage(QWidget):
 
         spec/111 — the canvas aspect lives on the Cut; cards render at the
         Cut's ``(width, height)`` so cards, photos and the show canvas all
-        agree."""
+        agree.
+
+        spec/155 — when the day has an attached map (or the export
+        opener day=None falls back to the event-level map), the flat
+        background is replaced by the letterboxed map (still text-less;
+        the PTE :Text objects still ride on top)."""
         from core.cut_aspect import aspect_dimensions, normalise
         from mira.ui.shared.separator_card import render_flat_background
         eg = self._eg
         aspect = normalise(getattr(cut, "aspect", "16:9"))
         _, canvas_h = aspect_dimensions(aspect)
         card_style = eg.cut_card_style(cut)
+        # Resolve per-day + event-level map slot ahead of time.
+        evt_root = Path(eg.event_root) if eg.event_root else None
+        day_map_rel = {
+            d.day_number: getattr(d, "map_image_path", None)
+            for d in eg.trip_days()
+        }
+        evt_map_rel = eg.get_event_map_path()
+
+        def _map_abs_for(day) -> "Optional[Path]":
+            if evt_root is None:
+                return None
+            rel = day_map_rel.get(day) if isinstance(day, int) else evt_map_rel
+            return (evt_root / rel) if rel else None
 
         def write(target: Path, day) -> None:
             img = render_flat_background(
                 aspect=aspect, height=canvas_h,
-                card_style=card_style, seed_key=f"{cut.id}:{day}")
+                card_style=card_style, seed_key=f"{cut.id}:{day}",
+                map_image_path=_map_abs_for(day))
             if not img.save(str(target), "JPG", 92):
                 raise OSError(f"could not write {target}")
         return write

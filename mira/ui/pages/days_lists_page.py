@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
@@ -97,6 +98,11 @@ class DaySnapshot:
     location: str = ""
     notes: list[str] = field(default_factory=list)
     capture_hours: list[int] = field(default_factory=lambda: [0] * 24)
+    # spec/155 — per-day map slot. None when no map is attached;
+    # otherwise the relative path under the event root
+    # (e.g. ``Maps/day-02.jpg``). The page reads it from the gateway at
+    # snapshot-build time and writes it back via the attach dialog.
+    map_rel: Optional[str] = None
 
 
 class _DayBadge(QLabel):
@@ -275,15 +281,22 @@ class DayRow(Card):
     activated = pyqtSignal(int)
     pick_all_requested = pyqtSignal(int)
     skip_all_requested = pyqtSignal(int)
+    # spec/155 — clicking the inline map chip asks the host to open the
+    # attach dialog for this day.
+    map_attach_requested = pyqtSignal(int)
 
     def __init__(
         self,
         snapshot: DaySnapshot,
         parent: QWidget | None = None,
         phase: str = "pick",
+        *,
+        event_root: "Optional[Path]" = None,
     ) -> None:
         super().__init__(parent, padded=True)
         self._snapshot = snapshot
+        self._event_root = event_root
+        self._map_chip = None  # set in the title block if event_root is known
         # The host phase decides what each row MEASURES (spec/71 — the
         # shared Days Lists takes its host's identity). Under "edit" the
         # row swaps the Pick/Skip read for Picked (green, for continuity
@@ -380,6 +393,18 @@ class DayRow(Card):
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
             )
             title_block.addWidget(sub)
+        # spec/155 — the inline map chip lives between the location sub-text
+        # and the rest of the row (date · location · [Map] · …). Only built
+        # when the row knows its event_root (always true in the live path;
+        # mocked rows in smoke tests pass None and skip the chip).
+        if self._event_root is not None:
+            from mira.ui.base.map_chip import MapChip
+            self._map_chip = MapChip(event_root=self._event_root)
+            self._map_chip.set_map_path(snapshot.map_rel)
+            self._map_chip.clicked.connect(
+                lambda _checked=False, n=snapshot.day_number:
+                self.map_attach_requested.emit(int(n)))
+            title_block.addWidget(self._map_chip)
         top.addLayout(title_block, 1)
         # Per-row Pick all / Skip all — mockup `.mini` quiet buttons
         # instead of the noisy ghost_button cluster the migration used.
@@ -587,6 +612,14 @@ class DayRow(Card):
         super().mousePressEvent(e)
         self.activated.emit(self._snapshot.day_number)
 
+    # spec/155 — let the page re-paint the chip in place after the
+    # attach dialog reports a change, without rebuilding the row.
+    def set_map_path(self, rel: Optional[str]) -> None:
+        self._snapshot = type(self._snapshot)(
+            **{**self._snapshot.__dict__, "map_rel": rel})
+        if self._map_chip is not None:
+            self._map_chip.set_map_path(rel)
+
 
 _EXPORT_NOW_TIP_ALL_DAYS = (
     "Render every Will-export keeper across this event and unlink "
@@ -615,6 +648,12 @@ class DaysListsPage(QWidget):
     day_activated = pyqtSignal(int)               # day_number
     day_pick_all_requested = pyqtSignal(int)
     day_skip_all_requested = pyqtSignal(int)
+    # spec/155 — chip-click signals routed to whichever surface owns the
+    # MapAttachDialog. The host opens the dialog with the per-event
+    # gateway, then calls :meth:`set_day_map_path` / :meth:`set_event_map_path`
+    # so the chip re-renders in place without rebuilding snapshots.
+    day_map_attach_requested = pyqtSignal(int)    # day_number
+    event_map_attach_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -626,6 +665,12 @@ class DaysListsPage(QWidget):
         self._event_id: Optional[str] = None
         self._event_name: str = ""
         self._snapshots: list[DaySnapshot] = []
+        # spec/155 — event_root + the event-level map slot. The host sets
+        # both via :meth:`set_event_root` / :meth:`set_event_map_path`
+        # when the current event changes.
+        self._event_root: Optional[Path] = None
+        self._event_map_rel: Optional[str] = None
+        self._event_map_chip = None
         # spec/71 identity phase — drives the SurfaceIdentityHeader.
         # Defaults to ``"pick"``; the host calls
         # :meth:`set_phase_identity` for the Edit / Quick Sweep routes.
@@ -697,6 +742,23 @@ class DaysListsPage(QWidget):
         self._sub.setObjectName("Sub")
         title_block.addWidget(self._sub)
         head.addLayout(title_block, 1)
+        # spec/155 — the event-level map chip sits next to the title
+        # block. Hidden when the page has no event_root yet (first paint
+        # before setEventForPreview). Clicking emits the page's
+        # event_map_attach_requested signal — the host opens the
+        # MapAttachDialog with the per-event gateway.
+        from mira.ui.base.map_chip import MapChip
+        self._event_map_chip = MapChip(
+            event_root=Path("."),                # rebound by set_event_root
+            empty_label="Event map",
+            attached_label="Event map",
+            tooltip_empty="Attach a map for the whole event.",
+            tooltip_attached="Replace or remove the event map.",
+        )
+        self._event_map_chip.setVisible(False)
+        self._event_map_chip.clicked.connect(
+            self.event_map_attach_requested.emit)
+        head.addWidget(self._event_map_chip)
         new_pass = primary_button("+ Start a new pass…")
         new_pass.clicked.connect(self.new_pass_requested.emit)
         head.addWidget(new_pass)
@@ -930,6 +992,46 @@ class DaysListsPage(QWidget):
                 return w
         return None
 
+    # ── maps (spec/155) ────────────────────────────────────────────────
+
+    def set_event_root(self, event_root: Optional[Path]) -> None:
+        """Bind the page (and the event-map chip) to an event folder.
+        The host calls this when the current event changes; without it,
+        the per-day map chips have nowhere to resolve their thumbnails
+        from and the event-map chip stays hidden."""
+        self._event_root = Path(event_root) if event_root is not None else None
+        if self._event_map_chip is not None:
+            self._event_map_chip.setVisible(self._event_root is not None)
+            if self._event_root is not None:
+                self._event_map_chip._event_root = self._event_root
+                self._event_map_chip.set_map_path(self._event_map_rel)
+
+    def set_event_map_path(self, rel: Optional[str]) -> None:
+        """Update the event-level map chip in place after the attach
+        dialog reports a change. Host calls this from the
+        ``mapChanged`` handler so the chip refreshes without rebuilding
+        snapshots."""
+        self._event_map_rel = rel
+        if self._event_map_chip is not None:
+            self._event_map_chip.set_map_path(rel)
+
+    def set_day_map_path(self, day_number: int, rel: Optional[str]) -> None:
+        """Update the per-day map chip in place after the attach dialog
+        reports a change."""
+        row = self._find_day_row(day_number)
+        if row is not None:
+            row.set_map_path(rel)
+        # Also update the cached snapshot so a later re-render carries
+        # the new state (the host might still rebuild snapshots later).
+        for i, snap in enumerate(self._snapshots):
+            if snap.day_number == day_number:
+                self._snapshots[i] = type(snap)(
+                    **{**snap.__dict__, "map_rel": rel})
+                break
+
+    def event_map_path(self) -> Optional[str]:
+        return self._event_map_rel
+
     def current_entry_anchor(self) -> Optional[int]:
         """spec/131 — last day the user activated from this list. Host
         falls back to this when the Days Grid reports no current day."""
@@ -951,13 +1053,18 @@ class DaysListsPage(QWidget):
             if w is not None:
                 w.deleteLater()
         for snap in self._snapshots:
-            row = DayRow(snap, phase=self._identity_phase)
+            row = DayRow(
+                snap, phase=self._identity_phase,
+                event_root=self._event_root,
+            )
             # spec/131 — intercept activation to record the entry
             # anchor (so the host has a fallback restore target if the
             # grid later reports no current day).
             row.activated.connect(self._on_day_row_activated)
             row.pick_all_requested.connect(self.day_pick_all_requested.emit)
             row.skip_all_requested.connect(self.day_skip_all_requested.emit)
+            row.map_attach_requested.connect(
+                self.day_map_attach_requested.emit)
             self._rows.addWidget(row)
         # Trailing stretch keeps the rows at their fixed height anchored to
         # the top. AlignTop alone doesn't stop Preferred-policy DayRow cards

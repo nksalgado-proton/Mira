@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -165,8 +165,11 @@ CREATE TABLE event (
   --   session   → {"target_subject":…}
   --   occasion  → {"host":…}
   --   project   → {"goal":…, "subject":…, "target_artifact":…}
-  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
+  extras_json       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  map_image_path    TEXT
 );
+-- spec/155: event.map_image_path is the event-level map slot, relative to
+-- event_root (e.g. 'Maps/event.jpg'). NULL = no map attached.
 CREATE INDEX ix_event_type            ON event(event_type);
 CREATE INDEX ix_event_subtype         ON event(event_subtype);
 CREATE INDEX ix_event_context         ON event(context)         WHERE context IS NOT NULL;
@@ -183,9 +186,12 @@ CREATE TABLE trip_day (
   -- per-day country + country_code drive dashboard chrome (flag emoji), filter-by-country,
   -- and the events_index country aggregation. The user-facing location string lives in
   -- the dedicated `location` column above; this bag is structured machine-readable data only.
-  extras_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
-  -- expected keys: {"country":…, "country_code":…}  (country_code = ISO 3166-1 alpha-2)
+  -- expected extras_json keys: {"country":..., "country_code":...} (ISO 3166-1 alpha-2)
+  extras_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json)),
+  map_image_path TEXT
 );
+-- spec/155: trip_day.map_image_path is the per-day map slot, relative to
+-- event_root (e.g. 'Maps/day-02.jpg'). NULL = no map attached.
 CREATE INDEX ix_trip_day_date ON trip_day(date);
 
 -- ===== camera (D) ==========================================================
@@ -1541,6 +1547,38 @@ def _migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
+    """spec/155 — per-day and per-event map images.
+
+    Adds a nullable ``map_image_path`` column to both ``trip_day`` (the
+    per-day slot) and ``event`` (the one event-level slot). Both store
+    the path relative to ``event_root`` (e.g. ``Maps/day-02.jpg``) so the
+    event folder stays portable (spec/82). NULL = no map attached, which
+    is the legacy state for every existing row.
+
+    The Cut day-separator pipeline (spec/61 §4) reads ``trip_day`` and
+    renders the letterboxed-map form when the column is set, falling
+    back to the v1 text card when NULL. The event-level entry drives
+    the Cut intro slide in the same way.
+
+    Each ALTER is guarded by a table-existence check: hand-crafted
+    legacy fixtures (e.g. the v4 seed in
+    ``tests/test_look_strength_foundation.py``) skip ``trip_day``, and a
+    missing table on this step would otherwise crash forward migration.
+    Same pattern as ``_migrate_v20_to_v21``'s ``video_adjustment``
+    guard.
+    """
+    def _has(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+
+    if _has("trip_day"):
+        conn.execute("ALTER TABLE trip_day ADD COLUMN map_image_path TEXT")
+    if _has("event"):
+        conn.execute("ALTER TABLE event ADD COLUMN map_image_path TEXT")
+
+
 def _migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
     """spec/156 — per-image creative-filter STRENGTH.
 
@@ -1611,6 +1649,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v18_to_v19,
     _migrate_v19_to_v20,
     _migrate_v20_to_v21,
+    _migrate_v21_to_v22,
 ]
 
 

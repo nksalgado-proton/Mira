@@ -38,6 +38,14 @@ def _roll_back_to_v17(conn: sqlite3.Connection) -> None:
     # spec/152 v19→v20 added cut.transition_ms; strip it so the ADD
     # COLUMN on the way back up doesn't collide.
     conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
+    # spec/156 v20→v21 added adjustment.filter_strength + video_adjustment.filter_strength
+    # — strip so the ADD COLUMN steps on the way back up don't collide.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 added trip_day.map_image_path + event.map_image_path
+    # — strip both so the ADD COLUMN steps on the way back up don't collide.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     conn.execute("UPDATE schema_info SET schema_version = 17 WHERE id = 1")
 
 

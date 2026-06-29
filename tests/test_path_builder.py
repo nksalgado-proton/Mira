@@ -7,13 +7,18 @@ from core.models import Event, TripDay
 from core.path_builder import (
     EDITED_MEDIA_DIR_NAME,
     EXPORTED_MEDIA_DIR_NAME,
+    MAP_IMAGE_EXTENSIONS,
+    MAPS_DIR_NAME,
     RESERVED_DIR_NAMES,
     day_folder_name,
     day_folder_path,
+    day_map_slot_basename,
     edited_media_dir,
     ensure_event_tree,
+    event_map_slot_basename,
     event_root_path,
     exported_media_dir,
+    maps_dir,
     sanitize_folder_name,
 )
 
@@ -157,3 +162,47 @@ def test_reserved_dir_names_includes_exported_media():
     other tier folders."""
     assert "Exported Media" in RESERVED_DIR_NAMES
     assert "Edited Media" in RESERVED_DIR_NAMES
+
+
+# ── spec/155 — Maps/ tier ─────────────────────────────────────────
+
+def test_maps_dir_resolves_under_event_root(tmp_path):
+    """spec/155 §1 — the per-day and per-event map images live in a
+    Maps/ subfolder directly under the event root."""
+    assert maps_dir(tmp_path) == tmp_path / "Maps"
+    assert MAPS_DIR_NAME == "Maps"
+
+
+def test_ensure_event_tree_creates_maps_dir(tmp_path):
+    """The event skeleton must include Maps/ so the attach dialog always
+    has a destination root."""
+    root = tmp_path / "Event"
+    root.mkdir()
+    ensure_event_tree(root)
+    assert maps_dir(root).is_dir()
+
+
+def test_reserved_dir_names_includes_maps():
+    """Walks of the event tree must skip Maps/ alongside the other
+    tier folders — it carries assets, not captures."""
+    assert "Maps" in RESERVED_DIR_NAMES
+
+
+def test_day_map_slot_basename_is_zero_padded():
+    """spec/155 §1 — per-day slot is ``day-NN`` with two-digit zero pad,
+    so the slot for day 2 sorts before day 10 in Explorer."""
+    assert day_map_slot_basename(1) == "day-01"
+    assert day_map_slot_basename(2) == "day-02"
+    assert day_map_slot_basename(10) == "day-10"
+    assert day_map_slot_basename(99) == "day-99"
+
+
+def test_event_map_slot_basename_is_event():
+    """One event-level slot, fixed name."""
+    assert event_map_slot_basename() == "event"
+
+
+def test_map_image_extensions_are_jpg_and_png():
+    """spec/155 §1 — the picker accepts JPEG and PNG; anything else is
+    rejected. Extensions are lower-case with leading dot."""
+    assert MAP_IMAGE_EXTENSIONS == (".jpg", ".jpeg", ".png")

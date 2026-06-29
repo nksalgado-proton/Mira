@@ -296,6 +296,33 @@ def test_item_extras_json_roundtrips_and_validates(tmp_path):
     store.close()
 
 
+def test_map_image_path_columns_exist_at_current_schema(tmp_path):
+    """spec/155 v21→v22 — a fresh DDL exposes ``map_image_path`` on
+    both ``trip_day`` (per-day slot) and ``event`` (event-level slot).
+    Both default to NULL. The column accepts the relative path written
+    by the gateway (e.g. ``Maps/day-02.jpg``)."""
+    store = _make_store(tmp_path)
+    cols_trip = {r["name"]: r for r in store.conn.execute(
+        "PRAGMA table_info(trip_day)")}
+    cols_event = {r["name"]: r for r in store.conn.execute(
+        "PRAGMA table_info(event)")}
+    assert "map_image_path" in cols_trip
+    assert "map_image_path" in cols_event
+    # Both are nullable (no NOT NULL constraint): the legacy state for
+    # every existing row is "no map attached," which is NULL.
+    assert cols_trip["map_image_path"]["notnull"] == 0
+    assert cols_event["map_image_path"]["notnull"] == 0
+    # Round-trip a value.
+    store.conn.execute(
+        "INSERT INTO trip_day (day_number, map_image_path) "
+        "VALUES (2, 'Maps/day-02.jpg')")
+    row = store.conn.execute(
+        "SELECT map_image_path FROM trip_day WHERE day_number = 2"
+    ).fetchone()
+    assert row["map_image_path"] == "Maps/day-02.jpg"
+    store.close()
+
+
 # --------------------------------------------------------------------------- #
 # Generic CRUD + transactions
 # --------------------------------------------------------------------------- #
@@ -495,6 +522,10 @@ def test_migrate_v2_to_v3_replaces_photo_tag_with_cuts(tmp_path):
     # tables so the ADD COLUMN steps don't collide on the way back up.
     conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
     conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 — strip map_image_path from trip_day and event
+    # so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     # Reverse the v5→v6 event qualifier swap so v5→v6 finds the v5
     # shape it expects (spec/64). The fresh store ships at the current
     # SCHEMA_VERSION; rolling back to v2 means restoring scope / mood /
@@ -593,6 +624,10 @@ def _strip_post_v6_lineage_cols(conn) -> None:
     # tables so the ADD COLUMN steps don't collide on the way back up.
     conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
     conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 — strip map_image_path from trip_day and event
+    # so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     # spec/123 v16→v17 — rename the *_seconds columns back to *_minutes
     # so the rename + ×60 migration has the v16 shape to work with.
     conn.execute(
@@ -795,6 +830,10 @@ def test_migrate_v16_to_v17_renames_and_scales_minute_columns(tmp_path):
     # tables so the ADD COLUMN steps don't collide on the way back up.
     conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
     conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 — strip map_image_path from trip_day and event
+    # so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     conn.execute(
         "INSERT INTO camera (camera_id, applied_offset_minutes, "
         "configured_tz_minutes) VALUES "

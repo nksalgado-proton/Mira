@@ -1067,6 +1067,8 @@ class CutPlayerDialog(QDialog):
 
     def _separator_image(self, day) -> QImage:
         meta = self._day_meta.get(day)
+        map_rel = getattr(meta, "map_image_path", None)
+        map_abs = (self._root / map_rel) if map_rel else None
         return render_separator_image(
             day_number=day,
             date=getattr(meta, "date", None),
@@ -1078,7 +1080,10 @@ class CutPlayerDialog(QDialog):
             seed_key=f"{self._seed_prefix}:{day}",
             # spec/154 — cross-event separators carry a SOURCE EVENT title
             # override; event-scope cards leave it None ("Day N").
-            title=getattr(meta, "title", None))
+            title=getattr(meta, "title", None),
+            # spec/155 — when this day has an attached map, the renderer
+            # switches to the letterboxed-map form.
+            map_image_path=map_abs)
 
     def _resolve_payload_path(self, payload) -> Path:
         """Where the bytes live on disk. Cross-event Play wires
@@ -1956,17 +1961,19 @@ class CutPlayerDialog(QDialog):
             if self._opener_image is not None:
                 pm = QPixmap.fromImage(self._opener_image)
         elif kind == "sep":
+            _meta = self._day_meta.get(payload)
+            _rel = getattr(_meta, "map_image_path", None)
+            _abs = (self._root / _rel) if _rel else None
             pm = QPixmap.fromImage(
                 render_separator_image(
                     day_number=payload,
-                    date=getattr(self._day_meta.get(payload), "date", None),
-                    location=getattr(
-                        self._day_meta.get(payload), "location", None),
-                    description=getattr(
-                        self._day_meta.get(payload), "description", "") or "",
+                    date=getattr(_meta, "date", None),
+                    location=getattr(_meta, "location", None),
+                    description=getattr(_meta, "description", "") or "",
                     aspect=self._aspect, height=target_h,
                     card_style=self._card_style,
-                    seed_key=f"{self._seed_prefix}:{payload}"))
+                    seed_key=f"{self._seed_prefix}:{payload}",
+                    map_image_path=_abs))
         else:
             relpath = getattr(payload, "export_relpath", None)
             if relpath:

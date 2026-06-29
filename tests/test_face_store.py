@@ -226,6 +226,14 @@ def test_migrate_v11_to_v12_adds_face_table(tmp_path):
     # spec/152 v19→v20 — strip cut.transition_ms so the ADD on the way
     # back up doesn't collide.
     conn.execute("ALTER TABLE cut DROP COLUMN transition_ms")
+    # spec/156 v20→v21 — strip filter_strength from both adjustment
+    # tables so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE adjustment DROP COLUMN filter_strength")
+    conn.execute("ALTER TABLE video_adjustment DROP COLUMN filter_strength")
+    # spec/155 v21→v22 — strip map_image_path from trip_day + event
+    # so the ADD COLUMN steps don't collide on the way back up.
+    conn.execute("ALTER TABLE trip_day DROP COLUMN map_image_path")
+    conn.execute("ALTER TABLE event DROP COLUMN map_image_path")
     conn.execute("UPDATE schema_info SET schema_version = 11 WHERE id = 1")
 
     schema.migrate(conn)

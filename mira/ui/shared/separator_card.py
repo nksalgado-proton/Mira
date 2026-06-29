@@ -7,12 +7,16 @@ pattern as #exported). One card per day boundary; it shows in the flat
 grid, plays in the rehearsal, and exports as an image in sequence.
 
 The look is deliberately slideshow-fixed (near-black ground, light
-text) — these cards play on a TV, not inside the app theme. Future
-styles (first-photo-with-label, map card) join behind the same
-setting per spec/61 §4.
+text) — these cards play on a TV, not inside the app theme. spec/155
+landed the **map card** style parked here: when the trip_day has a
+``map_image_path`` set, the separator renders that image letterboxed
+(sharp inset over a blurred copy of itself, caption strip on top)
+instead of the flat colour card; same for the event-level intro slide
+when the event has a map attached.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QRect, QRectF, Qt
@@ -66,24 +70,150 @@ def parse_aspect(text: Optional[str]) -> float:
     return 16.0 / 9.0
 
 
+def _load_map_image(
+    map_image_path: "Optional[Path | str]",
+) -> Optional[QImage]:
+    """Load the map slot file (JPEG/PNG) into a QImage, or return None
+    when the path is missing/unreadable. Callers fall back to the flat
+    colour card on None — the slide must always render."""
+    if not map_image_path:
+        return None
+    img = QImage(str(map_image_path))
+    if img.isNull():
+        return None
+    return img
+
+
+def _composite_letterboxed_map(
+    *,
+    base: QImage,
+    map_img: QImage,
+    blur_passes: int = 3,
+) -> None:
+    """Paint the letterboxed-map composition onto ``base`` in place
+    (spec/155 §5.1): a softened **cover** copy of the map fills the
+    canvas — supplying the bezel matte — then the sharp map sits inset
+    via **contain** with a 1px translucent stroke. Mutates ``base``;
+    no return value.
+
+    The "blur" is a cheap downscale-then-upscale (``blur_passes`` halvings,
+    each with smooth bilinear scaling). Fast (< 50 ms for a 1080 p frame)
+    and visually defocused enough that the bezel reads as a soft wash
+    rather than a recognisable second map. A real Gaussian would be
+    sharper-looking but heavier; this is the right v1 trade.
+    """
+    cw, ch = base.width(), base.height()
+
+    # ── 1. blurred cover fill ───────────────────────────────────
+    cover = map_img.scaled(
+        cw, ch,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    soft = cover
+    for _ in range(max(1, blur_passes)):
+        small = soft.scaled(
+            max(2, soft.width() // 2), max(2, soft.height() // 2),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        soft = small.scaled(
+            soft.width(), soft.height(),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    p = QPainter(base)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    # Center the soft cover (KeepAspectRatioByExpanding may overshoot
+    # one axis).
+    sx = (cw - soft.width()) // 2
+    sy = (ch - soft.height()) // 2
+    p.drawImage(sx, sy, soft)
+    # Slight darken so caption text reads cleanly when overlaid on top.
+    p.fillRect(0, 0, cw, ch, QColor(0, 0, 0, 46))  # ~18% alpha
+
+    # ── 2. sharp inset (aspect-contain) ─────────────────────────
+    inset = map_img.scaled(
+        cw, ch,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    ix = (cw - inset.width()) // 2
+    iy = (ch - inset.height()) // 2
+    p.drawImage(ix, iy, inset)
+    # Thin translucent stroke around the inset to sell the "photo on
+    # photo" feel.
+    p.setPen(QColor(255, 255, 255, 110))
+    p.drawRect(ix, iy, inset.width() - 1, inset.height() - 1)
+    p.end()
+
+
+def _paint_caption_strip(
+    *,
+    base: QImage,
+    title: str,
+    sub: str = "",
+    desc: str = "",
+) -> None:
+    """Bottom caption strip (~15% slide height) with title + optional
+    sub + description, used by the map-card separator + opener variants
+    so the day metadata stays visible over the map."""
+    w, h = base.width(), base.height()
+    strip_h = max(64, int(h * 0.16))
+    p = QPainter(base)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    p.fillRect(0, h - strip_h, w, strip_h, QColor(0, 0, 0, 140))
+    title_font = QFont("Segoe UI", max(10, int(strip_h * 0.32)), QFont.Weight.Bold)
+    sub_font = QFont("Segoe UI", max(8, int(strip_h * 0.20)))
+    p.setPen(QColor("#F2F3F5"))
+    p.setFont(title_font)
+    title_h = p.fontMetrics().height()
+    body_h = title_h
+    p.setFont(sub_font)
+    sub_h = p.fontMetrics().height() if (sub or desc) else 0
+    if sub or desc:
+        body_h += sub_h
+    y = h - strip_h + (strip_h - body_h) // 2
+    p.setFont(title_font)
+    p.drawText(QRect(0, y, w, title_h), Qt.AlignmentFlag.AlignHCenter, title)
+    y += title_h
+    if sub or desc:
+        p.setPen(QColor(255, 255, 255, 200))
+        p.setFont(sub_font)
+        line = " · ".join(b for b in (sub, desc) if b)
+        p.drawText(QRect(0, y, w, sub_h), Qt.AlignmentFlag.AlignHCenter, line)
+    p.end()
+
+
 def render_flat_background(
     *,
     aspect: str = "16:9",
     height: int = 720,
     card_style: str = "black",
     seed_key: str = "",
+    map_image_path: "Optional[Path | str]" = None,
 ) -> QImage:
     """spec/153 — a text-less flat-colour slide background for the PTE
     export's opener / day-separator slides. The card's words ride as
     separate PTE ``:Text`` objects over this image, so the user can swap
     it for a map or a photo in PTE and keep the text. Uses the same
     deterministic background colour as :func:`render_separator_image` so
-    the default look matches the in-app card."""
+    the default look matches the in-app card.
+
+    spec/155 — when ``map_image_path`` is set and the file loads, the
+    background is the letterboxed map (blurred cover + sharp contain
+    inset) instead of the flat colour. No caption text is painted —
+    the PTE :Text objects still ride on top.
+    """
     bg, _t, _s, _d = card_colors(card_style, seed_key)
     h = max(120, int(height))
     w = max(160, int(round(h * parse_aspect(aspect))))
     img = QImage(w, h, QImage.Format.Format_RGB32)
     img.fill(bg)
+    map_img = _load_map_image(map_image_path)
+    if map_img is not None:
+        _composite_letterboxed_map(base=img, map_img=map_img)
     return img
 
 
@@ -98,18 +228,45 @@ def render_separator_image(
     card_style: str = "black",
     seed_key: str = "",
     title: Optional[str] = None,
+    map_image_path: "Optional[Path | str]" = None,
 ) -> QImage:
     """The day card as a QImage (export writes it; the grid and the
     rehearsal scale it). ``card_style`` + ``seed_key`` pick the colours
     (deterministic — see :func:`card_colors`). ``title`` overrides the
     headline (spec/154 — cross-event separators use the SOURCE EVENT name
     instead of "Day N"); when ``None`` the per-event "Day {n}" / "More
-    moments" headline is used."""
+    moments" headline is used.
+
+    spec/155 — when ``map_image_path`` is set and loads, the card
+    becomes the letterboxed map (sharp inset + blurred bezels) with the
+    same date / location / description appearing as a caption strip
+    along the bottom. Falls back to the flat text card on missing /
+    unreadable file."""
     bg, title_c, sub_c, desc_c = card_colors(card_style, seed_key)
     h = max(120, int(height))
     w = max(160, int(round(h * parse_aspect(aspect))))
     img = QImage(w, h, QImage.Format.Format_RGB32)
     img.fill(bg)
+
+    # spec/155 — letterboxed-map branch. The title text is composed
+    # from the same metadata as the v1 text card, then drawn into a
+    # bottom strip so the day metadata survives over the map.
+    map_img = _load_map_image(map_image_path)
+    if map_img is not None:
+        _composite_letterboxed_map(base=img, map_img=map_img)
+        if title:
+            head = title
+        elif isinstance(day_number, int):
+            head = tr("Day {n}").replace("{n}", str(day_number))
+        else:
+            head = tr("More moments")
+        sub_line = " · ".join(b for b in (date, location) if b)
+        _paint_caption_strip(
+            base=img, title=head, sub=sub_line,
+            desc=(description or "").strip(),
+        )
+        return img
+
     p = QPainter(img)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -183,16 +340,32 @@ def render_cut_opener_image(
     height: int = 720,
     card_style: str = "black",
     seed_key: str = "",
+    map_image_path: "Optional[Path | str]" = None,
 ) -> QImage:
     """The Cut OPENER (Nelson eyeball round 2): the show's first slide —
     the Cut's name big, then its facts (count · length, created date,
     target, music…). Same derived-not-stored posture and colour rules
-    as the day separators."""
+    as the day separators.
+
+    spec/155 — when ``map_image_path`` is set (the event-level map),
+    the opener uses the letterboxed-map background with the title
+    riding the caption strip."""
     bg, title_c, sub_c, desc_c = card_colors(card_style, seed_key)
     h = max(120, int(height))
     w = max(160, int(round(h * parse_aspect(aspect))))
     img = QImage(w, h, QImage.Format.Format_RGB32)
     img.fill(bg)
+
+    map_img = _load_map_image(map_image_path)
+    if map_img is not None:
+        _composite_letterboxed_map(base=img, map_img=map_img)
+        first = str(lines[0]) if lines else ""
+        rest = " · ".join(str(ln) for ln in lines[1:] if ln)
+        _paint_caption_strip(
+            base=img, title=str(tag_text), sub=first, desc=rest,
+        )
+        return img
+
     p = QPainter(img)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)

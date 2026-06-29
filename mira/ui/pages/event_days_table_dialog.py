@@ -141,6 +141,40 @@ class _SelectedRowEdgeDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class _FocusGuardedLineEdit(QLineEdit):
+    """``QLineEdit`` that refuses focus from anything other than a
+    left-click, Tab/Backtab, keyboard shortcut, or popup transfer.
+
+    Nelson 2026-06-29 — Qt's QTableWidget cell widgets surface a long-
+    standing quirk: focus follows the mouse across cells, so simply
+    hovering a cell makes the embedded QLineEdit / QComboBox look
+    focused. The same fix the country picker + TzPicker apply for
+    themselves (rejecting non-allowed FocusIn reasons) is wrapped here
+    for the plain text cells (Location / Description).
+
+    ``clearFocus()`` runs on the next event-loop tick so the synchronous
+    focus-in chain finishes before the cell is un-focused — re-entering
+    Qt's focus machinery inside :meth:`focusInEvent` is otherwise a
+    light footgun.
+    """
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        allowed = (
+            Qt.FocusReason.MouseFocusReason,
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+            Qt.FocusReason.PopupFocusReason,
+        )
+        if event.reason() not in allowed:
+            # Sync clearFocus: Qt drains the focusOut chain before the
+            # call returns. Skipping the super().focusInEvent leaves
+            # the widget's selection/cursor untouched.
+            self.clearFocus()
+            return
+        super().focusInEvent(event)
+
+
 class _WheelToTableFilter(QObject):
     """spec/64 §4.2 — Nelson's locked rule, in two parts:
 
@@ -689,7 +723,10 @@ class EventDaysTableDialog(QDialog):
     def _make_text_cell(
         self, initial: str, kind: str, row_idx: int,
     ) -> QLineEdit:
-        editor = QLineEdit(initial or "")
+        # Nelson 2026-06-29 — _FocusGuardedLineEdit blocks the hover-
+        # induced focus theft so the field's accent border only lights
+        # up after a real left-click or a Tab.
+        editor = _FocusGuardedLineEdit(initial or "")
         editor.setObjectName("DaysCellInput")
         if kind == TOUCH_LOC:
             editor.setPlaceholderText(tr("e.g. Lisbon, Portugal"))

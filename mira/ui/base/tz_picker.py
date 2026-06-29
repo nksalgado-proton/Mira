@@ -172,6 +172,27 @@ class TzPicker(QComboBox):
         super().mousePressEvent(event)
 
     def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        # Nelson 2026-06-29 — focus follows ONLY left-click or Tab.
+        # Hover / window-activation / "Other" reasons must NOT focus
+        # the picker; Qt steals focus on hover for QTableWidget cell
+        # widgets (see _GuardedComboBox + this file's earlier comment)
+        # which surfaces as "focus follows mouse" — the locked rule
+        # is one of: left-click / Tab / Backtab / Shortcut, and the
+        # popup auto-focus stays as Qt handles it.
+        allowed = (
+            Qt.FocusReason.MouseFocusReason,
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+            Qt.FocusReason.PopupFocusReason,
+        )
+        if event.reason() not in allowed:
+            # Sync clearFocus: Qt drains the focusOut chain before
+            # returning. The early return skips super() so the picker
+            # never opens its dropdown / scrolls the model under a
+            # spurious hover focus.
+            self.clearFocus()
+            return
         if event.reason() in (
             Qt.FocusReason.TabFocusReason,
             Qt.FocusReason.BacktabFocusReason,

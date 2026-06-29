@@ -67,6 +67,21 @@ class _GuardedComboBox(QComboBox):
                 if event.button() == Qt.MouseButton.LeftButton:
                     self._user_engaged = True
             elif event.type() == QEvent.Type.FocusIn:
+                # Nelson 2026-06-29 — reject focus from hover /
+                # activation / other reasons. Allowed reasons mirror
+                # focusInEvent above.
+                allowed = (
+                    Qt.FocusReason.MouseFocusReason,
+                    Qt.FocusReason.TabFocusReason,
+                    Qt.FocusReason.BacktabFocusReason,
+                    Qt.FocusReason.ShortcutFocusReason,
+                    Qt.FocusReason.PopupFocusReason,
+                )
+                if event.reason() not in allowed:
+                    le = self.lineEdit()
+                    if le is not None:
+                        le.clearFocus()
+                    return True
                 if event.reason() in (
                     Qt.FocusReason.TabFocusReason,
                     Qt.FocusReason.BacktabFocusReason,
@@ -88,6 +103,21 @@ class _GuardedComboBox(QComboBox):
         super().mousePressEvent(event)
 
     def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        # Nelson 2026-06-29 — focus follows ONLY left-click or Tab on
+        # QTableWidget cell widgets. Hover-induced focus (which Qt
+        # quietly grants on some platforms — see the class docstring)
+        # is rejected here. Popup focus stays allowed so the combo's
+        # own dropdown handler keeps working.
+        allowed = (
+            Qt.FocusReason.MouseFocusReason,
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
+            Qt.FocusReason.ShortcutFocusReason,
+            Qt.FocusReason.PopupFocusReason,
+        )
+        if event.reason() not in allowed:
+            self.clearFocus()
+            return
         if event.reason() in (
             Qt.FocusReason.TabFocusReason,
             Qt.FocusReason.BacktabFocusReason,

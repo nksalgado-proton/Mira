@@ -207,8 +207,10 @@ today. MC generates them:
   dialog shows "includes N separators".
 - **Future styles, behind the same setting, not built until missed:**
   first-photo-of-the-day duplicated with the label on it; a map card (place or
-  route — touches the parked maps topic). The plain card ships first because
-  it is always legible and never embarrasses.
+  route — touches the parked maps topic — **landed by spec/155**, which
+  attaches a JPEG/PNG map to each `trip_day` and renders a letterboxed
+  separator from it). The plain card ships first because it is always
+  legible and never embarrasses.
 
 ### 4.1 Overlays — the provenance-counterpart attachment (spec/81 §3.1)
 

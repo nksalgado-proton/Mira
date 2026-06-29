@@ -168,3 +168,107 @@ def test_entry_total_ms_uses_probed_duration_for_sep_video(
         assert p._entry_total_ms(3) >= 6000
     finally:
         p.close()
+
+
+# ── opener video (event map) ──────────────────────────────────
+
+def _player_with_opener_video(gw, tmp_path, opener_video_path) -> CutPlayerDialog:
+    """Player fixture whose opener slot is wired to play ``opener_video_path``
+    (the event-map MP4)."""
+    entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
+    day_meta = {d.day_number: d for d in gw.trip_days()}
+    return CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta=day_meta, aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32),
+        opener_video_path=opener_video_path)
+
+
+def test_opener_video_path_stored_when_passed(qapp, gw, tmp_path):
+    """The constructor stashes the opener video path as an absolute
+    Path so the show-time branch can decide image vs. video."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    p = _player_with_opener_video(gw, tmp_path, src)
+    try:
+        assert p._opener_video_path == src
+    finally:
+        p.close()
+
+
+def test_opener_video_path_default_is_none(qapp, gw, tmp_path):
+    """When no opener_video_path is passed (the still-image case), the
+    field stays None and the existing render path stands."""
+    p = _player(gw, tmp_path)
+    try:
+        assert p._opener_video_path is None
+    finally:
+        p.close()
+
+
+def test_opener_video_duration_probes_mp4(qapp, gw, tmp_path):
+    """The cached probe returns the MP4's real duration (≈1 s)."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    p = _player_with_opener_video(gw, tmp_path, src)
+    try:
+        ms = p._opener_video_duration_ms()
+        assert 800 <= ms <= 1200, f"expected ~1000ms, got {ms}"
+        # Cache works — second call returns same value without re-probing.
+        assert p._opener_video_duration_ms() == ms
+    finally:
+        p.close()
+
+
+def test_opener_video_duration_zero_when_no_path(qapp, gw, tmp_path):
+    p = _player(gw, tmp_path)
+    try:
+        assert p._opener_video_duration_ms() == 0
+    finally:
+        p.close()
+
+
+def test_entry_class_reads_opener_video_as_video(qapp, gw, tmp_path):
+    """spec/152 crossfade math reads an MP4 opener as 'video' so the
+    boundary into the next entry uses the half/zero transition shape."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    p = _player_with_opener_video(gw, tmp_path, src)
+    try:
+        # show_entries fixture: index 0 is the opener.
+        assert p._entry_class(0) == "video"
+    finally:
+        p.close()
+
+
+def test_entry_class_reads_still_opener_as_photo(qapp, gw, tmp_path):
+    """No opener_video_path → opener is the still card and reads as
+    'photo' for the crossfade boundary math."""
+    p = _player(gw, tmp_path)
+    try:
+        assert p._entry_class(0) == "photo"
+    finally:
+        p.close()
+
+
+def test_entry_total_ms_uses_probed_duration_for_opener_video(
+        qapp, gw, tmp_path):
+    """Opener video slot's wall-clock is the MP4's native duration,
+    not ``photo_s + transition``."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    p = _player_with_opener_video(gw, tmp_path, src)
+    try:
+        ms = p._entry_total_ms(0)
+        assert 800 <= ms <= 1200, f"opener video slot read as {ms}ms, expected ~1000"
+    finally:
+        p.close()
+
+
+def test_entry_total_ms_falls_back_to_still_when_no_opener_video(
+        qapp, gw, tmp_path):
+    """Without an MP4 opener path, slot 0 holds for ``photo_ms +
+    transition_ms`` exactly like before spec/155 v2 §opener landed."""
+    p = _player(gw, tmp_path)
+    try:
+        ms = p._entry_total_ms(0)
+        # photo_s=6.0 → photo_ms=6000; transition_ms default is small.
+        assert ms >= 6000
+    finally:
+        p.close()

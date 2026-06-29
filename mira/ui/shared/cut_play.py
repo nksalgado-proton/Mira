@@ -333,6 +333,12 @@ class CutPlayerDialog(QDialog):
         aspect: str = "16:9",
         music_tracks: Optional[list] = None,
         opener_image: Optional[QImage] = None,
+        # spec/155 v2 — when the event has an MP4 map, the host passes
+        # the absolute path here and the opener slot PLAYS the clip
+        # (muted, native duration, one play) instead of showing the
+        # rendered first-frame still in opener_image. opener_image stays
+        # the fallback / scrubber-hover-thumb source either way.
+        opener_video_path: Optional[Path] = None,
         card_style: str = "black",
         seed_prefix: str = "",
         overlay_fields: Sequence[str] = (),
@@ -372,6 +378,10 @@ class CutPlayerDialog(QDialog):
         self._aspect = aspect
         self._music_tracks = list(music_tracks or [])
         self._opener_image = opener_image
+        self._opener_video_path: Optional[Path] = (
+            Path(opener_video_path) if opener_video_path is not None
+            else None)
+        self._opener_video_duration_cache: Optional[int] = None
         self._card_style = card_style
         self._seed_prefix = seed_prefix
         self._music_index = 0
@@ -716,7 +726,18 @@ class CutPlayerDialog(QDialog):
         # step with the scrubber's per-entry duration table.
         slot_ms = self._entry_total_ms(self._index)
         if kind == "opener":
-            if self._opener_image is not None:
+            # spec/155 v2 — when the event has an MP4 map, the opener
+            # PLAYS the clip; EndOfMedia drives advance just like a
+            # file video / sep video. opener_image is still rendered
+            # (first-frame still) as the scrubber-hover thumb fallback.
+            if self._opener_video_path is not None:
+                if outgoing_pm is not None and not outgoing_pm.isNull():
+                    self._photo.setPixmap(QPixmap())
+                self._ensure_video()
+                if self._video_audio is not None:
+                    self._video_audio.setMuted(True)
+                self._show_video(self._opener_video_path)
+            elif self._opener_image is not None:
                 self._show_image(self._opener_image)
                 if not self._paused:
                     self._timer.start(slot_ms)
@@ -815,6 +836,9 @@ class CutPlayerDialog(QDialog):
         # for crossfade math: the transition uses the video boundary
         # variant (half on photo↔video, zero on video↔video).
         if kind == "sep" and self._sep_video_path(payload) is not None:
+            return "video"
+        # spec/155 v2 — same shape for an MP4 event-map opener.
+        if kind == "opener" and self._opener_video_path is not None:
             return "video"
         return "photo"
 
@@ -1092,6 +1116,21 @@ class CutPlayerDialog(QDialog):
                 pass
 
     # ── spec/155 v2 — video-map separator helpers ──────────────
+
+    def _opener_video_duration_ms(self) -> int:
+        """Probed duration of the opener-slot MP4 (event map), cached.
+        Returns 0 when no MP4 opener path is set or the probe fails."""
+        if self._opener_video_path is None:
+            return 0
+        if self._opener_video_duration_cache is not None:
+            return self._opener_video_duration_cache
+        try:
+            from core.video_extract import probe_video
+            ms = int(probe_video(self._opener_video_path).duration_ms or 0)
+        except Exception:                                          # noqa: BLE001
+            ms = 0
+        self._opener_video_duration_cache = ms
+        return ms
 
     def _sep_video_path(self, day) -> Optional[Path]:
         """Returns the absolute MP4 path when this day's map slot is a
@@ -1965,8 +2004,13 @@ class CutPlayerDialog(QDialog):
             sep_d = self._sep_video_duration_ms(payload)
             if sep_d > 0:
                 return sep_d
-        if kind == "opener" and self._opener_image is None:
-            return 0
+        # spec/155 v2 — same shape for an MP4 event-map opener.
+        if kind == "opener":
+            op_d = self._opener_video_duration_ms()
+            if op_d > 0:
+                return op_d
+            if self._opener_image is None:
+                return 0
         return self._photo_ms + self._transition_ms_value()
 
     def _recompute_durations(self) -> None:

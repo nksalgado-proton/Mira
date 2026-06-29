@@ -282,11 +282,15 @@ the still QImage.
   Nelson is preparing a manual PTE example to design the contract
   against. Until then, video maps degrade gracefully to a single
   first-frame still at export.
-- **Event-level video maps**: same v2 storage/dialog/chip behaviour;
-  Cut Play does NOT yet play an event-map MP4 as the opener (the
-  opener still renders as the letterboxed first-frame still). Lifting
-  this to playback is mechanical once the day-separator playback
-  lands, but the design call is "ship day, learn, then expand."
+- **Event-level video maps**: same v2 storage/dialog/chip behaviour.
+  Cut Play **plays** an MP4 event map as the **opener** slot (Nelson
+  2026-06-29 — first eyeball reported the still-only opener and the
+  parked playback was lifted). ``CutPlayerDialog`` gains an
+  ``opener_video_path`` constructor kwarg; when set, the kind=="opener"
+  branch in ``_show_index`` swaps the still-render for the same video
+  playback path the day-separator uses (muted, EndOfMedia advance).
+  ``opener_image`` stays the rendered first-frame still so the scrubber
+  hover thumb and any fallback render stay readable.
 - **Helpers added**: `core.path_builder.is_video_map_path(rel)`,
   `core.path_builder.MAP_VIDEO_THUMB_SUFFIX`,
   `EventGateway._video_map_thumb_path()`,

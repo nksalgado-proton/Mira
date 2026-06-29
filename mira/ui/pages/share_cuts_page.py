@@ -2505,17 +2505,22 @@ class ShareCutsPage(QWidget):
             # spec/155 — when the event has an attached map, the opener
             # renders the letterboxed-map form with the Cut title riding
             # the caption strip. spec/155 v2 — for an MP4 event map the
-            # opener still uses the first-frame sidecar; the in-app
-            # rehearsal's Cut Play handles video playback for day-level
-            # separators only (event-level video opener is a follow-up
-            # once the PTE bundle story is settled).
+            # opener_image is the first-frame still (so the scrubber
+            # hover thumb + any fallback render path stays readable)
+            # AND the host hands the dialog the absolute MP4 path so
+            # Cut Play actually PLAYS the clip at the opener slot.
             from core.path_builder import (
                 MAP_VIDEO_THUMB_SUFFIX,
                 is_video_map_path,
             )
-            evt_map_rel = eg.get_event_map_path()
-            if evt_map_rel and is_video_map_path(evt_map_rel):
-                evt_map_rel = evt_map_rel + MAP_VIDEO_THUMB_SUFFIX
+            evt_map_rel_raw = eg.get_event_map_path()
+            opener_video_path: Optional[Path] = None
+            if evt_map_rel_raw and is_video_map_path(evt_map_rel_raw):
+                opener_video_path = (
+                    Path(eg.event_root) / evt_map_rel_raw)
+                evt_map_rel = evt_map_rel_raw + MAP_VIDEO_THUMB_SUFFIX
+            else:
+                evt_map_rel = evt_map_rel_raw
             evt_map_abs = (
                 Path(eg.event_root) / evt_map_rel
                 if evt_map_rel else None)
@@ -2526,6 +2531,8 @@ class ShareCutsPage(QWidget):
                 aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=cut.id,
                 map_image_path=evt_map_abs)
+        else:
+            opener_video_path = None
         # Spec/81 §3.1 — live overlays in Play. When the Cut has any
         # overlay field selected, the dialog draws ``when / where / how¹
         # / how²`` over each frame; the resolver is the same gateway
@@ -2553,6 +2560,7 @@ class ShareCutsPage(QWidget):
             aspect=aspect,
             music_tracks=music,
             opener_image=opener_image,
+            opener_video_path=opener_video_path,
             card_style=card_style,
             seed_prefix=cut.id,
             overlay_fields=overlay_fields,

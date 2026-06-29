@@ -1454,6 +1454,17 @@ QLabel#CutPlayOrigin {
     border-radius: 6px;
 }
 
+/* spec/155 v2 — top-centred caption that paints over the video widget on
+   sep / opener video slots. Larger than the origin/exif label since it
+   replaces the title text the still QImage would have baked in. */
+QLabel#CutPlayCaption {
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 150);
+    padding: 10px 18px;
+    font-size: 20px;
+    border-radius: 8px;
+}
+
 QLabel#CutPlayMissing {
     color: #cccccc;
     background-color: transparent;

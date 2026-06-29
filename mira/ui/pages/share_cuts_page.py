@@ -2524,15 +2524,19 @@ class ShareCutsPage(QWidget):
             evt_map_abs = (
                 Path(eg.event_root) / evt_map_rel
                 if evt_map_rel else None)
+            opener_tag = cut_names.display_tag(cut.tag)
+            opener_lines = cut_opener_lines(
+                cut, totals, cut.photo_s, self._transition_s(cut))
             opener_image = render_cut_opener_image(
-                tag_text=cut_names.display_tag(cut.tag),
-                lines=cut_opener_lines(
-                    cut, totals, cut.photo_s, self._transition_s(cut)),
+                tag_text=opener_tag,
+                lines=opener_lines,
                 aspect=aspect, height=canvas_h,
                 card_style=card_style, seed_key=cut.id,
                 map_image_path=evt_map_abs)
         else:
             opener_video_path = None
+            opener_tag = ""
+            opener_lines = ()
         # Spec/81 §3.1 — live overlays in Play. When the Cut has any
         # overlay field selected, the dialog draws ``when / where / how¹
         # / how²`` over each frame; the resolver is the same gateway
@@ -2561,6 +2565,8 @@ class ShareCutsPage(QWidget):
             music_tracks=music,
             opener_image=opener_image,
             opener_video_path=opener_video_path,
+            opener_caption_tag=opener_tag,
+            opener_caption_lines=opener_lines,
             card_style=card_style,
             seed_prefix=cut.id,
             overlay_fields=overlay_fields,

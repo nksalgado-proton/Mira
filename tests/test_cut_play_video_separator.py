@@ -272,3 +272,128 @@ def test_entry_total_ms_falls_back_to_still_when_no_opener_video(
         assert ms >= 6000
     finally:
         p.close()
+
+
+# ── top-centre caption overlay (spec/155 v2) ───────────────────
+
+def test_sep_caption_html_carries_day_title_and_sub(
+        qapp, gw, tmp_path):
+    """The sep-video overlay text composes Day N + date/location/desc,
+    matching the still QImage's baked text."""
+    src = _write_tiny_mp4(tmp_path / "map.mp4")
+    gw.attach_day_map(1, src)
+    p = _player(gw, tmp_path)
+    try:
+        html = p._compose_sep_caption_html(1)
+        assert "Day 1" in html
+        # The bundled fixture's day 1 has a date + a location; both
+        # should land in the sub line, joined by " · ".
+        meta = p._day_meta.get(1)
+        if getattr(meta, "date", None):
+            assert str(meta.date) in html
+        if getattr(meta, "location", None):
+            assert meta.location in html
+    finally:
+        p.close()
+
+
+def test_opener_caption_html_carries_tag_and_lines(qapp, gw, tmp_path):
+    """The opener overlay text composes the show title + facts row
+    (same shape the still render bakes in)."""
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
+    day_meta = {d.day_number: d for d in gw.trip_days()}
+    p = CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta=day_meta, aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32),
+        opener_video_path=src,
+        opener_caption_tag="My Show",
+        opener_caption_lines=("12 photos", "3 min", "♪ travel"))
+    try:
+        html = p._compose_opener_caption_html()
+        assert "My Show" in html
+        assert "12 photos" in html
+        assert "3 min" in html
+        # The lines join on " · ".
+        assert " · " in html
+    finally:
+        p.close()
+
+
+def test_caption_label_built_and_starts_hidden(qapp, gw, tmp_path):
+    """The label is built unconditionally (cheap, lazy QSS apply) but
+    starts hidden — the still-frame path bakes its own text, so showing
+    the label on a still would double-paint."""
+    p = _player(gw, tmp_path)
+    try:
+        assert p._caption_label is not None
+        assert p._caption_label.isHidden() is True
+    finally:
+        p.close()
+
+
+def test_update_caption_shows_for_sep_video(qapp, gw, tmp_path):
+    """spec/155 v2 — entering a sep-video slot shows the caption with
+    the right text. We drive _update_caption directly to avoid the
+    QMediaPlayer dance."""
+    src = _write_tiny_mp4(tmp_path / "map.mp4")
+    gw.attach_day_map(1, src)
+    p = _player(gw, tmp_path)
+    try:
+        p.show()
+        p._update_caption("sep", 1)
+        assert p._caption_label.isHidden() is False
+        assert "Day 1" in p._caption_label.text()
+    finally:
+        p.close()
+
+
+def test_update_caption_shows_for_opener_video(qapp, gw, tmp_path):
+    src = _write_tiny_mp4(tmp_path / "event.mp4")
+    entries = show_entries(gw, gw.cut("cut-s"), separators_on=True)
+    day_meta = {d.day_number: d for d in gw.trip_days()}
+    p = CutPlayerDialog(
+        entries, event_root=tmp_path, photo_s=6.0,
+        day_meta=day_meta, aspect="16:9",
+        opener_image=QImage(16, 9, QImage.Format.Format_RGB32),
+        opener_video_path=src,
+        opener_caption_tag="My Show",
+        opener_caption_lines=("12 photos · 3 min",))
+    try:
+        p.show()
+        p._update_caption("opener", None)
+        assert p._caption_label.isHidden() is False
+        assert "My Show" in p._caption_label.text()
+    finally:
+        p.close()
+
+
+def test_update_caption_hides_for_still_sep(qapp, gw, tmp_path):
+    """Sep WITHOUT an MP4 map → still-render path; caption stays hidden
+    so the QImage's baked text isn't double-painted."""
+    p = _player(gw, tmp_path)
+    try:
+        p.show()
+        p._update_caption("sep", 1)
+        assert p._caption_label.isHidden() is True
+    finally:
+        p.close()
+
+
+def test_update_caption_hides_for_file_frames(qapp, gw, tmp_path):
+    """File-kind frames (photos / cut videos) get the per-frame
+    overlay/origin labels; the sep/opener caption stays hidden."""
+    src = _write_tiny_mp4(tmp_path / "map.mp4")
+    gw.attach_day_map(1, src)
+    p = _player(gw, tmp_path)
+    try:
+        p.show()
+        # Show it once so it's not hidden, then assert it hides on a
+        # 'file' kind.
+        p._update_caption("sep", 1)
+        assert p._caption_label.isHidden() is False
+        p._update_caption("file", object())
+        assert p._caption_label.isHidden() is True
+    finally:
+        p.close()

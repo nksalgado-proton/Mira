@@ -339,6 +339,14 @@ class CutPlayerDialog(QDialog):
         # rendered first-frame still in opener_image. opener_image stays
         # the fallback / scrubber-hover-thumb source either way.
         opener_video_path: Optional[Path] = None,
+        # spec/155 v2 (Nelson 2026-06-29) — when the opener slot plays a
+        # video, opener_image's baked title disappears. Threading the
+        # title text + facts as plain strings lets Cut Play paint them
+        # as a top-centre overlay on the video the same way the still
+        # rendering bakes them. For the still path these are unused
+        # (opener_image carries the baked text).
+        opener_caption_tag: str = "",
+        opener_caption_lines: Sequence[str] = (),
         card_style: str = "black",
         seed_prefix: str = "",
         overlay_fields: Sequence[str] = (),
@@ -382,6 +390,13 @@ class CutPlayerDialog(QDialog):
             Path(opener_video_path) if opener_video_path is not None
             else None)
         self._opener_video_duration_cache: Optional[int] = None
+        self._opener_caption_tag = str(opener_caption_tag or "")
+        self._opener_caption_lines: Tuple[str, ...] = tuple(
+            str(s) for s in (opener_caption_lines or ()))
+        # spec/155 v2 — built lazily below, paints over the video widget
+        # on sep / opener video slots so the day metadata + Cut title
+        # stay visible while the clip plays.
+        self._caption_label: Optional[QLabel] = None
         self._card_style = card_style
         self._seed_prefix = seed_prefix
         self._music_index = 0
@@ -535,6 +550,23 @@ class CutPlayerDialog(QDialog):
             self._origin_label.setAttribute(
                 Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self._origin_label.hide()
+
+        # spec/155 v2 — top-centre caption that overlays the video
+        # widget during a sep / opener video slot. Carries the same
+        # title + sub the still QImage would have baked in. Hidden the
+        # rest of the time. Styled via QSS under ``QLabel#CutPlayCaption``.
+        self._caption_label = QLabel(self)
+        self._caption_label.setObjectName("CutPlayCaption")
+        self._caption_label.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._caption_label.setWordWrap(False)
+        self._caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._caption_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.NoTextInteraction)
+        self._caption_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._caption_label.setTextFormat(Qt.TextFormat.RichText)
+        self._caption_label.hide()
 
         # Pre-compute the per-entry duration table the scrubber walks.
         self._durations: List[int] = []
@@ -812,6 +844,7 @@ class CutPlayerDialog(QDialog):
         # Refresh the overlay AFTER the frame paint.
         self._update_overlay(kind, payload)
         self._update_origin(kind, payload)
+        self._update_caption(kind, payload)
         # Snap the scrubber to the new entry; the ticker keeps it warm.
         if self._scrubber is not None:
             self._scrubber.set_playhead(self._index, 0.0)
@@ -1263,6 +1296,7 @@ class CutPlayerDialog(QDialog):
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
+        self._position_caption()
         self._fit_current()
         self._position_overlay()
         self._position_origin()
@@ -1365,6 +1399,121 @@ class CutPlayerDialog(QDialog):
         self._position_origin()
         lbl.raise_()
         lbl.show()
+
+    # ── spec/155 v2 — sep / opener video caption overlay ──────────
+
+    @staticmethod
+    def _caption_html(title: str, sub: str) -> str:
+        """Compose the top-centre caption HTML with inline-styled
+        :func:`html.escape`-d title + sub. Inline ``font-size`` /
+        ``font-weight`` because Qt rich-text renders via QTextDocument
+        and doesn't honour QSS pseudo-class selectors on label
+        children."""
+        from html import escape
+        parts: list[str] = []
+        if title:
+            parts.append(
+                f'<div style="font-weight:700;">'
+                f'{escape(title)}</div>')
+        if sub:
+            parts.append(
+                f'<div style="font-size:14px;color:#dddddd;">'
+                f'{escape(sub)}</div>')
+        return "".join(parts)
+
+    def _compose_sep_caption_html(self, day) -> str:
+        """Day-separator caption HTML (title + sub) for the top-centre
+        overlay. Mirrors what
+        :func:`mira.ui.shared.separator_card.render_separator_image`
+        bakes into the still QImage so the look survives the swap to
+        video playback."""
+        meta = self._day_meta.get(day)
+        title_override = getattr(meta, "title", None)
+        if title_override:
+            title = title_override
+        elif isinstance(day, int):
+            title = tr("Day {n}").replace("{n}", str(day))
+        else:
+            title = tr("More moments")
+        sub_bits = [
+            b for b in (
+                getattr(meta, "date", None),
+                getattr(meta, "location", None),
+                (getattr(meta, "description", "") or "").strip(),
+            ) if b]
+        sub = " · ".join(str(b) for b in sub_bits)
+        return self._caption_html(title, sub)
+
+    def _compose_opener_caption_html(self) -> str:
+        """Cut opener caption HTML. ``opener_caption_tag`` is the show
+        title; ``opener_caption_lines`` joins on ``·`` for the facts
+        row (matches :func:`render_cut_opener_image`'s layout)."""
+        if not self._opener_caption_tag and not self._opener_caption_lines:
+            return ""
+        sub = " · ".join(self._opener_caption_lines)
+        return self._caption_html(self._opener_caption_tag or "", sub)
+
+    def _update_caption(self, kind: str, payload) -> None:
+        """Refresh the top-centre caption overlay.
+
+        Visible only during a sep / opener video slot — the still
+        QImage already bakes the same text on those frames, so showing
+        the Qt overlay too would double-paint. Hidden on file frames
+        (per-frame overlay/origin labels cover those)."""
+        lbl = self._caption_label
+        if lbl is None:
+            return
+        if kind == "sep" and self._sep_video_path(payload) is not None:
+            html = self._compose_sep_caption_html(payload)
+        elif kind == "opener" and self._opener_video_path is not None:
+            html = self._compose_opener_caption_html()
+        else:
+            lbl.hide()
+            return
+        if not html:
+            lbl.hide()
+            return
+        lbl.setText(html)
+        lbl.adjustSize()
+        self._position_caption()
+        lbl.raise_()
+        lbl.show()
+
+    def _position_caption(self) -> None:
+        """Anchor the caption label to the canvas's TOP edge, centred —
+        same arithmetic as :meth:`_position_origin` but uses the video
+        widget's geometry when the video is the active stack child."""
+        lbl = self._caption_label
+        if lbl is None:
+            return
+        margin = 16
+        # Prefer the video widget's rect while it's active (the photo
+        # widget may be empty mid-swap); fall back to the photo's
+        # foreground_rect / the stack widget like the origin label does.
+        if (self._video_widget is not None
+                and self._video_widget.isVisible()):
+            host = self._video_widget
+            area = QRect(
+                host.mapTo(self, QPoint(0, 0)), host.size())
+        else:
+            photo_rect = (
+                self._photo.foreground_rect() if self._photo is not None
+                else QRect())
+            if not photo_rect.isEmpty():
+                top_left = self._photo.mapTo(self, photo_rect.topLeft())
+                area = QRect(top_left, photo_rect.size())
+            else:
+                host = (
+                    self._stack_widget if self._stack_widget is not None
+                    else self)
+                area = QRect(host.mapTo(self, QPoint(0, 0)), host.size())
+        lbl.setMaximumWidth(self.width())
+        lbl.adjustSize()
+        w = min(lbl.width(), self.width())
+        cx = area.x() + area.width() // 2
+        x = max(0, min(cx - w // 2, self.width() - w))
+        y = max(0, area.y() + margin)
+        lbl.move(int(x), int(y))
 
     def _position_origin(self) -> None:
         """Anchor the origin label to the displayed photo's TOP edge,

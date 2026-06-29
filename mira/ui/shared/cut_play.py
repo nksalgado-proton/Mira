@@ -393,6 +393,12 @@ class CutPlayerDialog(QDialog):
         self._opener_caption_tag = str(opener_caption_tag or "")
         self._opener_caption_lines: Tuple[str, ...] = tuple(
             str(s) for s in (opener_caption_lines or ()))
+        # spec/155 v5 — True while a sep / opener video slot is active.
+        # In that mode the photo canvas stays VISIBLE (showing a flat
+        # slide-bg image so the user sees the rounded-card frame), the
+        # video widget sizes to the bottom 70 % of the photo's
+        # foreground rect, and the caption rides the top 30 %.
+        self._sep_video_active: bool = False
         # spec/155 v2 — built lazily below, paints over the video widget
         # on sep / opener video slots so the day metadata + Cut title
         # stay visible while the clip plays.
@@ -772,13 +778,19 @@ class CutPlayerDialog(QDialog):
             # file video / sep video. opener_image is still rendered
             # (first-frame still) as the scrubber-hover thumb fallback.
             if self._opener_video_path is not None:
-                if outgoing_pm is not None and not outgoing_pm.isNull():
-                    self._photo.setPixmap(QPixmap())
+                # spec/155 v6 — show a flat slide-bg image via the
+                # photo canvas so the rounded-card frame paints around
+                # the video. Caption rides the top 30 % of the inner
+                # card; video fills the bottom 70 %.
+                self._sep_video_active = True
+                bg = self._sep_video_bg_image()
+                self._show_image(bg)
                 self._ensure_video()
                 if self._video_audio is not None:
                     self._video_audio.setMuted(True)
                 self._show_video(self._opener_video_path)
             elif self._opener_image is not None:
+                self._sep_video_active = False
                 self._show_image(self._opener_image)
                 if not self._paused:
                     self._timer.start(slot_ms)
@@ -793,17 +805,21 @@ class CutPlayerDialog(QDialog):
             # idle.
             sep_vid = self._sep_video_path(payload)
             if sep_vid is not None:
-                if outgoing_pm is not None and not outgoing_pm.isNull():
-                    self._photo.setPixmap(QPixmap())
+                # spec/155 v6 — same slide-frame treatment as opener.
+                self._sep_video_active = True
+                bg = self._sep_video_bg_image()
+                self._show_image(bg)
                 self._ensure_video()
                 if self._video_audio is not None:
                     self._video_audio.setMuted(True)
                 self._show_video(sep_vid)
             else:
+                self._sep_video_active = False
                 self._show_image(self._separator_image(payload))
                 if not self._paused:
                     self._timer.start(slot_ms)
         elif getattr(payload, "kind", "photo") == "video":
+            self._sep_video_active = False
             # spec/144 — videos NEVER ride :attr:`_timer`. Advance is
             # event-driven via :data:`QMediaPlayer.MediaStatus.EndOfMedia`
             # in :meth:`_on_video_status`, so the show moves on the
@@ -839,6 +855,7 @@ class CutPlayerDialog(QDialog):
                 self._video_audio.setMuted(False)
             self._show_video(self._resolve_payload_path(payload))
         else:
+            self._sep_video_active = False
             pm = load_pixmap(self._resolve_payload_path(payload))
             self._show_pixmap(pm)
             if not self._paused:
@@ -1416,25 +1433,64 @@ class CutPlayerDialog(QDialog):
     #: The caption fills the remaining top 30 % so the two never overlap.
     _SEP_VIDEO_HEIGHT_FRAC = 0.70
 
-    def _fit_sep_video_geometry(self) -> None:
-        """Resize + position the sep / opener video widget into the
-        bottom 70 % of the slideshow canvas. Caption uses the remaining
-        top 30 %. Called from :meth:`_do_video_swap` and the dialog's
-        resize handler so the layout survives window resizes.
+    def _sep_video_bg_image(self) -> QImage:
+        """Flat slide-background QImage for sep / opener video slots.
 
-        The video widget is intentionally NOT in ``_stack_layout`` —
-        the layout would clobber our manual geometry on every layout
-        pass. The photo widget stays in the layout so still cards
-        keep their full-canvas paint.
+        spec/155 v6 — the photo canvas paints this image so the user
+        sees the rounded-card slide frame around the bottom-70 % video
+        plus the top-30 % caption. No text is baked in (the caption
+        QLabel handles that); the colour is the same deterministic
+        ``card_colors`` value the still card uses, so video and still
+        days share a visual family within the same Cut."""
+        from mira.ui.shared.separator_card import render_flat_background
+        h = max(480, self.height() or 1080)
+        return render_flat_background(
+            aspect=self._aspect,
+            height=h,
+            card_style=self._card_style,
+            seed_key=self._seed_prefix,
+        )
+
+    def _slide_inner_rect(self) -> "QRect":
+        """The rect of the actual slide content INSIDE the photo
+        canvas's rounded-card area (foreground_rect). When the photo
+        canvas has no pixmap (e.g. before the first paint), fall back
+        to the photo widget's own rect with the canvas's inner pad
+        manually subtracted so the geometry stays inside the slide
+        frame instead of flush to the canvas edge."""
+        if self._photo is None:
+            return QRect()
+        fg = self._photo.foreground_rect()
+        if not fg.isEmpty():
+            # foreground_rect is in canvas-local coords; we need it in
+            # stack_widget-local coords so video + caption resolve
+            # against the right origin.
+            tl = self._photo.mapTo(self._stack_widget, fg.topLeft())
+            return QRect(tl, fg.size())
+        # Fallback: no pixmap yet — use the photo widget's full rect
+        # minus inner_pad so the slide frame still looks inset.
+        pad = 28  # matches BlurredPhotoCanvas DEFAULT_INNER_PAD
+        ph = self._photo.size()
+        return QRect(pad, pad, max(1, ph.width() - 2 * pad),
+                     max(1, ph.height() - 2 * pad))
+
+    def _fit_sep_video_geometry(self) -> None:
+        """Position the sep / opener video into the bottom 70 % of the
+        slide's INNER card area (photo canvas's foreground rect). That
+        way the rounded-card frame stays visible around the video and
+        the top 30 % of the same card holds the caption.
+
+        Called from :meth:`_do_video_swap` and :meth:`resizeEvent` so
+        the layout survives window resizes.
         """
         if self._video_widget is None or self._stack_widget is None:
             return
-        sw = self._stack_widget.size()
-        if sw.width() <= 0 or sw.height() <= 0:
+        inner = self._slide_inner_rect()
+        if inner.isEmpty():
             return
-        video_h = int(sw.height() * self._SEP_VIDEO_HEIGHT_FRAC)
-        y = sw.height() - video_h
-        self._video_widget.setGeometry(0, y, sw.width(), video_h)
+        video_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
+        y = inner.bottom() + 1 - video_h
+        self._video_widget.setGeometry(inner.x(), y, inner.width(), video_h)
 
     # ── spec/155 v2 — sep / opener video caption overlay ──────────
 
@@ -1519,32 +1575,29 @@ class CutPlayerDialog(QDialog):
         lbl.show()
 
     def _position_caption(self) -> None:
-        """Anchor the caption label inside the slideshow canvas's TOP
-        30 % band — the slot that sits ABOVE the sep / opener video
-        (spec/155 v5). The label is a child of the dialog; we map the
-        stack widget's local rect into dialog coords."""
+        """Anchor the caption label inside the SLIDE's top 30 % band —
+        the slot that sits above the sep / opener video INSIDE the
+        rounded-card frame (spec/155 v6). The label is a child of the
+        dialog; we map stack-widget-local coords (where
+        ``_slide_inner_rect`` is anchored) into dialog coords."""
         lbl = self._caption_label
         if lbl is None:
             return
-        host = (
-            self._stack_widget if self._stack_widget is not None
-            else self)
-        top_left = host.mapTo(self, QPoint(0, 0))
-        sw_w = host.width()
-        sw_h = host.height()
-        band_h = max(48, int(sw_h * (1.0 - self._SEP_VIDEO_HEIGHT_FRAC)))
-        # The caption fits inside the band; clamp width to the canvas
-        # so a long subtitle wraps to multiple lines instead of running
-        # off the side.
+        inner = self._slide_inner_rect()
+        if inner.isEmpty() or self._stack_widget is None:
+            return
+        # Project inner-rect's top-left into dialog coords.
+        top_left = self._stack_widget.mapTo(self, inner.topLeft())
+        band_h = max(48, int(inner.height() * (1.0 - self._SEP_VIDEO_HEIGHT_FRAC)))
         lbl.setWordWrap(True)
-        lbl.setMaximumWidth(sw_w)
+        lbl.setMaximumWidth(inner.width())
         lbl.adjustSize()
         lbl_h = min(lbl.height(), band_h)
-        # Vertically centre within the top band so a short caption
-        # sits nicely between the canvas top and the video's top edge.
+        # Vertically centre within the band so a single-line caption
+        # doesn't hug the top edge of the slide frame.
         y_local = max(0, (band_h - lbl_h) // 2)
-        w = min(lbl.width(), sw_w)
-        x_local = max(0, (sw_w - w) // 2)
+        w = min(lbl.width(), inner.width())
+        x_local = max(0, (inner.width() - w) // 2)
         lbl.resize(w, lbl_h)
         lbl.move(top_left.x() + x_local, top_left.y() + y_local)
 
@@ -1657,15 +1710,20 @@ class CutPlayerDialog(QDialog):
 
     def _do_video_swap(self) -> None:
         """The actual photo→video swap, called from EITHER the
-        first-frame handler OR the watchdog. Idempotent."""
+        first-frame handler OR the watchdog. Idempotent.
+
+        spec/155 v6 — when ``_sep_video_active`` is True the photo
+        canvas stays VISIBLE (it paints the flat slide bg so the
+        rounded-card frame shows around the bottom-70 % video). For
+        file videos the photo continues to hide (full-canvas video)."""
         self._reset_video_swap_state()
         if self._video_widget is None:
             return
-        self._photo.hide()
-        # spec/155 v5 — sep / opener videos occupy the bottom 70 %. The
-        # video widget lives outside ``_stack_layout`` for this reason;
-        # set its geometry explicitly before showing it.
-        self._fit_sep_video_geometry()
+        if self._sep_video_active:
+            # Keep the slide frame visible behind the bottom-70 % video.
+            self._fit_sep_video_geometry()
+        else:
+            self._photo.hide()
         self._video_widget.show()
         self._video_widget.raise_()
         # spec/152 Phase 2 — the ``video_widget.raise_()`` above

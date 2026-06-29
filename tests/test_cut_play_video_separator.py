@@ -95,23 +95,34 @@ def test_caption_label_stays_child_of_dialog_on_ensure_video(
         p.close()
 
 
-def test_fit_sep_video_geometry_sizes_to_bottom_70_percent(
+def test_fit_sep_video_geometry_sizes_to_bottom_70_percent_of_slide(
         qapp, gw, tmp_path):
-    """The video widget occupies the bottom 70 % of the canvas; the
-    top 30 % is reserved for the caption. Pinned via a known canvas
-    size so the math is verifiable."""
+    """The video widget occupies the bottom 70 % of the SLIDE's inner
+    rect (the rounded-card foreground of the photo canvas) — not the
+    full stack widget. Pinned via the photo canvas's fallback rect so
+    the math is deterministic without forcing a pixmap-driven layout."""
     p = _player(gw, tmp_path)
     try:
         p._ensure_video()
-        # Force a known canvas size.
+        p.show()
+        # Resize stack + photo so the math is computable. With no
+        # pixmap, _slide_inner_rect falls back to (pad, pad,
+        # photo_w-2pad, photo_h-2pad).
         p._stack_widget.resize(1000, 1000)
+        p._photo.resize(1000, 1000)
+        pad = 28
+        inner_w = 1000 - 2 * pad
+        inner_h = 1000 - 2 * pad
         p._fit_sep_video_geometry()
         g = p._video_widget.geometry()
-        assert g.width() == 1000
-        # 70 % of 1000 = 700, positioned at y=300 (top edge of bottom 70 %).
-        assert g.height() == 700
-        assert g.y() == 300
-        assert g.x() == 0
+        # Width spans the inner rect; left edge at pad.
+        assert g.x() == pad
+        assert g.width() == inner_w
+        # 70 % of inner_h, bottom-anchored to the inner rect's bottom.
+        expected_video_h = int(inner_h * 0.70)
+        assert g.height() == expected_video_h
+        # Top of video = inner.bottom - video_h + 1.
+        assert g.y() == pad + inner_h - expected_video_h
     finally:
         p.close()
 

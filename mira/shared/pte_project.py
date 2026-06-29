@@ -630,9 +630,9 @@ _VIDEO_OVERLAY_TEXT_POS: Dict[str, Tuple[float, float]] = {
     # right under it at -68 (Nelson 2026-06-29 round 6 — earlier -55
     # left too much air between the lines).
     TEXT_SEP_TITLE:     (0.0, -82.0),
-    TEXT_SEP_SUB:       (0.0, -68.0),
+    TEXT_SEP_SUB:       (0.0, -65.0),
     TEXT_OPENER_TITLE:  (0.0, -82.0),
-    TEXT_OPENER_SUB:    (0.0, -68.0),
+    TEXT_OPENER_SUB:    (0.0, -65.0),
 }
 
 

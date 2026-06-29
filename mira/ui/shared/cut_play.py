@@ -604,6 +604,13 @@ class CutPlayerDialog(QDialog):
         from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
         from PyQt6.QtMultimediaWidgets import QVideoWidget
         self._video_widget = QVideoWidget(self._stack_widget)
+        # Nelson 2026-06-29 — fill the whole canvas (crop-fit) so an
+        # aspect-mismatched sep / opener video never letterboxes. The
+        # caption overlay is the only thing on top; the video fills.
+        # KeepAspectRatioByExpanding preserves the video's aspect AND
+        # fills the bounds — overflow gets cropped, no distortion.
+        self._video_widget.setAspectRatioMode(
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding)
         self._stack_layout.addWidget(self._video_widget)
         self._player = QMediaPlayer(self)
         self._video_audio = QAudioOutput(self)

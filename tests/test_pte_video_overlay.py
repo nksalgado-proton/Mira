@@ -58,9 +58,12 @@ def test_video_overlay_block_is_well_formed():
     assert block.startswith("    object MapVideo1:Video\r\n")
     # The locked rule: muted by default.
     assert "      Mute=1\r\n" in block
-    # Scale defaults to 65 % per Nelson 2026-06-29.
-    assert "        ScaleX=65.0\r\n" in block
-    assert "        ScaleY=65.0\r\n" in block
+    # Scale defaults to 100 % so the video fills the slide (Nelson
+    # 2026-06-29 round 2 — earlier 65 % made the still card show
+    # around the inset, but the caption overlay was meant to be the
+    # only thing on top).
+    assert "        ScaleX=100.0\r\n" in block
+    assert "        ScaleY=100.0\r\n" in block
     # Centred (Position=0,0); the user's manual example had an off-
     # centre placement but that was an artefact of hand-editing.
     assert "        Position=0,0\r\n" in block

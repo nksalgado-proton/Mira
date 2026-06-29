@@ -678,10 +678,13 @@ _NESTED_TEXT_RE = re.compile(
 
 
 # spec/155 v3 — Mira's default overlay scale for video maps. The
-# user's manual PTE example sized the inset at 63.479877 %; locked
-# to 65 % for round-number cleanliness. Centred on the slide canvas
-# via ``Position=0,0`` (PosMode=Percent).
-_VIDEO_OVERLAY_SCALE_PERCENT = 65.0
+# user's manual PTE example sized the inset at 63.479877 % and Mira
+# initially shipped at 65 %, but Nelson 2026-06-29 (eyeball round 2)
+# asked for the video to fill the whole slide so the caption text is
+# the only "on top" element. ``Position=0,0`` (PosMode=Percent)
+# centres it; FitMode=PlaceInto preserves the video's aspect (no
+# stretch).
+_VIDEO_OVERLAY_SCALE_PERCENT = 100.0
 
 
 def _video_overlay_object(

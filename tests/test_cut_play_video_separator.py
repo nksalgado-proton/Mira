@@ -78,6 +78,23 @@ def test_sep_video_path_returns_none_when_no_map(qapp, gw, tmp_path):
         p.close()
 
 
+def test_video_widget_fills_canvas_by_expanding(qapp, gw, tmp_path):
+    """Nelson 2026-06-29 round 2 — the video widget crops-to-fill so
+    aspect-mismatched sep / opener videos never letterbox. The caption
+    overlay is the only thing on top."""
+    from PyQt6.QtCore import Qt as _Qt
+    src = _write_tiny_mp4(tmp_path / "map.mp4")
+    gw.attach_day_map(1, src)
+    p = _player(gw, tmp_path)
+    try:
+        p._ensure_video()  # lazy-build the QVideoWidget
+        assert p._video_widget is not None
+        assert p._video_widget.aspectRatioMode() == (
+            _Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+    finally:
+        p.close()
+
+
 def test_sep_video_path_returns_none_when_image_map(
         qapp, gw, tmp_path):
     """An image map slot stays in the still-render path."""

@@ -72,6 +72,25 @@ def test_check_tag_taken_is_case_blind():
     assert cut_names.check_tag("best_macro", ["BEST_MACRO"]) == "taken"
 
 
+def test_uniquify_returns_base_when_free():
+    assert cut_names.uniquify("macro", ["wildlife", "street"]) == "macro"
+
+
+def test_uniquify_suffixes_when_taken():
+    # Pinning a Collection to a Cut: the Collection's own tag is always
+    # taken (shared namespace), so the default must shift to a free variant.
+    assert cut_names.uniquify("macro", ["macro"]) == "macro_2"
+    assert cut_names.uniquify("macro", ["macro", "macro_2"]) == "macro_3"
+
+
+def test_uniquify_is_case_blind():
+    assert cut_names.uniquify("Macro", ["macro"]) == "Macro_2"
+
+
+def test_uniquify_empty_base_passes_through():
+    assert cut_names.uniquify("", ["macro"]) == ""
+
+
 # --------------------------------------------------------------------------- #
 # cut_budget — minutes are the truth
 # --------------------------------------------------------------------------- #

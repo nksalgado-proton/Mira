@@ -251,11 +251,27 @@ class CrossEventPickerDialog(QDialog):
         except Exception as exc:                            # noqa: BLE001
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
-                self, tr("Commit failed"),
-                tr("Could not pin Cut: {err}").format(err=str(exc)))
+                self, tr("Commit failed"), self._commit_error_text(exc))
             return
         self.committed.emit(self._session)
         self.accept()
+
+    @staticmethod
+    def _commit_error_text(exc: Exception) -> str:
+        """Map the gateway's tag validation codes to a human-readable
+        message; anything else surfaces verbatim. ``'taken'`` is the common
+        one — the Cut name collides with an existing Cut OR Collection (one
+        global tag namespace)."""
+        code = str(exc)
+        if code == "taken":
+            return tr(
+                "A Cut or Collection with that name already exists. "
+                "Choose a different name.")
+        if code == "reserved":
+            return tr("That name is reserved. Choose a different name.")
+        if code == "empty":
+            return tr("Enter a name for the Cut.")
+        return tr("Could not pin Cut: {err}").format(err=code)
 
 
 __all__ = ["CrossEventPickerDialog"]

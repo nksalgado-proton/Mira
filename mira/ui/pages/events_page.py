@@ -534,6 +534,16 @@ class EventsPage(QWidget):
         pre_source = [(JOIN_OR, OperandOption(
             name=f"#{dc.tag}", count=0, kind="dc", id=dc.id, tag=dc.tag))]
 
+        # A cross-event Cut shares the global tag namespace with Collections
+        # (create_cross_event_cut collide-checks against both), so defaulting
+        # the Cut name to the Collection's own tag is *always* "taken". Seed
+        # a unique suggestion instead (macro → macro_2) so the common "just
+        # pin it" path works; the user can rename freely.
+        from core import cut_names as _cut_names
+        _taken = [c.tag for c in library_gateway.cross_event_cuts()]
+        _taken.extend(d.tag for d in dcs)
+        default_cut_name = _cut_names.uniquify(dc.tag, _taken)
+
         # spec/106 — music inventory + empty-state hint for the
         # cross-event dialog (so the soundtrack picker isn't blank
         # there). Mirrors the per-event ShareCutsPage._dialog_kwargs
@@ -565,7 +575,7 @@ class EventsPage(QWidget):
 
         ctx = NewRecipeContext(
             event_name="",
-            name=dc.tag,
+            name=default_cut_name,
             available_pools=available_pools,
             available_events=events_inventory,
             available_styles=styles,

@@ -77,6 +77,25 @@ def slugify_event_name(name: str) -> str:
     return slugify(name) or "event"
 
 
+def uniquify(base: str, existing_tags: Iterable[str]) -> str:
+    """Return ``base`` if free against ``existing_tags``, else the first
+    free ``base_2`` / ``base_3`` / … . Case-blind (slugs are lowercase;
+    ``existing_tags`` are lowercased defensively). ``base`` is assumed
+    already slugified; an empty base returns empty (the caller's ``'empty'``
+    guard handles it).
+
+    Used to seed a sensible non-colliding default name — e.g. pinning a
+    Collection to a Cut, where the Cut shares the global tag namespace with
+    Collections, so the Collection's own name is always taken."""
+    taken = {t.lower() for t in existing_tags}
+    if not base or base.lower() not in taken:
+        return base
+    n = 2
+    while f"{base}_{n}" in taken:
+        n += 1
+    return f"{base}_{n}"
+
+
 def check_tag(slug: str, existing_tags: Iterable[str]) -> Optional[str]:
     """Validate a slug against the event's existing Cut tags.
 

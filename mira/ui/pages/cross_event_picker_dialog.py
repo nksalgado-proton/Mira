@@ -2,31 +2,35 @@
 
 The cross-event sibling of :mod:`mira.ui.shared.cut_session_page`. Drives a
 :class:`CrossEventCutSession` in weed-out (start all-in, skip rejects) or
-pick-in (start all-out, pick keepers) mode. Each candidate is a packed
-key — a (event_uuid, item_id) pair the resolver returned. The user
-flips Pick/Skip per candidate; the budget zone updates live; commit
-freezes the membership into the anchor event's ``event.db``.
+pick-in (start all-out, pick keepers) mode, presented as a **Picker grid** —
+the same green/red state-border thumbnails + Pick/Skip grammar as the
+event-Cut picker (maximum reuse: the grid is :class:`ThumbGrid`, identical to
+the one ``CutSessionPage`` drives). Each candidate is a packed key — a
+(event_uuid, item_id) pair the resolver returned — spanning events, so there
+is no single timeline (separators default OFF, spec/81 §3.1) and the grid is
+flat-chronological rather than day-grouped.
 
-The Picker doesn't open the anchor gateway itself — the host owns that
-lifecycle and supplies a ``commit_callback(session)`` so the page stays
-gateway-agnostic. Tests use a stub callback.
+Thumbnails span events, so the host supplies a ``thumb_resolver`` that maps a
+candidate to its (cached) export thumb — the Picker stays gateway-agnostic
+(it only knows the session + the resolver + a ``commit_callback``). The
+resolver returns only ALREADY-CACHED thumbs; it never triggers synchronous
+generation (the known first-open freeze), so an un-visited event's frames
+render as neutral placeholders rather than stalling the grid.
 """
 from __future__ import annotations
 
 import logging
 from typing import Callable, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
     QWidget,
+    QVBoxLayout,
 )
 
 from core import cut_budget, cut_names
@@ -35,92 +39,28 @@ from mira.shared.cross_event_cut_session import (
     CrossEventSessionFile,
 )
 from mira.shared.cut_draft import PIN_PICK_IN, PIN_WEED_OUT
-from mira.ui.design import ghost_button, primary_button
+from mira.ui.design import ThumbGrid, ThumbGridItem, ghost_button, primary_button
 from mira.ui.i18n import tr
 
 log = logging.getLogger(__name__)
 
+#: A picked candidate paints the green state border; a skipped one the red —
+#: the exact tokens the event-Cut grid uses (Thumb's ``state`` contract).
+_STATE_PICKED = "picked"
+_STATE_SKIPPED = "skipped"
 
-# --------------------------------------------------------------------------- #
-# One row per candidate
-# --------------------------------------------------------------------------- #
-
-
-class _CandidateRow(QFrame):
-    """Per-candidate cell: Pick/Skip checkbox + identity + capture facts.
-
-    Signals:
-        toggled(str, bool)   packed key + new picked state
-    """
-
-    toggled = pyqtSignal(str, bool)
-
-    def __init__(self, sess_file: CrossEventSessionFile,
-                 picked: bool,
-                 parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._file = sess_file
-        self.setObjectName("CrossEventPickerRow")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
-
-        self._check = QCheckBox()
-        self._check.setChecked(picked)
-        self._check.toggled.connect(
-            lambda v: self.toggled.emit(self._file.key, v))
-        layout.addWidget(self._check)
-
-        idline = QVBoxLayout()
-        idline.setSpacing(2)
-        ident = QLabel(f"{sess_file.event_uuid}::{sess_file.item_id}")
-        ident.setObjectName("CrossEventPickerIdent")
-        idline.addWidget(ident)
-        relpath_text = (sess_file.export_relpath or sess_file.origin_relpath
-                        or "")
-        meta = QLabel(self._meta_line(sess_file, relpath_text))
-        meta.setObjectName("CrossEventPickerMeta")
-        meta.setWordWrap(True)
-        idline.addWidget(meta)
-        layout.addLayout(idline, 1)
-
-    @staticmethod
-    def _meta_line(f: CrossEventSessionFile, relpath_text: str) -> str:
-        bits: List[str] = []
-        if f.member_kind == "grab":
-            bits.append(tr("grab"))
-        else:
-            bits.append(tr("export"))
-        if f.kind == "video":
-            secs = f.duration_ms / 1000.0
-            bits.append(tr("video {s:.1f}s").format(s=secs))
-        if f.capture_time:
-            bits.append(f.capture_time[:10])
-        if relpath_text:
-            bits.append(relpath_text)
-        return " · ".join(bits)
-
-    @property
-    def key(self) -> str:
-        return self._file.key
-
-    def set_checked(self, on: bool) -> None:
-        self._check.blockSignals(True)
-        self._check.setChecked(on)
-        self._check.blockSignals(False)
-
-
-# --------------------------------------------------------------------------- #
-# The dialog
-# --------------------------------------------------------------------------- #
+#: Resolver type: candidate → its cached export-thumb pixmap, or ``None`` when
+#: no cached thumb exists (render a neutral placeholder, never block).
+ThumbResolver = Callable[[CrossEventSessionFile], Optional[QPixmap]]
 
 
 class CrossEventPickerDialog(QDialog):
-    """Drive a :class:`CrossEventCutSession` to commit.
+    """Drive a :class:`CrossEventCutSession` to commit, via a Picker grid.
 
     The constructor takes the session + a ``commit_callback`` that the host
-    wires to open the anchor event gateway and call ``session.commit(eg)``.
-    The Picker only knows about the session.
+    wires to commit through the library gateway, plus an optional
+    ``thumb_resolver`` for the grid thumbnails. The Picker only knows about
+    the session.
     """
 
     #: Fires after a successful commit with the same session. Host uses it
@@ -132,17 +72,19 @@ class CrossEventPickerDialog(QDialog):
         session: CrossEventCutSession,
         *,
         commit_callback: Callable[[CrossEventCutSession], None],
+        thumb_resolver: Optional[ThumbResolver] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._session = session
         self._commit_callback = commit_callback
+        self._thumb_resolver = thumb_resolver
         self.setWindowTitle(tr("Pin cross-event Cut — {name}").format(
             name=cut_names.display_tag(cut_names.slugify(session.name or ""))))
-        self.setMinimumSize(720, 560)
+        self.setMinimumSize(820, 600)
         self.setObjectName("CrossEventPickerDialog")
-        self._rows: List[_CandidateRow] = []
         self._build_layout()
+        self._grid.set_items(self._build_items())
         self._refresh_budget()
 
     # ----- layout --------------------------------------------------------- #
@@ -154,31 +96,24 @@ class CrossEventPickerDialog(QDialog):
 
         root.addWidget(self._build_header())
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        host = QWidget(scroll)
-        body = QVBoxLayout(host)
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(4)
-        for sf in self._session.files:
-            row = _CandidateRow(
-                sf, picked=self._session.is_picked(sf.key))
-            row.toggled.connect(self._on_row_toggled)
-            body.addWidget(row)
-            self._rows.append(row)
-        body.addStretch()
-        scroll.setWidget(host)
-        root.addWidget(scroll, 1)
+        # The grid — the same widget the event-Cut picker drives. Single-zone
+        # click toggles Pick/Skip (no single-view drill-in yet; a follow-up
+        # can add center-zone open to match the event grid exactly).
+        self._grid = ThumbGrid(two_zone_clicks=False)
+        self._grid.cell_activated.connect(self._on_cell_activated)
+        root.addWidget(self._grid, 1)
 
-        # Footer: budget line + actions.
         root.addWidget(self._build_footer())
 
     def _build_header(self) -> QWidget:
         box = QFrame()
         box.setObjectName("CrossEventPickerHeader")
-        layout = QVBoxLayout(box)
+        layout = QHBoxLayout(box)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(2)
+        layout.setSpacing(12)
+
+        info = QVBoxLayout()
+        info.setSpacing(2)
         mode_text = {
             PIN_WEED_OUT: tr("Weed out — start all picked, skip rejects"),
             PIN_PICK_IN: tr("Pick in — start all skipped, pick keepers"),
@@ -189,11 +124,21 @@ class CrossEventPickerDialog(QDialog):
         title.setObjectName("CrossEventPickerTitle")
         f = title.font(); f.setBold(True)
         title.setFont(f)
-        layout.addWidget(title)
-        anchor = self._session.anchor_event_id or "—"
-        sub = QLabel(tr("Anchor event: {anchor}").format(anchor=anchor))
+        info.addWidget(title)
+        sub = QLabel(tr("Click a tile to Pick (green) / Skip (red)."))
         sub.setObjectName("CrossEventPickerSub")
-        layout.addWidget(sub)
+        info.addWidget(sub)
+        layout.addLayout(info, 1)
+
+        # Batch controls — the "pick/skip in batch" ask.
+        self._pick_all_btn = ghost_button(tr("Pick all"))
+        self._pick_all_btn.setToolTip(tr("Mark every candidate Pick."))
+        self._pick_all_btn.clicked.connect(lambda: self._set_all(True))
+        layout.addWidget(self._pick_all_btn)
+        self._skip_all_btn = ghost_button(tr("Skip all"))
+        self._skip_all_btn.setToolTip(tr("Mark every candidate Skip."))
+        self._skip_all_btn.clicked.connect(lambda: self._set_all(False))
+        layout.addWidget(self._skip_all_btn)
         return box
 
     def _build_footer(self) -> QWidget:
@@ -216,10 +161,59 @@ class CrossEventPickerDialog(QDialog):
         layout.addWidget(self._commit)
         return box
 
+    # ----- grid items ---------------------------------------------------- #
+
+    def _build_items(self) -> List[ThumbGridItem]:
+        return [self._item_for(sf) for sf in self._session.files]
+
+    def _item_for(self, sf: CrossEventSessionFile) -> ThumbGridItem:
+        picked = self._session.is_picked(sf.key)
+        pixmap: Optional[QPixmap] = None
+        if self._thumb_resolver is not None:
+            try:
+                pixmap = self._thumb_resolver(sf)
+            except Exception:                                  # noqa: BLE001
+                log.exception("cross-event thumb resolve failed for %s", sf.key)
+                pixmap = None
+        return ThumbGridItem(
+            pixmap=pixmap,
+            state=_STATE_PICKED if picked else _STATE_SKIPPED,
+            payload=sf.key,
+            tooltip=self._tooltip(sf),
+        )
+
+    @staticmethod
+    def _tooltip(sf: CrossEventSessionFile) -> str:
+        bits: List[str] = []
+        rel = sf.export_relpath or sf.origin_relpath or ""
+        if rel:
+            bits.append(rel)
+        if sf.member_kind == "grab":
+            bits.append(tr("grab"))
+        if sf.kind == "video":
+            bits.append(tr("video {s:.1f}s").format(s=sf.duration_ms / 1000.0))
+        if sf.capture_time:
+            bits.append(sf.capture_time[:10])
+        return " · ".join(bits)
+
     # ----- callbacks ----------------------------------------------------- #
 
-    def _on_row_toggled(self, key: str, picked: bool) -> None:
-        self._session.set_state(key, picked)
+    def _on_cell_activated(self, index: int) -> None:
+        files = self._session.files
+        if not (0 <= index < len(files)):
+            return
+        sf = files[index]
+        new_state = not self._session.is_picked(sf.key)
+        self._session.set_state(sf.key, new_state)
+        self._grid.update_item(index, self._item_for(sf))
+        self._refresh_budget()
+
+    def _set_all(self, picked: bool) -> None:
+        for sf in self._session.files:
+            self._session.set_state(sf.key, picked)
+        # One rebuild — cheaper + simpler than N update_item calls, and the
+        # thumbs are already cached on the items so it doesn't re-resolve cost.
+        self._grid.set_items(self._build_items())
         self._refresh_budget()
 
     def _refresh_budget(self) -> None:

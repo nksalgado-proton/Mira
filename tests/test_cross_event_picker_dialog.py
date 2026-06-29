@@ -1,17 +1,17 @@
-"""Cross-event Picker (weed-out / pick-in commit path)."""
-from __future__ import annotations
+"""Cross-event Picker (grid weed-out / pick-in commit path).
 
-import pytest
+The Picker is now a :class:`ThumbGrid` (green/red state borders + click-to-
+toggle), reusing the event-Cut grid widget. Tests read the grid's item
+``state`` + ``payload`` and drive the toggle / batch / commit handlers.
+"""
+from __future__ import annotations
 
 from mira.shared.cross_event_cut_session import (
     CrossEventCutSession,
     CrossEventSessionFile,
 )
 from mira.shared.cut_draft import PIN_PICK_IN, PIN_WEED_OUT
-from mira.ui.pages.cross_event_picker_dialog import (
-    CrossEventPickerDialog,
-    _CandidateRow,
-)
+from mira.ui.pages.cross_event_picker_dialog import CrossEventPickerDialog
 
 
 def _make_session(*, pin_mode=PIN_WEED_OUT, n=3,
@@ -40,64 +40,129 @@ def _make_session(*, pin_mode=PIN_WEED_OUT, n=3,
     )
 
 
+def _states(d) -> list:
+    return [it.state for it in d._grid._items]
+
+
+def _payloads(d) -> list:
+    return [it.payload for it in d._grid._items]
+
+
 # --------------------------------------------------------------------------- #
-# Construction — cells rendered, default ledger applied
+# Construction — grid cells rendered, default ledger applied
 # --------------------------------------------------------------------------- #
 
 
-def test_renders_one_row_per_candidate(qapp):
-    """One :class:`_CandidateRow` per file in the session."""
+def test_renders_one_cell_per_candidate(qapp):
+    """One grid item per file in the session, keyed by the packed key."""
     sess = _make_session(n=4)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    rows = d._rows
-    assert len(rows) == 4
-    assert {r.key for r in rows} == {f"A::i{i}" for i in range(2)} | {
+    assert len(d._grid._items) == 4
+    assert set(_payloads(d)) == {f"A::i{i}" for i in range(2)} | {
         f"B::i{i}" for i in range(2, 4)}
     d.deleteLater()
 
 
-def test_weed_out_starts_all_picked_in_ui(qapp):
-    """Weed-out: session starts all-picked; the cells' checkboxes are on."""
+def test_weed_out_starts_all_picked_green(qapp):
+    """Weed-out: session starts all-picked; every cell paints the green
+    (picked) state border."""
     sess = _make_session(pin_mode=PIN_WEED_OUT, n=3)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    for row in d._rows:
-        assert row._check.isChecked()
+    assert _states(d) == ["picked", "picked", "picked"]
     d.deleteLater()
 
 
-def test_pick_in_starts_all_skipped_in_ui(qapp):
-    """Pick-in: session starts all-skipped; the cells' checkboxes are off."""
+def test_pick_in_starts_all_skipped_red(qapp):
+    """Pick-in: session starts all-skipped; every cell paints the red
+    (skipped) state border."""
     sess = _make_session(pin_mode=PIN_PICK_IN, n=3)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    for row in d._rows:
-        assert not row._check.isChecked()
+    assert _states(d) == ["skipped", "skipped", "skipped"]
     d.deleteLater()
 
 
 # --------------------------------------------------------------------------- #
-# Ledger — toggling a row updates the session
+# Ledger — clicking a cell toggles the session + repaints the border
 # --------------------------------------------------------------------------- #
 
 
-def test_toggle_row_updates_session_ledger(qapp):
-    """Flipping a row's checkbox flips the session.is_picked state."""
+def test_cell_click_toggles_session_and_border(qapp):
+    """Activating a cell flips session.is_picked AND the cell's state."""
     sess = _make_session(pin_mode=PIN_WEED_OUT, n=2)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    target_row = d._rows[0]
-    assert sess.is_picked(target_row.key)
-    target_row._check.setChecked(False)
-    assert not sess.is_picked(target_row.key)
+    key = sess.files[0].key
+    assert sess.is_picked(key)
+    d._on_cell_activated(0)
+    assert not sess.is_picked(key)
+    assert d._grid._items[0].state == "skipped"
+    # Toggle back.
+    d._on_cell_activated(0)
+    assert sess.is_picked(key)
+    assert d._grid._items[0].state == "picked"
     d.deleteLater()
 
 
 def test_picked_count_in_footer_updates_live(qapp):
     sess = _make_session(pin_mode=PIN_WEED_OUT, n=3)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    # All picked initially.
     assert "3/3 picked" in d._budget_label.text()
-    # Skip one.
-    d._rows[0]._check.setChecked(False)
+    d._on_cell_activated(0)
     assert "2/3 picked" in d._budget_label.text()
+    d.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
+# Batch — Pick all / Skip all
+# --------------------------------------------------------------------------- #
+
+
+def test_pick_all_and_skip_all(qapp):
+    """The batch buttons flip every candidate at once."""
+    sess = _make_session(pin_mode=PIN_PICK_IN, n=3)
+    d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
+    assert sess.picked_count() == 0
+    d._set_all(True)
+    assert sess.picked_count() == 3
+    assert _states(d) == ["picked", "picked", "picked"]
+    d._set_all(False)
+    assert sess.picked_count() == 0
+    assert _states(d) == ["skipped", "skipped", "skipped"]
+    d.deleteLater()
+
+
+# --------------------------------------------------------------------------- #
+# Thumbnails — the host's resolver feeds each cell's pixmap
+# --------------------------------------------------------------------------- #
+
+
+def test_thumb_resolver_feeds_pixmaps(qapp):
+    """When a resolver is supplied, each item carries its resolved pixmap;
+    a resolver that raises degrades to no pixmap (never blocks the grid)."""
+    from PyQt6.QtGui import QPixmap
+    sess = _make_session(n=2)
+    seen: list = []
+
+    def _resolver(sf):
+        seen.append(sf.key)
+        pm = QPixmap(8, 8)
+        return pm
+
+    d = CrossEventPickerDialog(
+        sess, commit_callback=lambda s: None, thumb_resolver=_resolver)
+    assert set(seen) == {sess.files[0].key, sess.files[1].key}
+    assert all(it.pixmap is not None for it in d._grid._items)
+    d.deleteLater()
+
+
+def test_thumb_resolver_failure_degrades_to_placeholder(qapp):
+    sess = _make_session(n=1)
+
+    def _angry(_sf):
+        raise RuntimeError("decode failed")
+
+    d = CrossEventPickerDialog(
+        sess, commit_callback=lambda s: None, thumb_resolver=_angry)
+    assert d._grid._items[0].pixmap is None        # placeholder, not a crash
     d.deleteLater()
 
 
@@ -107,46 +172,35 @@ def test_picked_count_in_footer_updates_live(qapp):
 
 
 def test_budget_zone_green_under_target(qapp):
-    """Picked length under target → zone green."""
-    sess = _make_session(pin_mode=PIN_PICK_IN, n=4,
-                         target_s=120, max_s=180)
+    sess = _make_session(pin_mode=PIN_PICK_IN, n=4, target_s=120, max_s=180)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    # 0 picked → 0s → green.
     assert d._budget_label.property("zone") == "green"
     d.deleteLater()
 
 
 def test_budget_zone_amber_between_target_and_max(qapp):
-    """Picked length between target and max → amber."""
-    sess = _make_session(pin_mode=PIN_WEED_OUT, n=4,
-                         target_s=12, max_s=36)
+    sess = _make_session(pin_mode=PIN_WEED_OUT, n=4, target_s=12, max_s=36)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    # 4 picked × 6s = 24s; between target (12) and max (36) → amber.
     assert d._budget_label.property("zone") == "amber"
     d.deleteLater()
 
 
 def test_budget_zone_red_over_max(qapp):
-    """Picked length over max → red."""
-    sess = _make_session(pin_mode=PIN_WEED_OUT, n=4,
-                         target_s=6, max_s=12)
+    sess = _make_session(pin_mode=PIN_WEED_OUT, n=4, target_s=6, max_s=12)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    # 4 picked × 6s = 24s; over max (12) → red.
     assert d._budget_label.property("zone") == "red"
     d.deleteLater()
 
 
 def test_budget_zone_none_when_no_limits(qapp):
-    """No target + no max → zone none."""
-    sess = _make_session(pin_mode=PIN_WEED_OUT, n=2,
-                         target_s=None, max_s=None)
+    sess = _make_session(pin_mode=PIN_WEED_OUT, n=2, target_s=None, max_s=None)
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
     assert d._budget_label.property("zone") == "none"
     d.deleteLater()
 
 
 # --------------------------------------------------------------------------- #
-# Commit — fires the callback + emits committed
+# Commit / cancel
 # --------------------------------------------------------------------------- #
 
 
@@ -163,12 +217,13 @@ def test_commit_invokes_callback_with_session(qapp):
     d.deleteLater()
 
 
-def test_commit_failure_surfaces_warning(qapp, monkeypatch):
-    """Callback raise → QMessageBox.warning, dialog stays open."""
+def test_commit_failure_surfaces_friendly_warning(qapp, monkeypatch):
+    """A 'taken' ValueError surfaces the human-readable message, dialog
+    stays open (committed not emitted)."""
     sess = _make_session(pin_mode=PIN_WEED_OUT, n=1)
 
     def _angry(_s):
-        raise RuntimeError("disk full")
+        raise ValueError("taken")
 
     warned: list = []
     from PyQt6.QtWidgets import QMessageBox
@@ -179,14 +234,9 @@ def test_commit_failure_surfaces_warning(qapp, monkeypatch):
     fired: list = []
     d.committed.connect(lambda s: fired.append(s))
     d._on_commit()
-    assert any("disk full" in str(m) for m in warned)
-    assert fired == []                                    # not emitted on error
+    assert any("already exists" in str(m) for m in warned)
+    assert fired == []
     d.deleteLater()
-
-
-# --------------------------------------------------------------------------- #
-# Cancel — no commit, no signal
-# --------------------------------------------------------------------------- #
 
 
 def test_cancel_does_not_commit(qapp):
@@ -200,13 +250,11 @@ def test_cancel_does_not_commit(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# Row metadata
+# Tooltip — grab member surfaces the 'grab' hint
 # --------------------------------------------------------------------------- #
 
 
-def test_row_renders_grab_member_label(qapp):
-    """Grab-kind rows surface the 'grab' label so the user knows they're
-    pulling the original."""
+def test_grab_member_tooltip(qapp):
     sess = CrossEventCutSession(
         name="x", expr=(("+", "collected"),), filters={},
         pin_mode=PIN_WEED_OUT, target_s=None, max_s=None, photo_s=6.0,
@@ -219,7 +267,5 @@ def test_row_renders_grab_member_label(qapp):
         anchor_event_id="A", separators_on=False,
     )
     d = CrossEventPickerDialog(sess, commit_callback=lambda s: None)
-    # The row's meta line contains "grab".
-    meta = d._rows[0]._meta_line(sess.files[0], "Original Media/raw.raw")
-    assert "grab" in meta
+    assert "grab" in d._grid._items[0].tooltip
     d.deleteLater()

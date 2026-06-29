@@ -777,11 +777,46 @@ class EventsPage(QWidget):
                 self._direct_commit_cross_event_cut(sess, library_gateway)
 
             picker = CrossEventPickerDialog(
-                session, commit_callback=_commit_cb, parent=self)
+                session, commit_callback=_commit_cb,
+                thumb_resolver=self._cross_event_thumb_resolver,
+                parent=self)
             picker.exec()
 
         dlg.start_requested.connect(_on_start)
         dlg.exec()
+
+    def _cross_event_thumb_resolver(self, sess_file):
+        """Cached export thumb for one cross-event candidate, or ``None``.
+
+        Spans events: resolve the file's source event_uuid → its on-disk
+        root (the same umbrella-index lookup the cross-event exporter uses),
+        then read the ALREADY-CACHED export thumb. Never generates a thumb
+        synchronously (the known first-open freeze, see
+        [[project-no-wait-feedback-thumb-generation]]) and never raises — a
+        miss returns ``None`` so the grid paints a neutral placeholder
+        instead of stalling. Grab-kind members (Original Media, no export
+        thumb) and not-yet-visited events fall to the placeholder."""
+        from PyQt6.QtGui import QPixmap
+        from core import photo_thumb_cache
+        try:
+            entry = self.gateway.index.get(sess_file.event_uuid)
+            if entry is None:
+                return None
+            root = self.gateway.index.resolve_root(
+                entry, self.gateway.photos_base_path())
+            if root is None:
+                return None
+            rel = sess_file.export_relpath or sess_file.origin_relpath
+            if not rel:
+                return None
+            thumb = photo_thumb_cache.resolve_export_thumb(root, root / rel)
+            if thumb is None:
+                return None
+            pm = QPixmap(str(thumb))
+            return pm if not pm.isNull() else None
+        except Exception:                                      # noqa: BLE001
+            log.exception("cross-event thumb resolve failed")
+            return None
 
     def _direct_commit_cross_event_cut(self, session, library_gateway) -> None:
         """Drive ``session.commit`` against the library gateway.

@@ -278,10 +278,28 @@ the still QImage.
     the spec/152 boundary crossfade math reads the right shape (half
     transition on photo↔sep-video, zero on sep-video↔file-video).
 - **Cut Export**: writes the **first-frame sidecar** as the separator
-  JPG. PTE bundle integration with a video slot is **parked** —
-  Nelson is preparing a manual PTE example to design the contract
-  against. Until then, video maps degrade gracefully to a single
-  first-frame still at export.
+  JPG (the slide's flat background). On top of that, when the slide
+  corresponds to a day / event whose map is an MP4, spec/155 **v3**
+  (Nelson 2026-06-29) nests a ``:Video`` object into the slide so PTE
+  **plays the MP4** over the flat background:
+  - ``mira/shared/pte_project.py::PteMember`` gains
+    ``video_overlay_path`` + ``video_overlay_duration_ms``.
+  - ``_video_overlay_object()`` emits the ``:Video`` block at 4-space
+    indent (sibling of the slide's ``:Text`` overlays) with
+    ``Mute=1``, ``ScaleX=ScaleY=65``, ``Position=0,0``, the absolute
+    Windows path, and the probed duration.
+  - ``_inject_texts(..., video_overlay=block)`` appends the block
+    after the text overlays at the skeleton's text anchor.
+  - The slide's ``[Times]`` slot is bumped to at least the video's
+    duration so PTE holds the slide long enough for the whole clip
+    to play. Slides whose video is shorter than the still slot keep
+    the longer ``photo_s + transition`` rhythm.
+  - The Video block is self-contained: no ``[Tracks]`` ``VideoClip``
+    entry is needed (matches Nelson's manual PTE example shape).
+  - ``share_cuts_page._pte_video_overlay()`` resolves the day /
+    event map slot via the cached card-text context, probes
+    duration via ``core.video_extract.probe_video``, and feeds the
+    PteMember constructor.
 - **Event-level video maps**: same v2 storage/dialog/chip behaviour.
   Cut Play **plays** an MP4 event map as the **opener** slot (Nelson
   2026-06-29 — first eyeball reported the still-only opener and the

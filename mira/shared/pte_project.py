@@ -128,6 +128,15 @@ class PteMember:
     duration_ms: int = 0
     overlay_text: Optional[str] = None
     texts: Sequence["PteText"] = ()
+    # spec/155 v3 — when set, the generator nests a ``:Video`` object
+    # alongside the slide's text overlays so a separator / opener slide
+    # PLAYS this MP4 over its flat background. ``video_overlay_path``
+    # is an absolute Windows path; ``video_overlay_duration_ms`` is the
+    # probed MP4 length. The slide's ``[Times]`` slot is bumped to at
+    # least the video duration so PTE holds the slide long enough for
+    # the whole clip to play. v1 is muted + centred at 65 % scale.
+    video_overlay_path: Optional[Path] = None
+    video_overlay_duration_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -668,15 +677,100 @@ _NESTED_TEXT_RE = re.compile(
     r"    object [^:\r\n]+:Text\r\n(?:[\s\S]*?)\r\n    end\r\n")
 
 
-def _inject_texts(slide_body: str, texts: Sequence["PteText"]) -> str:
+# spec/155 v3 — Mira's default overlay scale for video maps. The
+# user's manual PTE example sized the inset at 63.479877 %; locked
+# to 65 % for round-number cleanliness. Centred on the slide canvas
+# via ``Position=0,0`` (PosMode=Percent).
+_VIDEO_OVERLAY_SCALE_PERCENT = 65.0
+
+
+def _video_overlay_object(
+    idx: int, video_path: str, duration_ms: int,
+    *, scale_percent: float = _VIDEO_OVERLAY_SCALE_PERCENT,
+) -> str:
+    """Emit one ``:Video`` overlay block for a separator/opener slide
+    (spec/155 v3). The video sits at ``scale_percent`` of the canvas,
+    centred (Position=0,0). ``Mute=1`` is forced — Cuts ride music and
+    the video's own audio would compete. Duration carries the probed
+    MP4 length so PTE knows the clip's true span."""
+    obj_name = f"MapVideo{idx}"
+    return (
+        f"    object {obj_name}:Video\r\n"
+        f"      GUID={fresh_guid()}\r\n"
+        f"      FitMode=PlaceInto\r\n"
+        f"      PosMode=Percent\r\n"
+        f"      CenterMode=Percent\r\n"
+        f"      BlurMode=1\r\n"
+        f"      ShadowEnable=0\r\n"
+        f"      ShadowSize=16\r\n"
+        f"      ShadowColor=0,0,0\r\n"
+        f"      ShadowOpacity=59\r\n"
+        f"      ShadowDistance=1.5\r\n"
+        f"      ShadowAngle=45\r\n"
+        f"      ShadowSpreadIndex=0\r\n"
+        f"      Antialiased=1\r\n"
+        f"      EnableBorder=0\r\n"
+        f"      EnableCrop=0\r\n"
+        f"      EnableAspect=0\r\n"
+        f"      BorderWidth=1.5\r\n"
+        f"      BorderColor=255,255,255,255\r\n"
+        f"      CropRect=0,0,0,0\r\n"
+        f"      Aspect=0\r\n"
+        f"      ImageIndex=\r\n"
+        f"      NestedOpacity=\r\n"
+        f"      NestedColorisation=\r\n"
+        f"      RestoreAlpha=\r\n"
+        f"      AnimEnable=\r\n"
+        f"      TranspForClick=\r\n"
+        f"      HideMode=\r\n"
+        f"      ChildInvis=\r\n"
+        f"      Action=\r\n"
+        f"      object KeyPoint1:KeyPoint\r\n"
+        f"        Origin=SlideBegin\r\n"
+        f"        Bokeh=50\r\n"
+        f"        ScaleX={scale_percent}\r\n"
+        f"        ScaleY={scale_percent}\r\n"
+        f"        Opacity=100\r\n"
+        f"        Position=0,0\r\n"
+        f"        CenterPos=\r\n"
+        f"        grps=255\r\n"
+        f"      end\r\n"
+        f"      TreeNode=3\r\n"
+        f"      FileName={video_path}\r\n"
+        f"      Duration={int(duration_ms)}\r\n"
+        f"      AutoRotate=1\r\n"
+        f"      ClipGUID=\r\n"
+        f"      Mute=1\r\n"
+        f"      LoadFromDisk=\r\n"
+        f"      DeinterlaceType=\r\n"
+        f"      FPSMultiplier=\r\n"
+        f"      StartVideoTime=\r\n"
+        f"      StartPTETime=\r\n"
+        f"    end\r\n"
+    )
+
+
+def _inject_texts(
+    slide_body: str,
+    texts: Sequence["PteText"],
+    *,
+    video_overlay: Optional[str] = None,
+) -> str:
     """spec/153 — replace the skeleton's single nested ``:Text`` anchor
     with the member's generated text objects (one ``:Text`` per
     :class:`PteText`, styled by role). Empty ``texts`` → strip the anchor
     so the slide stays clean. The anchor marks WHERE text nests (inside
     the foreground image); its own style is irrelevant — Mira owns the
-    look now."""
+    look now.
+
+    spec/155 v3 — when ``video_overlay`` is provided (a fully-rendered
+    ``:Video`` block from :func:`_video_overlay_object`), it is appended
+    after the text blocks so the slide carries both the day metadata
+    text AND the playable MP4 map."""
     blocks = "".join(
         _text_object(i + 1, t.text, t.role) for i, t in enumerate(texts))
+    if video_overlay:
+        blocks += video_overlay
     m = _NESTED_TEXT_RE.search(slide_body)
     if m:
         return slide_body[: m.start()] + blocks + slide_body[m.end():]
@@ -935,7 +1029,22 @@ def generate(
         texts = list(m.texts)
         if not texts and m.overlay_text:
             texts = [PteText(m.overlay_text, TEXT_PHOTO_CAPTION)]
-        body = _inject_texts(body, texts)
+        # spec/155 v3 — when a separator / opener slide carries a video
+        # overlay (an attached MP4 day or event map), emit a ``:Video``
+        # object alongside the texts AND bump the slide's [Times] slot to
+        # at least the video's duration so PTE holds the slide long
+        # enough for the whole clip to play.
+        video_overlay_block: Optional[str] = None
+        if (m.video_overlay_path is not None
+                and m.video_overlay_duration_ms > 0):
+            video_overlay_block = _video_overlay_object(
+                idx=i + 1,
+                video_path=_windows_path(m.video_overlay_path),
+                duration_ms=m.video_overlay_duration_ms,
+            )
+            if m.video_overlay_duration_ms > slide_durations_ms[-1]:
+                slide_durations_ms[-1] = m.video_overlay_duration_ms
+        body = _inject_texts(body, texts, video_overlay=video_overlay_block)
         slide_bodies.append(body)
 
     # ── [Tracks] body — fresh clips for emitted videos ───────────

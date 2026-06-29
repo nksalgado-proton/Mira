@@ -3035,11 +3035,18 @@ class ShareCutsPage(QWidget):
                 # spec/153 — heal stale baked opener/separator cards from a
                 # pre-flat export so the new :Text isn't laid over old text.
                 self._reflatten_card_image(entry, stripped, card_text_ctx)
+                # spec/155 v3 — when this card corresponds to a day /
+                # event whose map slot is an MP4, attach the video as a
+                # PTE overlay so the slide plays the clip in PTE.
+                vid_path, vid_ms = self._pte_video_overlay(
+                    stripped, ctx=card_text_ctx)
                 members.append(PteMember(
                     kind="photo", path=entry,
                     texts=self._pte_slide_texts(
                         cut, stripped, entry, overlay_lookup,
                         ctx=card_text_ctx),
+                    video_overlay_path=vid_path,
+                    video_overlay_duration_ms=vid_ms,
                 ))
             elif suffix == ".mp4":
                 members.append(PteMember(
@@ -3221,10 +3228,17 @@ class ShareCutsPage(QWidget):
             log.exception("opener lines failed for cut %s", cut.tag)
         aspect = normalise(getattr(cut, "aspect", "16:9"))
         _, canvas_h = aspect_dimensions(aspect)
+        # spec/155 v3 — carry the event root + the event-level map slot
+        # so the per-slide PteMember loop can populate the video overlay
+        # fields when the day / event has an MP4 map attached.
+        event_root = Path(eg.event_root) if eg.event_root else None
+        evt_map_rel = eg.get_event_map_path()
         return dict(day_meta=day_meta, opener_tag=opener_tag,
                     opener_lines=opener_lines,
                     aspect=aspect, canvas_h=canvas_h,
-                    card_style=eg.cut_card_style(cut), cut_id=cut.id)
+                    card_style=eg.cut_card_style(cut), cut_id=cut.id,
+                    event_root=event_root,
+                    event_map_rel=evt_map_rel)
 
     def _reflatten_card_image(self, entry: Path, stripped: str,
                               ctx: dict) -> None:
@@ -3253,6 +3267,43 @@ class ShareCutsPage(QWidget):
                 raise OSError(f"could not write {entry}")
         except Exception:                                          # noqa: BLE001
             log.exception("re-flatten card failed for %s", entry)
+
+    def _pte_video_overlay(self, stripped: str, *, ctx: dict):
+        """spec/155 v3 — return ``(abs_video_path, duration_ms)`` when
+        the slide named ``stripped`` corresponds to a day / event whose
+        map slot is an MP4; ``(None, 0)`` otherwise.
+
+        ``opener.jpg`` reads the event-level map; ``dayN.jpg`` reads
+        ``trip_day.map_image_path`` for day N. Image-only maps (.jpg /
+        .png) ride the existing flat-letterboxed export and bypass this
+        helper. Probing duration goes through the cached
+        ``probe_video`` from :mod:`core.video_extract`."""
+        from core.path_builder import is_video_map_path
+        from core.video_extract import probe_video
+        lower = stripped.lower()
+        event_root = ctx.get("event_root")
+        if event_root is None:
+            return None, 0
+        rel: Optional[str] = None
+        if lower == "opener.jpg":
+            rel = ctx.get("event_map_rel")
+        elif (lower.startswith("day") and lower.endswith(".jpg")
+                and lower[3:-4].isdigit()):
+            n = int(lower[3:-4])
+            meta = ctx["day_meta"].get(n)
+            rel = getattr(meta, "map_image_path", None)
+        if not rel or not is_video_map_path(rel):
+            return None, 0
+        abs_p = Path(event_root) / rel
+        if not abs_p.is_file():
+            return None, 0
+        try:
+            ms = int(probe_video(abs_p).duration_ms or 0)
+        except Exception:                                          # noqa: BLE001
+            return None, 0
+        if ms <= 0:
+            return None, 0
+        return abs_p, ms
 
     def _pte_slide_texts(self, cut, stripped: str, entry: Path,
                          overlay_lookup: Dict[str, str], *, ctx: dict):

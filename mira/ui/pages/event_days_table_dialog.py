@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from PyQt6.QtCore import QEvent, QObject, QRect, QSize, Qt
 from PyQt6.QtGui import QColor, QCursor, QIcon, QPainter
@@ -90,8 +90,12 @@ COL_COUNTRY = 2
 COL_TZ = 3
 COL_LOC = 4
 COL_DESC = 5
-COL_OVERRIDE = 6
-COL_COUNT = 7
+# spec/155 — per-day map slot chip. Sits between Description and the
+# (often-hidden) Override marker so it's adjacent to the day metadata
+# it visualises.
+COL_MAP = 6
+COL_OVERRIDE = 7
+COL_COUNT = 8
 
 
 # Column-name keys used by the user-touched ledger + the propagate-down
@@ -208,6 +212,14 @@ class EventDaysTableDialog(QDialog):
         tz_editable_when_frozen: bool = False,
         browse_handler: Optional[Callable[[date], None]] = None,
         override_handler: Optional[Callable[[date], None]] = None,
+        # spec/155 — when the host wires the per-event gateway + the
+        # date→day_number map, the dialog grows the per-day map chip
+        # column + the event-header chip; chip clicks open the inline
+        # MapAttachDialog and persist via the gateway. Both stay
+        # ``None`` on the new-event scan path (no event.db yet).
+        gateway=None,
+        day_number_by_date: Optional[Mapping[date, int]] = None,
+        event_map_path: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -224,6 +236,7 @@ class EventDaysTableDialog(QDialog):
                 location=r.location,
                 description=r.description,
                 override_marker=r.override_marker,
+                map_image_path=r.map_image_path,
             )
             for r in rows
         ]
@@ -234,6 +247,17 @@ class EventDaysTableDialog(QDialog):
         self._browse_handler = browse_handler
         self._override_handler = override_handler
         self._was_applied = False
+        # spec/155 — map-chip plumbing. Both ``None`` ⇒ chip column +
+        # event-header chip stay hidden.
+        self._gateway = gateway
+        self._day_number_by_date = dict(day_number_by_date or {})
+        self._event_map_rel: Optional[str] = event_map_path
+        self._event_root = (
+            Path(gateway.event_root) if gateway is not None
+            and getattr(gateway, "event_root", None) is not None else None)
+        self._maps_enabled = (
+            self._gateway is not None and self._event_root is not None)
+        self._event_map_chip = None  # set in _build_header_bar
 
         # Per-cell user-touched ledger (spec/64 §4.3) — keyed on
         # (row_index, column_name). A cell appears here once the user
@@ -264,6 +288,10 @@ class EventDaysTableDialog(QDialog):
         # marker (the legacy PlanDialog convention).
         if not any(r.override_marker is not None for r in self._rows):
             self._table.setColumnHidden(COL_OVERRIDE, True)
+        # spec/155 — hide the per-day Map column when the host didn't
+        # wire the gateway (new-event scan path; no event.db yet).
+        if not self._maps_enabled:
+            self._table.setColumnHidden(COL_MAP, True)
 
         # Frozen-after-ingest TZ disable (spec/57 §4.2 — pickers stay
         # live when ``tz_editable_when_frozen=True``; the host gates
@@ -412,6 +440,23 @@ class EventDaysTableDialog(QDialog):
         text_col.addWidget(hint)
         h.addLayout(text_col, 1)
 
+        # spec/155 — event-level map chip. Hidden when the host didn't
+        # wire the gateway (new-event scan path; no event.db yet).
+        if self._maps_enabled and self._event_root is not None:
+            from mira.ui.base.map_chip import MapChip
+            self._event_map_chip = MapChip(
+                event_root=self._event_root,
+                empty_label=tr("Event map"),
+                attached_label=tr("Event map"),
+                tooltip_empty=tr("Attach a map for the whole event."),
+                tooltip_attached=tr(
+                    "Replace or remove the event map."),
+            )
+            self._event_map_chip.set_map_path(self._event_map_rel)
+            self._event_map_chip.clicked.connect(
+                self._open_event_map_dialog)
+            h.addWidget(self._event_map_chip)
+
         # Close X — line-icon cross.svg in a 9px squircle (mockup .modal-head
         # .x). Same fix as Surface 02: Unicode ✕ was invisible in both
         # themes; rendering via QIcon tints correctly per theme.
@@ -483,6 +528,11 @@ class EventDaysTableDialog(QDialog):
                 "source directory is organised per-day (e.g. ‘Day 1 - "
                 "Lisbon’), the subdir name takes precedence."
             )),
+            (tr("Map"), tr(
+                "Attach an image (JPEG / PNG) of the day's geography. "
+                "Shown in Cut day-separator slides; the user supplies "
+                "the image (Mira never fetches map tiles)."
+            )),
             (tr("Override"), tr(
                 "Shown when a re-scan brought new phone data for this "
                 "day that differs from the existing values."
@@ -524,6 +574,8 @@ class EventDaysTableDialog(QDialog):
         # two adjacent Stretch columns share a divider that can't be dragged
         # (Nelson 2026-06-20). Location seeds at 220 px from make_columns_resizable.
         header.setSectionResizeMode(COL_DESC, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_MAP, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(COL_MAP, 96)
         header.setSectionResizeMode(COL_OVERRIDE, QHeaderView.ResizeMode.Fixed)
         self._table.setColumnWidth(COL_OVERRIDE, 56)
 
@@ -550,6 +602,8 @@ class EventDaysTableDialog(QDialog):
         self._table.setCellWidget(
             idx, COL_DESC, self._make_text_cell(
                 row.description, TOUCH_DESC, idx))
+        self._table.setCellWidget(
+            idx, COL_MAP, self._make_map_cell(row, idx))
         self._table.setCellWidget(
             idx, COL_OVERRIDE,
             self._make_override_cell(row.override_marker, row.date))
@@ -646,6 +700,72 @@ class EventDaysTableDialog(QDialog):
         editor.textEdited.connect(
             lambda _text, r=row_idx, k=kind: self._touched.add((r, k)))
         return editor
+
+    # ── Map chip (spec/155) ───────────────────────────────────────
+
+    def _make_map_cell(self, row: ScanDayRow, idx: int) -> QWidget:
+        """The per-day map slot chip. Hidden (placeholder cell) when the
+        gateway isn't wired in (new-event scan path); otherwise it's a
+        :class:`MapChip` whose ``clicked`` opens the
+        :class:`MapAttachDialog` nested inside this dialog."""
+        cell = QWidget()
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(0)
+        if not self._maps_enabled:
+            return cell
+        from mira.ui.base.map_chip import MapChip
+        chip = MapChip(event_root=self._event_root)  # type: ignore[arg-type]
+        chip.set_map_path(row.map_image_path)
+        chip.clicked.connect(
+            lambda _checked=False, i=idx: self._open_map_dialog_for_row(i))
+        # Stash on the cell so the in-place refresh after attach/clear
+        # can locate it by row index.
+        cell.setProperty("_map_chip", chip)
+        lay.addWidget(chip)
+        lay.addStretch(1)
+        return cell
+
+    def _row_map_chip(self, idx: int):
+        cell = self._table.cellWidget(idx, COL_MAP)
+        if cell is None:
+            return None
+        return cell.property("_map_chip")
+
+    def _open_map_dialog_for_row(self, idx: int) -> None:
+        if not self._maps_enabled or self._gateway is None:
+            return
+        row = self._rows[idx]
+        day_number = self._day_number_by_date.get(row.date)
+        if day_number is None:
+            return
+        from mira.ui.base.map_attach_dialog import MapAttachDialog
+        dlg = MapAttachDialog(
+            self._gateway, day_number=day_number, parent=self)
+
+        def _on_changed() -> None:
+            new_rel = self._gateway.get_day_map_path(day_number)
+            row.map_image_path = new_rel
+            chip = self._row_map_chip(idx)
+            if chip is not None:
+                chip.set_map_path(new_rel)
+
+        dlg.mapChanged.connect(_on_changed)
+        dlg.exec()
+
+    def _open_event_map_dialog(self) -> None:
+        if not self._maps_enabled or self._gateway is None:
+            return
+        from mira.ui.base.map_attach_dialog import MapAttachDialog
+        dlg = MapAttachDialog(self._gateway, day_number=None, parent=self)
+
+        def _on_changed() -> None:
+            self._event_map_rel = self._gateway.get_event_map_path()
+            if self._event_map_chip is not None:
+                self._event_map_chip.set_map_path(self._event_map_rel)
+
+        dlg.mapChanged.connect(_on_changed)
+        dlg.exec()
 
     def _make_override_cell(
         self, marker: Optional[OverrideMarker], day: date,

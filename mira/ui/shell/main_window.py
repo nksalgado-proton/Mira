@@ -508,12 +508,6 @@ class MainWindow(QMainWindow):
         # wiring landed.
         self.days_lists_page.delete_now_requested.connect(
             self._on_days_lists_delete_now)
-        # spec/155 — map chip → open the attach dialog with the per-event
-        # gateway; on mapChanged, refresh the chip in place.
-        self.days_lists_page.day_map_attach_requested.connect(
-            self._on_day_map_attach_requested)
-        self.days_lists_page.event_map_attach_requested.connect(
-            self._on_event_map_attach_requested)
         # spec/70 Phase 3 — DaysGridPage signal wiring. Back returns to
         # Days Lists; an item click bridges to PickerPage (Surface 07,
         # redesigned + PhotoViewport-backed).
@@ -1266,68 +1260,6 @@ class MainWindow(QMainWindow):
             return None
         return self.gateway.index.resolve_root(
             entry, self.gateway.photos_base_path())
-
-    # ── Day / event map slots (spec/155) ────────────────────────────
-
-    def _refresh_days_list_maps(
-        self, event_id: str, snapshots: list,
-    ) -> None:
-        """Bind the days-lists page to ``event_id``'s event root and
-        fold each snapshot's ``map_rel`` from the per-event gateway,
-        plus the event-level slot. Called by ``_show_days_lists`` before
-        ``setEventForPreview`` so the chips paint with the correct
-        state on first paint."""
-        root = self._open_event_root()
-        self.days_lists_page.set_event_root(root)
-        if root is None:
-            self.days_lists_page.set_event_map_path(None)
-            return
-        try:
-            eg = self.gateway.open_event(event_id)
-        except Exception:                                            # noqa: BLE001
-            log.debug("refresh_days_list_maps: open_event failed", exc_info=True)
-            return
-        try:
-            for snap in snapshots:
-                snap.map_rel = eg.get_day_map_path(snap.day_number)
-            self.days_lists_page.set_event_map_path(eg.get_event_map_path())
-        finally:
-            eg.close()
-
-    def _open_map_attach_dialog(
-        self, day_number: Optional[int],
-    ) -> None:
-        """Open the MapAttachDialog for a per-day slot (``day_number``
-        not None) or the event-level slot (``day_number is None``).
-        Refreshes the page's chip in place on ``mapChanged``."""
-        event_id = self._current_event_id
-        if event_id is None:
-            return
-        try:
-            eg = self.gateway.open_event(event_id)
-        except Exception:                                            # noqa: BLE001
-            log.warning("open_event failed for map attach", exc_info=True)
-            return
-        try:
-            from mira.ui.base.map_attach_dialog import MapAttachDialog
-            dlg = MapAttachDialog(eg, day_number=day_number, parent=self)
-            def _on_changed() -> None:
-                if day_number is None:
-                    self.days_lists_page.set_event_map_path(
-                        eg.get_event_map_path())
-                else:
-                    self.days_lists_page.set_day_map_path(
-                        day_number, eg.get_day_map_path(day_number))
-            dlg.mapChanged.connect(_on_changed)
-            dlg.exec()
-        finally:
-            eg.close()
-
-    def _on_day_map_attach_requested(self, day_number: int) -> None:
-        self._open_map_attach_dialog(int(day_number))
-
-    def _on_event_map_attach_requested(self) -> None:
-        self._open_map_attach_dialog(None)
 
     def _proxy_cache_summary(self) -> str:
         """Settings info row: the open event's screen-copy disk cost."""
@@ -3064,9 +2996,6 @@ class MainWindow(QMainWindow):
                 snapshots,
                 default_state_for(self.gateway.settings, "pick"))
         event_name = self._lookup_event_name(event_id) or tr("Event")
-        # spec/155 — seed map state before snapshots so each DayRow's
-        # chip resolves its thumbnail in one paint pass.
-        self._refresh_days_list_maps(event_id, snapshots)
         self.days_lists_page.setEventForPreview(
             event_name, snapshots, anchor_day_number=anchor_day_number)
         # spec/71 — the shared Days Lists takes the host phase's chrome.
@@ -6433,18 +6362,24 @@ class MainWindow(QMainWindow):
         self._current_event_id = event_id
         try:
             eg = self.gateway.open_event(event_id)
-            try:
-                existing_days = list(eg.trip_days())
-            finally:
-                eg.close()
         except Exception:                                       # noqa: BLE001
             log.exception(
                 "Could not read event %s for Days Table dialog", event_id)
             return
 
+        try:
+            existing_days = list(eg.trip_days())
+            event_map_path = eg.get_event_map_path()
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "Could not read trip_days for %s", event_id)
+            eg.close()
+            return
+
         rows, day_number_by_date = self._build_scan_rows_from_trip_days(
             existing_days)
         if not rows:
+            eg.close()
             self._show_no_days_message()
             return
 
@@ -6461,12 +6396,22 @@ class MainWindow(QMainWindow):
                 "Could not read feature flags; defaulting CSV gate off")
             can_save_load_csv = False
 
-        dlg = self._exec_event_days_table_dialog(
-            self._build_days_table_dialog(
-                rows,
-                can_save_load_csv=can_save_load_csv,
-                browse_handler=self._make_days_table_browse_handler(event_id),
-            ))
+        try:
+            dlg = self._exec_event_days_table_dialog(
+                self._build_days_table_dialog(
+                    rows,
+                    can_save_load_csv=can_save_load_csv,
+                    browse_handler=self._make_days_table_browse_handler(
+                        event_id),
+                    # spec/155 — pass the open gateway + the
+                    # date→day_number lookup so the per-day Map chips
+                    # paint + the event-header Event-map chip works.
+                    gateway=eg,
+                    day_number_by_date=day_number_by_date,
+                    event_map_path=event_map_path,
+                ))
+        finally:
+            eg.close()
         if not dlg:
             return
         edited_rows = dlg.rows()
@@ -6644,6 +6589,9 @@ class MainWindow(QMainWindow):
                 location=td.location or "",
                 description=td.description or "",
                 override_marker=None,
+                # spec/155 — carry the per-day map slot so the dialog's
+                # chip paints in attached state on first build.
+                map_image_path=getattr(td, "map_image_path", None),
             ))
         rows.sort(key=lambda r: r.date)
         return rows, day_number_by_date

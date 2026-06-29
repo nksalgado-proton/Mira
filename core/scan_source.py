@@ -91,6 +91,12 @@ class ScanDayRow:
     location: str = ""
     description: str = ""
     override_marker: Optional[OverrideMarker] = None
+    # spec/155 — per-day map slot, relative to event_root (e.g.
+    # ``Maps/day-02.jpg``). Carried so the Event Days Table dialog can
+    # paint the chip's attached/empty state on first build. Only the
+    # existing-event opener fills this; the new-event scan path leaves
+    # it None (no event.db yet to attach to).
+    map_image_path: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #

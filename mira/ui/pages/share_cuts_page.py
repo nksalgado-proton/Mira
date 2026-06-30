@@ -2515,15 +2515,17 @@ class ShareCutsPage(QWidget):
             )
             evt_map_rel_raw = eg.get_event_map_path()
             opener_video_path: Optional[Path] = None
+            # spec/155 — VIDEO maps don't embed into the opener still
+            # bake. The dialog plays the MP4 directly at the opener
+            # slot; baking the first-frame thumb in would leave a still
+            # behind the 70 % video at PTE-time and around the play
+            # cut's scrubber-hover fallback (Nelson 2026-06-30).
+            evt_map_abs: Optional[Path] = None
             if evt_map_rel_raw and is_video_map_path(evt_map_rel_raw):
                 opener_video_path = (
                     Path(eg.event_root) / evt_map_rel_raw)
-                evt_map_rel = evt_map_rel_raw + MAP_VIDEO_THUMB_SUFFIX
-            else:
-                evt_map_rel = evt_map_rel_raw
-            evt_map_abs = (
-                Path(eg.event_root) / evt_map_rel
-                if evt_map_rel else None)
+            elif evt_map_rel_raw:
+                evt_map_abs = Path(eg.event_root) / evt_map_rel_raw
             opener_tag = cut_names.display_tag(cut.tag)
             opener_lines = cut_opener_lines(
                 cut, totals, cut.photo_s, self._transition_s(cut))
@@ -2763,10 +2765,15 @@ class ShareCutsPage(QWidget):
             rel = day_map_rel.get(day) if isinstance(day, int) else evt_map_rel
             if not rel:
                 return None
-            # spec/155 v2 — for MP4 maps the export's letterboxed-map
-            # form needs a still; substitute the pre-extracted sidecar.
+            # spec/155 — VIDEO maps don't embed into the bake. The
+            # :Video overlay (PTE) and the in-app video widget render
+            # the actual content; baking the first-frame thumb in
+            # would leave a still-frame behind the 70 % video in PTE,
+            # which reads as a blurred / busy background (Nelson
+            # 2026-06-30). IMAGE maps still embed so the map is
+            # visible where it's the only renderer.
             if is_video_map_path(rel):
-                rel = rel + MAP_VIDEO_THUMB_SUFFIX
+                return None
             return evt_root / rel
 
         def write(target: Path, day) -> None:
@@ -3285,9 +3292,10 @@ class ShareCutsPage(QWidget):
                 rel = getattr(meta, "map_image_path", None) if meta else None
             else:
                 rel = None
-            if rel:
-                if is_video_map_path(rel):
-                    rel = rel + MAP_VIDEO_THUMB_SUFFIX
+            # spec/155 — see _make_card_image_writer._map_abs_for. VIDEO
+            # maps don't embed into the bake; the :Video overlay handles
+            # the visible content. IMAGE maps still embed.
+            if rel and not is_video_map_path(rel):
                 map_abs = Path(evt_root) / rel
         try:
             img = render_flat_background(

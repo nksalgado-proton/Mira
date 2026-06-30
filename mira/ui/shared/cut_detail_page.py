@@ -397,12 +397,12 @@ class CutDetailPage(QWidget):
         self._entries = show_entries(eg, cut, separators_on=separators_on)
         # spec/155 — resolve the event-level + per-day map slots so the
         # opener / day-separator card thumbs render with the same map
-        # cell the export bake and Cut Play paths use. For MP4 maps,
-        # substitute the first-frame sidecar so QImage can load it.
-        from core.path_builder import (
-            MAP_VIDEO_THUMB_SUFFIX,
-            is_video_map_path,
-        )
+        # cell the export bake and Cut Play paths use. VIDEO maps don't
+        # render into the thumb (the in-app video widget owns the visual
+        # at play time, and baking the first-frame still in PTE/grid
+        # looks like a busy / blurred backdrop behind the 70 % video
+        # overlay — Nelson 2026-06-30). IMAGE maps still embed.
+        from core.path_builder import is_video_map_path
         _evt_map_rel = eg.get_event_map_path()
         def _map_abs_for(day) -> "Optional[Path]":
             if isinstance(day, int):
@@ -410,10 +410,8 @@ class CutDetailPage(QWidget):
                 rel = getattr(meta, "map_image_path", None) if meta else None
             else:
                 rel = _evt_map_rel
-            if not rel:
+            if not rel or is_video_map_path(rel):
                 return None
-            if is_video_map_path(rel):
-                rel = rel + MAP_VIDEO_THUMB_SUFFIX
             return self._root / rel
 
         totals_for_opener = eg.cut_show_totals(cut.id)

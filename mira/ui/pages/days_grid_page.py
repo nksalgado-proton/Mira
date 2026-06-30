@@ -2646,8 +2646,14 @@ class DaysGridPage(QWidget):
                 "Click a tile's border to mark Will export / Set aside."))
             self._compare_btn.setVisible(True)
             return
+        # GridItem.state carries the storage value ('candidate') from
+        # the C-key write path AND the colour-alias ('compare') from
+        # the gateway-refresh path — both mean "Compare-marked". Count
+        # both so the button reveals immediately on the C-key border
+        # press, not just after the next full refresh.
         n_marked = sum(
-            1 for it in self._items if it.state == "compare")
+            1 for it in self._items
+            if it.state in ("compare", "candidate"))
         if n_marked >= 2:
             self._compare_btn.setText(
                 tr("⇄ Compare ({n})").replace("{n}", str(n_marked)))
@@ -2674,7 +2680,9 @@ class DaysGridPage(QWidget):
         intent_toggle_requested signal lands on the day cell's
         phase_state via :meth:`_apply_verb_at_index`, which already
         routes correctly outside the versions sub-grid."""
-        marked = [it for it in self._items if it.state == "compare"]
+        marked = [
+            it for it in self._items
+            if it.state in ("compare", "candidate")]
         if len(marked) < 2:
             return
         from mira.ui.exported.compare_dialog import (

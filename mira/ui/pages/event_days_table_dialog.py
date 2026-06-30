@@ -1187,6 +1187,13 @@ class EventDaysTableDialog(QDialog):
                 location=location,
                 description=description,
                 override_marker=src.override_marker,
+                # spec/155 — carry the per-day map slot through dialog
+                # accept. ``src.map_image_path`` was updated in place by
+                # the chip's mapChanged callback when the user attached
+                # a file. Without this kwarg, _save_trip_day_edits sees
+                # map_image_path=None and the upsert nulls every map
+                # the user just attached (Nelson 2026-06-30 root cause).
+                map_image_path=src.map_image_path,
             ))
         return out
 

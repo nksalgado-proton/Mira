@@ -169,6 +169,60 @@ def paint_video_thumb_overlay(
     p.end()
 
 
+def paint_sep_caption_overlay(
+    *,
+    base: QImage,
+    title: str,
+    sub: str = "",
+    title_y_frac: float = 0.09,
+    sub_y_frac: float = 0.175,
+    title_font_frac: float = 0.075,
+    sub_font_frac: float = 0.030,
+) -> None:
+    """Paint the separator title + sub onto ``base`` at PTE-matching
+    positions (top of canvas) — so a grid cell whose bake has its text
+    at the vertical centre (covered by the 70 % video overlay) still
+    shows the labels. spec/155 round 7c — Nelson 2026-06-30.
+
+    Defaults mirror cut_play's _SEP_TITLE_CENTER_Y_FRAC + the PTE
+    Position y values from trip_long.pte:
+
+      title centre at 9 %  from top   (PTE y=-82)
+      sub   centre at 17.5 % from top (PTE y=-65)
+      title font at 7.5 % of canvas height (PTE ScaleX≈13-15)
+      sub   font at 3.0 % of canvas height (PTE ScaleX=5)
+
+    No background scrim — text rides over whatever's underneath
+    (matches PTE's transparent-bg overlay)."""
+    if not title and not sub:
+        return
+    w, h = base.width(), base.height()
+    p = QPainter(base)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if title:
+        title_px = max(10, int(h * title_font_frac))
+        font = QFont("Segoe UI", title_px, QFont.Weight.Bold)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        title_h = fm.height()
+        y = int(h * title_y_frac) - title_h // 2
+        p.setPen(QColor(255, 255, 255, 255))
+        p.drawText(QRect(0, y, w, title_h),
+                   Qt.AlignmentFlag.AlignHCenter, title)
+    if sub:
+        sub_px = max(8, int(h * sub_font_frac))
+        font = QFont("Segoe UI", sub_px)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        sub_h = fm.height()
+        y = int(h * sub_y_frac) - sub_h // 2
+        p.setPen(QColor(221, 221, 221, 255))  # #dddddd, matches cut_play
+        p.drawText(QRect(0, y, w, sub_h),
+                   Qt.AlignmentFlag.AlignHCenter, sub)
+    p.end()
+
+
 def _paint_caption_strip(
     *,
     base: QImage,

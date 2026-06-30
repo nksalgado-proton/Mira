@@ -1361,6 +1361,14 @@ class CutPlayerDialog(QDialog):
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
+        # spec/155 — PTE renders the sharp foreground photo at 85 % of
+        # the canvas (foreground PhotoProto ScaleX/Y=85 in trip_long.pte),
+        # leaving ~7.5 % of canvas dimension as blurred-matte breathing
+        # room on each side. The play cut mirrors that by setting the
+        # BlurredPhotoCanvas inner_pad to 7.5 % of the smaller canvas
+        # dimension; it's recomputed every resize so the look stays
+        # PTE-accurate across the dialog's normal + fullscreen sizes.
+        self._update_slide_inner_pad()
         # spec/155 — only the sep / opener video rides the inset
         # slide-frame geometry. File videos fill the whole canvas
         # (their historical behaviour); calling _fit_sep_video_geometry
@@ -1568,6 +1576,21 @@ class CutPlayerDialog(QDialog):
             ratio = 16.0 / 9.0
         self._sep_video_aspect_cache[key] = ratio
         return ratio
+
+    def _update_slide_inner_pad(self) -> None:
+        """Resize the BlurredPhotoCanvas's inner pad to ~7.5 % of the
+        smaller canvas dimension so the sharp foreground photo / card
+        sits at PTE's 85 % scale (spec/155, PTE example/trip_long.pte
+        foreground PhotoProto ScaleX/Y=85). The matte ring around the
+        card grows accordingly — same look on every slide, separator
+        or regular."""
+        if self._photo is None or self._stack_widget is None:
+            return
+        sw, sh = self._stack_widget.width(), self._stack_widget.height()
+        if sw <= 0 or sh <= 0:
+            return
+        pad = max(8, int(min(sw, sh) * 0.075))
+        self._photo.setInnerPad(pad)
 
     def _fit_file_video_geometry(self) -> None:
         """Position a regular file video inside the slide's INNER rect —

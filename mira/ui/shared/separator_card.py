@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 
 from mira.ui.i18n import tr
 
@@ -142,9 +142,12 @@ def _composite_letterboxed_map(
     ix = (cw - inset.width()) // 2
     iy = (ch - inset.height()) // 2
     p.drawImage(ix, iy, inset)
-    # Thin translucent stroke around the inset to sell the "photo on
-    # photo" feel.
-    p.setPen(QColor(255, 255, 255, 110))
+    # spec/155 — solid white 2 px border so image-map separators read
+    # with the same crisp frame the video-map PTE overlay gets
+    # (EnableBorder=1, BorderWidth=1.5, white in PTE). Consistency
+    # across image / video separators + with the regular slide's
+    # foreground photo border (Nelson 2026-06-30).
+    p.setPen(QPen(QColor(255, 255, 255, 255), 2))
     p.drawRect(ix, iy, inset.width() - 1, inset.height() - 1)
     p.end()
 

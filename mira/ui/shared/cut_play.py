@@ -1344,7 +1344,16 @@ class CutPlayerDialog(QDialog):
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
-        self._fit_sep_video_geometry()
+        # spec/155 — only the sep / opener video rides the inset
+        # slide-frame geometry. File videos fill the whole canvas
+        # (their historical behaviour); calling _fit_sep_video_geometry
+        # unconditionally would shrink them to the sep slot on every
+        # resize (regression seen 2026-06-30 — file videos played at
+        # opener size after a sep / opener video had set the geometry).
+        if self._sep_video_active:
+            self._fit_sep_video_geometry()
+        else:
+            self._fit_file_video_geometry()
         self._position_caption()
         self._fit_current()
         self._position_overlay()
@@ -1532,6 +1541,16 @@ class CutPlayerDialog(QDialog):
             ratio = 16.0 / 9.0
         self._sep_video_aspect_cache[key] = ratio
         return ratio
+
+    def _fit_file_video_geometry(self) -> None:
+        """Restore the file-video widget to fill the whole slide canvas
+        (the historical behaviour). The QVideoWidget is not in a layout,
+        so any previous sep / opener inset geometry sticks until we
+        explicitly clear it (spec/155 v6 regression — file videos played
+        at opener size after a sep / opener video set the geometry)."""
+        if self._video_widget is None or self._stack_widget is None:
+            return
+        self._video_widget.setGeometry(self._stack_widget.rect())
 
     def _fit_sep_video_geometry(self) -> None:
         """Position the sep / opener video inside the slide's inner
@@ -1803,6 +1822,10 @@ class CutPlayerDialog(QDialog):
             # Keep the slide frame visible behind the bottom-70 % video.
             self._fit_sep_video_geometry()
         else:
+            # spec/155 — file videos fill the whole canvas; restore the
+            # full geometry in case a prior sep / opener video left the
+            # widget at the inset size.
+            self._fit_file_video_geometry()
             self._photo.hide()
         self._video_widget.show()
         self._video_widget.raise_()

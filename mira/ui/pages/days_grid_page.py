@@ -1813,6 +1813,13 @@ class DaysGridPage(QWidget):
                 is_cell_stale(self._eg, cell.item_id)
                 if check_stale else False
             )
+            # A single (uncloistered) video cell still needs the video
+            # play-triangle badge so the user can tell videos from
+            # photos at a glance — Thumb only paints the badge when
+            # cluster_type='video' is set (Nelson 2026-06-30).
+            # ``cluster_count=0`` keeps the ×N chip hidden; same
+            # contract cut_detail_page uses for solo video tiles.
+            is_video_cell = (cell.item_kind == "video")
             out.append(GridItem(
                 item_id=cell.item_id,
                 item_kind=cell.item_kind,
@@ -1823,6 +1830,8 @@ class DaysGridPage(QWidget):
                 border_token=border_token,
                 edit_tooltip=_edit_reason_tooltip(reasons),
                 edited_since_export=stale,
+                cluster_type="video" if is_video_cell else None,
+                cluster_count=0,
                 _path=path,
                 _sha256=getattr(it, "sha256", None) or None,
             ))

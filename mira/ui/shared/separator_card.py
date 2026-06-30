@@ -90,50 +90,22 @@ def _composite_letterboxed_map(
     map_img: QImage,
     blur_passes: int = 3,
 ) -> None:
-    """Paint the letterboxed-map composition onto ``base`` in place
-    (spec/155 §5.1): a softened **cover** copy of the map fills the
-    canvas — supplying the bezel matte — then the sharp map sits inset
-    via **contain** with a 1px translucent stroke. Mutates ``base``;
-    no return value.
+    """Paint the map's **sharp aspect-contain inset** onto ``base`` in
+    place, with a solid white border. The flat card colour ``base`` was
+    filled with stays visible around the inset (no blurred backdrop /
+    matte). Mutates ``base``; no return value.
 
-    The "blur" is a cheap downscale-then-upscale (``blur_passes`` halvings,
-    each with smooth bilinear scaling). Fast (< 50 ms for a 1080 p frame)
-    and visually defocused enough that the bezel reads as a soft wash
-    rather than a recognisable second map. A real Gaussian would be
-    sharper-looking but heavier; this is the right v1 trade.
-    """
+    spec/155 — Nelson 2026-06-30 dropped the blurred-cover matte step
+    (the v1 design's "soft wash bezel") so the card looks flat behind
+    the inset map: the play cut's BlurredPhotoCanvas already paints a
+    flat-ish backdrop and the PTE export was bleeding the baked matte
+    through around the 70 % video overlay. The ``blur_passes`` param is
+    kept for API back-compat with callers that still pass it — it has
+    no effect now."""
     cw, ch = base.width(), base.height()
 
-    # ── 1. blurred cover fill ───────────────────────────────────
-    cover = map_img.scaled(
-        cw, ch,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    soft = cover
-    for _ in range(max(1, blur_passes)):
-        small = soft.scaled(
-            max(2, soft.width() // 2), max(2, soft.height() // 2),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        soft = small.scaled(
-            soft.width(), soft.height(),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
-    p = QPainter(base)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    # Center the soft cover (KeepAspectRatioByExpanding may overshoot
-    # one axis).
-    sx = (cw - soft.width()) // 2
-    sy = (ch - soft.height()) // 2
-    p.drawImage(sx, sy, soft)
-    # Slight darken so caption text reads cleanly when overlaid on top.
-    p.fillRect(0, 0, cw, ch, QColor(0, 0, 0, 46))  # ~18% alpha
-
-    # ── 2. sharp inset (aspect-contain) ─────────────────────────
+    # Sharp inset (aspect-contain). Centred. The flat ``base`` colour
+    # stays visible in the letterbox margins.
     inset = map_img.scaled(
         cw, ch,
         Qt.AspectRatioMode.KeepAspectRatio,
@@ -141,12 +113,15 @@ def _composite_letterboxed_map(
     )
     ix = (cw - inset.width()) // 2
     iy = (ch - inset.height()) // 2
+
+    p = QPainter(base)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     p.drawImage(ix, iy, inset)
     # spec/155 — solid white 2 px border so image-map separators read
     # with the same crisp frame the video-map PTE overlay gets
     # (EnableBorder=1, BorderWidth=1.5, white in PTE). Consistency
     # across image / video separators + with the regular slide's
-    # foreground photo border (Nelson 2026-06-30).
+    # foreground photo border.
     p.setPen(QPen(QColor(255, 255, 255, 255), 2))
     p.drawRect(ix, iy, inset.width() - 1, inset.height() - 1)
     p.end()

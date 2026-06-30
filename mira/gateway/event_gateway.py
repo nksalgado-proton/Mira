@@ -43,7 +43,7 @@ from bisect import bisect_right
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
 
 from core import collection_resolver, cut_budget, cut_names, recipe_resolver
 from core.video_segments import segment_bounds as derive_segment_bounds
@@ -72,6 +72,23 @@ def _parse_iso_or_epoch(s: Optional[str]) -> datetime:
         return datetime.fromisoformat(s.rstrip("Z"))
     except ValueError:
         return datetime.fromtimestamp(0)
+
+
+class LineageRatings(NamedTuple):
+    """spec/159 — per-version ratings on the Exported Collection
+    review surface. Returned by :meth:`EventGateway.lineage_ratings`
+    as a flat bag so the caller doesn't juggle four separate reads.
+
+    All fields are nullable / falsey when never set."""
+    stars: Optional[int]
+    color_label: Optional[str]
+    flag: bool
+    to_delete: bool
+
+
+#: spec/159 — accepted colour labels (LRC convention).
+_LINEAGE_COLOR_LABELS = frozenset(
+    ("red", "yellow", "green", "blue", "purple"))
 
 
 class EventGateway:
@@ -3160,6 +3177,122 @@ class EventGateway:
                 "WHERE export_relpath = ?",
                 (intent_state, export_relpath))
             self._touch()
+
+    # ── spec/159 — per-version ratings on Exported Collection review ──
+
+    def set_lineage_stars(
+        self, export_relpath: str, stars: Optional[int],
+    ) -> None:
+        """spec/159 — set the per-version star rating on a lineage row.
+        ``stars`` is 1..5 or ``None`` (clear). Raises ``ValueError`` on
+        out-of-range; mutates exactly one row by ``export_relpath`` and
+        funnels through ``_touch`` so the read-only-library guard +
+        backup snapshot trigger fire."""
+        if stars is not None and not (1 <= int(stars) <= 5):
+            raise ValueError(
+                f"set_lineage_stars: stars must be 1..5 or None, got "
+                f"{stars!r}")
+        val = None if stars is None else int(stars)
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE lineage SET stars = ? WHERE export_relpath = ?",
+                (val, export_relpath))
+            self._touch()
+
+    def set_lineage_color_label(
+        self, export_relpath: str, label: Optional[str],
+    ) -> None:
+        """spec/159 — set the per-version LRC-style colour label. Valid
+        labels: ``'red'`` / ``'yellow'`` / ``'green'`` / ``'blue'`` /
+        ``'purple'``, or ``None`` to clear."""
+        if label is not None and label not in _LINEAGE_COLOR_LABELS:
+            raise ValueError(
+                f"set_lineage_color_label: invalid label {label!r}; "
+                f"must be one of {sorted(_LINEAGE_COLOR_LABELS)!r} or None")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE lineage SET color_label = ? WHERE export_relpath = ?",
+                (label, export_relpath))
+            self._touch()
+
+    def set_lineage_flag(
+        self, export_relpath: str, flag: bool,
+    ) -> None:
+        """spec/159 — toggle the per-version portfolio flag."""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE lineage SET flag = ? WHERE export_relpath = ?",
+                (1 if flag else 0, export_relpath))
+            self._touch()
+
+    def set_lineage_to_delete(
+        self, export_relpath: str, to_delete: bool,
+    ) -> None:
+        """spec/159 — mark / unmark a lineage row for batch deletion via
+        the closed-event Cut page's "⌫ Delete N marked…" toolbar action.
+        The unlink does NOT happen here — the column flip is reversible
+        until the user confirms in :meth:`delete_marked_exported_files`."""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE lineage SET to_delete = ? WHERE export_relpath = ?",
+                (1 if to_delete else 0, export_relpath))
+            self._touch()
+
+    def lineage_ratings(self, export_relpath: str) -> LineageRatings:
+        """spec/159 — read all four review fields for one lineage row in
+        a single round-trip. Returns ``LineageRatings(None, None, False,
+        False)`` for rows that don't exist (the caller's surface
+        typically renders nothing for absent rows anyway)."""
+        row = self.store.conn.execute(
+            "SELECT stars, color_label, flag, to_delete FROM lineage "
+            "WHERE export_relpath = ?",
+            (export_relpath,)).fetchone()
+        if row is None:
+            return LineageRatings(None, None, False, False)
+        return LineageRatings(
+            stars=row["stars"],
+            color_label=row["color_label"],
+            flag=bool(row["flag"]),
+            to_delete=bool(row["to_delete"]),
+        )
+
+    def exported_marked_for_deletion(self) -> List[m.Lineage]:
+        """spec/159 — every lineage row under ``Exported Media/`` whose
+        ``to_delete = 1``, in deterministic order (export_relpath).
+        Drives the toolbar's "⌫ Delete N marked…" count + the confirm
+        dialog's preview list."""
+        sql = (
+            "SELECT l.* FROM lineage l "
+            "WHERE l.phase = 'edit' "
+            "AND l.export_relpath LIKE 'Exported Media/%' "
+            "AND l.to_delete = 1 "
+            "ORDER BY l.export_relpath ASC"
+        )
+        return self.store.query_raw(m.Lineage, sql)
+
+    def delete_marked_exported_files(self) -> int:
+        """spec/159 — commit the batch delete: unlink every file under
+        ``Exported Media/`` whose lineage row has ``to_delete = 1``,
+        drop the row, clear ``edit_exported`` when the last shipped
+        row for that item goes, and propagate the Cut-membership
+        cascade. Returns the number of files actually deleted.
+
+        Each row is delegated to :meth:`delete_exported_file_by_relpath`
+        — same single-row unlink path the per-cell Skip-on-shipped
+        verb (spec/89 §3) uses, so the gateway-side cascade is
+        identical (cut_member cleanup, edit_exported flip,
+        ``_unlink_with_retry`` for Windows lock retries). A row that
+        fails to unlink (filesystem error) keeps its ``to_delete``
+        flag for retry; rows that succeed clear naturally because
+        the underlying row is dropped."""
+        rows = self.exported_marked_for_deletion()
+        deleted_count = 0
+        for row in rows:
+            result = self.delete_exported_file_by_relpath(
+                row.export_relpath)
+            if result.get("rows_deleted", 0) >= 1:
+                deleted_count += 1
+        return deleted_count
 
     def versions_for_item(self, item_id: str) -> List[m.Lineage]:
         """spec/89 Slice 5 — every ``Exported Media/`` lineage row for

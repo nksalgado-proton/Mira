@@ -420,6 +420,17 @@ class Lineage:
     # NEVER reuse the source item's ``duration_ms`` for a clip — that's
     # the whole source video, not the segment.
     duration_ms: Optional[int] = None
+    # spec/159 — per-version ratings on the Exported Collection review
+    # surface (closed-event Cut page). ``stars`` 1-5 / NULL = unrated;
+    # ``color_label`` is the LRC-compatible word; ``flag`` is the
+    # portfolio keep toggle; ``to_delete`` marks the file for the
+    # batch "⌫ Delete N marked…" toolbar action (commit-on-confirm,
+    # not immediate). All four default to "untouched" so legacy rows
+    # read clean.
+    stars: Optional[int] = None
+    color_label: Optional[str] = None
+    flag: bool = False
+    to_delete: bool = False
 
 
 @dataclass

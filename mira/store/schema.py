@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -709,12 +709,29 @@ CREATE TABLE lineage (
   -- the source item's ``duration_ms`` for a clip — that's the WHOLE
   -- source video, not the segment.
   duration_ms       INTEGER,
+  -- spec/159 — per-version ratings on the Exported Collection review
+  -- surface. ``stars`` 1-5 or NULL (unrated); ``color_label`` one of the
+  -- five LRC values or NULL; ``flag`` is the portfolio-keep toggle;
+  -- ``to_delete`` marks the file for batch deletion via the
+  -- "⌫ Delete N marked…" toolbar action (the unlink does NOT happen
+  -- here — only at commit time). All four default to "untouched" so
+  -- existing lineage rows read as unrated, unflagged, not-marked.
+  stars             INTEGER CHECK (stars IS NULL OR (stars BETWEEN 1 AND 5)),
+  color_label       TEXT    CHECK (color_label IS NULL OR color_label IN ('red','yellow','green','blue','purple')),
+  flag              INTEGER NOT NULL DEFAULT 0 CHECK (flag IN (0,1)),
+  to_delete         INTEGER NOT NULL DEFAULT 0 CHECK (to_delete IN (0,1)),
   CHECK ( (source_kind='item'    AND source_item_id IS NOT NULL AND source_bracket_id IS NULL)
        OR (source_kind='bracket' AND source_bracket_id IS NOT NULL AND source_item_id IS NULL) )
 );
 CREATE INDEX ix_lineage_item    ON lineage(source_item_id);
 CREATE INDEX ix_lineage_bracket ON lineage(source_bracket_id);
 CREATE INDEX ix_lineage_phase   ON lineage(phase);
+-- spec/159 — partial indexes for the Exported Collection filter (min
+-- stars / colour label / flagged) + the batch-delete toolbar count.
+CREATE INDEX ix_lineage_stars       ON lineage(stars)       WHERE stars IS NOT NULL;
+CREATE INDEX ix_lineage_color_label ON lineage(color_label) WHERE color_label IS NOT NULL;
+CREATE INDEX ix_lineage_flag        ON lineage(flag)        WHERE flag = 1;
+CREATE INDEX ix_lineage_to_delete   ON lineage(to_delete)   WHERE to_delete = 1;
 
 -- ===== bucket (D) — durable soft-state ONLY ================================
 -- bucket_key is FK-less BY DESIGN: it is a content-stable recomputed id, and
@@ -1579,6 +1596,64 @@ def _migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE event ADD COLUMN map_image_path TEXT")
 
 
+def _migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
+    """spec/159 — per-version ratings + delete flag on lineage.
+
+    Adds four columns on ``lineage`` that drive the Exported Collection
+    review surface:
+
+    * ``stars``       — 1..5 or NULL (unrated). LRC-style star rating.
+    * ``color_label`` — 'red'|'yellow'|'green'|'blue'|'purple' or NULL.
+    * ``flag``        — 0/1 portfolio keep flag.
+    * ``to_delete``   — 0/1; marked for batch deletion via the closed-
+      event Cut page's "⌫ Delete N marked…" toolbar action. The unlink
+      does NOT happen on the column flip — only at confirm time.
+
+    Plus four partial indexes for the filter dropdown ("min stars",
+    colour multi-select, flagged-only, hide-marked-for-deletion) +
+    the toolbar count query.
+
+    Existing rows default to NULL/0 = unrated, unflagged, not-marked,
+    so the migration is purely additive — no data backfill needed.
+    The ``lineage`` table is guaranteed by every event.db created
+    after v13 (the spec/54 versions-as-exports migration), so no
+    presence guard is needed here.
+    """
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN stars INTEGER "
+        "CHECK (stars IS NULL OR (stars BETWEEN 1 AND 5))"
+    )
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN color_label TEXT "
+        "CHECK (color_label IS NULL OR color_label IN "
+        "('red','yellow','green','blue','purple'))"
+    )
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN flag INTEGER NOT NULL DEFAULT 0 "
+        "CHECK (flag IN (0,1))"
+    )
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN to_delete INTEGER NOT NULL DEFAULT 0 "
+        "CHECK (to_delete IN (0,1))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_lineage_stars "
+        "ON lineage(stars) WHERE stars IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_lineage_color_label "
+        "ON lineage(color_label) WHERE color_label IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_lineage_flag "
+        "ON lineage(flag) WHERE flag = 1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_lineage_to_delete "
+        "ON lineage(to_delete) WHERE to_delete = 1"
+    )
+
+
 def _migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
     """spec/156 — per-image creative-filter STRENGTH.
 
@@ -1650,6 +1725,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v19_to_v20,
     _migrate_v20_to_v21,
     _migrate_v21_to_v22,
+    _migrate_v22_to_v23,
 ]
 
 

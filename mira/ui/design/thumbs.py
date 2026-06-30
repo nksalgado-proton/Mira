@@ -146,6 +146,10 @@ class Thumb(QWidget):
         origin: str | None = None,
         skipped_in_pick: bool = False,
         edited_since_export: bool = False,
+        stars: int | None = None,
+        color_label: str | None = None,
+        flag: bool = False,
+        to_delete: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -159,6 +163,18 @@ class Thumb(QWidget):
         self._edit_reasons = tuple(edit_reasons or ())
         self._border_token = border_token
         self._stamp = stamp
+        # spec/159 — per-version review chrome for the closed-event
+        # Exported Collection grid. ``stars`` 1-5 or None; ``color_label``
+        # is the LRC-style label string; ``flag`` is the portfolio
+        # toggle; ``to_delete`` paints the "Marked for deletion" bottom
+        # strip + hides the star chip (no point showing a rating on
+        # something about to be deleted). All four default to off so
+        # the legacy chrome contract is unchanged for callers that
+        # don't pass them.
+        self._stars = stars
+        self._color_label = color_label
+        self._flag = bool(flag)
+        self._to_delete = bool(to_delete)
         # spec/89 §2.1 Block 2 D3.B — origin wordmark (Mira / LRC /
         # Helicon / CO / ext) painted on a thin strip under the thumb
         # for Export cells. ``None`` keeps the cell badge-free
@@ -242,6 +258,30 @@ class Thumb(QWidget):
 
     def setClusterCount(self, n: int) -> None:
         self._cluster_count = n
+        self.update()
+
+    # ── spec/159 — per-version review chrome setters ───────────────────
+
+    def setStars(self, stars: int | None) -> None:
+        """spec/159 — star rating 1..5 or None (no rating)."""
+        self._stars = stars
+        self.update()
+
+    def setColorLabel(self, label: str | None) -> None:
+        """spec/159 — LRC-style colour label or None (no label).
+        Accepted: 'red'/'yellow'/'green'/'blue'/'purple'."""
+        self._color_label = label
+        self.update()
+
+    def setFlag(self, flag: bool) -> None:
+        """spec/159 — portfolio flag toggle."""
+        self._flag = bool(flag)
+        self.update()
+
+    def setToDelete(self, to_delete: bool) -> None:
+        """spec/159 — "Marked for deletion" badge toggle. True paints
+        the bottom strip and hides the star chip."""
+        self._to_delete = bool(to_delete)
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt override
@@ -370,6 +410,14 @@ class Thumb(QWidget):
         self._paint_origin_strip(painter, palette)
         self._paint_skipped_in_pick(painter, palette)
         self._paint_edited_since_export(painter, palette)
+        # spec/159 — review chrome. Paint after the rest so they sit on
+        # top of cluster overlays etc. Order: colour label (top strip),
+        # star chip (bottom-right; suppressed by to_delete + clusters),
+        # flag glyph (top-left), to-delete badge (full-width bottom).
+        self._paint_color_label_strip(painter)
+        self._paint_star_chip(painter)
+        self._paint_flag_glyph(painter, palette)
+        self._paint_to_delete_badge(painter)
 
         painter.end()
 
@@ -783,3 +831,122 @@ class Thumb(QWidget):
         painter.drawText(int(cursor_x), int(text_y), skipped_text)
         cursor_x += skipped_w + spacing
         painter.drawPixmap(int(cursor_x), int(glyph_y), cross_pm)
+
+    # ── spec/159 — review chrome paints ────────────────────────────────
+
+    #: spec/159 §4.2 — LRC colour-label hex values.
+    _COLOR_LABEL_HEX = {
+        "red":    "#D9382E",
+        "yellow": "#E4B91F",
+        "green":  "#2DA84A",
+        "blue":   "#3A8DD8",
+        "purple": "#9C4DC9",
+    }
+
+    def _paint_color_label_strip(self, painter: QPainter) -> None:
+        """spec/159 — 4 px tall, full-width colour strip across the TOP
+        edge of the cell. Hidden when no label is set or the label is
+        unknown."""
+        if not self._color_label:
+            return
+        hex_color = self._COLOR_LABEL_HEX.get(self._color_label)
+        if hex_color is None:
+            return
+        strip_h = 4
+        painter.fillRect(
+            QRectF(0, 0, self.width(), strip_h),
+            QColor(hex_color),
+        )
+
+    def _paint_star_chip(self, painter: QPainter) -> None:
+        """spec/159 — small "★N" chip in the BOTTOM-RIGHT corner. The
+        slot is shared with the cluster-count chip (suppressed on
+        cluster covers — the cover already shows ×N there); the slot
+        also collapses when the to-delete badge is on (no point
+        rating something marked for deletion)."""
+        if self._stars is None:
+            return
+        if self._to_delete:
+            return
+        if self._cluster_type is not None or self._cluster_split is not None:
+            return
+        # Tight chip — "★N" reads as one symbol; keep narrow.
+        text = f"★{int(self._stars)}"
+        f = painter.font()
+        f.setPointSizeF(10)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        label_w = fm.horizontalAdvance(text)
+        pad_x = 7
+        chip_w = label_w + pad_x * 2
+        chip_h = 20
+        chip_rect = QRectF(
+            self.width() - chip_w - 8,
+            self.height() - chip_h - 8,
+            chip_w, chip_h,
+        )
+        self._paint_chip(
+            painter, chip_rect,
+            QColor(8, 10, 16, 200), QColor(255, 255, 255, 60),
+        )
+        # Gold-tinted star + white digit.
+        painter.setPen(QColor("#F2C84A"))
+        painter.drawText(
+            chip_rect,
+            int(Qt.AlignmentFlag.AlignCenter), text,
+        )
+
+    def _paint_flag_glyph(
+        self, painter: QPainter, palette: dict[str, str],
+    ) -> None:
+        """spec/159 — small flag glyph in the TOP-LEFT corner when the
+        portfolio flag is set. Simple painted flag (no SVG dependency)
+        so this works on any theme; the flag-cloth is amber so it
+        reads as "keep" rather than warning red."""
+        if not self._flag:
+            return
+        # Pole + flag at top-left, 18 px tall, 14 px wide. Anchored
+        # 8 px from the left and 6 px from the top so it sits inside
+        # the rounded card without colliding with the colour-label
+        # strip (which lives in the top 4 px).
+        x, y = 8, 10
+        pole_h = 18
+        # Pole
+        painter.setPen(QPen(QColor("#08101c"), 1.5))
+        painter.drawLine(int(x), int(y), int(x), int(y + pole_h))
+        # Flag triangle
+        flag_color = QColor(palette.get("amber", "#F5B042"))
+        flag_color.setAlpha(235)
+        painter.setBrush(QBrush(flag_color))
+        painter.setPen(QPen(QColor(0, 0, 0, 110), 1))
+        path = QPainterPath()
+        path.moveTo(x + 1, y + 1)
+        path.lineTo(x + 12, y + 4.5)
+        path.lineTo(x + 1, y + 8)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+    def _paint_to_delete_badge(self, painter: QPainter) -> None:
+        """spec/159 — opaque dark-red strip across the BOTTOM ~10 % of
+        the cell with white "Marked for deletion" text. Painted on top
+        of everything except the colour-label strip (the strip lives in
+        the top 4 px so they don't collide)."""
+        if not self._to_delete:
+            return
+        # Anchor 10 % of cell height with a 30 px floor so the text
+        # stays legible at small slider sizes.
+        strip_h = max(30, int(self.height() * 0.10))
+        strip_rect = QRectF(
+            0, self.height() - strip_h, self.width(), strip_h)
+        painter.fillRect(strip_rect, QColor("#A02020"))
+        painter.setPen(QColor("#ffffff"))
+        f = painter.font()
+        f.setPointSizeF(9.5)
+        f.setBold(True)
+        painter.setFont(f)
+        painter.drawText(
+            strip_rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            "Marked for deletion",
+        )

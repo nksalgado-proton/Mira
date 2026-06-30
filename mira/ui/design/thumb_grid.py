@@ -99,6 +99,11 @@ class ThumbGridItem:
     payload: object = None
     focusable: bool = False               # Tab-focusable for the locked §63 keymap
     tooltip: str = ""
+    # spec/159 — per-version review chrome for the Exported Collection.
+    stars: Optional[int] = None
+    color_label: Optional[str] = None
+    flag: bool = False
+    to_delete: bool = False
 
 
 class _GridCell(Thumb):
@@ -134,6 +139,10 @@ class _GridCell(Thumb):
             origin=item.origin,
             skipped_in_pick=item.skipped_in_pick,
             edited_since_export=item.edited_since_export,
+            stars=item.stars,
+            color_label=item.color_label,
+            flag=item.flag,
+            to_delete=item.to_delete,
             parent=parent,
         )
         self.setExportDestructiveMode(item.export_destructive_mode)
@@ -170,6 +179,11 @@ class _GridCell(Thumb):
         self.setExportDestructiveMode(item.export_destructive_mode)
         self.setEditedSinceExport(item.edited_since_export)
         self.setClusterCount(item.cluster_count)
+        # spec/159 — per-version review chrome.
+        self.setStars(item.stars)
+        self.setColorLabel(item.color_label)
+        self.setFlag(item.flag)
+        self.setToDelete(item.to_delete)
         # cluster_type + cluster_split aren't setter-exposed on Thumb;
         # write them directly (paintEvent reads instance attrs).
         self._cluster_type = item.cluster_type

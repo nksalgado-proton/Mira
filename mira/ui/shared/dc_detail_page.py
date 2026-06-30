@@ -86,6 +86,11 @@ _CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 #: = ~80 MB ceiling.
 _UNDO_MAX = 16
 
+#: spec/159 — center-click placeholder until Session B lands the
+#: review-mode editor. Set to True to log the would-be open; False
+#: makes it a silent no-op.
+_LOG_CENTER_CLICK_PLACEHOLDER = True
+
 
 @dataclass
 class DCUnexportSnapshot:
@@ -111,10 +116,38 @@ def _kind_for(relpath: str) -> str:
 
 
 class DCDetailPage(QWidget):
-    """The #exported DC drill-down (spec/81 §2)."""
+    """The #exported DC drill-down (spec/81 §2 + spec/159).
+
+    Spec/159 promoted this surface from "click anywhere to mark for
+    deletion" to a real review-and-classify grid:
+
+    * Selection state is **persistent** — the per-version ``to_delete``
+      column on ``lineage`` (added in schema v23) carries the mark
+      across sessions. The toolbar's "⌫ Delete N marked…" action
+      commits via :meth:`EventGateway.delete_marked_exported_files`.
+    * Click grammar is **two-zone** — border-click toggles
+      ``to_delete`` on a single-version cell; center-click opens the
+      review-mode editor (placeholder until Session B lands it).
+      Cluster covers open the cluster on any click (existing
+      cluster behaviour).
+    * Each cell shows the spec/159 review chrome — star chip, colour
+      label, portfolio flag, "Marked for deletion" badge — read from
+      lineage. Writing the rating fields happens in the editor
+      (Session B); this surface only renders them + handles
+      to_delete.
+
+    Spec/159 §11 calls Ctrl+Z out as scoped to the editor's rating
+    history, not the to_delete flag — the batched delete confirm IS
+    the safety. The legacy single-cell quick-delete path is retired.
+    """
 
     back_requested = pyqtSignal()
     files_deleted = pyqtSignal(set)         # set[export_relpath]
+    #: spec/159 — emitted when center-click opens a cell for review.
+    #: Carries the export_relpath. Until Session B wires the editor,
+    #: callers may ignore this signal (the surface logs the would-be
+    #: open and stays put).
+    review_requested = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -125,7 +158,6 @@ class DCDetailPage(QWidget):
         self._root: Optional[Path] = None
         self._files: List[m.Lineage] = []
         self._thumbs: Dict[str, QPixmap] = {}
-        self._selected: set[str] = set()
         self._undo_stack: list[DCUnexportSnapshot] = []
 
         from mira.ui.media.photo_cache import photo_cache
@@ -153,17 +185,19 @@ class DCDetailPage(QWidget):
         self._meta_lbl = QLabel("")
         self._meta_lbl.setObjectName("PageHint")
         head.addWidget(self._meta_lbl, stretch=1)
-        # The Delete affordance — hidden when nothing is marked. Uses
-        # the design system's danger button so the verb's blast reads
-        # at a glance (this is the only place in the pool surface that
-        # touches on-disk files).
-        self._delete_btn = danger_ghost_button(tr("Delete"))
+        # spec/159 — "Delete N marked…" primary action. Visible only
+        # when at least one lineage row carries ``to_delete = 1``;
+        # opens a confirm dialog naming the file + cut-cascade count.
+        self._delete_btn = danger_ghost_button(tr("⌫ Delete marked…"))
         self._delete_btn.setVisible(False)
         self._delete_btn.clicked.connect(self._on_delete_clicked)
         head.addWidget(self._delete_btn)
-        self._clear_btn = ghost_button(tr("Clear selection"))
+        # spec/159 — "Clear all marks" releases the to_delete flag on
+        # every visible row in one transaction. Visible alongside the
+        # delete button when there's anything to clear.
+        self._clear_btn = ghost_button(tr("Clear marks"))
         self._clear_btn.setVisible(False)
-        self._clear_btn.clicked.connect(self._clear_selection)
+        self._clear_btn.clicked.connect(self._clear_marks)
         head.addWidget(self._clear_btn)
         outer.addLayout(head)
 
@@ -179,16 +213,22 @@ class DCDetailPage(QWidget):
         chrome.addWidget(self._header_lbl, stretch=1)
         outer.addLayout(chrome)
 
-        # The grid — Cut-detail's renderer, but the user's interaction
-        # is purely "click to mark for deletion". Single-zone clicks
-        # toggle the deletion mark on the clicked cell.
-        self._grid = ThumbGrid(cell_size=_CELL_SIZE)
+        # spec/159 — two-zone grid: border-click toggles the lineage
+        # row's ``to_delete`` flag; center-click opens the review-mode
+        # editor (placeholder until Session B). The two-zone hit-test
+        # is the same one days_grid uses.
+        self._grid = ThumbGrid(cell_size=_CELL_SIZE, two_zone_clicks=True)
+        self._grid.cell_border_clicked.connect(self._on_cell_border_clicked)
         self._grid.cell_activated.connect(self._on_cell_activated)
         self._grid.back_requested.connect(self.back_requested.emit)
         outer.addWidget(self._grid, stretch=1)
 
-        # Keyboard: Del / Backspace = delete; Ctrl+Z = undo last
-        # single-cell delete; Esc = back.
+        # Keyboard: Del / Backspace = commit the batch delete confirm;
+        # Ctrl+Z = undo last single-cell delete; Esc = back. (spec/159
+        # §5.4 scopes the per-rating undo to the editor's history; the
+        # surface keeps the legacy Ctrl+Z for the rare single-cell
+        # quick delete the legacy flow used to support — Session B
+        # may retire it.)
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self,
                   activated=self._on_delete_clicked)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self,
@@ -202,14 +242,14 @@ class DCDetailPage(QWidget):
         self._eg = eg
         self._root = Path(eg.event_root) if eg.event_root else Path(".")
         self._cache.set_event_context(self._root, {})
-        self._selected.clear()
         self._undo_stack.clear()
         self._refresh()
 
     def close_event(self) -> None:
         """Drop in-memory state — called on Back. The on-disk thumb
-        + proxy caches stay (they're event-scoped)."""
-        self._selected.clear()
+        + proxy caches stay (they're event-scoped). spec/159 — no
+        in-memory selection state to clear; the ``to_delete`` flag
+        lives on lineage and persists across opens."""
         self._undo_stack.clear()
         self._eg = None
         self._root = None
@@ -226,11 +266,13 @@ class DCDetailPage(QWidget):
         # without the visible_item hidden-day filter (Nelson
         # 2026-06-15 bug: pool empty while watermark showed several
         # files). Cuts logic still uses the strict ``exported_files``.
+        # The query already pulls every Lineage column (the dataclass
+        # round-trip carries the spec/159 stars / color_label / flag /
+        # to_delete values).
         self._files = list(self._eg.exported_files_all())
         # Drop stale undo entries whose file is no longer on the
         # roster (a fresh batch delete should not re-appear in Ctrl+Z).
         live = {f.export_relpath for f in self._files}
-        self._selected = {r for r in self._selected if r in live}
         self._undo_stack = [
             s for s in self._undo_stack if s.export_relpath not in live]
         self._rebuild_cells()
@@ -239,11 +281,19 @@ class DCDetailPage(QWidget):
     def _rebuild_cells(self) -> None:
         items: List[ThumbGridItem] = []
         for f in self._files:
-            state = "skipped" if f.export_relpath in self._selected else None
+            # spec/159 — the cell carries the lineage row's ratings +
+            # delete flag. The locked colour grammar (state border)
+            # stays neutral on this surface (per spec/159 §4.2 "state
+            # border DROP at default"); the "Marked for deletion" badge
+            # paints from to_delete instead.
             items.append(ThumbGridItem(
                 pixmap=self._thumbs.get(f.export_relpath),
-                state=state,
+                state=None,
                 payload=f.export_relpath,
+                stars=getattr(f, "stars", None),
+                color_label=getattr(f, "color_label", None),
+                flag=bool(getattr(f, "flag", False)),
+                to_delete=bool(getattr(f, "to_delete", False)),
             ))
         self._header_lbl.setText(tr("#exported — the base Collection"))
         self._grid.set_items(items)
@@ -280,60 +330,120 @@ class DCDetailPage(QWidget):
 
     # ── selection ─────────────────────────────────────────────────────
 
-    def _on_cell_activated(self, index: int) -> None:
-        """Single click on a cell — toggles the deletion mark. The
-        red border IS the mark; the toolbar "Delete N" button is the
-        commit. (Center-click double-duty as 'open lightbox' retires
-        for this surface — the pool is a housekeeping surface, not a
-        browsing one. Nelson 2026-06-15.)"""
+    def _on_cell_border_clicked(self, index: int) -> None:
+        """spec/159 — border-click toggles the lineage row's
+        ``to_delete`` flag. The flag persists across sessions; the
+        toolbar's "⌫ Delete marked…" action commits the batch."""
+        if self._eg is None:
+            return
         if not (0 <= index < len(self._files)):
             return
-        rel = self._files[index].export_relpath
-        if rel in self._selected:
-            self._selected.discard(rel)
-        else:
-            self._selected.add(rel)
-        # Repaint just this cell with the new border colour. The locked
-        # §5a "skipped" state token renders the red 3px border that
-        # signals "marked for deletion".
-        state = "skipped" if rel in self._selected else None
+        f = self._files[index]
+        new_state = not bool(getattr(f, "to_delete", False))
+        try:
+            self._eg.set_lineage_to_delete(f.export_relpath, new_state)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_to_delete failed for %s",
+                f.export_relpath)
+            return
+        # In-place update — repaint just this cell + the toolbar chrome.
+        # Mutate the cached Lineage row so the next rebuild reads the
+        # new flag without another DB hit.
+        try:
+            f.to_delete = new_state                                # type: ignore[misc]
+        except AttributeError:
+            self._files[index] = m.Lineage(
+                **{**f.__dict__, "to_delete": new_state})
         self._grid.update_item(index, ThumbGridItem(
-            pixmap=self._thumbs.get(rel),
-            state=state,
-            payload=rel,
+            pixmap=self._thumbs.get(f.export_relpath),
+            state=None,
+            payload=f.export_relpath,
+            stars=getattr(f, "stars", None),
+            color_label=getattr(f, "color_label", None),
+            flag=bool(getattr(f, "flag", False)),
+            to_delete=new_state,
         ))
         self._update_chrome()
 
-    def _clear_selection(self) -> None:
-        if not self._selected:
+    def _on_cell_activated(self, index: int) -> None:
+        """spec/159 — center-click opens the review-mode editor for
+        the version at ``index``. Until Session B lands the editor,
+        we emit ``review_requested`` for any host that wants to wire
+        it ahead of time, and log the would-be open so a missing
+        editor binding is observable."""
+        if not (0 <= index < len(self._files)):
             return
-        self._selected.clear()
+        rel = self._files[index].export_relpath
+        self.review_requested.emit(rel)
+        if _LOG_CENTER_CLICK_PLACEHOLDER:
+            log.info(
+                "DCDetailPage: center-click on %s — review-mode editor "
+                "not yet wired (spec/159 Session B)", rel)
+
+    def _marked_relpaths(self) -> List[str]:
+        """Every visible lineage row whose ``to_delete = 1``. Drives
+        the toolbar count + the "Delete N marked…" confirm dialog.
+        Reads off the cached lineage rows so we don't re-query mid
+        click sequence."""
+        return [
+            f.export_relpath for f in self._files
+            if bool(getattr(f, "to_delete", False))
+        ]
+
+    def _clear_marks(self) -> None:
+        """spec/159 — release the ``to_delete`` flag on every visible
+        lineage row whose flag is set, in one logical operation."""
+        if self._eg is None:
+            return
+        marked = self._marked_relpaths()
+        if not marked:
+            return
+        for rel in marked:
+            try:
+                self._eg.set_lineage_to_delete(rel, False)
+            except Exception:                                      # noqa: BLE001
+                log.exception(
+                    "DCDetailPage: clear set_lineage_to_delete failed "
+                    "for %s", rel)
+        # Reflect the clear locally so the rebuild paints clean
+        # without re-querying the gateway.
+        for f in self._files:
+            try:
+                f.to_delete = False                                # type: ignore[misc]
+            except AttributeError:
+                pass
         self._rebuild_cells()
         self._update_chrome()
 
     def _update_chrome(self) -> None:
         n_files = len(self._files)
-        n_sel = len(self._selected)
+        n_marked = len(self._marked_relpaths())
         # Header counts + delete-button label.
         self._meta_lbl.setText(
             tr("{n} exported file(s)").replace("{n}", str(n_files)))
-        self._delete_btn.setVisible(n_sel > 0)
-        self._clear_btn.setVisible(n_sel > 0)
-        if n_sel > 0:
+        self._delete_btn.setVisible(n_marked > 0)
+        self._clear_btn.setVisible(n_marked > 0)
+        if n_marked > 0:
             self._delete_btn.setText(
-                tr("Delete {n} selected").replace("{n}", str(n_sel)))
+                tr("⌫ Delete {n} marked…").replace("{n}", str(n_marked)))
 
     # ── delete ────────────────────────────────────────────────────────
 
     def _on_delete_clicked(self) -> None:
+        """spec/159 — open the confirm dialog naming the marked count +
+        the cut-cascade reach, then commit via
+        :meth:`EventGateway.delete_marked_exported_files`. Every
+        commit path goes through here (Del / Backspace / button) —
+        the legacy single-cell quick-delete + Ctrl+Z restore stays
+        wired against the per-row capture path for any future caller
+        but is no longer reachable from this surface's gestures."""
         if self._eg is None or self._root is None:
             return
-        if not self._selected:
+        marked = self._marked_relpaths()
+        if not marked:
             return
-        if len(self._selected) == 1:
-            self._delete_one_quick(next(iter(self._selected)))
-        else:
-            self._delete_batch_with_confirm(list(self._selected))
+        self._delete_batch_with_confirm(marked)
 
     def _capture_snapshot(self, relpath: str) -> Optional[DCUnexportSnapshot]:
         """Capture file bytes + lineage row BEFORE the delete so
@@ -403,7 +513,8 @@ class DCDetailPage(QWidget):
             return
         if snap is not None:
             self._push_undo(snap)
-        self._selected.discard(relpath)
+        # spec/159 — no in-memory selection to discard; the lineage
+        # row is gone now, so the next refresh drops the cell anyway.
         self._refresh()
         self.files_deleted.emit({relpath})
 
@@ -447,20 +558,26 @@ class DCDetailPage(QWidget):
         box.exec()
         if box.clickedButton() is not delete_btn:
             return
-        deleted: set[str] = set()
-        for rel in relpaths:
-            try:
-                res = self._eg.delete_exported_file_by_relpath(rel)
-                if res.get("rows_deleted"):
-                    deleted.add(rel)
-            except Exception:                                      # noqa: BLE001
-                log.exception(
-                    "pool delete: batch delete failed for %s", rel)
-        self._selected -= deleted
+        # spec/159 — route through the gateway's batch helper so the
+        # cascade (file unlink + lineage drop + edit_exported flip
+        # + cut_member cleanup) stays in one well-tested code path.
+        # The helper reads ``to_delete = 1`` itself so we don't need
+        # to thread the relpath list through.
+        deleted_before = set(relpaths)
+        try:
+            n_deleted = self._eg.delete_marked_exported_files()
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: delete_marked_exported_files failed")
+            return
         self._undo_stack.clear()           # batch is non-undoable
         self._refresh()
-        if deleted:
-            self.files_deleted.emit(deleted)
+        # Surviving rows = rows that still appear after the refresh.
+        surviving = {f.export_relpath for f in self._files}
+        deleted_relpaths = {r for r in deleted_before
+                            if r not in surviving}
+        if deleted_relpaths or n_deleted:
+            self.files_deleted.emit(deleted_relpaths)
 
     # ── undo ──────────────────────────────────────────────────────────
 

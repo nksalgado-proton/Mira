@@ -80,14 +80,6 @@ class CompareItem:
     develop_style_fallback: str = "general"
 
 
-_STATE_LABEL = {
-    "picked": "Will export",
-    "skipped": "Set aside",
-    "compare": "Undecided",
-    "candidate": "Undecided",
-}
-
-
 def _border_color_for_state(state: Optional[str]) -> str:
     """spec/89 §1.1 / §4.2 — the locked colour grammar:
     green=Will export · red=Set aside · orange=Undecided.
@@ -146,15 +138,12 @@ class _CompareTile(QFrame):
         self._image_label.setMinimumHeight(280)
         outer.addWidget(self._image_label, 1)
 
-        self._title_label = QLabel(item.title or "")
-        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title_label.setObjectName("Sub")
-        outer.addWidget(self._title_label)
-
-        self._state_chip = QLabel("")
-        self._state_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._state_chip.setObjectName("Faint")
-        outer.addWidget(self._state_chip)
+        # spec/63 §4 follow-up — Nelson 2026-06-30: the per-tile title
+        # + state chip read as redundant / wrong when this dialog is
+        # reused outside the Export Compare flow (the "Will be
+        # exported" wording, the storage-relpath title). Dropping both
+        # labels; the coloured 3 px border still encodes the state.
+        # ``set_state`` keeps refreshing the border only.
 
         self.set_state(item.state)
         self._load_pixmap()
@@ -174,8 +163,6 @@ class _CompareTile(QFrame):
             develop_style_fallback=self._item.develop_style_fallback,
         )
         self._refresh_border()
-        self._state_chip.setText(
-            _STATE_LABEL.get(state or "", ""))
 
     def set_focused(self, focused: bool) -> None:
         """Paint the focus halo (or remove it). The focused tile is

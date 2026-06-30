@@ -48,6 +48,7 @@ from mira.ui.media.photo_viewport import ViewportItem
 from mira.ui.shared.cut_session_page import _SingleView, _fmt_mmss
 from mira.ui.shared.separator_card import (
     cut_opener_lines,
+    paint_video_thumb_overlay,
     render_cut_opener_image,
     render_separator_image,
     render_separator_pixmap,
@@ -398,11 +399,15 @@ class CutDetailPage(QWidget):
         # spec/155 — resolve the event-level + per-day map slots so the
         # opener / day-separator card thumbs render with the same map
         # cell the export bake and Cut Play paths use. VIDEO maps don't
-        # render into the thumb (the in-app video widget owns the visual
-        # at play time, and baking the first-frame still in PTE/grid
-        # looks like a busy / blurred backdrop behind the 70 % video
-        # overlay — Nelson 2026-06-30). IMAGE maps still embed.
-        from core.path_builder import is_video_map_path
+        # embed into the bake (the in-app video widget owns the visual
+        # at play time, and baking the first-frame still would look
+        # busy behind the 70 % video overlay — Nelson 2026-06-30); they
+        # ride a SEPARATE overlay paint pass below so the grid still
+        # previews the slide content. IMAGE maps still embed.
+        from core.path_builder import (
+            MAP_VIDEO_THUMB_SUFFIX,
+            is_video_map_path,
+        )
         _evt_map_rel = eg.get_event_map_path()
         def _map_abs_for(day) -> "Optional[Path]":
             if isinstance(day, int):
@@ -413,6 +418,20 @@ class CutDetailPage(QWidget):
             if not rel or is_video_map_path(rel):
                 return None
             return self._root / rel
+        def _video_thumb_for(day) -> "Optional[Path]":
+            """First-frame sidecar of the day/event's video map, or
+            None when the map is missing or an image. Used by the grid
+            renderer to composite a PTE-matching :Video preview onto
+            the otherwise-flat bake."""
+            if isinstance(day, int):
+                meta = day_meta.get(day)
+                rel = getattr(meta, "map_image_path", None) if meta else None
+            else:
+                rel = _evt_map_rel
+            if not rel or not is_video_map_path(rel):
+                return None
+            sidecar = self._root / (rel + MAP_VIDEO_THUMB_SUFFIX)
+            return sidecar if sidecar.is_file() else None
 
         totals_for_opener = eg.cut_show_totals(cut.id)
         from dataclasses import replace as _replace
@@ -441,12 +460,16 @@ class CutDetailPage(QWidget):
         for kind, payload in self._entries:
             if kind == "opener":
                 opener_map = _map_abs_for(None)
+                opener_thumb = _video_thumb_for(None)
                 img = render_cut_opener_image(
                     tag_text=cut_names.display_tag(cut.tag),
                     lines=self._opener_lines,
                     aspect=aspect, height=_CELL_PX,
                     card_style=self._card_style, seed_key=cut.id,
                     map_image_path=opener_map)
+                if opener_thumb is not None:
+                    paint_video_thumb_overlay(
+                        base=img, thumb_path=opener_thumb)
                 pm = QPixmap.fromImage(img)
                 if pm.width() > _CELL_PX:
                     pm = pm.scaledToWidth(_CELL_PX)
@@ -457,6 +480,9 @@ class CutDetailPage(QWidget):
                     aspect=aspect, height=_CARD_FULL_HEIGHT,
                     card_style=self._card_style, seed_key=cut.id,
                     map_image_path=opener_map)
+                if opener_thumb is not None:
+                    paint_video_thumb_overlay(
+                        base=full, thumb_path=opener_thumb)
                 self._items.append(ViewportItem(
                     kind="card", payload=tr("Opener"),
                     pixmap=QPixmap.fromImage(full)))
@@ -464,16 +490,27 @@ class CutDetailPage(QWidget):
                 day = payload
                 meta = day_meta.get(day)
                 sep_map = _map_abs_for(day)
-                pm = render_separator_pixmap(
-                    size=_CELL_PX,
+                sep_thumb = _video_thumb_for(day)
+                # Inline render_separator_pixmap so we can composite
+                # the video thumb between the base render and the
+                # scale-down step.
+                grid_img = render_separator_image(
                     day_number=day,
                     date=getattr(meta, "date", None),
                     location=getattr(meta, "location", None),
                     description=getattr(meta, "description", "") or "",
                     aspect=aspect,
+                    height=max(120, _CELL_PX),
                     card_style=self._card_style,
                     seed_key=f"{cut.id}:{day}",
                     map_image_path=sep_map)
+                if sep_thumb is not None:
+                    paint_video_thumb_overlay(
+                        base=grid_img, thumb_path=sep_thumb)
+                pm = QPixmap.fromImage(grid_img)
+                if pm.width() > _CELL_PX:
+                    pm = pm.scaledToWidth(
+                        _CELL_PX, Qt.TransformationMode.SmoothTransformation)
                 grid_items.append(ThumbGridItem(pixmap=pm, payload=("sep", day)))
                 full = render_separator_image(
                     day_number=day,
@@ -484,6 +521,9 @@ class CutDetailPage(QWidget):
                     card_style=self._card_style,
                     seed_key=f"{cut.id}:{day}",
                     map_image_path=sep_map)
+                if sep_thumb is not None:
+                    paint_video_thumb_overlay(
+                        base=full, thumb_path=sep_thumb)
                 title = (tr("Day {n} separator").replace("{n}", str(day))
                          if day is not None else tr("Separator"))
                 self._items.append(ViewportItem(

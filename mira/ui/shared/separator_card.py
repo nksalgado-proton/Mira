@@ -127,6 +127,48 @@ def _composite_letterboxed_map(
     p.end()
 
 
+def paint_video_thumb_overlay(
+    *,
+    base: QImage,
+    thumb_path: "Path | str",
+    scale: float = 0.70,
+    center_y_frac: float = 0.575,
+) -> None:
+    """Composite the video's first-frame thumbnail on top of ``base``
+    at PTE's :Video overlay geometry — 70 % canvas scale, centred
+    horizontally, vertical centre at 57.5 % from the top. Solid white
+    2 px border around the inset (matches PTE EnableBorder=1 +
+    BorderWidth=1.5). Mutates ``base``; no-op if the thumb can't load.
+
+    Used by the cut-grid renderer so a separator / opener with a video
+    map still shows the slide's content at a glance (the bake itself
+    stays flat — the live :Video overlay in PTE and the in-app video
+    widget at play-time own the actual playback). spec/155 round 7
+    follow-up — Nelson 2026-06-30."""
+    if not thumb_path:
+        return
+    img = QImage(str(thumb_path))
+    if img.isNull():
+        return
+    cw, ch = base.width(), base.height()
+    bound_w = max(1, int(cw * scale))
+    bound_h = max(1, int(ch * scale))
+    inset = img.scaled(
+        bound_w, bound_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    iw, ih = inset.width(), inset.height()
+    ix = (cw - iw) // 2
+    iy = int(ch * center_y_frac) - ih // 2
+    p = QPainter(base)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.drawImage(ix, iy, inset)
+    p.setPen(QPen(QColor(255, 255, 255, 255), 2))
+    p.drawRect(ix, iy, iw - 1, ih - 1)
+    p.end()
+
+
 def _paint_caption_strip(
     *,
     base: QImage,

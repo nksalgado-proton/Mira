@@ -367,19 +367,120 @@ class DCDetailPage(QWidget):
         self._update_chrome()
 
     def _on_cell_activated(self, index: int) -> None:
-        """spec/159 — center-click opens the review-mode editor for
-        the version at ``index``. Until Session B lands the editor,
-        we emit ``review_requested`` for any host that wants to wire
-        it ahead of time, and log the would-be open so a missing
-        editor binding is observable."""
-        if not (0 <= index < len(self._files)):
+        """spec/159 — center-click opens the review viewer on the
+        clicked version, with the rest of the visible list available
+        for ←/→ nav. Emits ``review_requested`` for any host that
+        wants to observe the open."""
+        if not (0 <= index < len(self._files)) or self._eg is None:
             return
         rel = self._files[index].export_relpath
         self.review_requested.emit(rel)
-        if _LOG_CENTER_CLICK_PLACEHOLDER:
-            log.info(
-                "DCDetailPage: center-click on %s — review-mode editor "
-                "not yet wired (spec/159 Session B)", rel)
+        self._open_review_dialog(index)
+
+    def _open_review_dialog(self, start_index: int) -> None:
+        """Build the ReviewItem list from the current lineage roster
+        and open the dialog. Mutations from the dialog write through
+        the gateway and update the cached lineage rows + the grid
+        chrome in real time."""
+        from mira.ui.exported.review_dialog import (
+            ReviewItem, ReviewMediaDialog,
+        )
+        if self._eg is None or self._root is None:
+            return
+        items: List[ReviewItem] = []
+        for f in self._files:
+            items.append(ReviewItem(
+                export_relpath=f.export_relpath,
+                abs_path=self._root / f.export_relpath,
+                stars=getattr(f, "stars", None),
+                color_label=getattr(f, "color_label", None),
+                flag=bool(getattr(f, "flag", False)),
+                to_delete=bool(getattr(f, "to_delete", False)),
+                title=Path(f.export_relpath).name,
+            ))
+        if not items:
+            return
+        dlg = ReviewMediaDialog(items, start_index=start_index, parent=self)
+        dlg.stars_changed.connect(self._on_review_stars_changed)
+        dlg.color_label_changed.connect(
+            self._on_review_color_label_changed)
+        dlg.flag_changed.connect(self._on_review_flag_changed)
+        dlg.to_delete_changed.connect(
+            self._on_review_to_delete_changed)
+        dlg.exec()
+        # On close: rebuild the cells so any rating changes paint.
+        self._rebuild_cells()
+        self._update_chrome()
+
+    def _find_file_index(self, rel: str) -> Optional[int]:
+        for i, f in enumerate(self._files):
+            if f.export_relpath == rel:
+                return i
+        return None
+
+    def _on_review_stars_changed(self, rel: str, value) -> None:
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_lineage_stars(rel, value)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_stars failed for %s", rel)
+            return
+        idx = self._find_file_index(rel)
+        if idx is not None:
+            try:
+                self._files[idx].stars = value                     # type: ignore[misc]
+            except AttributeError:
+                pass
+
+    def _on_review_color_label_changed(self, rel: str, value) -> None:
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_lineage_color_label(rel, value)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_color_label failed for %s", rel)
+            return
+        idx = self._find_file_index(rel)
+        if idx is not None:
+            try:
+                self._files[idx].color_label = value               # type: ignore[misc]
+            except AttributeError:
+                pass
+
+    def _on_review_flag_changed(self, rel: str, value: bool) -> None:
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_lineage_flag(rel, value)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_flag failed for %s", rel)
+            return
+        idx = self._find_file_index(rel)
+        if idx is not None:
+            try:
+                self._files[idx].flag = value                      # type: ignore[misc]
+            except AttributeError:
+                pass
+
+    def _on_review_to_delete_changed(self, rel: str, value: bool) -> None:
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_lineage_to_delete(rel, value)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_to_delete failed for %s", rel)
+            return
+        idx = self._find_file_index(rel)
+        if idx is not None:
+            try:
+                self._files[idx].to_delete = value                 # type: ignore[misc]
+            except AttributeError:
+                pass
 
     def _marked_relpaths(self) -> List[str]:
         """Every visible lineage row whose ``to_delete = 1``. Drives

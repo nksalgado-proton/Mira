@@ -928,25 +928,37 @@ class Thumb(QWidget):
         painter.drawPath(path)
 
     def _paint_to_delete_badge(self, painter: QPainter) -> None:
-        """spec/159 — opaque dark-red strip across the BOTTOM ~10 % of
-        the cell with white "Marked for deletion" text. Painted on top
-        of everything except the colour-label strip (the strip lives in
-        the top 4 px so they don't collide)."""
+        """spec/159 — compact "Delete" pill across the BOTTOM of the
+        cell. Smaller than the v1 full-strip (Nelson 2026-06-30 —
+        "the badge looks bad: too large + square corners on a
+        rounded grid"). Pill is inset from the cell edges so it
+        respects the card's rounded corners; opaque dark-red bg,
+        white text."""
         if not self._to_delete:
             return
-        # Anchor 10 % of cell height with a 30 px floor so the text
-        # stays legible at small slider sizes.
-        strip_h = max(30, int(self.height() * 0.10))
-        strip_rect = QRectF(
-            0, self.height() - strip_h, self.width(), strip_h)
-        painter.fillRect(strip_rect, QColor("#A02020"))
-        painter.setPen(QColor("#ffffff"))
         f = painter.font()
-        f.setPointSizeF(9.5)
+        f.setPointSizeF(9.0)
         f.setBold(True)
         painter.setFont(f)
+        fm = painter.fontMetrics()
+        label = "DELETE"
+        label_w = fm.horizontalAdvance(label)
+        pad_x = 10
+        pad_y = 4
+        pill_w = label_w + pad_x * 2
+        pill_h = fm.height() + pad_y * 2
+        pill_rect = QRectF(
+            (self.width() - pill_w) / 2,
+            self.height() - pill_h - 8,
+            pill_w, pill_h,
+        )
+        painter.setBrush(QBrush(QColor("#A02020")))
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        painter.drawRoundedRect(
+            pill_rect, pill_h / 2, pill_h / 2)
+        painter.setPen(QColor("#ffffff"))
         painter.drawText(
-            strip_rect,
+            pill_rect,
             int(Qt.AlignmentFlag.AlignCenter),
-            "Marked for deletion",
+            label,
         )

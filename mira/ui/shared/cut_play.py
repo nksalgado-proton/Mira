@@ -1500,11 +1500,11 @@ class CutPlayerDialog(QDialog):
 
     #: Title text centre y. PTE's Position y=-82 maps to 9 % from top
     #: of canvas, but Qt's font baseline + the absence of PTE's text
-    #: bounding-box padding makes the same Y read TOO HIGH in the play
-    #: cut. Nelson 2026-06-30 asked to move it down a touch; 0.14 puts
-    #: the title centre at 14 % from the top, which lands the text
-    #: where PTE's rendered glyphs actually sit.
-    _SEP_TITLE_CENTER_Y_FRAC = 0.14
+    #: bounding-box padding makes the same Y read too high in the play
+    #: cut. Nelson 2026-06-30 round 4 — 0.14 went a touch too far down;
+    #: halving the move (0.09 + (0.14-0.09)/2 = 0.115) splits the
+    #: difference and matches what reads right in the rehearsal.
+    _SEP_TITLE_CENTER_Y_FRAC = 0.115
 
     #: Title font size as a fraction of canvas height (PTE ScaleX≈13-15).
     _SEP_TITLE_FONT_FRAC = 0.075

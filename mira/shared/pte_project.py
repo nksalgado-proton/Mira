@@ -878,6 +878,18 @@ def _strip_cover_blurred_block(slide_body: str) -> str:
         "", slide_body, count=1, flags=re.DOTALL | re.MULTILINE)
 
 
+def _blank_slide_picture(slide_body: str) -> str:
+    """Empty out the slide-level ``Picture=`` line. PTE renders that
+    image as the slide background when no Cover-fit layer claims the
+    canvas, so after :func:`_strip_cover_blurred_block` we'd otherwise
+    see the same card JPG auto-blurred behind the sharp 85 % foreground
+    (Nelson 2026-06-30 follow-up to spec/155 — observed in
+    salta_argentina/trip_long/trip_long.pte after the strip)."""
+    return re.sub(
+        r"^Picture=[^\r\n]*",
+        "Picture=", slide_body, count=1, flags=re.MULTILINE)
+
+
 def _set_slide_image_paths(slide_body: str, image_path: str) -> str:
     """Rewrite every `ImageName=` line + the slide-level `Picture=` line
     to ``image_path``. Photo slides use this; the per-object `GUID`s
@@ -1093,11 +1105,12 @@ def generate(
             body = _regenerate_guids(body)
             body = _set_slide_image_paths(body, path_s)
             # spec/155 — card slides (opener / undated / dayN) drop the
-            # Cover-blurred backdrop so PTE shows a flat background,
-            # matching the play cut. Regular photo slides keep the
-            # blurred matte.
+            # Cover-blurred backdrop AND blank the slide-level Picture
+            # reference so PTE shows a flat background, matching the
+            # play cut. Regular photo slides keep the blurred matte.
             if _is_card_slide_path(m.path):
                 body = _strip_cover_blurred_block(body)
+                body = _blank_slide_picture(body)
             slide_durations_ms.append(photo_ms)
         # Overlay text objects (spec/153) — Mira-styled separate ``:Text``
         # per member. Empty ``texts`` → a clean slide. The legacy single

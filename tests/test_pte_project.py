@@ -144,10 +144,21 @@ def test_three_slide_blocks_emitted(output, members):
 
 
 def test_photo_slides_repathed(output, members):
-    photo_paths = [_windows(m.path) for m in members if m.kind == "photo"]
-    for path in photo_paths:
+    # spec/155 — card slides (opener / undated / dayN) blank the
+    # slide-level Picture= so PTE doesn't auto-render it as a blurred
+    # backdrop. ImageName= still carries through on the nested image
+    # object (Nelson 2026-06-30, salta_argentina/trip_long observation).
+    from mira.shared.pte_project import _is_card_slide_path
+    for m in members:
+        if m.kind != "photo":
+            continue
+        path = _windows(m.path)
         assert f"ImageName={path}" in output
-        assert f"Picture={path}" in output
+        if _is_card_slide_path(m.path):
+            # Card slides explicitly blank Picture=.
+            assert f"Picture={path}" not in output
+        else:
+            assert f"Picture={path}" in output
 
 
 def test_video_slide_emits_video_objects(output):

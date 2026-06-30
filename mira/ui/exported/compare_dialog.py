@@ -44,6 +44,7 @@ from PyQt6.QtGui import QColor, QKeyEvent, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -346,8 +347,16 @@ class CompareVersionsDialog(QDialog):
             geo = parent.geometry()
             self.resize(int(geo.width() * 0.92), int(geo.height() * 0.88))
         else:
-            target_w = max(900, _TILE_DEFAULT_WIDTH * min(3, len(items)))
-            self.resize(target_w, 760)
+            # No parent — pick a default that fits the grid shape
+            # (cols × tile_width, rows × ~tile_width since tiles are
+            # roughly square at fit-to-aspect).
+            import math
+            n = max(1, len(items))
+            cols = max(1, int(math.ceil(math.sqrt(n))))
+            rows = max(1, int(math.ceil(n / cols)))
+            target_w = max(900, _TILE_DEFAULT_WIDTH * min(3, cols))
+            target_h = max(760, int(_TILE_DEFAULT_WIDTH * 0.75) * min(3, rows))
+            self.resize(target_w, target_h)
 
     # ── UI ──────────────────────────────────────────────────────────
 
@@ -366,28 +375,40 @@ class CompareVersionsDialog(QDialog):
         hint.setObjectName("Sub")
         outer.addWidget(hint)
 
-        # Tile row inside a scroll area — handles 4+-version clusters
-        # without resizing the dialog past its parent. ≤3 versions fit
-        # the dialog at its default size without scrolling.
+        # Tile grid inside a scroll area. spec/63 §4 follow-up — Nelson
+        # 2026-06-30 asked for a grid layout instead of the single-row
+        # side-by-side so 3+ items don't crush each other. The grid
+        # aims for near-square (cols = ceil(sqrt(N))): 2 items → 1×2
+        # (still side-by-side); 3-4 → 2×2; 5-6 → 2×3 or 3×2; etc. The
+        # scroll area now scrolls vertically when the grid overflows.
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         outer.addWidget(scroll, 1)
 
+        import math
+        n = len(self._items)
+        cols = max(1, int(math.ceil(math.sqrt(max(1, n)))))
+
         host = QWidget()
-        host_layout = QHBoxLayout(host)
+        host_layout = QGridLayout(host)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        host_layout.setSpacing(12)
-        for item in self._items:
+        host_layout.setHorizontalSpacing(12)
+        host_layout.setVerticalSpacing(12)
+        for idx, item in enumerate(self._items):
             tile = _CompareTile(item, parent=host)
             tile.toggled.connect(self.intent_toggle_requested.emit)
             tile.focused.connect(self._on_tile_focused)
-            host_layout.addWidget(tile, 1)
+            row, col = divmod(idx, cols)
+            host_layout.addWidget(tile, row, col)
             self._tiles.append(tile)
+        # Make every column stretch equally so tiles share the width.
+        for c in range(cols):
+            host_layout.setColumnStretch(c, 1)
         scroll.setWidget(host)
 
     # ── intent updates from the host ────────────────────────────────

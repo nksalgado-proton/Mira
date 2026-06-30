@@ -815,7 +815,7 @@ class CutPlayerDialog(QDialog):
                 # spec/155 v6 — same slide-frame treatment as opener.
                 self._sep_video_active = True
                 self._sep_current_video_path = sep_vid
-                bg = self._sep_video_bg_image()
+                bg = self._sep_video_bg_image(day=payload)
                 self._show_image(bg)
                 self._ensure_video()
                 if self._video_audio is not None:
@@ -1515,7 +1515,7 @@ class CutPlayerDialog(QDialog):
     #: Caption block width as a fraction of canvas width.
     _SEP_CAPTION_WIDTH_FRAC = 0.90
 
-    def _sep_video_bg_image(self) -> QImage:
+    def _sep_video_bg_image(self, day=None) -> QImage:
         """Flat slide-background QImage for sep / opener video slots.
 
         spec/155 v6 — the photo canvas paints this image so the user
@@ -1523,14 +1523,23 @@ class CutPlayerDialog(QDialog):
         plus the top-30 % caption. No text is baked in (the caption
         QLabel handles that); the colour is the same deterministic
         ``card_colors`` value the still card uses, so video and still
-        days share a visual family within the same Cut."""
+        days share a visual family within the same Cut.
+
+        spec/155 round 8b — Nelson 2026-06-30: when a day is given,
+        use the per-day seed (``cut_id:day``) so each video-map sep
+        gets its own card colour. The opener still rides
+        ``self._seed_prefix`` (the cut id), matching the bake's
+        ``render_cut_opener_image(seed_key=cut.id)`` so the play cut
+        opener doesn't drift from the grid opener."""
         from mira.ui.shared.separator_card import render_flat_background
         h = max(480, self.height() or 1080)
+        seed = (f"{self._seed_prefix}:{day}"
+                if day is not None else self._seed_prefix)
         return render_flat_background(
             aspect=self._aspect,
             height=h,
             card_style=self._card_style,
-            seed_key=self._seed_prefix,
+            seed_key=seed,
         )
 
     def _slide_inner_rect(self) -> "QRect":

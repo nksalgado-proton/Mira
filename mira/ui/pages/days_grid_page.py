@@ -2651,9 +2651,16 @@ class DaysGridPage(QWidget):
         # the gateway-refresh path — both mean "Compare-marked". Count
         # both so the button reveals immediately on the C-key border
         # press, not just after the next full refresh.
+        #
+        # Skip cluster covers — a cluster whose members are all Compare
+        # aggregates to a Compare cover, which would otherwise inflate
+        # the count by 1 (Nelson 2026-06-30: "always shows (3) even
+        # when only 2 items are marked"). The dialog opens on actual
+        # cells, not covers.
         n_marked = sum(
             1 for it in self._items
-            if it.state in ("compare", "candidate"))
+            if it.item_kind != "cluster"
+            and it.state in ("compare", "candidate"))
         if n_marked >= 2:
             self._compare_btn.setText(
                 tr("⇄ Compare ({n})").replace("{n}", str(n_marked)))
@@ -2682,7 +2689,8 @@ class DaysGridPage(QWidget):
         routes correctly outside the versions sub-grid."""
         marked = [
             it for it in self._items
-            if it.state in ("compare", "candidate")]
+            if it.item_kind != "cluster"
+            and it.state in ("compare", "candidate")]
         if len(marked) < 2:
             return
         from mira.ui.exported.compare_dialog import (

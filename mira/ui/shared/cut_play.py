@@ -1475,21 +1475,31 @@ class CutPlayerDialog(QDialog):
         lbl.raise_()
         lbl.show()
 
-    # ── spec/155 v7 — slide-inset layout for video sep & opener ────
+    # ── spec/155 — PTE-derived layout constants for video sep / opener ──
+    # Source of truth: PTE example/trip_long.pte (a Cut Mira itself
+    # generated). The values below translate PTE's percent coords
+    # (range −100…+100 across the canvas, origin at centre) into
+    # canvas-fraction form used by Qt geometry. Nelson 2026-06-30
+    # confirmed the play cut should MATCH the PTE export. Stays in
+    # sync with mira/shared/pte_project.py constants — change both
+    # together.
 
-    #: Fraction of the slide's inner rect occupied by the video. The
-    #: top ``1 − this − bottom_margin`` band holds the caption.
-    _SEP_VIDEO_HEIGHT_FRAC = 0.60
+    #: Video object scale (ScaleX/Y=70 in PTE → 70 % of canvas).
+    _SEP_VIDEO_SCALE = 0.70
 
-    #: Horizontal margin (fraction of inner width) between the slide's
-    #: inner-card edge and the video / caption — so the slide border
-    #: stays visible around the video on the left + right.
-    _SEP_VIDEO_MARGIN_X_FRAC = 0.05
+    #: Video centre y (Position y=+15 in PTE → 57.5 % from top of canvas).
+    _SEP_VIDEO_CENTER_Y_FRAC = 0.575
 
-    #: Bottom margin so the slide's lower border shows under the video.
-    _SEP_VIDEO_MARGIN_BOTTOM_FRAC = 0.05
+    #: Title text centre y (Position y=-82 in PTE → 9 % from top of canvas).
+    _SEP_TITLE_CENTER_Y_FRAC = 0.09
 
-    #: Fraction of the slide's inner width the caption occupies.
+    #: Title font size as a fraction of canvas height (PTE ScaleX≈13-15).
+    _SEP_TITLE_FONT_FRAC = 0.075
+
+    #: Sub text font size as a fraction of canvas height (PTE ScaleX=5).
+    _SEP_SUB_FONT_FRAC = 0.030
+
+    #: Caption block width as a fraction of canvas width.
     _SEP_CAPTION_WIDTH_FRAC = 0.90
 
     def _sep_video_bg_image(self) -> QImage:
@@ -1578,62 +1588,62 @@ class CutPlayerDialog(QDialog):
         self._video_widget.setGeometry(inner)
 
     def _fit_sep_video_geometry(self) -> None:
-        """Position the sep / opener video inside the slide's inner
-        rect with margins on the sides + bottom AND match the widget
-        to the video's own aspect so QVideoWidget paints no internal
-        letterbox bars (spec/155 v8 — Nelson 2026-06-29). The widget
-        is sized to fit inside the 90 % × 60 % cap while preserving
-        the video's aspect; remaining space stays slide-background
-        (the rounded-card frame around the video).
+        """Position the sep / opener video to match the PTE export
+        verbatim — spec/155, Nelson 2026-06-30. The PTE side renders the
+        video as a 70 % × 70 % box centred horizontally and with vertical
+        centre at PTE y=+15 (57.5 % from the top of the canvas); the
+        widget aspect-fits the video inside that bound box so the
+        QVideoWidget paints no internal letterbox bars.
 
         Called from :meth:`_do_video_swap` and :meth:`resizeEvent`.
         """
         if self._video_widget is None or self._stack_widget is None:
             return
-        inner = self._slide_inner_rect()
-        if inner.isEmpty():
+        canvas = self._stack_widget.rect()
+        if canvas.isEmpty():
             return
-        margin_x = int(inner.width() * self._SEP_VIDEO_MARGIN_X_FRAC)
-        margin_b = int(inner.height() * self._SEP_VIDEO_MARGIN_BOTTOM_FRAC)
-        max_w = inner.width() - 2 * margin_x
-        max_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
-        if max_w <= 0 or max_h <= 0:
+        cw, ch = canvas.width(), canvas.height()
+        bound_w = int(cw * self._SEP_VIDEO_SCALE)
+        bound_h = int(ch * self._SEP_VIDEO_SCALE)
+        if bound_w <= 0 or bound_h <= 0:
             return
         aspect = self._sep_video_aspect()
-        # Fit within max_w × max_h preserving aspect — letterbox-fit
-        # logic applied to the widget itself rather than to the video
-        # inside the widget, so the widget shows no black bars.
-        if max_w / max_h > aspect:
-            video_h = max_h
-            video_w = max(1, int(round(max_h * aspect)))
+        if bound_w / bound_h > aspect:
+            video_h = bound_h
+            video_w = max(1, int(round(bound_h * aspect)))
         else:
-            video_w = max_w
-            video_h = max(1, int(round(max_w / aspect)))
-        x = inner.x() + (inner.width() - video_w) // 2
-        y = inner.bottom() + 1 - margin_b - video_h
-        self._video_widget.setGeometry(x, y, video_w, video_h)
+            video_w = bound_w
+            video_h = max(1, int(round(bound_w / aspect)))
+        center_x = cw // 2
+        center_y = int(ch * self._SEP_VIDEO_CENTER_Y_FRAC)
+        self._video_widget.setGeometry(
+            center_x - video_w // 2, center_y - video_h // 2,
+            video_w, video_h)
 
-    # ── spec/155 v2 — sep / opener video caption overlay ──────────
+    # ── spec/155 — PTE-derived sep / opener caption overlay ─────────
 
-    @staticmethod
-    def _caption_html(title: str, sub: str) -> str:
-        """Compose the top-centre caption HTML.
-
-        Qt's rich-text renderer handles a subset of HTML4 reliably —
-        ``<b>``, ``<br>``, ``<span style="…">`` — but block-element
-        styling on ``<div>`` doesn't always apply (the title looked the
-        same size as the sub in Nelson's first eyeball). Sticking to
-        the supported subset keeps the title visibly weighted and the
-        sub visibly smaller."""
+    def _caption_html(self, title: str, sub: str) -> str:
+        """Compose the caption HTML with PTE-matched font sizes — title
+        at ``_SEP_TITLE_FONT_FRAC`` of canvas height, sub at
+        ``_SEP_SUB_FONT_FRAC``. Both stack in one QLabel so we can keep
+        a single positioning anchor; the natural vertical stack lands
+        the sub close to PTE's y=-65 once the label is anchored at the
+        title's y=-82 (PTE trip_long.pte truth)."""
         from html import escape
+        ch = max(1, self._stack_widget.height() if self._stack_widget
+                 else self.height() or 1080)
+        title_px = max(12, int(ch * self._SEP_TITLE_FONT_FRAC))
+        sub_px = max(10, int(ch * self._SEP_SUB_FONT_FRAC))
         parts: list[str] = []
         if title:
-            parts.append(f"<b>{escape(title)}</b>")
+            parts.append(
+                f'<span style="font-size:{title_px}px; font-weight:bold; '
+                f'color:#ffffff;">{escape(title)}</span>')
         if sub:
             if parts:
                 parts.append("<br>")
             parts.append(
-                f'<span style="font-size:14px; color:#dddddd;">'
+                f'<span style="font-size:{sub_px}px; color:#dddddd;">'
                 f'{escape(sub)}</span>')
         return "".join(parts)
 
@@ -1696,34 +1706,32 @@ class CutPlayerDialog(QDialog):
         lbl.show()
 
     def _position_caption(self) -> None:
-        """Anchor the caption label inside the slide's top band — the
-        slot ABOVE the video, inside the rounded-card frame. Width is
-        fixed at 90 % of the slide's inner width and the background is
-        transparent (only the text reads) per spec/155 v7."""
+        """Anchor the caption label so the TITLE LINE is centred at PTE's
+        title-y (``_SEP_TITLE_CENTER_Y_FRAC`` of canvas height from top).
+        Width is fixed at ``_SEP_CAPTION_WIDTH_FRAC`` of canvas width,
+        centred horizontally. Background is transparent. Stays in sync
+        with the PTE export (spec/155 — trip_long.pte is the truth)."""
         lbl = self._caption_label
-        if lbl is None:
+        if lbl is None or self._stack_widget is None:
             return
-        inner = self._slide_inner_rect()
-        if inner.isEmpty() or self._stack_widget is None:
+        canvas = self._stack_widget.rect()
+        if canvas.isEmpty():
             return
-        top_left = self._stack_widget.mapTo(self, inner.topLeft())
-        # The caption band fills the top portion of the slide that the
-        # video doesn't claim. With v7 margins the video sits at
-        # ``video_h + margin_b`` from the slide bottom; everything
-        # above that is the caption's territory.
-        margin_b = int(inner.height() * self._SEP_VIDEO_MARGIN_BOTTOM_FRAC)
-        video_h = int(inner.height() * self._SEP_VIDEO_HEIGHT_FRAC)
-        band_h = max(48, inner.height() - video_h - margin_b)
-        w = int(inner.width() * self._SEP_CAPTION_WIDTH_FRAC)
+        canvas_top_left = self._stack_widget.mapTo(self, canvas.topLeft())
+        cw, ch = canvas.width(), canvas.height()
+        w = int(cw * self._SEP_CAPTION_WIDTH_FRAC)
         lbl.setWordWrap(True)
         lbl.setFixedWidth(w)
         lbl.adjustSize()
-        lbl_h = min(lbl.height(), band_h)
-        # Vertically centre within the band.
-        y_local = max(0, (band_h - lbl_h) // 2)
-        x_local = max(0, (inner.width() - w) // 2)
-        lbl.resize(w, lbl_h)
-        lbl.move(top_left.x() + x_local, top_left.y() + y_local)
+        # Anchor by the TITLE line's centre — title is the first line
+        # of the HTML stack, so its centre y ≈ title_font_size / 2.
+        # The sub-line naturally falls below, landing near PTE's y=-65.
+        title_px = max(12, int(ch * self._SEP_TITLE_FONT_FRAC))
+        title_center_y = int(ch * self._SEP_TITLE_CENTER_Y_FRAC)
+        lbl_top_y = title_center_y - title_px // 2
+        x_local = max(0, (cw - w) // 2)
+        lbl.move(canvas_top_left.x() + x_local,
+                 canvas_top_left.y() + max(0, lbl_top_y))
 
     def _position_origin(self) -> None:
         """Anchor the origin label to the displayed photo's TOP edge,

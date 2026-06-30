@@ -97,41 +97,36 @@ def test_caption_label_stays_child_of_dialog_on_ensure_video(
 
 def test_fit_sep_video_geometry_matches_video_aspect_within_inset(
         qapp, gw, tmp_path):
-    """spec/155 v8 — the video widget is sized to the video's OWN
-    aspect inside the 90 % × 60 % cap so QVideoWidget paints no
-    internal black bars. Horizontally centred; bottom-anchored with a
-    5 % margin so the slide border shows around it."""
+    """spec/155 — the video widget matches PTE's geometry verbatim
+    (PTE example/trip_long.pte): a 70 % × 70 % bound box, aspect-fit
+    so QVideoWidget paints no internal black bars, centred horizontally,
+    centre-y at 57.5 % from the top of the canvas (Position y=+15 in
+    PTE percent coords). Updated 2026-06-30."""
     p = _player(gw, tmp_path)
     try:
         p._ensure_video()
         p.show()
         p._stack_widget.resize(1000, 1000)
         p._photo.resize(1000, 1000)
-        pad = 28
-        inner_w = 1000 - 2 * pad
-        inner_h = 1000 - 2 * pad
         # Force a known aspect via the cache so we don't need a real
         # MP4 / probe in this test.
         p._sep_current_video_path = tmp_path / "fake.mp4"
         p._sep_video_aspect_cache[str(p._sep_current_video_path)] = 16.0 / 9.0
         p._fit_sep_video_geometry()
         g = p._video_widget.geometry()
-        margin_x = int(inner_w * 0.05)
-        margin_b = int(inner_h * 0.05)
-        max_w = inner_w - 2 * margin_x
-        max_h = int(inner_h * 0.60)
-        # max_w / max_h = 866 / 568 ≈ 1.524 < 16/9 (1.778), so width is
-        # the binding edge; height comes from width / aspect.
-        expected_w = max_w
-        expected_h = int(round(max_w / (16.0 / 9.0)))
+        bound_w = int(1000 * 0.70)  # _SEP_VIDEO_SCALE
+        bound_h = int(1000 * 0.70)
+        # bound_w / bound_h = 1.0 < 16/9 (1.778), so width is the
+        # binding edge; height comes from width / aspect.
+        expected_w = bound_w
+        expected_h = int(round(bound_w / (16.0 / 9.0)))
         assert g.width() == expected_w
         assert g.height() == expected_h
-        # Horizontally centred inside the inner card.
-        assert g.x() == pad + (inner_w - expected_w) // 2
-        # Bottom-anchored with the 5 % margin so the slide border shows
-        # under the video.
-        inner_bottom = pad + inner_h - 1
-        assert g.y() == inner_bottom + 1 - margin_b - expected_h
+        # Horizontally centred against the FULL canvas.
+        assert g.x() == 500 - expected_w // 2
+        # Vertical centre at 57.5 % of canvas height (PTE Position y=+15).
+        center_y = int(1000 * 0.575)
+        assert g.y() == center_y - expected_h // 2
     finally:
         p.close()
 

@@ -1650,28 +1650,41 @@ class CutPlayerDialog(QDialog):
 
     # ── spec/155 — PTE-derived sep / opener caption overlay ─────────
 
-    def _caption_html(self, title: str, sub: str) -> str:
+    def _caption_html(self, title: str, sub: str,
+                      seed_key: Optional[str] = None) -> str:
         """Compose the caption HTML with PTE-matched font sizes — title
         at ``_SEP_TITLE_FONT_FRAC`` of canvas height, sub at
         ``_SEP_SUB_FONT_FRAC``. Both stack in one QLabel so we can keep
         a single positioning anchor; the natural vertical stack lands
         the sub close to PTE's y=-65 once the label is anchored at the
-        title's y=-82 (PTE trip_long.pte truth)."""
+        title's y=-82 (PTE trip_long.pte truth).
+
+        spec/155 round 8 — text colours pulled from
+        :func:`mira.ui.shared.separator_card.card_colors` so pastel
+        ('single' / 'multi') cards get readable dark text and the
+        classic 'black' card still gets white. Same seed key the bake
+        was rendered with so the in-app caption matches it; opener
+        uses ``self._seed_prefix``, day-sep uses ``cut_id:day``."""
         from html import escape
+        from mira.ui.shared.separator_card import card_colors
         ch = max(1, self._stack_widget.height() if self._stack_widget
                  else self.height() or 1080)
         title_px = max(12, int(ch * self._SEP_TITLE_FONT_FRAC))
         sub_px = max(10, int(ch * self._SEP_SUB_FONT_FRAC))
+        _bg, title_c, sub_c, _desc_c = card_colors(
+            self._card_style, seed_key or self._seed_prefix)
+        title_hex = title_c.name()  # "#RRGGBB"
+        sub_hex = sub_c.name()
         parts: list[str] = []
         if title:
             parts.append(
                 f'<span style="font-size:{title_px}px; font-weight:bold; '
-                f'color:#ffffff;">{escape(title)}</span>')
+                f'color:{title_hex};">{escape(title)}</span>')
         if sub:
             if parts:
                 parts.append("<br>")
             parts.append(
-                f'<span style="font-size:{sub_px}px; color:#dddddd;">'
+                f'<span style="font-size:{sub_px}px; color:{sub_hex};">'
                 f'{escape(sub)}</span>')
         return "".join(parts)
 
@@ -1697,7 +1710,8 @@ class CutPlayerDialog(QDialog):
                 (getattr(meta, "description", "") or "").strip(),
             ) if b]
         sub = " · ".join(str(b) for b in sub_bits)
-        return self._caption_html(title, sub)
+        return self._caption_html(
+            title, sub, seed_key=f"{self._seed_prefix}:{day}")
 
     def _compose_opener_caption_html(self) -> str:
         """Cut opener caption HTML. ``opener_caption_tag`` is the show

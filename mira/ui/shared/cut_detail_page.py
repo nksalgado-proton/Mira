@@ -47,6 +47,7 @@ from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import ViewportItem
 from mira.ui.shared.cut_session_page import _SingleView, _fmt_mmss
 from mira.ui.shared.separator_card import (
+    card_colors,
     cut_opener_lines,
     paint_sep_caption_overlay,
     paint_video_thumb_overlay,
@@ -465,6 +466,11 @@ class CutDetailPage(QWidget):
                 opener_title = cut_names.display_tag(cut.tag)
                 opener_sub = "  ·  ".join(
                     str(s) for s in self._opener_lines)
+                # spec/155 round 8 — pastel card needs dark text; pull
+                # the deep-tint pair from card_colors using the same
+                # seed the bake was rendered with.
+                _bg, op_title_c, op_sub_c, _ = card_colors(
+                    self._card_style, cut.id)
                 img = render_cut_opener_image(
                     tag_text=opener_title,
                     lines=self._opener_lines,
@@ -475,7 +481,8 @@ class CutDetailPage(QWidget):
                     paint_video_thumb_overlay(
                         base=img, thumb_path=opener_thumb)
                     paint_sep_caption_overlay(
-                        base=img, title=opener_title, sub=opener_sub)
+                        base=img, title=opener_title, sub=opener_sub,
+                        title_color=op_title_c, sub_color=op_sub_c)
                 pm = QPixmap.fromImage(img)
                 if pm.width() > _CELL_PX:
                     pm = pm.scaledToWidth(_CELL_PX)
@@ -490,7 +497,8 @@ class CutDetailPage(QWidget):
                     paint_video_thumb_overlay(
                         base=full, thumb_path=opener_thumb)
                     paint_sep_caption_overlay(
-                        base=full, title=opener_title, sub=opener_sub)
+                        base=full, title=opener_title, sub=opener_sub,
+                        title_color=op_title_c, sub_color=op_sub_c)
                 self._items.append(ViewportItem(
                     kind="card", payload=tr("Opener"),
                     pixmap=QPixmap.fromImage(full)))
@@ -512,6 +520,11 @@ class CutDetailPage(QWidget):
                         getattr(meta, "date", None),
                         (getattr(meta, "description", "") or "").strip(),
                     ) if b)
+                # spec/155 round 8 — per-day card colours for readable
+                # text on pastel backgrounds.
+                sep_seed = f"{cut.id}:{day}"
+                _bg, sep_title_c, sep_sub_c, _ = card_colors(
+                    self._card_style, sep_seed)
                 # Inline render_separator_pixmap so we can composite
                 # the video thumb between the base render and the
                 # scale-down step.
@@ -529,7 +542,8 @@ class CutDetailPage(QWidget):
                     paint_video_thumb_overlay(
                         base=grid_img, thumb_path=sep_thumb)
                     paint_sep_caption_overlay(
-                        base=grid_img, title=sep_title, sub=sep_sub)
+                        base=grid_img, title=sep_title, sub=sep_sub,
+                        title_color=sep_title_c, sub_color=sep_sub_c)
                 pm = QPixmap.fromImage(grid_img)
                 if pm.width() > _CELL_PX:
                     pm = pm.scaledToWidth(
@@ -548,7 +562,8 @@ class CutDetailPage(QWidget):
                     paint_video_thumb_overlay(
                         base=full, thumb_path=sep_thumb)
                     paint_sep_caption_overlay(
-                        base=full, title=sep_title, sub=sep_sub)
+                        base=full, title=sep_title, sub=sep_sub,
+                        title_color=sep_title_c, sub_color=sep_sub_c)
                 title = (tr("Day {n} separator").replace("{n}", str(day))
                          if day is not None else tr("Separator"))
                 self._items.append(ViewportItem(

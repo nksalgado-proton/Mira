@@ -41,19 +41,29 @@ def card_colors(style: str, seed_key: str):
     Colours are DETERMINISTIC from ``seed_key`` (the Cut id for
     'single', cut id + day for 'multi') so the grid tile, the
     rehearsal and the export always render the SAME card — random at
-    creation, stable forever after. Hues spin the full wheel; the
-    background stays medium-dark so the light text always reads."""
+    creation, stable forever after.
+
+    spec/155 — Nelson 2026-06-30 swapped the original "deep-saturated,
+    medium-dark" palette for **pastels**: light, low-to-mid saturation
+    backgrounds across the full hue wheel. Text inverts to dark tints
+    of the same hue so contrast carries on any bg. The 'black' style
+    is untouched (classic dark card, white text) — the swap only
+    affects the per-Cut 'single' / per-card 'multi' variants."""
     if style not in ("single", "multi"):
         return _BG, _TITLE, _SUB, _DESC
     import zlib
     h = zlib.crc32(str(seed_key).encode("utf-8"))
     hue = h % 360
-    sat = 140 + (h >> 9) % 80          # 140–219 of 255 — colourful, not neon
-    val = 95 + (h >> 17) % 50          # 95–144 of 255 — deep enough for white
+    # Pastel band — soft saturation, high value. Avoids both neon
+    # (sat > ~120) and washed-out white (val < ~210).
+    sat = 60 + (h >> 9) % 50           # 60–109 of 255 — soft pastel
+    val = 218 + (h >> 17) % 28         # 218–245 of 255 — light pastel
     bg = QColor.fromHsv(hue, sat, val)
-    title = QColor("#F7F8FA")
-    sub = QColor.fromHsv(hue, max(0, sat - 90), 235)
-    desc = QColor.fromHsv(hue, max(0, sat - 110), 205)
+    # Dark text in the same hue — deeper saturation + low value gives
+    # a readable contrast that still feels harmonious with the bg.
+    title = QColor.fromHsv(hue, min(255, sat + 140), 55)
+    sub = QColor.fromHsv(hue, min(255, sat + 100), 95)
+    desc = QColor.fromHsv(hue, min(255, sat + 60), 130)
     return bg, title, sub, desc
 
 
@@ -174,6 +184,8 @@ def paint_sep_caption_overlay(
     base: QImage,
     title: str,
     sub: str = "",
+    title_color: "Optional[QColor]" = None,
+    sub_color: "Optional[QColor]" = None,
     title_y_frac: float = 0.09,
     sub_y_frac: float = 0.175,
     title_font_frac: float = 0.075,
@@ -192,8 +204,11 @@ def paint_sep_caption_overlay(
       title font at 7.5 % of canvas height (PTE ScaleX≈13-15)
       sub   font at 3.0 % of canvas height (PTE ScaleX=5)
 
-    No background scrim — text rides over whatever's underneath
-    (matches PTE's transparent-bg overlay)."""
+    Colours default to white / light-grey for the classic dark card,
+    but callers should pass the deep-tint pair from
+    :func:`card_colors` so pastel ('single' / 'multi') cards get
+    readable dark text. No background scrim — text rides over
+    whatever's underneath (matches PTE's transparent-bg overlay)."""
     if not title and not sub:
         return
     w, h = base.width(), base.height()
@@ -207,7 +222,7 @@ def paint_sep_caption_overlay(
         fm = p.fontMetrics()
         title_h = fm.height()
         y = int(h * title_y_frac) - title_h // 2
-        p.setPen(QColor(255, 255, 255, 255))
+        p.setPen(title_color or QColor(255, 255, 255, 255))
         p.drawText(QRect(0, y, w, title_h),
                    Qt.AlignmentFlag.AlignHCenter, title)
     if sub:
@@ -217,7 +232,7 @@ def paint_sep_caption_overlay(
         fm = p.fontMetrics()
         sub_h = fm.height()
         y = int(h * sub_y_frac) - sub_h // 2
-        p.setPen(QColor(221, 221, 221, 255))  # #dddddd, matches cut_play
+        p.setPen(sub_color or QColor(221, 221, 221, 255))
         p.drawText(QRect(0, y, w, sub_h),
                    Qt.AlignmentFlag.AlignHCenter, sub)
     p.end()

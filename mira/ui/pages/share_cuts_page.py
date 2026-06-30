@@ -3253,22 +3253,47 @@ class ShareCutsPage(QWidget):
         ``.pte`` never shows STALE baked text under the new ``:Text``
         objects. Card images are generated (never hardlinks), so
         overwriting is safe; real photos are left untouched. Failures are
-        logged, not fatal."""
+        logged, not fatal.
+
+        spec/155 — re-flatten ALSO carries through the day / event map
+        cell (or its MP4 first-frame sidecar) so a regenerate never
+        strips the attached map from the PTE slide background."""
+        from core.path_builder import (
+            MAP_VIDEO_THUMB_SUFFIX,
+            is_video_map_path,
+        )
         from mira.ui.shared.separator_card import render_flat_background
         lower = stripped.lower()
+        day_key = None
         if lower == "opener.jpg":
             seed = ctx["cut_id"]
         elif lower == "undated.jpg":
             seed = f"{ctx['cut_id']}:None"
         elif (lower.startswith("day") and lower.endswith(".jpg")
                 and lower[3:-4].isdigit()):
-            seed = f"{ctx['cut_id']}:{int(lower[3:-4])}"
+            day_key = int(lower[3:-4])
+            seed = f"{ctx['cut_id']}:{day_key}"
         else:
             return  # not a card slide — leave real photos alone
+        evt_root = ctx.get("event_root")
+        map_abs: Optional[Path] = None
+        if evt_root is not None:
+            if lower == "opener.jpg":
+                rel = ctx.get("event_map_rel")
+            elif day_key is not None:
+                meta = ctx["day_meta"].get(day_key)
+                rel = getattr(meta, "map_image_path", None) if meta else None
+            else:
+                rel = None
+            if rel:
+                if is_video_map_path(rel):
+                    rel = rel + MAP_VIDEO_THUMB_SUFFIX
+                map_abs = Path(evt_root) / rel
         try:
             img = render_flat_background(
                 aspect=ctx["aspect"], height=ctx["canvas_h"],
-                card_style=ctx["card_style"], seed_key=seed)
+                card_style=ctx["card_style"], seed_key=seed,
+                map_image_path=map_abs)
             if not img.save(str(entry), "JPG", 92):
                 raise OSError(f"could not write {entry}")
         except Exception:                                          # noqa: BLE001

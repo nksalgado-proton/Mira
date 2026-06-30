@@ -395,6 +395,26 @@ class CutDetailPage(QWidget):
         self._day_meta = day_meta
         self._aspect = aspect
         self._entries = show_entries(eg, cut, separators_on=separators_on)
+        # spec/155 — resolve the event-level + per-day map slots so the
+        # opener / day-separator card thumbs render with the same map
+        # cell the export bake and Cut Play paths use. For MP4 maps,
+        # substitute the first-frame sidecar so QImage can load it.
+        from core.path_builder import (
+            MAP_VIDEO_THUMB_SUFFIX,
+            is_video_map_path,
+        )
+        _evt_map_rel = eg.get_event_map_path()
+        def _map_abs_for(day) -> "Optional[Path]":
+            if isinstance(day, int):
+                meta = day_meta.get(day)
+                rel = getattr(meta, "map_image_path", None) if meta else None
+            else:
+                rel = _evt_map_rel
+            if not rel:
+                return None
+            if is_video_map_path(rel):
+                rel = rel + MAP_VIDEO_THUMB_SUFFIX
+            return self._root / rel
 
         totals_for_opener = eg.cut_show_totals(cut.id)
         from dataclasses import replace as _replace
@@ -422,11 +442,13 @@ class CutDetailPage(QWidget):
         self._video_thumb_in_flight = set()
         for kind, payload in self._entries:
             if kind == "opener":
+                opener_map = _map_abs_for(None)
                 img = render_cut_opener_image(
                     tag_text=cut_names.display_tag(cut.tag),
                     lines=self._opener_lines,
                     aspect=aspect, height=_CELL_PX,
-                    card_style=self._card_style, seed_key=cut.id)
+                    card_style=self._card_style, seed_key=cut.id,
+                    map_image_path=opener_map)
                 pm = QPixmap.fromImage(img)
                 if pm.width() > _CELL_PX:
                     pm = pm.scaledToWidth(_CELL_PX)
@@ -435,13 +457,15 @@ class CutDetailPage(QWidget):
                     tag_text=cut_names.display_tag(cut.tag),
                     lines=self._opener_lines,
                     aspect=aspect, height=_CARD_FULL_HEIGHT,
-                    card_style=self._card_style, seed_key=cut.id)
+                    card_style=self._card_style, seed_key=cut.id,
+                    map_image_path=opener_map)
                 self._items.append(ViewportItem(
                     kind="card", payload=tr("Opener"),
                     pixmap=QPixmap.fromImage(full)))
             elif kind == "sep":
                 day = payload
                 meta = day_meta.get(day)
+                sep_map = _map_abs_for(day)
                 pm = render_separator_pixmap(
                     size=_CELL_PX,
                     day_number=day,
@@ -450,7 +474,8 @@ class CutDetailPage(QWidget):
                     description=getattr(meta, "description", "") or "",
                     aspect=aspect,
                     card_style=self._card_style,
-                    seed_key=f"{cut.id}:{day}")
+                    seed_key=f"{cut.id}:{day}",
+                    map_image_path=sep_map)
                 grid_items.append(ThumbGridItem(pixmap=pm, payload=("sep", day)))
                 full = render_separator_image(
                     day_number=day,
@@ -459,7 +484,8 @@ class CutDetailPage(QWidget):
                     description=getattr(meta, "description", "") or "",
                     aspect=aspect, height=_CARD_FULL_HEIGHT,
                     card_style=self._card_style,
-                    seed_key=f"{cut.id}:{day}")
+                    seed_key=f"{cut.id}:{day}",
+                    map_image_path=sep_map)
                 title = (tr("Day {n} separator").replace("{n}", str(day))
                          if day is not None else tr("Separator"))
                 self._items.append(ViewportItem(

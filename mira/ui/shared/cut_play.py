@@ -1210,12 +1210,23 @@ class CutPlayerDialog(QDialog):
         meta = self._day_meta.get(day)
         rel = getattr(meta, "map_image_path", None)
         if not rel:
+            log.info(
+                "sep video: day=%r → no meta or empty map_image_path "
+                "(meta_present=%s, day_meta_keys=%r)",
+                day, meta is not None, sorted(self._day_meta.keys()))
             return None
         from core.path_builder import is_video_map_path
         if not is_video_map_path(rel):
+            log.info(
+                "sep video: day=%r rel=%r → not video map", day, rel)
             return None
         abs_p = self._root / rel
-        return abs_p if abs_p.is_file() else None
+        if not abs_p.is_file():
+            log.info(
+                "sep video: day=%r abs=%r → file missing", day, abs_p)
+            return None
+        log.info("sep video: day=%r → resolved to %r", day, abs_p)
+        return abs_p
 
     def _sep_video_duration_ms(self, day) -> int:
         """Probed duration of the day's video-map separator, cached.

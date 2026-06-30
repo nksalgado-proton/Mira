@@ -3361,9 +3361,10 @@ class ShareCutsPage(QWidget):
             meta = ctx["day_meta"].get(n)
             texts = [PteText(
                 tr("Day {n}").replace("{n}", str(n)), TEXT_SEP_TITLE)]
+            # spec/155 — Nelson 2026-06-30 dropped the location field
+            # from every separator caption surface.
             bits = [b for b in (
                 getattr(meta, "date", None),
-                getattr(meta, "location", None),
                 getattr(meta, "description", None)) if b]
             sub = " · ".join(str(b) for b in bits)
             if sub:

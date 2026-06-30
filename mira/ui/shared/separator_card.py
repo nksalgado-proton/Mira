@@ -263,7 +263,10 @@ def render_separator_image(
             head = tr("Day {n}").replace("{n}", str(day_number))
         else:
             head = tr("More moments")
-        sub_line = " · ".join(b for b in (date, location) if b)
+        # spec/155 — Nelson 2026-06-30 dropped the location field. Date
+        # carries on its own as the sub line; description still rides
+        # the third slot.
+        sub_line = date or ""
         _paint_caption_strip(
             base=img, title=head, sub=sub_line,
             desc=(description or "").strip(),
@@ -283,7 +286,8 @@ def render_separator_image(
         # token with an unresolved event name) → a neutral headline rather
         # than a garbled "Day (…)".
         title = tr("More moments")
-    sub = " · ".join(b for b in (date, location) if b)
+    # spec/155 — Nelson 2026-06-30 dropped the location field.
+    sub = date or ""
     desc = (description or "").strip()
 
     title_font = QFont("Segoe UI", max(10, int(h * 0.085)), QFont.Weight.Bold)

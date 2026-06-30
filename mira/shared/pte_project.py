@@ -850,6 +850,34 @@ def _populate_nested_text(slide_body: str, overlay_text: str) -> str:
     return slide_body[: m.start()] + block + slide_body[m.end():]
 
 
+def _is_card_slide_path(p: Path) -> bool:
+    """True when the file is one of Mira's card slides — ``opener.jpg``,
+    ``undated.jpg``, or ``dayN.jpg`` (with the optional ``NNN_`` export
+    prefix). Used to strip the Cover-blurred backdrop from card slides
+    in PTE so the look matches the play cut's flat background
+    (Nelson 2026-06-30, spec/155)."""
+    name = p.name.lower()
+    if len(name) > 4 and name[:3].isdigit() and name[3] == "_":
+        base = name[4:]
+    else:
+        base = name
+    if base in ("opener.jpg", "undated.jpg"):
+        return True
+    return (base.startswith("day") and base.endswith(".jpg")
+            and base[3:-4].isdigit())
+
+
+def _strip_cover_blurred_block(slide_body: str) -> str:
+    """Remove the first ``PhotoProto:Image`` block (the Cover-blurred
+    backdrop) from a slide body — leaves only the sharp PlaceInto
+    foreground photo. Applied to card slides so PTE's separator /
+    opener background reads flat, matching the play cut
+    (Nelson 2026-06-30, spec/155)."""
+    return re.sub(
+        r"^  object PhotoProto:Image\b.*?\n  end\r?\n",
+        "", slide_body, count=1, flags=re.DOTALL | re.MULTILINE)
+
+
 def _set_slide_image_paths(slide_body: str, image_path: str) -> str:
     """Rewrite every `ImageName=` line + the slide-level `Picture=` line
     to ``image_path``. Photo slides use this; the per-object `GUID`s
@@ -1064,6 +1092,12 @@ def generate(
             body = proto_photo_body
             body = _regenerate_guids(body)
             body = _set_slide_image_paths(body, path_s)
+            # spec/155 — card slides (opener / undated / dayN) drop the
+            # Cover-blurred backdrop so PTE shows a flat background,
+            # matching the play cut. Regular photo slides keep the
+            # blurred matte.
+            if _is_card_slide_path(m.path):
+                body = _strip_cover_blurred_block(body)
             slide_durations_ms.append(photo_ms)
         # Overlay text objects (spec/153) — Mira-styled separate ``:Text``
         # per member. Empty ``texts`` → a clean slide. The legacy single

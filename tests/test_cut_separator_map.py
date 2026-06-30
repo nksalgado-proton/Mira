@@ -100,7 +100,13 @@ def test_render_separator_image_with_map_has_caption_strip(qapp, tmp_path):
     )
     h = img.height()
     centre_y = h // 2
-    strip_y = h - 16  # well inside the caption strip
+    # Sample inside the caption strip but BELOW the text glyphs. Title
+    # + sub render in the upper portion of the strip; the bottom few
+    # pixels are pure scrim. h-3 is reliably below the glyph block
+    # regardless of how the date / description line wraps (Nelson
+    # 2026-06-30 — the shorter date-only sub used to leave glyphs at
+    # h-16 which read brighter than the centre map pixel).
+    strip_y = h - 3
     centre = QColor(img.pixel(img.width() // 2, centre_y))
     strip = QColor(img.pixel(img.width() // 2, strip_y))
     # Strip should be noticeably darker (the translucent black scrim).

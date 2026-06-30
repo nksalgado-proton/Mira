@@ -1498,8 +1498,13 @@ class CutPlayerDialog(QDialog):
     #: Video centre y (Position y=+15 in PTE → 57.5 % from top of canvas).
     _SEP_VIDEO_CENTER_Y_FRAC = 0.575
 
-    #: Title text centre y (Position y=-82 in PTE → 9 % from top of canvas).
-    _SEP_TITLE_CENTER_Y_FRAC = 0.09
+    #: Title text centre y. PTE's Position y=-82 maps to 9 % from top
+    #: of canvas, but Qt's font baseline + the absence of PTE's text
+    #: bounding-box padding makes the same Y read TOO HIGH in the play
+    #: cut. Nelson 2026-06-30 asked to move it down a touch; 0.14 puts
+    #: the title centre at 14 % from the top, which lands the text
+    #: where PTE's rendered glyphs actually sit.
+    _SEP_TITLE_CENTER_Y_FRAC = 0.14
 
     #: Title font size as a fraction of canvas height (PTE ScaleX≈13-15).
     _SEP_TITLE_FONT_FRAC = 0.075
@@ -1684,10 +1689,11 @@ class CutPlayerDialog(QDialog):
             title = tr("Day {n}").replace("{n}", str(day))
         else:
             title = tr("More moments")
+        # spec/155 — Nelson 2026-06-30 dropped the location field from
+        # every separator caption surface. Date + description only.
         sub_bits = [
             b for b in (
                 getattr(meta, "date", None),
-                getattr(meta, "location", None),
                 (getattr(meta, "description", "") or "").strip(),
             ) if b]
         sub = " · ".join(str(b) for b in sub_bits)

@@ -1560,14 +1560,22 @@ class CutPlayerDialog(QDialog):
         return ratio
 
     def _fit_file_video_geometry(self) -> None:
-        """Restore the file-video widget to fill the whole slide canvas
-        (the historical behaviour). The QVideoWidget is not in a layout,
-        so any previous sep / opener inset geometry sticks until we
-        explicitly clear it (spec/155 v6 regression — file videos played
-        at opener size after a sep / opener video set the geometry)."""
+        """Position a regular file video inside the slide's INNER rect —
+        the same area where photos paint — so the rounded-card slide
+        frame stays visible around the video instead of the video
+        bleeding to the canvas edge (Nelson 2026-06-30: "they should
+        play in a size that would fit in a separator slide").
+
+        The QVideoWidget keeps ``KeepAspectRatio`` mode so the video
+        letterboxes within the inner rect. Sep / opener videos still
+        use ``_fit_sep_video_geometry`` (different cap + caption band)."""
         if self._video_widget is None or self._stack_widget is None:
             return
-        self._video_widget.setGeometry(self._stack_widget.rect())
+        inner = self._slide_inner_rect()
+        if inner.isEmpty():
+            self._video_widget.setGeometry(self._stack_widget.rect())
+            return
+        self._video_widget.setGeometry(inner)
 
     def _fit_sep_video_geometry(self) -> None:
         """Position the sep / opener video inside the slide's inner

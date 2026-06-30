@@ -6636,6 +6636,14 @@ class MainWindow(QMainWindow):
                 location=sr.location,
                 tz_minutes=sr.tz_minutes,
                 extras_json=_extras_with_country(sr.country_code),
+                # spec/155 — preserve the per-day map slot. The
+                # EventDaysTableDialog's map-chip attach flow writes
+                # ``trip_day.map_image_path`` directly via
+                # ``EventGateway.attach_day_map``; without this kwarg
+                # the subsequent ``save_trip_days`` upsert would NULL
+                # the column right back out, dropping every map the
+                # user just attached during the dialog session.
+                map_image_path=sr.map_image_path,
             ))
         new_days.sort(key=lambda td: td.day_number)
         try:
@@ -6802,6 +6810,11 @@ class MainWindow(QMainWindow):
                 location=sr.location,
                 tz_minutes=sr.tz_minutes,
                 extras_json=_extras_with_country(sr.country_code),
+                # spec/155 — see _save_trip_day_edits; the retime-save
+                # path must also carry the map slot through or the
+                # subsequent save_trip_days NULLs whatever the user
+                # just attached via the days-table map chip.
+                map_image_path=sr.map_image_path,
             ))
         new_days.sort(key=lambda td: td.day_number)
         try:

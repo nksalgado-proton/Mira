@@ -74,7 +74,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 25
 
 # --------------------------------------------------------------------------- #
 # Shared enum domains (spec/30 §3 + spec/52 cleanup). SQLite cannot DRY a CHECK
@@ -283,6 +283,17 @@ CREATE TABLE item (
   quarantine_status      TEXT NOT NULL DEFAULT 'ok'
                               CHECK (quarantine_status IN ('ok','no_timestamp','recovered')),
   recovered_from_filename INTEGER NOT NULL DEFAULT 0 CHECK (recovered_from_filename IN (0,1)),
+  -- spec/159 §6+ (Nelson 2026-06-30 eyeball pivot) — preferred-version
+  -- flag for the VIRTUAL Mira-render intent. When the user picks the
+  -- Mira-pending tile in Compare on a cluster whose Mira render hasn't
+  -- materialised yet, this column flips to 1; downstream Cuts compose
+  -- reads it as "use Mira when it ships." Mutually exclusive with any
+  -- ``lineage.is_preferred = 1`` row for the same item — the gateway's
+  -- setters clear each other's flag inside one transaction. When a
+  -- Mira render later materialises (a fresh ``mira_render`` lineage
+  -- row), the next preferred-resolution pass can promote that row +
+  -- clear this column.
+  preferred_virtual_mira INTEGER NOT NULL DEFAULT 0 CHECK (preferred_virtual_mira IN (0,1)),
   created_at             TEXT NOT NULL,
   -- VIRTUAL/MATERIALISED invariant: bytes present iff materialized -----------
   CHECK ( (origin_relpath IS NULL  AND sha256 IS NULL  AND byte_size IS NULL  AND materialized_at IS NULL)
@@ -720,6 +731,13 @@ CREATE TABLE lineage (
   color_label       TEXT    CHECK (color_label IS NULL OR color_label IN ('red','yellow','green','blue','purple')),
   flag              INTEGER NOT NULL DEFAULT 0 CHECK (flag IN (0,1)),
   to_delete         INTEGER NOT NULL DEFAULT 0 CHECK (to_delete IN (0,1)),
+  -- spec/159 §6+ — at most one preferred version per ``source_item_id``.
+  -- The gateway's ``set_lineage_preferred`` clears any sibling row's
+  -- flag before setting a new one (single transaction) so downstream
+  -- surfaces (Cuts compose) read a deterministic "which version to
+  -- include." Single-version cells are implicitly preferred and
+  -- don't need this flag.
+  is_preferred      INTEGER NOT NULL DEFAULT 0 CHECK (is_preferred IN (0,1)),
   CHECK ( (source_kind='item'    AND source_item_id IS NOT NULL AND source_bracket_id IS NULL)
        OR (source_kind='bracket' AND source_bracket_id IS NOT NULL AND source_item_id IS NULL) )
 );
@@ -732,6 +750,9 @@ CREATE INDEX ix_lineage_stars       ON lineage(stars)       WHERE stars IS NOT N
 CREATE INDEX ix_lineage_color_label ON lineage(color_label) WHERE color_label IS NOT NULL;
 CREATE INDEX ix_lineage_flag        ON lineage(flag)        WHERE flag = 1;
 CREATE INDEX ix_lineage_to_delete   ON lineage(to_delete)   WHERE to_delete = 1;
+-- spec/159 §6+ — "find the preferred version of this source" is the
+-- hot lookup; partial index keeps the table walk tiny.
+CREATE INDEX ix_lineage_preferred   ON lineage(source_item_id) WHERE is_preferred = 1;
 
 -- ===== bucket (D) — durable soft-state ONLY ================================
 -- bucket_key is FK-less BY DESIGN: it is a content-stable recomputed id, and
@@ -1654,6 +1675,48 @@ def _migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v24_to_v25(conn: sqlite3.Connection) -> None:
+    """spec/159 §6+ Nelson eyeball pivot — virtual-Mira preferred flag
+    on ``item``.
+
+    Adds the boolean ``preferred_virtual_mira`` column on ``item``. In
+    practice many clusters consist of an LRC return + the virtual Mira
+    intent (no Mira render file on disk yet); the user still wants to
+    pick which is preferred. ``lineage.is_preferred`` covers real
+    rows; this column covers the virtual case. The gateway's
+    ``set_lineage_preferred`` clears this column for the same source
+    when it writes a real preferred row; ``set_item_preferred_virtual_mira``
+    clears all ``lineage.is_preferred`` siblings for that source.
+    """
+    conn.execute(
+        "ALTER TABLE item ADD COLUMN preferred_virtual_mira INTEGER NOT NULL "
+        "DEFAULT 0 CHECK (preferred_virtual_mira IN (0,1))"
+    )
+
+
+def _migrate_v23_to_v24(conn: sqlite3.Connection) -> None:
+    """spec/159 §6+ — preferred-version flag on ``lineage``.
+
+    Adds the boolean ``is_preferred`` column + a partial index keyed
+    on ``source_item_id``. The gateway enforces the at-most-one-per-
+    source uniqueness rule by clearing siblings inside one
+    transaction; the schema only enforces 0/1 + the index.
+
+    Existing rows default to 0 (not preferred). The Exported
+    Collection's downstream consumers (Cuts compose) fall back to a
+    deterministic "most-recent ``mira_render`` first" pick when no
+    preferred is set, so legacy events keep working without backfill.
+    """
+    conn.execute(
+        "ALTER TABLE lineage ADD COLUMN is_preferred INTEGER NOT NULL "
+        "DEFAULT 0 CHECK (is_preferred IN (0,1))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_lineage_preferred "
+        "ON lineage(source_item_id) WHERE is_preferred = 1"
+    )
+
+
 def _migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
     """spec/156 — per-image creative-filter STRENGTH.
 
@@ -1726,6 +1789,8 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v20_to_v21,
     _migrate_v21_to_v22,
     _migrate_v22_to_v23,
+    _migrate_v23_to_v24,
+    _migrate_v24_to_v25,
 ]
 
 

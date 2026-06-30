@@ -104,6 +104,16 @@ class ThumbGridItem:
     color_label: Optional[str] = None
     flag: bool = False
     to_delete: bool = False
+    #: spec/159 §4.4 — "N/M to delete" sub-chip on a versions-cluster
+    #: cover. ``None`` hides; ``(marked, total)`` paints when marked
+    #: is ≥ 1 and the cell is a cluster cover.
+    to_delete_split: Optional[Tuple[int, int]] = None
+    #: spec/159 §6+ — paint the ✓ preferred pill (flat cell) when
+    #: True; hidden on cluster covers (use ``preferred_origin``).
+    preferred: bool = False
+    #: spec/159 §6+ — cluster cover's "✓ <origin>" chip. ``None``
+    #: hides; a non-empty string paints (LRC / Mira / ext).
+    preferred_origin: Optional[str] = None
 
 
 class _GridCell(Thumb):
@@ -143,6 +153,9 @@ class _GridCell(Thumb):
             color_label=item.color_label,
             flag=item.flag,
             to_delete=item.to_delete,
+            to_delete_split=item.to_delete_split,
+            preferred=item.preferred,
+            preferred_origin=item.preferred_origin,
             parent=parent,
         )
         self.setExportDestructiveMode(item.export_destructive_mode)
@@ -184,6 +197,9 @@ class _GridCell(Thumb):
         self.setColorLabel(item.color_label)
         self.setFlag(item.flag)
         self.setToDelete(item.to_delete)
+        self.setToDeleteSplit(item.to_delete_split)
+        self.setPreferred(item.preferred)
+        self.setPreferredOrigin(item.preferred_origin)
         # cluster_type + cluster_split aren't setter-exposed on Thumb;
         # write them directly (paintEvent reads instance attrs).
         self._cluster_type = item.cluster_type

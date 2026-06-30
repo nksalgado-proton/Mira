@@ -264,3 +264,71 @@ def test_delete_marked_exported_files_only_targets_flagged_versions(
     rels = {row.export_relpath for row in gw.exported_files_all()}
     assert mira_version not in rels
     assert lr_version in rels
+
+
+# ── preferred-version flag (§6+) ────────────────────────────────────
+
+
+def test_lineage_ratings_carries_preferred(gw):
+    """The bag read should include ``is_preferred=False`` by default
+    and flip when ``set_lineage_preferred`` writes it."""
+    rel = "Exported Media/Dia 1/p1.jpg"
+    assert gw.lineage_ratings(rel).is_preferred is False
+    gw.set_lineage_preferred(rel, True)
+    assert gw.lineage_ratings(rel).is_preferred is True
+
+
+def test_set_lineage_preferred_clears_siblings(gw):
+    """Setting one of p1's versions preferred clears any sibling row
+    that previously held the flag — at-most-one-per-source invariant."""
+    mira_v = "Exported Media/Dia 1/p1.jpg"
+    lrc_v = "Exported Media/Dia 1/p1_LRC.jpg"
+    gw.set_lineage_preferred(mira_v, True)
+    assert gw.lineage_ratings(mira_v).is_preferred is True
+    assert gw.lineage_ratings(lrc_v).is_preferred is False
+    # Flip the preferred to the LRC version — the Mira flag clears.
+    gw.set_lineage_preferred(lrc_v, True)
+    assert gw.lineage_ratings(mira_v).is_preferred is False
+    assert gw.lineage_ratings(lrc_v).is_preferred is True
+
+
+def test_set_lineage_preferred_clear_only_affects_this_row(gw):
+    """Toggling preferred=False on one row never touches sibling
+    rows — the gateway doesn't auto-promote another version."""
+    mira_v = "Exported Media/Dia 1/p1.jpg"
+    lrc_v = "Exported Media/Dia 1/p1_LRC.jpg"
+    gw.set_lineage_preferred(mira_v, True)
+    gw.set_lineage_preferred(mira_v, False)
+    assert gw.lineage_ratings(mira_v).is_preferred is False
+    assert gw.lineage_ratings(lrc_v).is_preferred is False
+
+
+def test_preferred_for_item_returns_the_preferred_row(gw):
+    """``preferred_for_item`` is the downstream lookup Cuts compose
+    will use."""
+    mira_v = "Exported Media/Dia 1/p1.jpg"
+    assert gw.preferred_for_item("p1") is None
+    gw.set_lineage_preferred(mira_v, True)
+    pref = gw.preferred_for_item("p1")
+    assert pref is not None
+    assert pref.export_relpath == mira_v
+    # Another source with no preferred reads None.
+    assert gw.preferred_for_item("p2") is None
+
+
+def test_set_lineage_preferred_independent_across_sources(gw):
+    """Marking p1's Mira version preferred has zero effect on p2's
+    row (different source_item_id, separate uniqueness scope)."""
+    gw.set_lineage_preferred("Exported Media/Dia 1/p1.jpg", True)
+    gw.set_lineage_preferred("Exported Media/Dia 1/p2.jpg", True)
+    assert gw.lineage_ratings(
+        "Exported Media/Dia 1/p1.jpg").is_preferred is True
+    assert gw.lineage_ratings(
+        "Exported Media/Dia 1/p2.jpg").is_preferred is True
+
+
+def test_set_lineage_preferred_noop_when_row_missing(gw):
+    """An UPDATE against a missing row matches zero rows — the gateway
+    stays silent."""
+    gw.set_lineage_preferred("Exported Media/missing.jpg", True)
+    assert gw.preferred_for_item("p1") is None

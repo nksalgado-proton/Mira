@@ -151,6 +151,12 @@ class Item:
     bracket_role: Optional[str] = None
     quarantine_status: str = "ok"
     recovered_from_filename: bool = False
+    # spec/159 §6+ Nelson eyeball pivot — virtual-Mira preferred flag.
+    # When the user picks the Mira-pending tile in Compare on a
+    # cluster that has no materialised Mira render yet, this flag
+    # flips. Mutually exclusive with ``lineage.is_preferred`` for the
+    # same item — the gateway's setters keep one or the other clear.
+    preferred_virtual_mira: bool = False
 
 
 @dataclass
@@ -431,6 +437,12 @@ class Lineage:
     color_label: Optional[str] = None
     flag: bool = False
     to_delete: bool = False
+    # spec/159 §6+ — preferred-version flag. At most one row per
+    # ``source_item_id`` carries ``is_preferred=True`` (gateway-
+    # enforced via clear-siblings-then-set in one transaction). When
+    # a source has multiple shipped versions, downstream surfaces
+    # (Cuts compose) read this row as "the one to include."
+    is_preferred: bool = False
 
 
 @dataclass

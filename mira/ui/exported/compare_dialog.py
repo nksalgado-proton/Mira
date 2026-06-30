@@ -78,6 +78,11 @@ class CompareItem:
     develop_for_preview: bool = False
     develop_adjustment: Any = None
     develop_style_fallback: str = "general"
+    #: spec/159 §6+ — caller-controlled gate on the "Use this" button.
+    #: Virtual members (Mira-pending) clear this so the user can't
+    #: pick a version that has no bytes on disk; once it materialises
+    #: as a real lineage row, the flag flips True by default.
+    can_be_preferred: bool = True
 
 
 def _border_color_for_state(state: Optional[str]) -> str:
@@ -108,6 +113,8 @@ class _CompareTile(QFrame):
 
     toggled = pyqtSignal(str)             # item_id
     focused = pyqtSignal(str)             # item_id (mouse-focus the tile)
+    #: spec/159 §6+ — Use-this click from this tile's action button.
+    use_this_clicked = pyqtSignal(str)    # item_id
 
     def __init__(
         self,
@@ -140,13 +147,71 @@ class _CompareTile(QFrame):
 
         # spec/63 §4 follow-up — Nelson 2026-06-30: the per-tile title
         # + state chip read as redundant / wrong when this dialog is
-        # reused outside the Export Compare flow (the "Will be
-        # exported" wording, the storage-relpath title). Dropping both
-        # labels; the coloured 3 px border still encodes the state.
-        # ``set_state`` keeps refreshing the border only.
+        # reused outside the Export Compare flow (the day-grid Compare
+        # uses the coloured 3 px border to encode state, no caption
+        # needed).
+        # spec/159 §6 (Nelson 2026-06-30 round 5) — the closed-event
+        # Compare has no state grammar (review surface, no Pick/Skip),
+        # so the user needs the per-tile caption back to tell "LRC"
+        # from "Mira" at a glance. Caller opts in via the dialog's
+        # ``show_titles`` constructor flag (off by default to keep the
+        # day-grid Compare clean).
+        if item.title:
+            self._title_lbl: Optional[QLabel] = QLabel(item.title)
+            # Reuse the existing ``#Sub`` typography role from
+            # redesign.qss — theme-aware ink, no inline styles.
+            self._title_lbl.setObjectName("Sub")
+            self._title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._title_lbl.setVisible(False)
+            outer.addWidget(self._title_lbl, 0)
+        else:
+            self._title_lbl = None
+
+        # spec/159 §6+ — per-tile "Use this" action. Hidden by default
+        # so the day-grid Compare reuse stays unchanged; the closed-
+        # event Compare opts in via the dialog's ``show_use_this``
+        # flag. The button is a custom-painted PreferredToggle re-used
+        # so the visual language matches the review-dialog chrome.
+        from mira.ui.exported.rating_widgets import PreferredToggle
+        self._use_this_btn = PreferredToggle(self)
+        self._use_this_btn.setVisible(False)
+        self._use_this_btn.toggled.connect(self._on_use_this_toggled)
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.addStretch(1)
+        action_row.addWidget(self._use_this_btn)
+        action_row.addStretch(1)
+        outer.addLayout(action_row)
 
         self.set_state(item.state)
         self._load_pixmap()
+
+    def set_title_visible(self, visible: bool) -> None:
+        """Show or hide the per-tile caption (the provenance badge)."""
+        if self._title_lbl is not None:
+            self._title_lbl.setVisible(bool(visible))
+
+    def set_use_this_visible(self, visible: bool) -> None:
+        """Show or hide the "✓ Use this" action button."""
+        self._use_this_btn.setVisible(bool(visible))
+
+    def set_preferred(self, preferred: bool) -> None:
+        """Push the preferred-state onto the action button without
+        firing a toggle signal back."""
+        self._use_this_btn.setValue(bool(preferred))
+
+    def _on_use_this_toggled(self, on: bool) -> None:
+        # Per spec/159 §6+, clicking "Use this" on a tile sets it as
+        # the preferred version. Toggling the same tile OFF would
+        # leave the source with no preferred — surface that to the
+        # host too (the host calls set_lineage_preferred(rel, False)).
+        if on:
+            self.use_this_clicked.emit(self._item.item_id)
+        else:
+            # Empty payload = "clear this tile's preferred flag." The
+            # host knows it called set_preferred(True) on this tile so
+            # the inverse is unambiguous.
+            self.use_this_clicked.emit("")
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -306,11 +371,19 @@ class CompareVersionsDialog(QDialog):
     intent_pick_requested = pyqtSignal(str)     # item_id
     intent_skip_requested = pyqtSignal(str)     # item_id
     intent_toggle_requested = pyqtSignal(str)   # item_id
+    #: spec/159 §6+ — the user picked this tile as the preferred
+    #: version of its source. Carries the tile's ``item_id`` (which
+    #: for spec/159 callers is the lineage row's ``export_relpath``).
+    use_this_requested = pyqtSignal(str)
 
     def __init__(
         self,
         items: List[CompareItem],
         parent: Optional[QWidget] = None,
+        *,
+        show_titles: bool = False,
+        show_use_this: bool = False,
+        preferred_item_id: Optional[str] = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("CompareVersionsDialog")
@@ -319,6 +392,9 @@ class CompareVersionsDialog(QDialog):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._items: List[CompareItem] = list(items)
         self._tiles: List[_CompareTile] = []
+        self._show_titles = bool(show_titles)
+        self._show_use_this = bool(show_use_this)
+        self._preferred_item_id = preferred_item_id
         # spec/63 locked keymap — the focused tile is the implicit
         # target of P / X / Space. Tiles 0..N-1; the first tile starts
         # focused so the user can act immediately without clicking.
@@ -388,8 +464,18 @@ class CompareVersionsDialog(QDialog):
         host_layout.setVerticalSpacing(12)
         for idx, item in enumerate(self._items):
             tile = _CompareTile(item, parent=host)
+            tile.set_title_visible(self._show_titles)
+            # The "Use this" button only appears when the dialog opts
+            # in AND the underlying item allows it (virtual Mira-
+            # pending members opt out — see CompareItem docstring).
+            tile.set_use_this_visible(
+                self._show_use_this and item.can_be_preferred)
+            if (self._preferred_item_id is not None
+                    and item.item_id == self._preferred_item_id):
+                tile.set_preferred(True)
             tile.toggled.connect(self.intent_toggle_requested.emit)
             tile.focused.connect(self._on_tile_focused)
+            tile.use_this_clicked.connect(self._on_tile_use_this)
             row, col = divmod(idx, cols)
             host_layout.addWidget(tile, row, col)
             self._tiles.append(tile)
@@ -408,6 +494,30 @@ class CompareVersionsDialog(QDialog):
             if tile.item_id() == item_id:
                 tile.set_state(new_state or None)
                 return
+
+    def set_preferred_item_id(self, item_id: Optional[str]) -> None:
+        """spec/159 §6+ — set or clear the preferred tile. Empty /
+        ``None`` clears every tile's "Use this" toggle."""
+        self._preferred_item_id = item_id or None
+        for tile in self._tiles:
+            tile.set_preferred(
+                bool(item_id) and tile.item_id() == item_id)
+
+    def _on_tile_use_this(self, item_id: str) -> None:
+        """spec/159 §6+ — a tile fired Use-this. The dialog enforces
+        the singleton invariant (mirror of the gateway's clear-then-
+        set transaction): set this tile preferred + clear every
+        other, then surface to the host via :data:`use_this_requested`
+        which writes through ``set_lineage_preferred``. An empty
+        ``item_id`` payload from the tile means the user just
+        toggled the current preferred OFF."""
+        if not item_id:
+            cleared = self._preferred_item_id
+            self.set_preferred_item_id(None)
+            self.use_this_requested.emit(cleared or "")
+            return
+        self.set_preferred_item_id(item_id)
+        self.use_this_requested.emit(item_id)
 
     # ── Focus + keymap (spec/63) ────────────────────────────────────
 

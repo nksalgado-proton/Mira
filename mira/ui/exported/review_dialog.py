@@ -1,30 +1,34 @@
 """spec/159 — the Exported Collection review viewer.
 
-A lightweight dialog that opens against a lineage row (one exported
-file), shows the actual exported bytes through
-:class:`~mira.ui.media.photo_viewport.PhotoViewport`, and surfaces
-the per-version classification controls (stars / colour label /
-portfolio flag / "marked for deletion" toggle).
+Opens against a lineage row (one exported file), shows the actual
+exported file's bytes through
+:class:`~mira.ui.media.photo_viewport.PhotoViewport`, and surfaces the
+per-version classification controls (Style + stars + colour label +
+portfolio flag + "marked for deletion" toggle).
 
 This is the spec/159 Session B viewer in its minimal-viable form.
-The spec asked for Editor reuse with a ``review_mode`` flag; this
-implementation goes lighter because the Editor's creative chrome is
-already a substantial maintenance surface and the review use case
-doesn't need any of it. If the Editor reuse turns out to be the
-better long-term call, this dialog can be replaced — the
-DCDetailPage already wires ``review_requested`` as the open verb.
+Spec §5 calls for Editor reuse with a ``review_mode`` flag; this
+implementation goes lighter — purpose-built chrome controls, no
+creative-edit machinery — because the rating use case doesn't need
+any of it. If Editor reuse turns out to be the better long-term
+call, the DCDetailPage already routes through ``review_requested``
+so the swap is local.
 
 Keyboard map (spec/159 §5.4):
 
-* ``1-5``       — set stars 1..5
-* ``0``         — clear stars
+* ``1-5``        — set stars 1..5
+* ``0``          — clear stars
 * ``Shift+1..5`` — set colour label (red/yellow/green/blue/purple)
-* ``Shift+0`` — clear colour label
-* ``K``         — toggle portfolio flag
+* ``Shift+0``    — clear colour label
+* ``K``          — toggle portfolio flag
 * ``D`` / ``Delete`` — toggle "marked for deletion"
-* ``←/→``      — prev / next version
+* ``←/→``        — prev / next version
 * ``F`` / ``F11`` — fullscreen
-* ``Esc``       — close
+* ``Esc``        — close
+
+Visual treatment lives in :mod:`mira.ui.exported.rating_widgets` —
+custom-painted widgets so the dialog carries zero inline
+``setStyleSheet`` (spec/92 §7).
 """
 from __future__ import annotations
 
@@ -33,37 +37,44 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from mira.ui.design import ghost_button
+from mira.ui.exported.rating_widgets import (
+    COLOR_LABEL_ORDER,
+    ColorLabelRow,
+    DeleteToggle,
+    FlagToggle,
+    PreferredToggle,
+    StarRow,
+    StylePicker,
+)
 from mira.ui.i18n import tr
 
 log = logging.getLogger(__name__)
 
 
-_COLOR_LABEL_HEX = {
-    "red":    "#D9382E",
-    "yellow": "#E4B91F",
-    "green":  "#2DA84A",
-    "blue":   "#3A8DD8",
-    "purple": "#9C4DC9",
-}
-#: Order matches the Shift+1..5 keyboard map.
-_COLOR_LABEL_ORDER = ("red", "yellow", "green", "blue", "purple")
-
-
 @dataclass
 class ReviewItem:
-    """One exported lineage row exposed to the review dialog."""
+    """One exported lineage row exposed to the review dialog.
+
+    Carries everything the chrome row needs to render + write back:
+    the per-version ratings (``stars`` / ``color_label`` / ``flag`` /
+    ``to_delete``) plus the per-item Style (``item_id`` /
+    ``classification``). The dialog never reads back through the
+    gateway — the host pushes a fresh list on open and the dialog
+    emits signals on user change.
+    """
+
     export_relpath: str
     abs_path: Path
     stars: Optional[int] = None
@@ -71,10 +82,27 @@ class ReviewItem:
     flag: bool = False
     to_delete: bool = False
     title: str = ""
+    #: Source item id (``lineage.source_item_id``) — needed to write
+    #: Style classification through the gateway. ``None`` disables the
+    #: Style picker for this row (defensive — shouldn't happen in the
+    #: spec/159 flow but the schema allows ``source_item_id`` NULL on
+    #: third-party returns).
+    item_id: Optional[str] = None
+    #: Current ``item.classification`` for the source item; ``None`` =
+    #: unclassified (Style picker resolves to ``'general'``).
+    classification: Optional[str] = None
+    #: spec/159 §6+ — whether this row is currently marked as the
+    #: preferred version of its source item.
+    is_preferred: bool = False
+    #: True when this row has at least one sibling lineage row for the
+    #: same source item; controls the PreferredToggle's visibility
+    #: (single-version cells are implicitly preferred and don't need
+    #: the affordance).
+    has_siblings: bool = False
 
 
 class ReviewMediaDialog(QDialog):
-    """spec/159 — minimal review viewer for the Exported Collection."""
+    """spec/159 — review viewer for the Exported Collection."""
 
     #: ``(export_relpath, stars 1..5 or None)``
     stars_changed = pyqtSignal(str, object)
@@ -84,6 +112,13 @@ class ReviewMediaDialog(QDialog):
     flag_changed = pyqtSignal(str, bool)
     #: ``(export_relpath, bool)``
     to_delete_changed = pyqtSignal(str, bool)
+    #: ``(item_id, classification key)`` — per-item; propagates across
+    #: every version of that source item (spec/159 §2.2).
+    classification_changed = pyqtSignal(str, str)
+    #: ``(export_relpath, bool)`` — preferred-version toggle. The host
+    #: routes through :meth:`EventGateway.set_lineage_preferred`, which
+    #: also clears any sibling row's flag.
+    preferred_changed = pyqtSignal(str, bool)
 
     def __init__(
         self,
@@ -93,14 +128,19 @@ class ReviewMediaDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ReviewMediaDialog")
-        self.setWindowTitle(tr("Review"))
+        self.setWindowTitle(tr("Review exported file"))
         self.setModal(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._items = list(items)
         self._index = max(0, min(start_index, len(self._items) - 1))
         self._was_fullscreen = False
+        self._first_show_pending = True
         self._build_ui()
-        self._load_index()
+        # Push the chrome state now (the rating controls don't depend
+        # on widget size); the photo viewport waits for the first show
+        # so it samples its final geometry, not the pre-layout 0×0.
+        # spec/159 viewport-race fix (Nelson 2026-06-30 round 2).
+        self._refresh_chrome(self._current_or_blank())
         if parent is not None:
             geo = parent.geometry()
             self.resize(int(geo.width() * 0.85), int(geo.height() * 0.85))
@@ -114,76 +154,57 @@ class ReviewMediaDialog(QDialog):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 10, 12, 10)
-        outer.setSpacing(8)
+        outer.setSpacing(10)
 
-        # ── classification row (top) ────────────────────────────────
-        self._chrome_row = QHBoxLayout()
-        self._chrome_row.setSpacing(14)
-        self._chrome_row.setContentsMargins(4, 0, 4, 0)
+        # ── top row: Back + Style + filename label ──────────────────
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(10)
+        self._back_btn = ghost_button(tr("← Back"))
+        self._back_btn.setToolTip(tr("Close the review viewer (Esc)"))
+        self._back_btn.clicked.connect(self.close)
+        top.addWidget(self._back_btn)
+        self._style_picker = StylePicker(self)
+        self._style_picker.style_picked.connect(self._on_style_picked)
+        top.addWidget(self._style_picker)
+        self._title_lbl = QLabel("")
+        self._title_lbl.setObjectName("Sub")
+        self._title_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        top.addWidget(self._title_lbl, stretch=1)
+        # Counter ("3 / 12") on the far right of the top row so the
+        # nav row at the bottom is just chevron buttons.
+        self._counter = QLabel("")
+        self._counter.setObjectName("PageHint")
+        top.addWidget(self._counter)
+        top_w = QWidget()
+        top_w.setLayout(top)
+        outer.addWidget(top_w)
 
-        # Star buttons 1..5 — initial glyph is the outline; filled
-        # state painted on every _refresh_chrome.
-        self._star_btns: list[QPushButton] = []
-        star_box = QHBoxLayout()
-        star_box.setSpacing(2)
-        for n in range(1, 6):
-            b = QPushButton("☆")
-            b.setFixedSize(34, 34)
-            b.setObjectName(f"StarBtn{n}")
-            b.setProperty("starlevel", n)
-            b.setCheckable(False)
-            b.setToolTip(tr("Set {n}-star rating").replace("{n}", str(n)))
-            b.clicked.connect(lambda _=False, k=n: self._on_star_clicked(k))
-            star_box.addWidget(b)
-            self._star_btns.append(b)
-        clear_stars = QPushButton(tr("Clear stars"))
-        clear_stars.setFixedHeight(28)
-        clear_stars.clicked.connect(lambda: self._on_star_clicked(None))
-        star_box.addWidget(clear_stars)
-        self._chrome_row.addLayout(star_box)
-
-        # Colour label dots
-        color_box = QHBoxLayout()
-        color_box.setSpacing(4)
-        self._color_btns: dict[str, QPushButton] = {}
-        for key in _COLOR_LABEL_ORDER:
-            b = QPushButton()
-            b.setFixedSize(20, 20)
-            b.setToolTip(key.capitalize())
-            b.setStyleSheet(
-                f"QPushButton {{ background-color: {_COLOR_LABEL_HEX[key]};"
-                f" border: 1px solid #00000060; border-radius: 10px; }}"
-                f"QPushButton:hover {{ border: 2px solid #ffffff; }}"
-            )
-            b.clicked.connect(
-                lambda _=False, k=key: self._on_color_clicked(k))
-            color_box.addWidget(b)
-            self._color_btns[key] = b
-        clear_color = QPushButton(tr("Clear"))
-        clear_color.setFixedHeight(28)
-        clear_color.clicked.connect(
-            lambda: self._on_color_clicked(None))
-        color_box.addWidget(clear_color)
-        self._chrome_row.addLayout(color_box)
-
-        # Flag toggle
-        self._flag_btn = QPushButton(tr("⚑ Flag"))
-        self._flag_btn.setCheckable(True)
-        self._flag_btn.setFixedHeight(28)
-        self._flag_btn.clicked.connect(self._on_flag_clicked)
-        self._chrome_row.addWidget(self._flag_btn)
-
-        self._chrome_row.addStretch(1)
-
-        # To-delete toggle
-        self._delete_btn = QPushButton(tr("⌫ Mark for deletion"))
-        self._delete_btn.setCheckable(True)
-        self._delete_btn.setFixedHeight(28)
-        self._delete_btn.clicked.connect(self._on_delete_clicked)
-        self._chrome_row.addWidget(self._delete_btn)
-
+        # ── chrome row: stars · colour · flag · delete ──────────────
+        chrome = QHBoxLayout()
+        chrome.setContentsMargins(0, 0, 0, 0)
+        chrome.setSpacing(18)
+        self._star_row = StarRow(self)
+        self._star_row.value_changed.connect(self._on_stars_changed)
+        chrome.addWidget(self._star_row)
+        self._color_row = ColorLabelRow(self)
+        self._color_row.value_changed.connect(self._on_color_changed)
+        chrome.addWidget(self._color_row)
+        self._flag_btn = FlagToggle(self)
+        self._flag_btn.toggled.connect(self._on_flag_toggled)
+        chrome.addWidget(self._flag_btn)
+        # spec/159 §6+ — PreferredToggle sits between flag and delete.
+        # Hidden when the row has no siblings (single-version cell).
+        self._preferred_btn = PreferredToggle(self)
+        self._preferred_btn.toggled.connect(self._on_preferred_toggled)
+        chrome.addWidget(self._preferred_btn)
+        chrome.addStretch(1)
+        self._delete_btn = DeleteToggle(self)
+        self._delete_btn.toggled.connect(self._on_delete_toggled)
+        chrome.addWidget(self._delete_btn)
         chrome_w = QWidget()
-        chrome_w.setLayout(self._chrome_row)
+        chrome_w.setLayout(chrome)
         outer.addWidget(chrome_w)
 
         # ── photo viewport ──────────────────────────────────────────
@@ -197,14 +218,11 @@ class ReviewMediaDialog(QDialog):
         # ── nav row (bottom) ────────────────────────────────────────
         nav = QHBoxLayout()
         nav.setSpacing(8)
-        self._prev_btn = QPushButton("← " + tr("Previous"))
+        self._prev_btn = ghost_button("← " + tr("Previous"))
         self._prev_btn.clicked.connect(self._go_prev)
         nav.addWidget(self._prev_btn)
-        self._counter = QLabel("")
-        self._counter.setObjectName("Sub")
-        nav.addWidget(self._counter)
         nav.addStretch(1)
-        self._next_btn = QPushButton(tr("Next") + " →")
+        self._next_btn = ghost_button(tr("Next") + " →")
         self._next_btn.clicked.connect(self._go_next)
         nav.addWidget(self._next_btn)
         nav_w = QWidget()
@@ -224,14 +242,14 @@ class ReviewMediaDialog(QDialog):
                   activated=self._toggle_fullscreen)
         # K → flag toggle
         QShortcut(QKeySequence(Qt.Key.Key_K), self,
-                  activated=lambda: self._on_flag_clicked(
+                  activated=lambda: self._on_flag_toggled(
                       not self._current_or_blank().flag))
         # D → to-delete toggle
         QShortcut(QKeySequence(Qt.Key.Key_D), self,
-                  activated=lambda: self._on_delete_clicked(
+                  activated=lambda: self._on_delete_toggled(
                       not self._current_or_blank().to_delete))
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self,
-                  activated=lambda: self._on_delete_clicked(
+                  activated=lambda: self._on_delete_toggled(
                       not self._current_or_blank().to_delete))
 
     # ── helpers ─────────────────────────────────────────────────────
@@ -242,8 +260,8 @@ class ReviewMediaDialog(QDialog):
         return ReviewItem("", Path("."))
 
     def _load_index(self) -> None:
-        """Show the photo at ``self._index`` and repaint the chrome
-        so the rating widgets reflect the current item's values."""
+        """Show the photo at ``self._index`` and repaint the chrome so
+        the rating widgets reflect the current item's values."""
         from mira.ui.media.photo_viewport import ViewportItem
 
         if not self._items:
@@ -254,157 +272,103 @@ class ReviewMediaDialog(QDialog):
             [ViewportItem(path=item.abs_path, kind="photo")],
             current=0,
         )
-        self._counter.setText(
-            f"{idx + 1} / {len(self._items)}  ·  {item.export_relpath}")
+        self._counter.setText(f"{idx + 1} / {len(self._items)}")
+        self._title_lbl.setText(item.export_relpath)
         self._refresh_chrome(item)
         self._prev_btn.setEnabled(idx > 0)
         self._next_btn.setEnabled(idx < len(self._items) - 1)
 
     def _refresh_chrome(self, item: ReviewItem) -> None:
-        # Stars — ★ (filled gold) up to N, ☆ (outline, theme-grey) for
-        # the rest. Using two distinct glyphs makes the rating
-        # readable independent of theme contrast (Nelson 2026-06-30 —
-        # "I cannot see the stars" on the colour-only v1).
-        for i, b in enumerate(self._star_btns, start=1):
-            filled = item.stars is not None and i <= item.stars
-            b.setText("★" if filled else "☆")
-            b.setStyleSheet(
-                "QPushButton {"
-                "  font-size: 22px; font-weight: bold;"
-                "  color: #F2C84A;"
-                "  background: rgba(255, 200, 60, 0.18);"
-                "  border: 1px solid #F2C84A;"
-                "  border-radius: 6px;"
-                "}"
-                "QPushButton:hover { background: rgba(255, 200, 60, 0.28); }"
-                if filled
-                else "QPushButton {"
-                "  font-size: 22px;"
-                "  color: #B8BCC4;"
-                "  background: transparent;"
-                "  border: 1px solid #555960;"
-                "  border-radius: 6px;"
-                "}"
-                "QPushButton:hover {"
-                "  color: #F2C84A; border-color: #F2C84A;"
-                "}"
-            )
-        # Colour label — the active dot gets a thick white ring +
-        # a small white check-dot overlay. The unselected ones keep
-        # a thin dark border + brighten on hover.
-        for key, b in self._color_btns.items():
-            hex_color = _COLOR_LABEL_HEX[key]
-            if item.color_label == key:
-                b.setText("✓")
-                b.setStyleSheet(
-                    f"QPushButton {{"
-                    f"  background-color: {hex_color};"
-                    f"  color: #ffffff; font-weight: bold;"
-                    f"  border: 3px solid #ffffff;"
-                    f"  border-radius: 12px;"
-                    f"}}"
-                )
-            else:
-                b.setText("")
-                b.setStyleSheet(
-                    f"QPushButton {{"
-                    f"  background-color: {hex_color};"
-                    f"  border: 1px solid #00000080;"
-                    f"  border-radius: 10px;"
-                    f"}}"
-                    f"QPushButton:hover {{ border: 2px solid #ffffff; }}"
-                )
-        # Flag — active state lights up the button with an amber bg
-        # so it reads as ON without relying on Qt's default :checked
-        # styling (which is theme-dependent and often invisible).
-        self._flag_btn.setChecked(item.flag)
-        if item.flag:
-            self._flag_btn.setText(tr("⚑ Flagged"))
-            self._flag_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: #F2A841; color: #1A1A1A;"
-                "  font-weight: bold; border: 2px solid #F2A841;"
-                "  border-radius: 4px; padding: 2px 10px;"
-                "}"
-            )
+        """Push the row's current values onto every chrome widget
+        without firing any user-input signal (each setter blocks)."""
+        self._star_row.setValue(item.stars)
+        self._color_row.setValue(item.color_label)
+        self._flag_btn.setValue(item.flag)
+        self._delete_btn.setValue(item.to_delete)
+        # Style picker: disable when there's no source item to write to.
+        if item.item_id:
+            self._style_picker.setEnabled(True)
+            self._style_picker.setStyle(item.classification)
         else:
-            self._flag_btn.setText(tr("⚑ Flag"))
-            self._flag_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: transparent; color: #C8CCD4;"
-                "  border: 1px solid #555960;"
-                "  border-radius: 4px; padding: 2px 10px;"
-                "}"
-                "QPushButton:hover {"
-                "  color: #F2A841; border-color: #F2A841;"
-                "}"
-            )
-        # To-delete — same treatment, but danger red so the user
-        # reads "this is destructive" at a glance.
-        self._delete_btn.setChecked(item.to_delete)
-        if item.to_delete:
-            self._delete_btn.setText(tr("⌫ Marked for deletion"))
-            self._delete_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: #C03030; color: #ffffff;"
-                "  font-weight: bold; border: 2px solid #C03030;"
-                "  border-radius: 4px; padding: 2px 10px;"
-                "}"
-            )
-        else:
-            self._delete_btn.setText(tr("⌫ Mark for deletion"))
-            self._delete_btn.setStyleSheet(
-                "QPushButton {"
-                "  background-color: transparent; color: #C8CCD4;"
-                "  border: 1px solid #555960;"
-                "  border-radius: 4px; padding: 2px 10px;"
-                "}"
-                "QPushButton:hover {"
-                "  color: #E66060; border-color: #E66060;"
-                "}"
-            )
+            self._style_picker.setStyle(item.classification)
+            self._style_picker.setEnabled(False)
+        # spec/159 §6+ — hide the Preferred toggle on single-version
+        # cells (there's no other version to compete with, so the
+        # "use this" concept is moot).
+        self._preferred_btn.setValue(item.is_preferred)
+        self._preferred_btn.setVisible(item.has_siblings)
 
-    # ── click handlers ─────────────────────────────────────────────
+    # ── click / change handlers ────────────────────────────────────
 
-    def _on_star_clicked(self, n: Optional[int]) -> None:
+    def _on_stars_changed(self, value) -> None:
         item = self._current_or_blank()
         if not item.export_relpath:
             return
-        # LRC convention: click an already-filled star clears.
-        if n is not None and item.stars == n:
-            n = None
-        item.stars = n
-        self.stars_changed.emit(item.export_relpath, n)
-        self._refresh_chrome(item)
+        item.stars = value
+        self.stars_changed.emit(item.export_relpath, value)
 
-    def _on_color_clicked(self, label: Optional[str]) -> None:
+    def _on_color_changed(self, value) -> None:
         item = self._current_or_blank()
         if not item.export_relpath:
             return
-        # Same convention as stars — click active = clear.
-        if label is not None and item.color_label == label:
-            label = None
-        item.color_label = label
-        self.color_label_changed.emit(item.export_relpath, label)
-        self._refresh_chrome(item)
+        item.color_label = value
+        self.color_label_changed.emit(item.export_relpath, value)
 
-    def _on_flag_clicked(self, checked: Optional[bool] = None) -> None:
+    def _on_flag_toggled(self, on: bool) -> None:
         item = self._current_or_blank()
         if not item.export_relpath:
             return
-        new_state = (not item.flag) if checked is None else bool(checked)
-        item.flag = new_state
-        self.flag_changed.emit(item.export_relpath, new_state)
-        self._refresh_chrome(item)
+        on = bool(on)
+        item.flag = on
+        # Keep the widget in sync when the trigger was the keyboard
+        # shortcut rather than the widget's own mousePressEvent.
+        if self._flag_btn.value() != on:
+            self._flag_btn.setValue(on)
+        self.flag_changed.emit(item.export_relpath, on)
 
-    def _on_delete_clicked(self, checked: Optional[bool] = None) -> None:
+    def _on_delete_toggled(self, on: bool) -> None:
         item = self._current_or_blank()
         if not item.export_relpath:
             return
-        new_state = (not item.to_delete) if checked is None else bool(checked)
-        item.to_delete = new_state
-        self.to_delete_changed.emit(item.export_relpath, new_state)
-        self._refresh_chrome(item)
+        on = bool(on)
+        item.to_delete = on
+        if self._delete_btn.value() != on:
+            self._delete_btn.setValue(on)
+        self.to_delete_changed.emit(item.export_relpath, on)
+
+    def _on_preferred_toggled(self, on: bool) -> None:
+        item = self._current_or_blank()
+        if not item.export_relpath:
+            return
+        on = bool(on)
+        item.is_preferred = on
+        # spec/159 §6+ — at most one preferred per source item. When
+        # we set this one ON, clear the cached flag on every sibling
+        # in the dialog's loaded list so ←/→ to a sibling reads the
+        # right state without the host round-tripping the gateway.
+        if on and item.item_id:
+            for other in self._items:
+                if (other.item_id == item.item_id
+                        and other.export_relpath != item.export_relpath):
+                    other.is_preferred = False
+        if self._preferred_btn.value() != on:
+            self._preferred_btn.setValue(on)
+        self.preferred_changed.emit(item.export_relpath, on)
+
+    def _on_style_picked(self, key: str) -> None:
+        item = self._current_or_blank()
+        if not item.export_relpath or not item.item_id:
+            return
+        if not key:
+            return
+        item.classification = key
+        # spec/159 §2.2 — classification is per-item; every loaded
+        # version of the same source item carries the new value so the
+        # next ←/→ visit reads it without round-tripping the gateway.
+        for other in self._items:
+            if other.item_id and other.item_id == item.item_id:
+                other.classification = key
+        self.classification_changed.emit(item.item_id, key)
 
     # ── nav ────────────────────────────────────────────────────────
 
@@ -428,6 +392,37 @@ class ReviewMediaDialog(QDialog):
             self.showFullScreen()
             self._was_fullscreen = True
 
+    # ── first-show fit ─────────────────────────────────────────────
+
+    def showEvent(self, ev) -> None:  # noqa: N802 — Qt
+        """Hand the photo to the viewport once the dialog has been
+        laid out at its final size.
+
+        Nelson 2026-06-30 — earlier the photo sometimes paints small
+        in the centre until any later event triggers a re-fit. Cause:
+        ``set_items`` ran in ``__init__`` while the viewport was still
+        at its zero-default size, so the request issued at that small
+        target and the pixmap landed at the small target. A simple
+        ``QTimer.singleShot(0, refresh_current)`` after ``showEvent``
+        was unreliable on Windows — Qt's layout pass sometimes runs
+        after the 0ms post. The robust fix is to skip ``set_items``
+        in ``__init__`` entirely and call ``_load_index`` only after
+        the first ``showEvent`` plus one event-loop turn (so layout
+        has settled). Re-entries (the dialog gets hidden + shown
+        again) are no-ops — we don't want to reset the viewport on
+        every show.
+        """
+        super().showEvent(ev)
+        if self._first_show_pending:
+            self._first_show_pending = False
+            QTimer.singleShot(0, self._first_show_load)
+
+    def _first_show_load(self) -> None:
+        try:
+            self._load_index()
+        except Exception:                                      # noqa: BLE001
+            log.exception("ReviewMediaDialog: first-show load failed")
+
     # ── number-key handling (1..5 stars + Shift+1..5 colour) ──────
 
     def keyPressEvent(self, ev: QKeyEvent) -> None:  # noqa: N802 — Qt
@@ -440,20 +435,40 @@ class ReviewMediaDialog(QDialog):
             if Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
                 n = key - Qt.Key.Key_0
                 if shift:
-                    self._on_color_clicked(
-                        _COLOR_LABEL_ORDER[n - 1])
+                    self._set_color_from_key(COLOR_LABEL_ORDER[n - 1])
                 else:
-                    self._on_star_clicked(n)
+                    self._set_stars_from_key(n)
                 ev.accept()
                 return
             if key == Qt.Key.Key_0:
                 if shift:
-                    self._on_color_clicked(None)
+                    self._set_color_from_key(None)
                 else:
-                    self._on_star_clicked(None)
+                    self._set_stars_from_key(None)
                 ev.accept()
                 return
         super().keyPressEvent(ev)
+
+    def _set_stars_from_key(self, n: Optional[int]) -> None:
+        item = self._current_or_blank()
+        if not item.export_relpath:
+            return
+        # LRC convention: same-N clears.
+        if n is not None and item.stars == n:
+            n = None
+        item.stars = n
+        self._star_row.setValue(n)
+        self.stars_changed.emit(item.export_relpath, n)
+
+    def _set_color_from_key(self, label: Optional[str]) -> None:
+        item = self._current_or_blank()
+        if not item.export_relpath:
+            return
+        if label is not None and item.color_label == label:
+            label = None
+        item.color_label = label
+        self._color_row.setValue(label)
+        self.color_label_changed.emit(item.export_relpath, label)
 
 
 __all__ = ["ReviewItem", "ReviewMediaDialog"]

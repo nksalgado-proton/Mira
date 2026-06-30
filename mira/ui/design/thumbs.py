@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -150,6 +150,9 @@ class Thumb(QWidget):
         color_label: str | None = None,
         flag: bool = False,
         to_delete: bool = False,
+        to_delete_split: tuple[int, int] | None = None,
+        preferred: bool = False,
+        preferred_origin: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -175,6 +178,19 @@ class Thumb(QWidget):
         self._color_label = color_label
         self._flag = bool(flag)
         self._to_delete = bool(to_delete)
+        # spec/159 §4.4 — versions-cluster "N/M to delete" sub-chip.
+        # Only painted when this Thumb is a cluster cover AND at least
+        # one inner version carries ``to_delete = 1``. Tuple of
+        # (marked_count, total_count); ``None`` hides the chip.
+        self._to_delete_split = to_delete_split
+        # spec/159 §6+ — preferred-version chrome.
+        # ``preferred`` paints a small "✓" pill in the top-right of
+        # a single-version flat cell. ``preferred_origin`` (the wordmark
+        # of the preferred member — "LRC" / "Mira" / "ext") paints
+        # alongside the ✓ on a cluster cover so the user knows which
+        # version is the chosen one without drilling in.
+        self._preferred = bool(preferred)
+        self._preferred_origin = preferred_origin
         # spec/89 §2.1 Block 2 D3.B — origin wordmark (Mira / LRC /
         # Helicon / CO / ext) painted on a thin strip under the thumb
         # for Export cells. ``None`` keeps the cell badge-free
@@ -273,6 +289,26 @@ class Thumb(QWidget):
         self._color_label = label
         self.update()
 
+    def setToDeleteSplit(
+        self, split: tuple[int, int] | None,
+    ) -> None:
+        """spec/159 §4.4 — set the versions-cluster cover's "N/M to
+        delete" sub-chip. ``None`` hides it; ``(n, m)`` with ``n >= 1``
+        paints it in the bottom-left."""
+        self._to_delete_split = split
+        self.update()
+
+    def setPreferred(self, preferred: bool) -> None:
+        """spec/159 §6+ — paint / hide the ✓ preferred-version pill."""
+        self._preferred = bool(preferred)
+        self.update()
+
+    def setPreferredOrigin(self, origin: str | None) -> None:
+        """spec/159 §6+ — set the cluster cover's preferred wordmark
+        ("LRC" / "Mira" / "ext"). ``None`` hides the chip."""
+        self._preferred_origin = origin
+        self.update()
+
     def setFlag(self, flag: bool) -> None:
         """spec/159 — portfolio flag toggle."""
         self._flag = bool(flag)
@@ -336,7 +372,14 @@ class Thumb(QWidget):
         # The border colour is normally the decision STATE; an explicit
         # border_token overrides it (Edit grid: 'green' unedited / 'amber'
         # edited — the load-bearing edited signal, Nelson 2026-06-18).
-        if self._border_token:
+        # spec/159 (Nelson 2026-06-30 follow-up) — an LRC ``color_label``
+        # outranks both: the cell-border colour IS the rating chip on
+        # the Exported Collection grid (replaces the v1 top strip; the
+        # delete badge owns the bottom strip so the cell already wears
+        # one stripe + we want the rating to read at a glance).
+        if self._color_label and self._color_label in self._COLOR_LABEL_HEX:
+            state_color = QColor(self._COLOR_LABEL_HEX[self._color_label])
+        elif self._border_token:
             state_color = QColor(
                 palette.get(self._border_token, palette[_STATE_KEY[self._state]]))
         else:
@@ -411,13 +454,20 @@ class Thumb(QWidget):
         self._paint_skipped_in_pick(painter, palette)
         self._paint_edited_since_export(painter, palette)
         # spec/159 — review chrome. Paint after the rest so they sit on
-        # top of cluster overlays etc. Order: colour label (top strip),
-        # star chip (bottom-right; suppressed by to_delete + clusters),
-        # flag glyph (top-left), to-delete badge (full-width bottom).
-        self._paint_color_label_strip(painter)
+        # top of cluster overlays etc. The colour-label strip retired
+        # 2026-06-30 — the cell border now carries the LRC colour (see
+        # the ``state_color`` resolve above).
         self._paint_star_chip(painter)
         self._paint_flag_glyph(painter, palette)
         self._paint_to_delete_badge(painter)
+        # spec/159 §4.4 — versions-cluster "N/M to delete" sub-chip.
+        # Only fires on cluster covers; only when the inner versions
+        # carry at least one mark. Sits in the bottom-left so it
+        # shares the row with the bottom-right ×N count chip.
+        self._paint_to_delete_split_chip(painter)
+        # spec/159 §6+ — preferred-version chrome.
+        self._paint_preferred_pill(painter)
+        self._paint_preferred_origin_chip(painter)
 
         painter.end()
 
@@ -843,21 +893,6 @@ class Thumb(QWidget):
         "purple": "#9C4DC9",
     }
 
-    def _paint_color_label_strip(self, painter: QPainter) -> None:
-        """spec/159 — 4 px tall, full-width colour strip across the TOP
-        edge of the cell. Hidden when no label is set or the label is
-        unknown."""
-        if not self._color_label:
-            return
-        hex_color = self._COLOR_LABEL_HEX.get(self._color_label)
-        if hex_color is None:
-            return
-        strip_h = 4
-        painter.fillRect(
-            QRectF(0, 0, self.width(), strip_h),
-            QColor(hex_color),
-        )
-
     def _paint_star_chip(self, painter: QPainter) -> None:
         """spec/159 — small "★N" chip in the BOTTOM-RIGHT corner. The
         slot is shared with the cluster-count chip (suppressed on
@@ -900,32 +935,161 @@ class Thumb(QWidget):
     def _paint_flag_glyph(
         self, painter: QPainter, palette: dict[str, str],
     ) -> None:
-        """spec/159 — small flag glyph in the TOP-LEFT corner when the
-        portfolio flag is set. Simple painted flag (no SVG dependency)
-        so this works on any theme; the flag-cloth is amber so it
-        reads as "keep" rather than warning red."""
+        """spec/159 — flag glyph in the TOP-LEFT corner when the
+        portfolio flag is set.
+
+        Pennant body with a forked tail so it reads as a *flag* and
+        not a triangle (Nelson 2026-06-30 round 2). 28 px tall × 24
+        px wide, anchored 10 px in from the cell edges. The cloth is
+        amber and the pole goes on top so the join reads clean.
+        """
         if not self._flag:
             return
-        # Pole + flag at top-left, 18 px tall, 14 px wide. Anchored
-        # 8 px from the left and 6 px from the top so it sits inside
-        # the rounded card without colliding with the colour-label
-        # strip (which lives in the top 4 px).
-        x, y = 8, 10
-        pole_h = 18
-        # Pole
-        painter.setPen(QPen(QColor("#08101c"), 1.5))
-        painter.drawLine(int(x), int(y), int(x), int(y + pole_h))
-        # Flag triangle
+        x, y = 10.0, 10.0
+        pole_h = 28.0
+        cloth_w = 24.0
+        cloth_h = 16.0
+        # Cloth — pennant with forked tail (matches the dialog's
+        # FlagToggle silhouette).
         flag_color = QColor(palette.get("amber", "#F5B042"))
-        flag_color.setAlpha(235)
-        painter.setBrush(QBrush(flag_color))
-        painter.setPen(QPen(QColor(0, 0, 0, 110), 1))
         path = QPainterPath()
-        path.moveTo(x + 1, y + 1)
-        path.lineTo(x + 12, y + 4.5)
-        path.lineTo(x + 1, y + 8)
+        tx = x
+        ty = y + 1
+        path.moveTo(tx,                  ty)
+        path.lineTo(tx + cloth_w,        ty + cloth_h * 0.25)
+        path.lineTo(tx + cloth_w * 0.78, ty + cloth_h * 0.50)
+        path.lineTo(tx + cloth_w,        ty + cloth_h * 0.78)
+        path.lineTo(tx,                  ty + cloth_h)
         path.closeSubpath()
+        painter.setBrush(QBrush(flag_color))
+        painter.setPen(QPen(QColor("#7A4A12"), 1.4))
         painter.drawPath(path)
+        # Pole + finial in the SAME amber as the cloth (Nelson
+        # 2026-06-30 round 3): a darker pole was getting lost against
+        # the photo behind it, and the eye then saw just the cloth —
+        # a triangle, not a flag. Matching the amber makes the whole
+        # glyph read as one continuous object on any backdrop.
+        pole_pen = QPen(flag_color, 2.0)
+        painter.setPen(pole_pen)
+        painter.drawLine(int(x), int(y), int(x), int(y + pole_h))
+        painter.setBrush(QBrush(flag_color))
+        painter.drawEllipse(QPointF(x, y), 2.0, 2.0)
+
+    #: spec/159 §6+ — green used by the preferred-version chrome.
+    #: Distinct from the cell's state-border palette so the badge
+    #: doesn't read as "picked".
+    _PREFERRED_GREEN = QColor("#2DA84A")
+    _PREFERRED_GREEN_DARK = QColor("#1F7A36")
+
+    def _paint_preferred_pill(self, painter: QPainter) -> None:
+        """spec/159 §6+ — small ✓ pill in the TOP-RIGHT corner when
+        the lineage row is the preferred version of its source.
+
+        Hidden on cluster covers — those carry the
+        ``_paint_preferred_origin_chip`` chip instead (which also
+        names the chosen origin, e.g. "✓ LRC")."""
+        if not self._preferred:
+            return
+        if self._cluster_type is not None:
+            return
+        # ✓ glyph; medium chip; high-contrast green so it reads on
+        # both light and dark thumbs without a backdrop dependency.
+        f = painter.font()
+        f.setPointSizeF(11)
+        f.setBold(True)
+        painter.setFont(f)
+        diameter = 22
+        rect = QRectF(
+            self.width() - diameter - 8,
+            8,
+            diameter, diameter,
+        )
+        painter.setBrush(QBrush(self._PREFERRED_GREEN))
+        painter.setPen(QPen(self._PREFERRED_GREEN_DARK, 1.4))
+        painter.drawEllipse(rect)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(
+            rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            "✓",
+        )
+
+    def _paint_preferred_origin_chip(self, painter: QPainter) -> None:
+        """spec/159 §6+ — "✓ LRC" / "✓ Mira" sub-chip on a versions
+        cluster cover, painted in the top-left. Tells the user which
+        member of the cluster is the chosen one without drilling in.
+        Hidden when the cover has no preferred member."""
+        if self._cluster_type is None:
+            return
+        if not self._preferred_origin:
+            return
+        label = f"✓ {self._preferred_origin}"
+        f = painter.font()
+        f.setPointSizeF(9.5)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        pad_x = 9
+        chip_w = fm.horizontalAdvance(label) + pad_x * 2
+        chip_h = fm.height() + 6
+        chip_rect = QRectF(
+            8, 8, chip_w, chip_h,
+        )
+        painter.setBrush(QBrush(self._PREFERRED_GREEN))
+        painter.setPen(QPen(self._PREFERRED_GREEN_DARK, 1.2))
+        painter.drawRoundedRect(chip_rect, chip_h / 2, chip_h / 2)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(
+            chip_rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            label,
+        )
+
+    def _paint_to_delete_split_chip(self, painter: QPainter) -> None:
+        """spec/159 §4.4 — bottom-left "N/M to delete" sub-chip on a
+        versions-cluster cover. Hidden when there is no split, when
+        the marked count is zero, or when this Thumb is NOT a cluster
+        cover (the chip is meaningless on a flat cell — the cell's
+        own bottom "DELETE" pill carries that signal).
+        """
+        if self._to_delete_split is None:
+            return
+        if self._cluster_type is None:
+            return
+        marked, total = self._to_delete_split
+        if marked <= 0 or total <= 0:
+            return
+        text = f"{int(marked)}/{int(total)}"
+        f = painter.font()
+        f.setPointSizeF(9.5)
+        f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        # Mini "DELETE" tag next to the count so the chip reads at a
+        # glance ("3/5 DELETE") without needing a hover tooltip.
+        tag = "DELETE"
+        sep = "·"
+        sep_w = fm.horizontalAdvance(f" {sep} ")
+        text_w = fm.horizontalAdvance(text)
+        tag_w = fm.horizontalAdvance(tag)
+        pad_x = 8
+        chip_w = text_w + sep_w + tag_w + pad_x * 2
+        chip_h = fm.height() + 6
+        chip_rect = QRectF(
+            8, self.height() - chip_h - 8, chip_w, chip_h,
+        )
+        painter.setBrush(QBrush(QColor("#A02020")))
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        painter.drawRoundedRect(chip_rect, chip_h / 2, chip_h / 2)
+        painter.setPen(QColor("#ffffff"))
+        # Hand-place the two parts so we don't burn a layout pass.
+        text_y = chip_rect.y() + (chip_rect.height() + fm.ascent()) / 2 - 2
+        cursor_x = chip_rect.x() + pad_x
+        painter.drawText(int(cursor_x), int(text_y), text)
+        cursor_x += text_w
+        painter.drawText(int(cursor_x), int(text_y), f" {sep} ")
+        cursor_x += sep_w
+        painter.drawText(int(cursor_x), int(text_y), tag)
 
     def _paint_to_delete_badge(self, painter: QPainter) -> None:
         """spec/159 — compact "Delete" pill across the BOTTOM of the

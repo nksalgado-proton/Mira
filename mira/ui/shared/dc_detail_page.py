@@ -50,13 +50,14 @@ old identifiers since they're widely referenced in
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -65,6 +66,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.export_provenance import lineage_origin_label
 from core.video_discovery import VIDEO_EXTENSIONS
 from mira.store import models as m
 from mira.ui.design import (
@@ -90,6 +92,27 @@ _UNDO_MAX = 16
 #: review-mode editor. Set to True to log the would-be open; False
 #: makes it a silent no-op.
 _LOG_CENTER_CLICK_PLACEHOLDER = True
+
+
+@dataclass
+class _GridCell:
+    """One slot in the rendered grid.
+
+    Single-version (``kind='flat'``) cells carry one lineage row;
+    versions-cluster (``kind='cluster'``) covers carry every row that
+    shares a ``source_item_id``. The virtual "Mira render is intended
+    but no file on disk yet" version (``kind='mira_pending'``) only
+    appears inside a drilled-in cluster — it adds to the cluster
+    threshold so a single LRC return + a Mira intent fold into a
+    cluster (spec/89 §6, mirrored from
+    :meth:`mira.ui.pages.days_grid_page._versions_cluster_grid_item`).
+    """
+
+    kind: str                                  # 'flat' | 'cluster' | 'mira_pending'
+    cover_relpath: str                         # the pixmap key + payload
+    rows: List[m.Lineage] = field(default_factory=list)
+    source_item_id: Optional[str] = None       # cluster covers + pending
+    virtual_mira: bool = False                 # cluster covers: include virtual Mira member?
 
 
 @dataclass
@@ -159,6 +182,29 @@ class DCDetailPage(QWidget):
         self._files: List[m.Lineage] = []
         self._thumbs: Dict[str, QPixmap] = {}
         self._undo_stack: list[DCUnexportSnapshot] = []
+        # spec/159 §4.4 — drill-in state. ``flat`` shows every shipped
+        # file with versions of one item folded into a cluster cover;
+        # ``cluster`` shows just the versions of one source item.
+        self._mode: str = "flat"
+        self._cluster_item_id: Optional[str] = None
+        # spec/89 §6 / spec/159 §4.4 — source items whose adjustment
+        # row carries a non-default look / filter / crop / rotation
+        # count as a virtual "Mira render" ship intent even when no
+        # JPEG has been materialised under ``Exported Media/`` yet.
+        # Refreshed in :meth:`_refresh` so the cluster math reflects
+        # gateway writes the user just made.
+        self._mira_intent_ids: set = set()
+        # spec/159 §6+ — source items whose virtual-Mira intent is
+        # currently marked preferred (item.preferred_virtual_mira).
+        # Refreshed in :meth:`_refresh`. Drives the cluster-cover
+        # "✓ Mira" chip + the virtual tile's "✓ Use this" toggle.
+        self._virtual_mira_preferred_ids: set = set()
+        # spec/159 §6 — Compare-mark set (session-local). Keys are
+        # cell payload strings: ``export_relpath`` for flat cells.
+        # Cleared on mode change so a flat-mode marking doesn't bleed
+        # into the cluster sub-grid (where the Compare button targets
+        # ALL members by design).
+        self._compare_marked: set = set()
 
         from mira.ui.media.photo_cache import photo_cache
         self._cache = photo_cache()
@@ -199,6 +245,15 @@ class DCDetailPage(QWidget):
         self._clear_btn.setVisible(False)
         self._clear_btn.clicked.connect(self._clear_marks)
         head.addWidget(self._clear_btn)
+        # spec/159 §6 — Compare button reuse. Hidden until either
+        # (a) flat mode: ≥2 cells are Compare-marked via the C key, or
+        # (b) cluster sub-grid: always shown so the user can open every
+        # version of one shot side-by-side. Hooked up here so the
+        # toolbar row reads:  [⌫ Delete N…] [Clear marks] [⇄ Compare]
+        self._compare_btn = ghost_button(tr("⇄ Compare"))
+        self._compare_btn.setVisible(False)
+        self._compare_btn.clicked.connect(self._on_compare_clicked)
+        head.addWidget(self._compare_btn)
         outer.addLayout(head)
 
         # ── Grid chrome (Back + header) ──────────────────────────────
@@ -213,14 +268,21 @@ class DCDetailPage(QWidget):
         chrome.addWidget(self._header_lbl, stretch=1)
         outer.addLayout(chrome)
 
-        # spec/159 — two-zone grid: border-click toggles the lineage
-        # row's ``to_delete`` flag; center-click opens the review-mode
-        # editor (placeholder until Session B). The two-zone hit-test
-        # is the same one days_grid uses.
+        # spec/159 — every click on a single-version cell opens the
+        # review viewer. Earlier in spec/159's life the border zone
+        # toggled the ``to_delete`` flag in-place, but accidental
+        # marks were too easy (Nelson 2026-06-30 — "anyone can
+        # accidentally mark a photo for deletion by clicking on the
+        # border"); marking now happens only inside the dialog (D key
+        # / DeleteToggle) or via the toolbar batch action. Cluster
+        # covers keep their existing "any click opens the cluster"
+        # behaviour.
         self._grid = ThumbGrid(cell_size=_CELL_SIZE, two_zone_clicks=True)
-        self._grid.cell_border_clicked.connect(self._on_cell_border_clicked)
+        self._grid.cell_border_clicked.connect(self._on_cell_activated)
         self._grid.cell_activated.connect(self._on_cell_activated)
-        self._grid.back_requested.connect(self.back_requested.emit)
+        # In cluster mode the grid's back_requested pops the cluster
+        # first; only the flat mode's back propagates to the host.
+        self._grid.back_requested.connect(self._on_grid_back_requested)
         outer.addWidget(self._grid, stretch=1)
 
         # Keyboard: Del / Backspace = commit the batch delete confirm;
@@ -234,6 +296,13 @@ class DCDetailPage(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self,
                   activated=self._on_delete_clicked)
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo)
+        # spec/159 §6 / spec/63 §4 — C key toggles Compare-mark on the
+        # focused cell. The grid's flat cells are made ``focusable``
+        # so the locked §63 keymap can target them; cluster covers +
+        # virtual mira_pending cells are skipped (the Compare button
+        # in cluster mode already targets every member).
+        QShortcut(QKeySequence(Qt.Key.Key_C), self,
+                  activated=self._toggle_compare_on_focused)
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -243,6 +312,13 @@ class DCDetailPage(QWidget):
         self._root = Path(eg.event_root) if eg.event_root else Path(".")
         self._cache.set_event_context(self._root, {})
         self._undo_stack.clear()
+        # Always land on the flat grid — drill-in state from a prior
+        # open never carries over (Nelson 2026-06-30 round 4: returning
+        # to the page used to dump the user back into the same cluster
+        # they last viewed).
+        self._mode = "flat"
+        self._cluster_item_id = None
+        self._compare_marked = set()
         self._refresh()
 
     def close_event(self) -> None:
@@ -255,6 +331,25 @@ class DCDetailPage(QWidget):
         self._root = None
         self._files = []
         self._thumbs = {}
+        self._mode = "flat"
+        self._cluster_item_id = None
+        self._mira_intent_ids = set()
+        self._compare_marked = set()
+
+    def on_titlebar_back(self) -> None:
+        """Shared title-bar Back hook (spec/142).
+
+        In cluster mode, the title-bar Back FIRST pops the cluster so
+        the user lands back on the flat #exported grid; only when
+        already on the flat grid does it propagate the host-level
+        ``back_requested`` that exits the page. Without this hook the
+        host's :meth:`ShareCutsPage.on_titlebar_back` falls through to
+        ``back_requested.emit()`` directly and the cluster step is
+        skipped (Nelson 2026-06-30 round 4)."""
+        if self._mode == "cluster":
+            self._close_cluster()
+            return
+        self.back_requested.emit()
 
     # ── data → cells ──────────────────────────────────────────────────
 
@@ -270,6 +365,29 @@ class DCDetailPage(QWidget):
         # round-trip carries the spec/159 stars / color_label / flag /
         # to_delete values).
         self._files = list(self._eg.exported_files_all())
+        try:
+            self._mira_intent_ids = set(
+                self._eg.items_with_mira_intent())
+        except Exception:                                      # noqa: BLE001
+            log.exception(
+                "DCDetailPage: items_with_mira_intent failed")
+            self._mira_intent_ids = set()
+        # spec/159 §6+ — fan out the virtual-Mira preferred ids in
+        # bulk (one SQL hit) so the cluster paint isn't N+1.
+        self._virtual_mira_preferred_ids = set()
+        try:
+            for src in {getattr(f, "source_item_id", None)
+                        for f in self._files
+                        if getattr(f, "source_item_id", None)}:
+                if not src:
+                    continue
+                it = self._eg.item(src)
+                if it is not None and bool(getattr(
+                        it, "preferred_virtual_mira", False)):
+                    self._virtual_mira_preferred_ids.add(src)
+        except Exception:                                      # noqa: BLE001
+            log.exception(
+                "DCDetailPage: preferred_virtual_mira lookup failed")
         # Drop stale undo entries whose file is no longer on the
         # roster (a fresh batch delete should not re-appear in Ctrl+Z).
         live = {f.export_relpath for f in self._files}
@@ -279,34 +397,248 @@ class DCDetailPage(QWidget):
         self._update_chrome()
 
     def _rebuild_cells(self) -> None:
+        """Build the visible grid from ``self._files``.
+
+        Flat mode (default): rows that share a ``source_item_id`` get
+        folded into one versions-cluster cover; standalone rows pass
+        through as single-version cells. Cluster mode: every cell is
+        the matching source's rows, flat (the cover's drill-in view).
+
+        Side-effects: ``self._cells`` holds the per-index mapping the
+        rest of the surface dispatches through.
+        """
+        self._cells: List[_GridCell] = self._compute_cells()
         items: List[ThumbGridItem] = []
-        for f in self._files:
-            # spec/159 — the cell carries the lineage row's ratings +
-            # delete flag. The locked colour grammar (state border)
-            # stays neutral on this surface (per spec/159 §4.2 "state
-            # border DROP at default"); the "Marked for deletion" badge
-            # paints from to_delete instead.
-            items.append(ThumbGridItem(
-                pixmap=self._thumbs.get(f.export_relpath),
-                state=None,
-                payload=f.export_relpath,
-                stars=getattr(f, "stars", None),
-                color_label=getattr(f, "color_label", None),
-                flag=bool(getattr(f, "flag", False)),
-                to_delete=bool(getattr(f, "to_delete", False)),
-            ))
-        self._header_lbl.setText(tr("#exported — the base Collection"))
+        for cell in self._cells:
+            items.append(self._make_grid_item(cell))
+        if self._mode == "cluster":
+            cluster_label = self._cluster_header_label()
+            self._header_lbl.setText(cluster_label)
+        else:
+            self._header_lbl.setText(
+                tr("#exported — the base Collection"))
         self._grid.set_items(items)
         self._request_missing_thumbs()
+
+    def _compute_cells(self) -> List[_GridCell]:
+        """Roll ``self._files`` into the cell list for the active mode.
+
+        spec/89 §6 — a source item's **ship intents** = its lineage
+        rows + a virtual "Mira render" intent when the adjustment row
+        is non-default AND no ``mira_render`` lineage row already
+        exists. Cluster threshold = 2 ship intents.
+        """
+        if self._mode == "cluster" and self._cluster_item_id:
+            rows = [f for f in self._files
+                    if getattr(f, "source_item_id", None)
+                    == self._cluster_item_id]
+            cells: List[_GridCell] = [
+                _GridCell(
+                    kind="flat",
+                    cover_relpath=r.export_relpath,
+                    rows=[r],
+                    source_item_id=getattr(r, "source_item_id", None),
+                )
+                for r in rows
+            ]
+            if self._has_virtual_mira_intent(self._cluster_item_id, rows):
+                cells.append(self._make_mira_pending_cell(
+                    self._cluster_item_id))
+            return cells
+
+        # Flat mode — group by source_item_id (None stays ungrouped).
+        groups: Dict[str, List[m.Lineage]] = {}
+        order: list[str] = []                  # group keys in first-sight order
+        for f in self._files:
+            sid = getattr(f, "source_item_id", None)
+            if not sid:
+                key = f"__solo:{f.export_relpath}"
+                groups.setdefault(key, []).append(f)
+                order.append(key)
+                continue
+            key = f"src:{sid}"
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(f)
+        seen = set()
+        cells = []
+        for key in order:
+            if key in seen:
+                continue
+            seen.add(key)
+            rows = groups[key]
+            sid = (None if key.startswith("__solo:")
+                   else getattr(rows[0], "source_item_id", None))
+            virtual = (sid is not None
+                       and self._has_virtual_mira_intent(sid, rows))
+            total_intents = len(rows) + (1 if virtual else 0)
+            if total_intents >= 2 and sid is not None:
+                cells.append(_GridCell(
+                    kind="cluster",
+                    cover_relpath=rows[0].export_relpath,
+                    rows=rows,
+                    source_item_id=sid,
+                    virtual_mira=virtual,
+                ))
+            else:
+                row = rows[0]
+                cells.append(_GridCell(
+                    kind="flat",
+                    cover_relpath=row.export_relpath,
+                    rows=[row],
+                    source_item_id=sid,
+                ))
+        return cells
+
+    def _has_virtual_mira_intent(
+        self,
+        source_item_id: str,
+        rows: List[m.Lineage],
+    ) -> bool:
+        """``True`` when this source carries a Mira intent that hasn't
+        already been materialised as a lineage row. Skipping when a
+        ``mira_render`` row already exists avoids double-counting (the
+        materialised file represents that intent)."""
+        if source_item_id not in self._mira_intent_ids:
+            return False
+        for r in rows:
+            if getattr(r, "provenance", None) == "mira_render":
+                return False
+        return True
+
+    def _make_mira_pending_cell(
+        self, source_item_id: str,
+    ) -> _GridCell:
+        """Build the virtual "Mira render pending" cell for the drill-
+        in sub-grid. Its pixmap slot points at the source item's
+        ``origin_relpath`` (the Original Media file) so the cell shows
+        the user what the rendering would be of. The cell is informal:
+        clicking it is a no-op (there's no shipped file to review)."""
+        rel = ""
+        if self._eg is not None:
+            try:
+                item = self._eg.item(source_item_id)
+            except Exception:                                  # noqa: BLE001
+                item = None
+            if item is not None and item.origin_relpath:
+                rel = item.origin_relpath
+        return _GridCell(
+            kind="mira_pending",
+            cover_relpath=rel,
+            rows=[],
+            source_item_id=source_item_id,
+        )
+
+    def _make_grid_item(self, cell: _GridCell) -> ThumbGridItem:
+        """Render one ``_GridCell`` into the matching ThumbGridItem.
+
+        Flat cells carry the lineage row's full rating chrome. Cluster
+        covers paint the spec/159 §6 "no inner ratings on the cover"
+        rule — no star chip, no flag, no color border, no delete
+        badge — and add the ``×N`` count + the ``N/M to delete``
+        sub-chip when any inner version is marked. ``mira_pending``
+        cells (drill-in only) paint the source item's preview pixmap
+        with a "Mira" origin wordmark so the user reads "this is what
+        the Mira render WOULD look like" at a glance.
+        """
+        pix = self._thumbs.get(cell.cover_relpath)
+        if cell.kind == "cluster":
+            n_marked = sum(
+                1 for r in cell.rows
+                if bool(getattr(r, "to_delete", False)))
+            split = ((n_marked, len(cell.rows))
+                     if n_marked > 0 else None)
+            count = len(cell.rows) + (1 if cell.virtual_mira else 0)
+            # spec/159 §6+ — surface the cluster's preferred wordmark
+            # (e.g. "✓ LRC") when one of the members is marked
+            # preferred. Real lineage rows win over the virtual flag
+            # because the gateway clears the virtual on any real-row
+            # write — but read both so we paint the right chip even
+            # if the local cache is mid-flight.
+            preferred_origin: Optional[str] = None
+            for r in cell.rows:
+                if bool(getattr(r, "is_preferred", False)):
+                    label = lineage_origin_label(
+                        getattr(r, "provenance", None) or "mira_render",
+                        r.export_relpath)
+                    preferred_origin = label
+                    break
+            if (preferred_origin is None
+                    and cell.source_item_id
+                    in self._virtual_mira_preferred_ids):
+                preferred_origin = "Mira"
+            return ThumbGridItem(
+                pixmap=pix,
+                state=None,
+                payload=("cluster", cell.source_item_id or ""),
+                cluster_type="versions",
+                cluster_count=count,
+                to_delete_split=split,
+                preferred_origin=preferred_origin,
+            )
+        if cell.kind == "mira_pending":
+            return ThumbGridItem(
+                pixmap=pix,
+                state=None,
+                payload=("mira_pending", cell.source_item_id or ""),
+                origin="Mira",
+            )
+        row = cell.rows[0]
+        origin = lineage_origin_label(
+            getattr(row, "provenance", None) or "mira_render",
+            row.export_relpath,
+        )
+        # Origin wordmark on the cell is only meaningful when the row
+        # came from outside Mira (LRC / Helicon / CO / ext); for plain
+        # Mira renders, hide it so the cell stays clean.
+        if origin == "Mira":
+            origin = None
+        # spec/159 §6 — Compare-mark paints the orange state border.
+        is_compare = row.export_relpath in self._compare_marked
+        return ThumbGridItem(
+            pixmap=pix,
+            state="compare" if is_compare else None,
+            payload=("flat", row.export_relpath),
+            stars=getattr(row, "stars", None),
+            color_label=getattr(row, "color_label", None),
+            flag=bool(getattr(row, "flag", False)),
+            to_delete=bool(getattr(row, "to_delete", False)),
+            origin=origin,
+            focusable=True,
+            preferred=bool(getattr(row, "is_preferred", False)),
+        )
+
+    def _cluster_header_label(self) -> str:
+        """Title bar text for the cluster sub-grid view."""
+        item = None
+        if self._eg is not None and self._cluster_item_id:
+            try:
+                item = self._eg.item(self._cluster_item_id)
+            except Exception:                                  # noqa: BLE001
+                item = None
+        name = ""
+        if item is not None and item.origin_relpath:
+            name = Path(item.origin_relpath).name
+        if name:
+            return tr("Versions of {n}").replace("{n}", name)
+        return tr("Versions")
 
     def _request_missing_thumbs(self) -> None:
         if self._root is None:
             return
-        for f in self._files:
-            if f.export_relpath in self._thumbs:
+        # Only fetch what the current view actually paints — cluster
+        # mode shows a subset, no point pulling thumbs the user can't
+        # see. Always include the cover relpaths (a flat row is its
+        # own cover; a mira_pending cell's cover is the source item's
+        # ``origin_relpath`` under ``Original Media/``).
+        wanted = {c.cover_relpath for c in getattr(self, "_cells", [])
+                  if c.cover_relpath}
+        for rel in wanted:
+            if rel in self._thumbs:
                 continue
             self._cache.request_scaled_pixmap(
-                self._root / f.export_relpath, _GRID_THUMB_TARGET,
+                self._root / rel, _GRID_THUMB_TARGET,
                 priority=1)
 
     def _on_thumb_ready(self, path: Path, _pm: QPixmap, _native) -> None:
@@ -321,96 +653,387 @@ class DCDetailPage(QWidget):
         if hit is None:
             return
         self._thumbs[rel] = hit[0]
-        try:
-            idx = next(i for i, f in enumerate(self._files)
-                       if f.export_relpath == rel)
-        except StopIteration:
-            return
-        self._grid.set_pixmap(idx, hit[0])
+        # Push the new pixmap onto any cell whose COVER relpath matches.
+        for idx, cell in enumerate(getattr(self, "_cells", [])):
+            if cell.cover_relpath == rel:
+                self._grid.set_pixmap(idx, hit[0])
 
     # ── selection ─────────────────────────────────────────────────────
 
-    def _on_cell_border_clicked(self, index: int) -> None:
-        """spec/159 — border-click toggles the lineage row's
-        ``to_delete`` flag. The flag persists across sessions; the
-        toolbar's "⌫ Delete marked…" action commits the batch."""
-        if self._eg is None:
+    def _on_cell_activated(self, index: int) -> None:
+        """spec/159 — flat cells open the review viewer; cluster
+        covers drill the surface into the cluster sub-grid; the virtual
+        ``mira_pending`` cell is a no-op (the file the user would
+        review hasn't been rendered yet).
+
+        ``review_requested`` is emitted for any host that wants to
+        observe the viewer open (NOT for cluster drill-in or pending
+        cells)."""
+        cells = getattr(self, "_cells", [])
+        if self._eg is None or not (0 <= index < len(cells)):
             return
-        if not (0 <= index < len(self._files)):
+        cell = cells[index]
+        if cell.kind == "cluster":
+            if cell.source_item_id:
+                self._open_cluster(cell.source_item_id)
             return
-        f = self._files[index]
-        new_state = not bool(getattr(f, "to_delete", False))
-        try:
-            self._eg.set_lineage_to_delete(f.export_relpath, new_state)
-        except Exception:                                          # noqa: BLE001
-            log.exception(
-                "DCDetailPage: set_lineage_to_delete failed for %s",
-                f.export_relpath)
+        if cell.kind == "mira_pending":
             return
-        # In-place update — repaint just this cell + the toolbar chrome.
-        # Mutate the cached Lineage row so the next rebuild reads the
-        # new flag without another DB hit.
-        try:
-            f.to_delete = new_state                                # type: ignore[misc]
-        except AttributeError:
-            self._files[index] = m.Lineage(
-                **{**f.__dict__, "to_delete": new_state})
-        self._grid.update_item(index, ThumbGridItem(
-            pixmap=self._thumbs.get(f.export_relpath),
-            state=None,
-            payload=f.export_relpath,
-            stars=getattr(f, "stars", None),
-            color_label=getattr(f, "color_label", None),
-            flag=bool(getattr(f, "flag", False)),
-            to_delete=new_state,
-        ))
+        rel = cell.cover_relpath
+        self.review_requested.emit(rel)
+        self._open_review_dialog_for_cell(index)
+
+    def _open_cluster(self, source_item_id: str) -> None:
+        """spec/159 §4.4 — drill into a versions cluster. Switches the
+        surface to ``cluster`` mode + re-renders the same grid showing
+        only the rows of ``source_item_id``. The flat-mode Compare
+        marks reset on mode change (the cluster's Compare button
+        targets every member, no per-cell marking)."""
+        self._mode = "cluster"
+        self._cluster_item_id = source_item_id
+        self._compare_marked = set()
+        self._rebuild_cells()
         self._update_chrome()
 
-    def _on_cell_activated(self, index: int) -> None:
-        """spec/159 — center-click opens the review viewer on the
-        clicked version, with the rest of the visible list available
-        for ←/→ nav. Emits ``review_requested`` for any host that
-        wants to observe the open."""
-        if not (0 <= index < len(self._files)) or self._eg is None:
+    def _close_cluster(self) -> None:
+        """Return from the cluster sub-grid to the flat grid."""
+        if self._mode != "cluster":
             return
-        rel = self._files[index].export_relpath
-        self.review_requested.emit(rel)
-        self._open_review_dialog(index)
+        self._mode = "flat"
+        self._cluster_item_id = None
+        self._compare_marked = set()
+        self._rebuild_cells()
+        self._update_chrome()
 
-    def _open_review_dialog(self, start_index: int) -> None:
-        """Build the ReviewItem list from the current lineage roster
-        and open the dialog. Mutations from the dialog write through
-        the gateway and update the cached lineage rows + the grid
-        chrome in real time."""
+    def _on_grid_back_requested(self) -> None:
+        """Esc / edge nav. In cluster mode → pop the cluster; in flat
+        mode → propagate so the host (the shared title bar) returns
+        to the Cut page (Nelson 2026-06-21)."""
+        if self._mode == "cluster":
+            self._close_cluster()
+            return
+        self.back_requested.emit()
+
+    # ── spec/159 §6 — Compare ─────────────────────────────────────────
+
+    def _toggle_compare_on_focused(self) -> None:
+        """C key entry point: flip the focused flat cell's Compare mark.
+
+        Only flat cells participate; the Compare button inside a
+        cluster sub-grid already opens every member, and cluster
+        covers are tile aggregates with no per-cover state to mark."""
+        if self._mode == "cluster":
+            return
+        cells = getattr(self, "_cells", [])
+        focused = QApplication.focusWidget()
+        try:
+            grid_cells = self._grid.cells()
+        except Exception:                                      # noqa: BLE001
+            grid_cells = []
+        idx: Optional[int] = None
+        for i, cell_widget in enumerate(grid_cells):
+            if cell_widget is focused:
+                idx = i
+                break
+        if idx is None or not (0 <= idx < len(cells)):
+            return
+        cell = cells[idx]
+        if cell.kind != "flat":
+            return
+        rel = cell.cover_relpath
+        if rel in self._compare_marked:
+            self._compare_marked.discard(rel)
+        else:
+            self._compare_marked.add(rel)
+        self._rebuild_cells()
+        self._update_chrome()
+
+    def _refresh_compare_btn(self) -> None:
+        """Recompute the Compare button label + visibility.
+
+        * In cluster sub-grid mode: always visible, "⇄ Compare versions",
+          opens every member side-by-side (spec/89 §11.3).
+        * In flat mode: visible only when ≥2 flat cells are
+          Compare-marked, labelled "⇄ Compare (N)" (spec/63 §4 follow-up).
+        """
+        if self._mode == "cluster":
+            n = sum(
+                1 for c in getattr(self, "_cells", [])
+                if c.kind in ("flat", "mira_pending"))
+            self._compare_btn.setText(tr("⇄ Compare versions"))
+            self._compare_btn.setVisible(n >= 2)
+            return
+        n = len(self._compare_marked)
+        if n >= 2:
+            self._compare_btn.setText(
+                tr("⇄ Compare ({n})").replace("{n}", str(n)))
+            self._compare_btn.setVisible(True)
+        else:
+            self._compare_btn.setVisible(False)
+
+    def _on_compare_clicked(self) -> None:
+        """Dispatch Compare-button click: cluster sub-grid opens every
+        member; flat mode opens the marked set."""
+        if self._mode == "cluster":
+            self._open_compare_cluster()
+        else:
+            self._open_compare_marked()
+
+    def _build_compare_item(self, cell: _GridCell):
+        """Build the :class:`CompareItem` for one ``_GridCell``."""
+        from mira.ui.exported.compare_dialog import CompareItem
+
+        root = self._root or Path(".")
+        if cell.kind == "mira_pending":
+            # Virtual member — preview the source item's bytes; the
+            # develop pipeline does the rest at fit-to-tile size.
+            # ``can_be_preferred=True`` (Nelson 2026-06-30 pivot —
+            # users genuinely want to mark the Mira intent preferred
+            # before it ships); the gateway routes through
+            # :meth:`EventGateway.set_item_preferred_virtual_mira`
+            # which stores the flag on the source item row.
+            return CompareItem(
+                item_id=f"mira:{cell.source_item_id or ''}",
+                path=root / cell.cover_relpath,
+                state=None,
+                title=tr("Mira (pending)"),
+                develop_for_preview=True,
+                can_be_preferred=True,
+            )
+        row = cell.rows[0]
+        origin = lineage_origin_label(
+            getattr(row, "provenance", None) or "mira_render",
+            row.export_relpath,
+        )
+        return CompareItem(
+            item_id=row.export_relpath,
+            path=root / row.export_relpath,
+            state=None,
+            title=origin,
+        )
+
+    def _open_compare_marked(self) -> None:
+        if self._eg is None or self._root is None:
+            return
+        cells = [
+            c for c in getattr(self, "_cells", [])
+            if c.kind == "flat" and c.cover_relpath in self._compare_marked
+        ]
+        if len(cells) < 2:
+            return
+        self._open_compare_dialog(cells)
+
+    def _open_compare_cluster(self) -> None:
+        if self._eg is None or self._root is None or self._mode != "cluster":
+            return
+        cells = [
+            c for c in getattr(self, "_cells", [])
+            if c.kind in ("flat", "mira_pending")
+        ]
+        if len(cells) < 2:
+            return
+        self._open_compare_dialog(cells)
+
+    def _open_compare_dialog(self, cells: List[_GridCell]) -> None:
+        from mira.ui.exported.compare_dialog import CompareVersionsDialog
+
+        compare_items = [self._build_compare_item(c) for c in cells]
+        # ``show_titles=True`` is the spec/159 §6 contract — the
+        # closed-event surface has no state grammar so the user needs
+        # the per-tile provenance caption (LRC / Mira / ext) to tell
+        # versions apart. ``show_use_this=True`` adds the "✓ Use this"
+        # action so the user can mark the preferred version straight
+        # from Compare (spec/159 §6+).
+        preferred_id = self._preferred_item_id_in_cells(cells)
+        dlg = CompareVersionsDialog(
+            compare_items, parent=self,
+            show_titles=True,
+            show_use_this=True,
+            preferred_item_id=preferred_id,
+        )
+        dlg.use_this_requested.connect(self._on_compare_use_this)
+        # The closed-event surface has no Pick / Skip ledger to drive
+        # from a Compare click — the dialog's intent signals stay
+        # unwired by design. The user inspects + closes; ratings +
+        # to_delete are handled through the review dialog instead.
+        dlg.exec()
+        # Repaint after close so any preferred-change reflects on the
+        # cluster cover + grid cells.
+        self._rebuild_cells()
+        self._update_chrome()
+
+    def _preferred_item_id_in_cells(
+        self, cells: List[_GridCell],
+    ) -> Optional[str]:
+        """The Compare ``item_id`` of the currently-preferred member
+        among these cells, or ``None``. Used to pre-light the
+        Compare dialog's "Use this" toggle on open. Real lineage
+        rows return their ``export_relpath``; the virtual Mira member
+        returns ``mira:<source_item_id>`` so the dialog can find the
+        matching tile in its build loop."""
+        for c in cells:
+            if c.kind == "flat" and c.rows:
+                if bool(getattr(c.rows[0], "is_preferred", False)):
+                    return c.rows[0].export_relpath
+            elif c.kind == "mira_pending":
+                if c.source_item_id in self._virtual_mira_preferred_ids:
+                    return f"mira:{c.source_item_id}"
+        return None
+
+    def _on_compare_use_this(self, item_id: str) -> None:
+        """spec/159 §6+ — Compare dialog asked us to write the
+        preferred flag.
+
+        ``item_id`` shape:
+          * a lineage row's ``export_relpath`` — real preferred row;
+          * ``mira:<source_item_id>`` — virtual Mira intent preferred
+            (writes to ``item.preferred_virtual_mira``);
+          * empty — clear whichever flag is currently set."""
+        if self._eg is None:
+            return
+        if not item_id:
+            # The user cleared. Hunt for whoever was preferred (real
+            # row or virtual flag) and clear that.
+            target_rel = None
+            for f in self._files:
+                if bool(getattr(f, "is_preferred", False)):
+                    target_rel = f.export_relpath
+                    break
+            if target_rel is not None:
+                self._on_review_preferred_changed(target_rel, False)
+                return
+            for src_id in list(self._virtual_mira_preferred_ids):
+                self._set_virtual_mira_preferred(src_id, False)
+            return
+        if item_id.startswith("mira:"):
+            src_id = item_id.split(":", 1)[1]
+            if src_id:
+                self._set_virtual_mira_preferred(src_id, True)
+            return
+        self._on_review_preferred_changed(item_id, True)
+
+    def _set_virtual_mira_preferred(
+        self, source_item_id: str, value: bool,
+    ) -> None:
+        """spec/159 §6+ — write the virtual-Mira preferred flag through
+        the gateway + mirror it locally so the next paint reflects
+        the new state without a fresh ``_refresh``."""
+        if self._eg is None or not source_item_id:
+            return
+        try:
+            self._eg.set_item_preferred_virtual_mira(
+                source_item_id, value)
+        except Exception:                                      # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_item_preferred_virtual_mira "
+                "failed for %s", source_item_id)
+            return
+        if value:
+            self._virtual_mira_preferred_ids.add(source_item_id)
+            # Mirror the gateway's "clear sibling lineage" so the
+            # cached rows lose their is_preferred flag too.
+            for f in self._files:
+                if (getattr(f, "source_item_id", None)
+                        == source_item_id):
+                    try:
+                        f.is_preferred = False             # type: ignore[misc]
+                    except AttributeError:
+                        pass
+        else:
+            self._virtual_mira_preferred_ids.discard(
+                source_item_id)
+
+    def _open_review_dialog_for_cell(self, cell_index: int) -> None:
+        """spec/159 — open the review viewer with the visible flat
+        cells as nav siblings.
+
+        Cluster covers are NOT navigable from the viewer (the cluster
+        is drilled into to walk its versions). In cluster-mode views,
+        every cell is flat, so ←/→ walks all that cover's versions
+        in order."""
         from mira.ui.exported.review_dialog import (
             ReviewItem, ReviewMediaDialog,
         )
-        if self._eg is None or self._root is None:
+        cells = getattr(self, "_cells", [])
+        if (self._eg is None or self._root is None
+                or not (0 <= cell_index < len(cells))):
             return
-        items: List[ReviewItem] = []
-        for f in self._files:
-            items.append(ReviewItem(
-                export_relpath=f.export_relpath,
-                abs_path=self._root / f.export_relpath,
-                stars=getattr(f, "stars", None),
-                color_label=getattr(f, "color_label", None),
-                flag=bool(getattr(f, "flag", False)),
-                to_delete=bool(getattr(f, "to_delete", False)),
-                title=Path(f.export_relpath).name,
-            ))
+        if cells[cell_index].kind != "flat":
+            return
+        # Flat-only sibling list — same order they appear in the grid.
+        siblings = [c for c in cells if c.kind == "flat"]
+        try:
+            start = next(i for i, c in enumerate(siblings)
+                         if c.cover_relpath
+                         == cells[cell_index].cover_relpath)
+        except StopIteration:
+            return
+        items = [self._review_item_for(c.rows[0]) for c in siblings]
         if not items:
             return
-        dlg = ReviewMediaDialog(items, start_index=start_index, parent=self)
+        dlg = ReviewMediaDialog(items, start_index=start, parent=self)
         dlg.stars_changed.connect(self._on_review_stars_changed)
         dlg.color_label_changed.connect(
             self._on_review_color_label_changed)
         dlg.flag_changed.connect(self._on_review_flag_changed)
         dlg.to_delete_changed.connect(
             self._on_review_to_delete_changed)
+        dlg.classification_changed.connect(
+            self._on_review_classification_changed)
+        dlg.preferred_changed.connect(self._on_review_preferred_changed)
         dlg.exec()
         # On close: rebuild the cells so any rating changes paint.
         self._rebuild_cells()
         self._update_chrome()
+
+    def _review_item_for(self, row):
+        """Build a ReviewItem from a Lineage row (with the source item's
+        classification eagerly resolved so the Style picker reads the
+        current value without a round-trip)."""
+        from mira.ui.exported.review_dialog import ReviewItem
+
+        item_id = getattr(row, "source_item_id", None)
+        classification: Optional[str] = None
+        if item_id and self._eg is not None:
+            try:
+                src = self._eg.item(item_id)
+            except Exception:                                  # noqa: BLE001
+                log.exception(
+                    "DCDetailPage: item lookup failed for %s", item_id)
+                src = None
+            if src is not None:
+                classification = getattr(src, "classification", None)
+        # spec/159 §6+ — does this row have any sibling lineage row
+        # for the same source? Drives the PreferredToggle's visibility.
+        has_siblings = False
+        if item_id:
+            has_siblings = sum(
+                1 for f in self._files
+                if getattr(f, "source_item_id", None) == item_id
+            ) >= 2
+            # Virtual Mira intent also counts as a sibling (spec/89 §6)
+            # so the user can mark the LRC return preferred even before
+            # the Mira render materialises.
+            if (not has_siblings
+                    and item_id in self._mira_intent_ids
+                    and not any(
+                        getattr(f, "provenance", None) == "mira_render"
+                        for f in self._files
+                        if getattr(f, "source_item_id", None) == item_id)):
+                has_siblings = True
+        return ReviewItem(
+            export_relpath=row.export_relpath,
+            abs_path=(self._root or Path(".")) / row.export_relpath,
+            stars=getattr(row, "stars", None),
+            color_label=getattr(row, "color_label", None),
+            flag=bool(getattr(row, "flag", False)),
+            to_delete=bool(getattr(row, "to_delete", False)),
+            title=Path(row.export_relpath).name,
+            item_id=item_id,
+            classification=classification,
+            is_preferred=bool(getattr(row, "is_preferred", False)),
+            has_siblings=has_siblings,
+        )
 
     def _find_file_index(self, rel: str) -> Optional[int]:
         for i, f in enumerate(self._files):
@@ -482,6 +1105,62 @@ class DCDetailPage(QWidget):
             except AttributeError:
                 pass
 
+    def _on_review_preferred_changed(
+        self, rel: str, value: bool,
+    ) -> None:
+        """spec/159 §6+ — write the preferred flag through the gateway
+        (which clears any sibling row's flag first), then mirror the
+        new state onto the cached lineage rows so the grid repaints
+        the right chip after the dialog closes."""
+        if self._eg is None:
+            return
+        try:
+            self._eg.set_lineage_preferred(rel, value)
+        except Exception:                                      # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_lineage_preferred failed for %s",
+                rel)
+            return
+        # Find this row's source_item_id so we mirror the sibling
+        # clear locally too.
+        src_id: Optional[str] = None
+        for f in self._files:
+            if f.export_relpath == rel:
+                src_id = getattr(f, "source_item_id", None)
+                try:
+                    f.is_preferred = bool(value)               # type: ignore[misc]
+                except AttributeError:
+                    pass
+        if value and src_id:
+            for f in self._files:
+                if (getattr(f, "source_item_id", None) == src_id
+                        and f.export_relpath != rel):
+                    try:
+                        f.is_preferred = False                 # type: ignore[misc]
+                    except AttributeError:
+                        pass
+            # Setting a real preferred row clears the virtual flag on
+            # the source — keep the local cache in sync with the
+            # gateway's mutual-exclusion write (spec/159 §6+).
+            self._virtual_mira_preferred_ids.discard(src_id)
+
+    def _on_review_classification_changed(
+        self, item_id: str, value: str,
+    ) -> None:
+        """spec/159 §2.2 / §5.3 — Style is per-source-item; a single
+        ``set_classification`` call covers every version. ``source =
+        'user'`` because the action came from the review dialog
+        (mirrors the Editor's classification capture path)."""
+        if self._eg is None or not item_id:
+            return
+        try:
+            self._eg.set_classification(item_id, value, source="user")
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "DCDetailPage: set_classification failed for %s",
+                item_id)
+            return
+
     def _marked_relpaths(self) -> List[str]:
         """Every visible lineage row whose ``to_delete = 1``. Drives
         the toolbar count + the "Delete N marked…" confirm dialog.
@@ -528,6 +1207,7 @@ class DCDetailPage(QWidget):
         if n_marked > 0:
             self._delete_btn.setText(
                 tr("⌫ Delete {n} marked…").replace("{n}", str(n_marked)))
+        self._refresh_compare_btn()
 
     # ── delete ────────────────────────────────────────────────────────
 

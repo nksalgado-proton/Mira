@@ -84,6 +84,8 @@ class LineageRatings(NamedTuple):
     color_label: Optional[str]
     flag: bool
     to_delete: bool
+    #: spec/159 §6+ — at most one preferred per ``source_item_id``.
+    is_preferred: bool = False
 
 
 #: spec/159 — accepted colour labels (LRC convention).
@@ -3239,22 +3241,118 @@ class EventGateway:
             self._touch()
 
     def lineage_ratings(self, export_relpath: str) -> LineageRatings:
-        """spec/159 — read all four review fields for one lineage row in
-        a single round-trip. Returns ``LineageRatings(None, None, False,
-        False)`` for rows that don't exist (the caller's surface
-        typically renders nothing for absent rows anyway)."""
+        """spec/159 — read every review field for one lineage row in a
+        single round-trip. Returns the zero-state ``LineageRatings``
+        for rows that don't exist (the caller's surface typically
+        renders nothing for absent rows anyway)."""
         row = self.store.conn.execute(
-            "SELECT stars, color_label, flag, to_delete FROM lineage "
-            "WHERE export_relpath = ?",
+            "SELECT stars, color_label, flag, to_delete, is_preferred "
+            "FROM lineage WHERE export_relpath = ?",
             (export_relpath,)).fetchone()
         if row is None:
-            return LineageRatings(None, None, False, False)
+            return LineageRatings(None, None, False, False, False)
         return LineageRatings(
             stars=row["stars"],
             color_label=row["color_label"],
             flag=bool(row["flag"]),
             to_delete=bool(row["to_delete"]),
+            is_preferred=bool(row["is_preferred"]),
         )
+
+    def set_lineage_preferred(
+        self, export_relpath: str, preferred: bool,
+    ) -> None:
+        """spec/159 §6+ — mark / unmark a lineage row as the preferred
+        version of its source item.
+
+        Enforces "at most one preferred per ``source_item_id``" inside
+        a single transaction:
+
+        * when ``preferred=True``, every sibling lineage row sharing
+          the same source has its ``is_preferred`` cleared, AND the
+          item's ``preferred_virtual_mira`` is cleared too (mutually
+          exclusive with the virtual flag);
+        * when ``preferred=False`` simply clears this row's flag.
+
+        Defensive: when the row's ``source_item_id`` is ``NULL`` (a
+        legacy third-party return with no match) we only flip this
+        row's own flag — there is nothing to dedupe against. The
+        method is a no-op when the row doesn't exist (UPDATE matches
+        zero rows; the gateway stays silent).
+        """
+        with self.store.transaction() as conn:
+            if preferred:
+                row = conn.execute(
+                    "SELECT source_item_id FROM lineage "
+                    "WHERE export_relpath = ?",
+                    (export_relpath,)).fetchone()
+                if row is not None and row["source_item_id"] is not None:
+                    conn.execute(
+                        "UPDATE lineage SET is_preferred = 0 "
+                        "WHERE source_item_id = ? AND export_relpath != ?",
+                        (row["source_item_id"], export_relpath))
+                    # Clear the virtual-Mira flag on the source item;
+                    # picking a real row supersedes the "Mira pending"
+                    # intent.
+                    conn.execute(
+                        "UPDATE item SET preferred_virtual_mira = 0 "
+                        "WHERE id = ?",
+                        (row["source_item_id"],))
+                conn.execute(
+                    "UPDATE lineage SET is_preferred = 1 "
+                    "WHERE export_relpath = ?",
+                    (export_relpath,))
+            else:
+                conn.execute(
+                    "UPDATE lineage SET is_preferred = 0 "
+                    "WHERE export_relpath = ?",
+                    (export_relpath,))
+            self._touch()
+
+    def set_item_preferred_virtual_mira(
+        self, item_id: str, preferred: bool,
+    ) -> None:
+        """spec/159 §6+ — mark / unmark the virtual-Mira intent of a
+        source item as preferred. Used when the cluster has only a
+        third-party return on disk + a Mira intent (no Mira render
+        file yet) and the user wants to say "use the Mira version
+        once it ships."
+
+        Mutually exclusive with any real ``lineage.is_preferred`` row
+        for the same source: setting True clears every lineage
+        preferred flag for this item; setting False just clears the
+        column on the item row."""
+        with self.store.transaction() as conn:
+            if preferred:
+                conn.execute(
+                    "UPDATE lineage SET is_preferred = 0 "
+                    "WHERE source_item_id = ?",
+                    (item_id,))
+                conn.execute(
+                    "UPDATE item SET preferred_virtual_mira = 1 "
+                    "WHERE id = ?",
+                    (item_id,))
+            else:
+                conn.execute(
+                    "UPDATE item SET preferred_virtual_mira = 0 "
+                    "WHERE id = ?",
+                    (item_id,))
+            self._touch()
+
+    def preferred_for_item(
+        self, source_item_id: str,
+    ) -> Optional[m.Lineage]:
+        """spec/159 §6+ — the preferred version of a source item, or
+        ``None`` when no preference has been set. Downstream surfaces
+        (Cuts compose) call this to default the included version when
+        adding a multi-version source to a Cut."""
+        sql = (
+            "SELECT l.* FROM lineage l "
+            "WHERE l.source_item_id = ? AND l.is_preferred = 1 "
+            "LIMIT 1"
+        )
+        rows = self.store.query_raw(m.Lineage, sql, (source_item_id,))
+        return rows[0] if rows else None
 
     def exported_marked_for_deletion(self) -> List[m.Lineage]:
         """spec/159 — every lineage row under ``Exported Media/`` whose

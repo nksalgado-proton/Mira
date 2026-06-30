@@ -121,20 +121,22 @@ class ReviewMediaDialog(QDialog):
         self._chrome_row.setSpacing(14)
         self._chrome_row.setContentsMargins(4, 0, 4, 0)
 
-        # Star buttons 1..5
+        # Star buttons 1..5 — initial glyph is the outline; filled
+        # state painted on every _refresh_chrome.
         self._star_btns: list[QPushButton] = []
         star_box = QHBoxLayout()
         star_box.setSpacing(2)
         for n in range(1, 6):
-            b = QPushButton("★")
-            b.setFixedSize(28, 28)
+            b = QPushButton("☆")
+            b.setFixedSize(34, 34)
             b.setObjectName(f"StarBtn{n}")
             b.setProperty("starlevel", n)
             b.setCheckable(False)
+            b.setToolTip(tr("Set {n}-star rating").replace("{n}", str(n)))
             b.clicked.connect(lambda _=False, k=n: self._on_star_clicked(k))
             star_box.addWidget(b)
             self._star_btns.append(b)
-        clear_stars = QPushButton(tr("Clear"))
+        clear_stars = QPushButton(tr("Clear stars"))
         clear_stars.setFixedHeight(28)
         clear_stars.clicked.connect(lambda: self._on_star_clicked(None))
         star_box.addWidget(clear_stars)
@@ -259,32 +261,108 @@ class ReviewMediaDialog(QDialog):
         self._next_btn.setEnabled(idx < len(self._items) - 1)
 
     def _refresh_chrome(self, item: ReviewItem) -> None:
-        # Stars — filled star buttons up to N, faint for the rest.
+        # Stars — ★ (filled gold) up to N, ☆ (outline, theme-grey) for
+        # the rest. Using two distinct glyphs makes the rating
+        # readable independent of theme contrast (Nelson 2026-06-30 —
+        # "I cannot see the stars" on the colour-only v1).
         for i, b in enumerate(self._star_btns, start=1):
             filled = item.stars is not None and i <= item.stars
+            b.setText("★" if filled else "☆")
             b.setStyleSheet(
-                "QPushButton { color: #F2C84A; font-size: 18px;"
-                " border: none; background: transparent; }"
+                "QPushButton {"
+                "  font-size: 22px; font-weight: bold;"
+                "  color: #F2C84A;"
+                "  background: rgba(255, 200, 60, 0.18);"
+                "  border: 1px solid #F2C84A;"
+                "  border-radius: 6px;"
+                "}"
+                "QPushButton:hover { background: rgba(255, 200, 60, 0.28); }"
                 if filled
-                else "QPushButton { color: #555; font-size: 18px;"
-                " border: none; background: transparent; }"
+                else "QPushButton {"
+                "  font-size: 22px;"
+                "  color: #B8BCC4;"
+                "  background: transparent;"
+                "  border: 1px solid #555960;"
+                "  border-radius: 6px;"
+                "}"
+                "QPushButton:hover {"
+                "  color: #F2C84A; border-color: #F2C84A;"
+                "}"
             )
-        # Colour label — bordered ring on the active one.
+        # Colour label — the active dot gets a thick white ring +
+        # a small white check-dot overlay. The unselected ones keep
+        # a thin dark border + brighten on hover.
         for key, b in self._color_btns.items():
             hex_color = _COLOR_LABEL_HEX[key]
             if item.color_label == key:
+                b.setText("✓")
                 b.setStyleSheet(
-                    f"QPushButton {{ background-color: {hex_color};"
-                    f" border: 2px solid #ffffff; border-radius: 10px; }}"
+                    f"QPushButton {{"
+                    f"  background-color: {hex_color};"
+                    f"  color: #ffffff; font-weight: bold;"
+                    f"  border: 3px solid #ffffff;"
+                    f"  border-radius: 12px;"
+                    f"}}"
                 )
             else:
+                b.setText("")
                 b.setStyleSheet(
-                    f"QPushButton {{ background-color: {hex_color};"
-                    f" border: 1px solid #00000060; border-radius: 10px; }}"
+                    f"QPushButton {{"
+                    f"  background-color: {hex_color};"
+                    f"  border: 1px solid #00000080;"
+                    f"  border-radius: 10px;"
+                    f"}}"
                     f"QPushButton:hover {{ border: 2px solid #ffffff; }}"
                 )
+        # Flag — active state lights up the button with an amber bg
+        # so it reads as ON without relying on Qt's default :checked
+        # styling (which is theme-dependent and often invisible).
         self._flag_btn.setChecked(item.flag)
+        if item.flag:
+            self._flag_btn.setText(tr("⚑ Flagged"))
+            self._flag_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: #F2A841; color: #1A1A1A;"
+                "  font-weight: bold; border: 2px solid #F2A841;"
+                "  border-radius: 4px; padding: 2px 10px;"
+                "}"
+            )
+        else:
+            self._flag_btn.setText(tr("⚑ Flag"))
+            self._flag_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: transparent; color: #C8CCD4;"
+                "  border: 1px solid #555960;"
+                "  border-radius: 4px; padding: 2px 10px;"
+                "}"
+                "QPushButton:hover {"
+                "  color: #F2A841; border-color: #F2A841;"
+                "}"
+            )
+        # To-delete — same treatment, but danger red so the user
+        # reads "this is destructive" at a glance.
         self._delete_btn.setChecked(item.to_delete)
+        if item.to_delete:
+            self._delete_btn.setText(tr("⌫ Marked for deletion"))
+            self._delete_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: #C03030; color: #ffffff;"
+                "  font-weight: bold; border: 2px solid #C03030;"
+                "  border-radius: 4px; padding: 2px 10px;"
+                "}"
+            )
+        else:
+            self._delete_btn.setText(tr("⌫ Mark for deletion"))
+            self._delete_btn.setStyleSheet(
+                "QPushButton {"
+                "  background-color: transparent; color: #C8CCD4;"
+                "  border: 1px solid #555960;"
+                "  border-radius: 4px; padding: 2px 10px;"
+                "}"
+                "QPushButton:hover {"
+                "  color: #E66060; border-color: #E66060;"
+                "}"
+            )
 
     # ── click handlers ─────────────────────────────────────────────
 

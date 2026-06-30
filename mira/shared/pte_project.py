@@ -739,7 +739,13 @@ def _video_overlay_object(
         f"      ShadowAngle=45\r\n"
         f"      ShadowSpreadIndex=0\r\n"
         f"      Antialiased=1\r\n"
-        f"      EnableBorder=0\r\n"
+        # spec/155 — separator / opener video overlay carries the same
+        # thin white frame the foreground photo gets on regular slides.
+        # PTE example side-by-side (PTE example/separators with photo
+        # and video.pte vs. … - with border.pte) showed the only diff
+        # was EnableBorder=0 → 1 on the foreground content object;
+        # Nelson 2026-06-30 confirmed the border is wanted.
+        f"      EnableBorder=1\r\n"
         f"      EnableCrop=0\r\n"
         f"      EnableAspect=0\r\n"
         f"      BorderWidth=1.5\r\n"

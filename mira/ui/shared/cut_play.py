@@ -1210,23 +1210,40 @@ class CutPlayerDialog(QDialog):
         meta = self._day_meta.get(day)
         rel = getattr(meta, "map_image_path", None)
         if not rel:
-            log.info(
-                "sep video: day=%r → no meta or empty map_image_path "
-                "(meta_present=%s, day_meta_keys=%r)",
-                day, meta is not None, sorted(self._day_meta.keys()))
+            self._sep_video_diag(
+                f"day={day!r} → no meta or empty map_image_path "
+                f"(meta_present={meta is not None}, "
+                f"day_meta_keys={sorted(self._day_meta.keys())!r})")
             return None
         from core.path_builder import is_video_map_path
         if not is_video_map_path(rel):
-            log.info(
-                "sep video: day=%r rel=%r → not video map", day, rel)
+            self._sep_video_diag(
+                f"day={day!r} rel={rel!r} → not video map")
             return None
         abs_p = self._root / rel
         if not abs_p.is_file():
-            log.info(
-                "sep video: day=%r abs=%r → file missing", day, abs_p)
+            self._sep_video_diag(
+                f"day={day!r} abs={abs_p!r} → file missing")
             return None
-        log.info("sep video: day=%r → resolved to %r", day, abs_p)
+        self._sep_video_diag(
+            f"day={day!r} → resolved to {abs_p!r}")
         return abs_p
+
+    @staticmethod
+    def _sep_video_diag(line: str) -> None:
+        """Append one diagnostic line to ``<Desktop>/mira_sep_video_diag.txt``
+        so Nelson can see exactly which check fails per sep slot without
+        digging through %LOCALAPPDATA% logs (Nelson 2026-06-30). Also
+        mirrors into the regular logger."""
+        log.info("sep video: %s", line)
+        try:
+            from datetime import datetime
+            target = Path.home() / "Desktop" / "mira_sep_video_diag.txt"
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(f"{ts}  {line}\n")
+        except Exception:                                          # noqa: BLE001
+            pass
 
     def _sep_video_duration_ms(self, day) -> int:
         """Probed duration of the day's video-map separator, cached.

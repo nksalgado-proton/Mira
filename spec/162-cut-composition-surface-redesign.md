@@ -141,10 +141,22 @@ edited):**
   dialog file. Rename target open; suggestion: `new_cut_dialog.py`.
   The two current constructor flavours (`FLAVOUR_CUT`,
   `FLAVOUR_COLLECTION`) collapse to a single dialog that takes a
-  scope argument (`SCOPE_EVENT`, `SCOPE_CROSS_EVENT`); no
-  flavour-Collection composition path — the retirement of "compose a
-  Collection standalone" follows from Collection retiring as a
-  user-saveable artefact.
+  scope argument (`SCOPE_EVENT`, `SCOPE_CROSS_EVENT`). Round 1
+  (2026-07-01) added `scope` + `mode` params alongside the legacy
+  `flavour` param as an alias during transition; the alias retires
+  with the Save/Load Collection retirement.
+
+**Where the standalone "compose a Collection" surface actually
+lives.** Discovered during Round 1 review — the `+ New Collection`
+UI is INSIDE `mira/ui/pages/cross_event_dcs_dialog.py` (line 267),
+NOT on `events_page.py`. The `events_page.py:715` site that opens
+the old dialog with `flavour=FLAVOUR_COLLECTION` is
+`_pin_cross_event_dc` — a **cross-event Cut composer** (Pin → New
+Cut flow) that just happens to use the Collection *face* of the
+old dialog as its shape today. It migrates to `scope=
+SCOPE_CROSS_EVENT` (mode=`new`) in Round 3, NOT retires. The real
+"+ New Collection" button retires when `CrossEventDcsDialog` itself
+retires (Round 2's wholesale delete of the file).
 
 **Action button rename:** on Cut rows across every surface, the
 `Adjust` ghost button becomes `Edit Cut`. Handler names

@@ -719,7 +719,18 @@ def test_mute_pushes_zero_to_viewport(qapp, app_gateway):
     page._viewport.video_set_volume = lambda v: pushed.append(int(v))
     page._on_mute_toggled(True)
     assert pushed == [0]
+    # spec-neutral 2026-07-01 — call viewport.shutdown_video() before
+    # close_event so QMediaPlayer clears its armed state; without it
+    # a queued teardown callback fires later against the freed
+    # ``pushed`` closure and pytest reports "TypeError: 'NoneType' is
+    # not callable" in the Qt event loop at fixture end.
+    try:
+        page._viewport.shutdown_video()
+    except Exception:                                              # noqa: BLE001
+        pass
     page.close_event()
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
 
 
 def test_unmute_restores_slider_volume(qapp, app_gateway):

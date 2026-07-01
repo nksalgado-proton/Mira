@@ -740,7 +740,16 @@ def test_unmute_restores_slider_volume(qapp, app_gateway):
     page._viewport.video_set_volume = lambda v: pushed.append(int(v))
     page._on_mute_toggled(False)
     assert pushed == [65]
+    # Same teardown-drain pattern as test_mute_pushes_zero_to_viewport
+    # — clear QMediaPlayer state before close_event so the queued
+    # callback fires while the closure is still alive.
+    try:
+        page._viewport.shutdown_video()
+    except Exception:                                              # noqa: BLE001
+        pass
     page.close_event()
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
 
 
 # ── Jump stops walks markers ∪ snapshots ∪ endpoints ─────────────────

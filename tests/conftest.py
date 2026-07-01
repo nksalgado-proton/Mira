@@ -11,10 +11,20 @@ Currently provides:
     .question`` with non-blocking stubs that return ``Ok`` /
     ``Yes``. Tests that NEED to observe a modal call (e.g. checking
     the alert message) can monkeypatch their own version on top.
+  - Autouse ``QDialog.exec`` / ``QDialog.open`` neutralization. Custom
+    ``QDialog`` subclasses (name dialogs, load pickers, export target
+    pickers, date-range popovers, etc.) call ``.exec()`` on their
+    instances directly; those bypass ``QMessageBox``'s stubs entirely
+    and would pop a real modal on the developer's desktop, freezing
+    the pytest run until a human clicks the dialog away. Class-level
+    monkeypatch of ``QDialog.exec`` returning ``Rejected`` covers
+    every subclass in one shot. Tests that need a specific dialog's
+    ``.exec()`` to return ``Accepted`` (or capture arguments)
+    monkeypatch the specific subclass on top of this default.
 """
 
 import pytest
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
 
 @pytest.fixture(scope="session")
@@ -90,6 +100,34 @@ def _stub_blocking_modals(monkeypatch):
     monkeypatch.setattr(
         QFileDialog, "getSaveFileName",
         lambda *args, **kwargs: ("", ""),
+    )
+    # Class-level QDialog.exec / .open neutralization. Every custom
+    # QDialog subclass in the app (NewCutDialog's sub-pickers, the
+    # export-target dialog, date-range popovers, rename dialogs,
+    # etc.) inherits .exec() from QDialog; monkeypatching the base
+    # method covers all of them in one shot. Default return:
+    # Rejected — Cancel branches are the safest default (code paths
+    # that treat Accepted as a green light will short-circuit; a
+    # code path that treats Rejected as green light doesn't exist
+    # in the Qt idiom).
+    #
+    # Tests that need a specific dialog subclass's .exec() to return
+    # Accepted (or to spy on its instantiation) monkeypatch that
+    # subclass's .exec on top of this default. That per-test override
+    # wins by ordering: pytest's monkeypatch fixture is per-test, so
+    # the autouse patch and any in-test patch both undo cleanly at
+    # test teardown.
+    #
+    # Also stub QDialog.open (async modal show; without this, a call
+    # site that uses open() instead of exec() would still pop a
+    # window).
+    monkeypatch.setattr(
+        QDialog, "exec",
+        lambda self, *args, **kwargs: QDialog.DialogCode.Rejected,
+    )
+    monkeypatch.setattr(
+        QDialog, "open",
+        lambda self, *args, **kwargs: None,
     )
 
 

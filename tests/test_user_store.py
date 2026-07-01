@@ -107,15 +107,17 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         )
     }
     # spec/61 (schema v2): the user-level "cut" table retired — event Cuts
-    # live in event.db; only templates are user-level.
+    # live in event.db; only templates were user-level.
     # spec/81 Phase 2 (schema v3): cross-event surface arrived — global_items
     # (cross-event projection) + saved_filter (cross-event DC home).
     # spec/90 Phase 1 (schema v7): recipe (saved Cut/Collection configuration)
     # + event_collection (saved event sets) arrived; ``person`` gained a
     # ``representative_face_id`` column but is not a new table.
-    # spec/94 Phase 4a-ii (schema v8): cross-event Cuts arrive — cut +
-    # cut_member, library-level per spec/93 §3. Event-scope Cuts still
-    # live in event.db; the discriminator is the membership shape.
+    # spec/94 Phase 4a-ii (schema v8): the user-level ``cut`` table
+    # **re-arrived** — now scoped to cross-event Cuts (spec/93 §3), while
+    # event-scope Cuts stay in event.db. The v2 retirement note above is
+    # historical; the v8 re-introduction is what ships today.
+    #  ``cut_member`` is the sibling table (one row per source event × file).
     assert names == {
         "schema_info",
         "installation_profile",
@@ -131,6 +133,7 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "user_camera",
         "gear_profile",
 
+        "cut",
         "cut_member",
         "feature_flag",
     }

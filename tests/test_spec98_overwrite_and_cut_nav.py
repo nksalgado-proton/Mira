@@ -26,9 +26,11 @@ from mira.ui.pages.new_cut_dialog import (
     NewRecipeContext,
     NewCutDialog,
     OperandOption,
-    _SaveAsDcNameDialog,
     _SaveRecipeNameDialog,
 )
+# spec/162 Round 2d.C — _SaveAsDcNameDialog retires with the Save-as-DC
+# surface. The two tests below that reference it are marked skip.
+_SaveAsDcNameDialog = None  # type: ignore[assignment]
 
 
 NOW = "2026-06-22T12:00:00+00:00"
@@ -222,6 +224,12 @@ def _open_dc_dialog(qapp, *, dc_creator, dc_replacer=None):
     )
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2d.C — the Collection Save-as-DC surface "
+           "(_SaveAsDcNameDialog + _open_save_as_dc_dialog) retires "
+           "with the dead-code sweep; the dc_replacer callback retires "
+           "with the constructor's dc_creator/dc_replacer/dc_loader "
+           "kwargs.")
 def test_collection_replace_routes_to_dc_replacer(qapp, monkeypatch):
     """spec/98 §1 — Replace branch on the DC save: the host's
     ``dc_replacer`` is the one called (not ``dc_creator``)."""
@@ -255,6 +263,9 @@ def test_collection_replace_routes_to_dc_replacer(qapp, monkeypatch):
     assert replacer_calls[0][0] == "my_collection"
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2d.C — the Collection Save-as-DC surface + "
+           "the dc_replacer callback retire; see previous test.")
 def test_collection_replace_cancel_does_not_call_replacer(qapp, monkeypatch):
     """spec/98 §1 — Cancel branch: no ``dc_replacer`` call; the loop
     falls through to the legacy 'pick another' inline path."""

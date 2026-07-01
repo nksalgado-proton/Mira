@@ -234,11 +234,10 @@ def test_source_expression_two_chips_default_to_union(qapp):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2d.C — _on_save_as_dc_clicked retires with "
+           "the Save-as-DC dialog surface (dead code from Round 2a's "
+           "body rebuild).")
 def test_save_as_dc_placeholder_emits_dialog_signal(qapp):
-    """The picker's ``save_as_dc_requested`` is wired into the dialog's
-    ``save_as_dc_requested`` so Phase 4e can listen on the dialog object."""
-    dlg = _dialog(qapp)
-    seen = []
-    dlg.save_as_dc_requested.connect(lambda: seen.append(True))
-    dlg._on_save_as_dc_clicked()
-    assert seen == [True]
+    """Retired — see the skip reason above."""
+    ...

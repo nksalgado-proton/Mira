@@ -1535,64 +1535,15 @@ class ShareCutsPage(QWidget):
             dlg.setWindowTitle(heading_text)
         return dlg
 
-    def _make_dc_loader(self):
-        """Build the :meth:`NewCutDialog.dc_loader` closure for the
-        Cut-face dialog (spec/90 §5). Resolves an
-        :class:`OperandOption` to ``(expr, filters)`` so Load DC can
-        replace the dialog's Source + Filters with the saved DC's
-        contents.
-
-        Returns ``None`` when no per-event gateway is open."""
-        eg = self._eg
-        if eg is None:
-            return None
-
-        def dc_loader(operand: OperandOption) -> tuple[list, dict]:
-            dc = None
-            if operand.id:
-                dc = eg.dynamic_collection(operand.id)
-            if dc is None and operand.tag:
-                dc = eg.dc_by_tag(operand.tag)
-            if dc is None:
-                return ([], {})
-            return (list(eg.dc_expr(dc)), dict(eg.dc_filters(dc)))
-
-        return dc_loader
-
-    def _make_dc_creator(self):
-        """Build the :meth:`NewCutDialog.dc_creator` closure for the
-        Cut-face dialog (spec/90 §5). Translates the dialog's
-        ``filters_payload()`` dict back into the gateway's
-        ``styles`` / ``media_type`` parameters and refreshes the page
-        so the new DC lands in the DCs tab after the sub-dialog closes.
-
-        Returns ``None`` when no per-event gateway is open — the dialog
-        keeps the Save as DC button visible-but-inert in that case
-        (smokes / unit tests without persistence)."""
-        eg = self._eg
-        if eg is None:
-            return None
-        page = self
-
-        def dc_creator(name: str, expr: list, filters: dict) -> OperandOption:
-            styles = list((filters or {}).get("styles") or [])
-            media_type = (filters or {}).get("media_type") or "both"
-            dc = eg.create_dc(
-                name, expr=expr, styles=styles, media_type=media_type)
-            try:
-                live = eg.dc_probe(eg.dc_expr(dc), eg.dc_filters(dc))
-            except Exception:                              # noqa: BLE001
-                live = 0
-            page.refresh()
-            return OperandOption(
-                name=f"#{dc.tag}",
-                count=int(live or 0),
-                kind="dc",
-                tag=dc.tag,
-                id=dc.id,
-            )
-
-        return dc_creator
+    # spec/162 Round 3f (2026-07-01) — ``_make_dc_loader`` +
+    # ``_make_dc_creator`` retired. They built the closures the
+    # NewCutDialog's ``dc_loader`` / ``dc_creator`` kwargs used; both
+    # kwargs retired in Round 2d.C/D along with the Save/Load-Collection
+    # sub-dialogs. The methods had no live caller after that; the audit
+    # deletes them wholesale. Test coverage for the underlying gateway
+    # methods (:meth:`EventGateway.create_dc`, ``dc_expr`` / ``dc_filters``)
+    # lives directly in :mod:`tests.test_gateway_cuts` +
+    # :mod:`tests.test_cuts_shell` — no page-layer indirection needed.
 
     # ── spec/94 Phase 1b — placement classifier + event-name lookup ──
 

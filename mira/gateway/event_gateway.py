@@ -1149,7 +1149,13 @@ class EventGateway:
 
     def dynamic_collections(self) -> List[m.DynamicCollection]:
         """All Dynamic Collections, oldest first. The base #exported universe
-        is NOT a row — it is :meth:`exported_files` (operand token "exported")."""
+        is NOT a row — it is :meth:`exported_files` (operand token "exported").
+
+        spec/162 Round 3f — load-bearing after the user-saved Collection
+        UI retired: the resolver's cycle-guard + the ShareCutsPage
+        operand-picker inventory + the cut-binding placement classifier
+        walk this list. Method survives; no user-facing writer creates
+        rows any more."""
         return self.store.query_raw(
             m.DynamicCollection,
             "SELECT * FROM dynamic_collection ORDER BY created_at, id")
@@ -1164,13 +1170,20 @@ class EventGateway:
     @staticmethod
     def dc_expr(dc: m.DynamicCollection) -> List[list]:
         """A DC's formula as ``[[op, operand], …]`` — the operand is the base
-        token ``"exported"`` or a typed ref ``{"kind","id","tag"}``."""
+        token ``"exported"`` or a typed ref ``{"kind","id","tag"}``.
+
+        spec/162 Round 3f — load-bearing after the user-saved Collection
+        UI retired: the resolver + :class:`CutSession` / :class:`Cross
+        EventCutSession` read it when re-resolving a Cut's live DC."""
         return list(json.loads(dc.expr_json))
 
     @staticmethod
     def dc_filters(dc: m.DynamicCollection) -> dict:
         """A DC's filters mapping (``{"styles":[…],"media_type":…}``); readers
-        tolerate missing keys."""
+        tolerate missing keys.
+
+        spec/162 Round 3f — load-bearing after the user-saved Collection
+        UI retired: same callers as :meth:`dc_expr`."""
         try:
             data = json.loads(dc.filters_json)
             return data if isinstance(data, dict) else {}
@@ -1202,7 +1215,14 @@ class EventGateway:
         """Create a DC from a user-typed name (slugified + validated against the
         DC namespace only — separate from Cut tags, Nelson 2026-06-16). Rejects
         a self-referential operand graph (cycle guard). Filters fold into
-        ``filters_json``."""
+        ``filters_json``.
+
+        spec/162 Round 3f — no user-facing UI writes DC rows any more
+        (Round 2b retired the Save-as-Collection dialog). The write-side
+        API stays exposed for the gateway's test coverage
+        (:mod:`tests.test_gateway_cuts` +
+        :mod:`tests.test_cuts_shell`) so a future re-integration can
+        wire a new writer without reviving retired code."""
         slug = cut_names.slugify(name)
         err = cut_names.check_tag(slug, [d.tag for d in self.dynamic_collections()])
         if err:
@@ -1232,7 +1252,10 @@ class EventGateway:
     ) -> None:
         """Edit a DC's formula / filters in place (the live recipe re-resolves
         next read; pinned Cuts are frozen and unaffected — spec/81 §5). The
-        cycle guard runs against the NEW expr."""
+        cycle guard runs against the NEW expr.
+
+        spec/162 Round 3f — no user-facing UI writes to DC rows any
+        more; test-coverage only."""
         dc = self.dynamic_collection(dc_id)
         if dc is None:
             raise KeyError(dc_id)
@@ -1259,7 +1282,10 @@ class EventGateway:
 
     def rename_dc(self, dc_id: str, new_name: str) -> m.DynamicCollection:
         """Rename a DC (slugify + validate against the DC namespace, excluding
-        itself). Pinned Cuts keep their frozen snapshot."""
+        itself). Pinned Cuts keep their frozen snapshot.
+
+        spec/162 Round 3f — no user-facing UI writes to DC rows any
+        more; test-coverage only."""
         dc = self.dynamic_collection(dc_id)
         if dc is None:
             raise KeyError(dc_id)
@@ -1280,7 +1306,10 @@ class EventGateway:
         §5) — but their ``source_dc_id`` is NULLed here at the gateway
         level. Schema v8 (spec/81 Phase 2) dropped the FK that used to
         carry ON DELETE SET NULL; the equivalent guarantee now lives in
-        this method. Members are untouched."""
+        this method. Members are untouched.
+
+        spec/162 Round 3f — no user-facing UI writes to DC rows any
+        more; test-coverage only."""
         with self.store.transaction() as conn:
             conn.execute(
                 "UPDATE cut SET source_dc_id = NULL, source_dc_kind = NULL "
@@ -1478,7 +1507,12 @@ class EventGateway:
     def dc_probe(self, expr: Sequence[Sequence],
                  filters: Optional[Mapping] = None) -> int:
         """The dialog's live count for a draft DC formula (spec/81 §2) — how
-        many files this expr+filters resolves to right now."""
+        many files this expr+filters resolves to right now.
+
+        spec/162 Round 3f — load-bearing: :class:`ShareCutsPage`'s
+        operand-picker inventory computes the live count for every DC
+        chip via this call so the user sees the resolution size before
+        pinning."""
         return len(self.resolve_dc(expr, filters))
 
     # ----- Recipe resolution (spec/90 §7 Phase 2) -------------------------- #

@@ -170,7 +170,11 @@ class LibraryGateway:
         and projects each :class:`DefinitionFile` to a
         :class:`SavedFilter` dataclass so callers see the same row
         shape. Falls back to the legacy SQL path when the library is
-        absent (unit tests construct LibraryGateway directly)."""
+        absent (unit tests construct LibraryGateway directly).
+
+        spec/162 Round 3f — load-bearing after the user-saved
+        Collection UI retired: the cross-event resolver + cycle-guard
+        + cross-event uniqueness enforcement walk this list."""
         if self._collections_library is not None:
             rows = [
                 self._df_to_saved_filter(df)
@@ -226,7 +230,11 @@ class LibraryGateway:
     @staticmethod
     def dc_expr(dc: um.SavedFilter) -> List[list]:
         """A DC's formula as ``[[op, operand], …]`` — typed-ref shape, same
-        as event-scope (spec/81 §2)."""
+        as event-scope (spec/81 §2).
+
+        spec/162 Round 3f — load-bearing after the user-saved
+        Collection UI retired: :class:`CrossEventCutSession` +
+        the placement classifier walk this to re-resolve a Cut."""
         try:
             return list(json.loads(dc.expr_json or "[]"))
         except (ValueError, TypeError):
@@ -235,7 +243,10 @@ class LibraryGateway:
     @staticmethod
     def dc_filters(dc: um.SavedFilter) -> dict:
         """A DC's filter mapping (the spec/32 §2 catalogue). Tolerant readers
-        — missing keys / malformed JSON fall back to ``{}``."""
+        — missing keys / malformed JSON fall back to ``{}``.
+
+        spec/162 Round 3f — load-bearing: same callers as
+        :meth:`dc_expr`."""
         try:
             data = json.loads(dc.filters_json or "{}")
             return data if isinstance(data, dict) else {}
@@ -269,7 +280,14 @@ class LibraryGateway:
         validated against the cross-event DC namespace — reserved against the
         ladder rungs + taken tags). Rejects self-referential operand graphs
         (cycle guard). ``filters`` is the spec/32 §2 catalogue as a dict —
-        tolerant readers; unknown keys round-trip via ``filters_json``."""
+        tolerant readers; unknown keys round-trip via ``filters_json``.
+
+        spec/162 Round 3f — no user-facing UI writes to cross-event DC
+        rows any more (Round 2b retired the Save-as-Collection dialog;
+        Round 3e retired the standalone cross-event Collection composer).
+        The write-side API stays exposed for the gateway's test
+        coverage so a future re-integration can wire a new writer
+        without reviving retired code."""
         self._guard_read_only()
         slug = cut_names.slugify(name)
         err = cut_names.check_tag(slug, [d.tag for d in self.dynamic_collections()])
@@ -323,7 +341,10 @@ class LibraryGateway:
         The cycle guard runs against the NEW expr. ``filters`` REPLACES the
         whole mapping (event-scope's per-key merge is too narrow for the
         cross-event catalogue's open-ended key set; callers pass the full
-        next state)."""
+        next state).
+
+        spec/162 Round 3f — no user-facing UI writes to cross-event DC
+        rows any more; test-coverage only."""
         self._guard_read_only()
         dc = self.dynamic_collection(dc_id)
         if dc is None:
@@ -368,7 +389,10 @@ class LibraryGateway:
     def rename_dc(self, dc_id: str, new_name: str) -> um.SavedFilter:
         """Rename a cross-event DC (slug + validate against the cross-event
         namespace, excluding itself). The cycle guard does not need to
-        re-run — renaming changes only the tag, not the operand graph."""
+        re-run — renaming changes only the tag, not the operand graph.
+
+        spec/162 Round 3f — no user-facing UI writes to cross-event DC
+        rows any more; test-coverage only."""
         self._guard_read_only()
         dc = self.dynamic_collection(dc_id)
         if dc is None:
@@ -399,7 +423,12 @@ class LibraryGateway:
         """Drop a cross-event DC. Cross-event Cuts that point at it (Item 4+)
         survive via the same opaque-id discipline event-scope already uses
         (the FK is dropped per the Phase-2 handover recommendation; freeze
-        invariant — spec/81 §5)."""
+        invariant — spec/81 §5).
+
+        spec/162 Round 3f — no user-facing UI writes to cross-event DC
+        rows any more; the umbrella :meth:`Gateway.delete_cross_event_dc`
+        wraps this for a future cascade-sweep entry point. Test-coverage
+        only today."""
         self._guard_read_only()
         if self._collections_library is not None:
             self._collections_library.delete(dc_id)
@@ -460,7 +489,10 @@ class LibraryGateway:
                  scope: Optional[Iterable[str]] = None) -> int:
         """The dialog's live count for a draft DC formula (spec/81 §2).
         spec/94 Phase 4a — honours ``scope`` the same way as
-        :meth:`resolve_dc_keys`."""
+        :meth:`resolve_dc_keys`.
+
+        spec/162 Round 3f — load-bearing: the operand-picker at cross-
+        event scope computes the live count via this call."""
         return len(self.resolve_dc_keys(expr, filters, scope=scope))
 
     # ----- Scope resolution (spec/90 §3 / spec/94 Phase 4a) --------------- #

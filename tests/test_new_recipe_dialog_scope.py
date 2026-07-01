@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mira.ui.pages import new_recipe_dialog as nrd
+from mira.ui.pages import new_cut_dialog as nrd
 from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,

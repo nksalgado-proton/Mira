@@ -17,9 +17,13 @@ from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
+    MODE_EDIT,
+    MODE_NEW,
     NewRecipeContext,
     NewCutDialog,
     OperandOption,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
 )
 
 
@@ -338,12 +342,20 @@ def test_scope_section_carries_inline_hint(qapp):
 
 
 def test_footer_contains_only_cancel_and_start(qapp):
-    """spec/90 §5 — the footer is just Cancel + Start ▶; saves live with
-    their data (Recipe toolbar / Which items? band)."""
+    """spec/90 §5 / spec/162 §5 — the footer / launch pad hosts Cancel +
+    the mode-specific primary CTA; saves live with their data (Recipe
+    toolbar / Which items? band). spec/162 Round 1b renamed the primary
+    button per mode:
+
+      New Cut mode  → ``▶ Freeze and Pick``
+      Edit Cut mode → ``▶ Save Changes and Pick``  (covered by a
+                       separate edit-mode test)
+    """
     from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
     # Walk the dialog's children to find the footer host (the bottom
-    # widget that hosts the Start primary button).
+    # widget that hosts the primary button — post-Round 1b it wears
+    # the #LaunchPad role).
     footer = dlg._start_btn.parent()
     button_texts = sorted(
         (b.text() or "") for b in footer.findChildren(QPushButton)
@@ -351,7 +363,7 @@ def test_footer_contains_only_cancel_and_start(qapp):
         if b.text() and b is not None
     )
     assert "Cancel" in button_texts
-    assert any("Start" in t for t in button_texts)
+    assert any("Freeze and Pick" in t for t in button_texts)
     assert not any("Save as Recipe" in t for t in button_texts)
     # Vocabulary rename to "Collection" landed in spec/94 Phase 1.
     assert not any("Save as Collection" in t for t in button_texts)
@@ -415,3 +427,187 @@ def test_name_and_scope_wrapped_as_lightboxes(qapp):
     dlg = _collection_dialog(qapp)
     assert _section(dlg, "NameBox") is not None
     assert _section(dlg, "ScopeBox") is not None
+
+
+# --------------------------------------------------------------------------- #
+# spec/162 Round 1b — scope / mode / contextual labels / budget hide
+# --------------------------------------------------------------------------- #
+
+
+def test_scope_event_maps_to_flavour_cut(qapp):
+    """spec/162 §2 — `scope=SCOPE_EVENT` resolves to the same behaviour
+    as the legacy `flavour=FLAVOUR_CUT` code path."""
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
+    )
+    assert dlg._scope == SCOPE_EVENT
+    assert dlg._flavour == FLAVOUR_CUT
+
+
+def test_scope_cross_event_maps_to_flavour_collection(qapp):
+    """spec/162 §2 — `scope=SCOPE_CROSS_EVENT` resolves to the legacy
+    `flavour=FLAVOUR_COLLECTION` code path (until Round 2 retires the
+    Collection flavour surface)."""
+    dlg = NewCutDialog(
+        scope=SCOPE_CROSS_EVENT, show_scope=True, show_hardware=True,
+        inventory_scope=INVENTORY_LIBRARY,
+        ctx=_ctx(cameras=("Pana+G9M2",), lenses=("100-500mm",)),
+    )
+    assert dlg._scope == SCOPE_CROSS_EVENT
+    assert dlg._flavour == FLAVOUR_COLLECTION
+
+
+def test_scope_and_flavour_together_when_disagreeing_raises(qapp):
+    with pytest.raises(ValueError, match="disagree"):
+        NewCutDialog(
+            scope=SCOPE_EVENT, flavour=FLAVOUR_COLLECTION,
+            show_scope=False, show_hardware=False,
+            inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
+        )
+
+
+def test_neither_scope_nor_flavour_raises(qapp):
+    with pytest.raises(ValueError, match="scope|flavour"):
+        NewCutDialog(
+            show_scope=False, show_hardware=False,
+            inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
+        )
+
+
+def test_invalid_mode_raises(qapp):
+    with pytest.raises(ValueError, match="mode"):
+        NewCutDialog(
+            scope=SCOPE_EVENT, mode="rewrite",
+            show_scope=False, show_hardware=False,
+            inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
+        )
+
+
+def test_new_mode_primary_button_is_freeze_and_pick(qapp):
+    """spec/162 §5.1 — New Cut mode primary CTA reads ‘Freeze and Pick’."""
+    dlg = _cut_dialog(qapp)
+    assert "Freeze and Pick" in dlg._start_btn.text()
+
+
+def test_edit_mode_primary_button_is_save_changes_and_pick(qapp):
+    """spec/162 §5.2 — Edit Cut mode primary CTA reads
+    ‘Save Changes and Pick’."""
+    ctx = _ctx()
+    ctx.name = "Sunday best"
+    ctx.is_editing = True
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, mode=MODE_EDIT,
+        show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    assert "Save Changes and Pick" in dlg._start_btn.text()
+
+
+def test_edit_mode_window_title_shows_cut_name(qapp):
+    """spec/162 §5.2 / §4.1 — the window title is ‘Edit Cut · <name>’ in
+    edit mode."""
+    ctx = _ctx()
+    ctx.name = "Sunday best"
+    ctx.is_editing = True
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, mode=MODE_EDIT,
+        show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    assert dlg.windowTitle() == "Edit Cut · Sunday best"
+
+
+def test_new_mode_window_title_is_new_cut(qapp):
+    """spec/162 §5.1 — the window title is just ‘New Cut’ in new mode."""
+    dlg = _cut_dialog(qapp)
+    assert dlg.windowTitle() == "New Cut"
+
+
+def test_edit_mode_cancel_reads_discard_changes(qapp):
+    """spec/162 §5.2 — the cancel button reads ‘Discard Changes’ in
+    edit mode."""
+    from PyQt6.QtWidgets import QPushButton
+    ctx = _ctx()
+    ctx.name = "Sunday best"
+    ctx.is_editing = True
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, mode=MODE_EDIT,
+        show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    footer = dlg._start_btn.parent()
+    texts = [b.text() for b in footer.findChildren(QPushButton) if b.text()]
+    assert "Discard Changes" in texts
+    assert "Cancel" not in texts
+
+
+def test_footer_wears_launch_pad_role(qapp):
+    """spec/162 §4.6 — the button row lives in a widget wearing the
+    #LaunchPad role so Slice 1's ink-tinted QSS strip paints."""
+    dlg = _cut_dialog(qapp)
+    footer = dlg._start_btn.parent()
+    assert footer.objectName() == "LaunchPad"
+
+
+def test_otherwise_lead_reads_starts_all_when_no_rules(qapp):
+    """spec/162 §4.6 — the leading label reads ‘Starts all:’ when no
+    rule has been added yet."""
+    dlg = _cut_dialog(qapp)
+    assert dlg._otherwise_lead.text() == "Starts all:"
+
+
+def test_otherwise_lead_reads_otherwise_after_a_rule_is_added(qapp):
+    """spec/162 §4.6 — the leading label flexes to ‘Otherwise:’ once at
+    least one rule has been added."""
+    dlg = _cut_dialog(qapp)
+    dlg._on_add_rule_clicked()
+    assert dlg._otherwise_lead.text() == "Otherwise:"
+
+
+def test_otherwise_lead_flexes_back_when_last_rule_is_deleted(qapp):
+    """spec/162 §4.6 — the leading label flexes back to ‘Starts all:’ if
+    the user deletes the last rule."""
+    dlg = _cut_dialog(qapp)
+    dlg._on_add_rule_clicked()
+    assert dlg._otherwise_lead.text() == "Otherwise:"
+    dlg._delete_rule(dlg._rule_rows[0])
+    assert dlg._otherwise_lead.text() == "Starts all:"
+
+
+def test_budget_row_hides_when_budget_check_unticks(qapp):
+    """spec/162 §4.4 — the WHOLE Budget row hides when the checkbox is
+    unchecked (not merely disables)."""
+    ctx = _ctx()
+    ctx.has_budget = True
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    # Force layout so isVisibleTo returns a stable answer.
+    dlg.show()
+    assert dlg._target_box.isVisibleTo(dlg) is True
+    assert dlg._max_box.isVisibleTo(dlg) is True
+
+    dlg._budget_check.setChecked(False)
+    assert dlg._target_box.isVisibleTo(dlg) is False
+    assert dlg._max_box.isVisibleTo(dlg) is False
+
+    dlg._budget_check.setChecked(True)
+    assert dlg._target_box.isVisibleTo(dlg) is True
+    assert dlg._max_box.isVisibleTo(dlg) is True
+
+
+def test_edit_mode_coerces_ctx_is_editing_true(qapp):
+    """spec/162 Round 1b — if the caller passes mode=edit but a
+    lagging ctx.is_editing=False, the dialog coerces the copy so
+    downstream code (e.g. _refresh_start_enabled) reads the edit-mode
+    branch."""
+    ctx = _ctx()
+    ctx.is_editing = False  # lag
+    dlg = NewCutDialog(
+        scope=SCOPE_EVENT, mode=MODE_EDIT,
+        show_scope=False, show_hardware=False,
+        inventory_scope=INVENTORY_EVENT, ctx=ctx,
+    )
+    assert dlg._is_editing is True

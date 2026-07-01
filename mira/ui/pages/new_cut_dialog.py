@@ -94,8 +94,34 @@ log = logging.getLogger(__name__)
 
 
 # Flavour constants (mirror :data:`mira.shared.recipe_store.FLAVOUR_*`).
+# Legacy — retire alongside the Save/Load-Collection surface in Round 2
+# of spec/162; new call-sites should use SCOPE_EVENT / SCOPE_CROSS_EVENT
+# below.
 FLAVOUR_CUT = "cut"
 FLAVOUR_COLLECTION = "collection"
+
+# spec/162 §2 — the two-flavour split collapses into a single scope
+# parameter. The dialog composes a Cut at either scope; the old
+# "compose a standalone Collection" mode retires with the Save/Load-
+# Collection retirement in Round 2. During the transition round both
+# argument names are accepted on :class:`NewCutDialog.__init__`; the
+# scope drives the dialog behaviour and the equivalent flavour is
+# derived for downstream code that still expects a ``flavour`` field
+# (RecipeStore, recipe_draft_adapter, cross-flavour banner).
+SCOPE_EVENT = "event"
+SCOPE_CROSS_EVENT = "cross-event"
+
+# Mapping helpers between the two vocabularies. During the transition
+# round the dialog carries both.
+_SCOPE_TO_FLAVOUR = {
+    SCOPE_EVENT: FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT: FLAVOUR_COLLECTION,
+}
+_FLAVOUR_TO_SCOPE = {v: k for k, v in _SCOPE_TO_FLAVOUR.items()}
+
+# spec/162 §5 — the dialog opens in one of two modes.
+MODE_NEW = "new"
+MODE_EDIT = "edit"
 
 # Inventory scopes — event-only operands vs the library-wide catalogue.
 INVENTORY_EVENT = "event"
@@ -1638,7 +1664,9 @@ class NewCutDialog(QDialog):
     def __init__(
         self,
         *,
-        flavour: str,
+        flavour: Optional[str] = None,
+        scope: Optional[str] = None,
+        mode: str = MODE_NEW,
         show_scope: bool,
         show_hardware: bool,
         inventory_scope: str,
@@ -1670,9 +1698,41 @@ class NewCutDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        # spec/162 §2 — the constructor accepts either the legacy
+        # ``flavour`` or the new ``scope`` and derives the other. Exactly
+        # one must be provided.
+        if flavour is None and scope is None:
+            raise ValueError(
+                "NewCutDialog requires either scope=SCOPE_EVENT / "
+                "SCOPE_CROSS_EVENT or the legacy flavour= kwarg")
+        if scope is not None:
+            if scope not in (SCOPE_EVENT, SCOPE_CROSS_EVENT):
+                raise ValueError(
+                    f"scope must be 'event' or 'cross-event', got {scope!r}")
+            derived_flavour = _SCOPE_TO_FLAVOUR[scope]
+            if flavour is not None and flavour != derived_flavour:
+                raise ValueError(
+                    f"scope={scope!r} + flavour={flavour!r} disagree")
+            flavour = derived_flavour
         if flavour not in (FLAVOUR_CUT, FLAVOUR_COLLECTION):
             raise ValueError(
                 f"flavour must be 'cut' or 'collection', got {flavour!r}")
+        self._scope = _FLAVOUR_TO_SCOPE[flavour]
+        # spec/162 §5 — mode drives header title + button labels; the
+        # underlying "edit an existing cut" behaviour still rides on
+        # ``ctx.is_editing`` (unchanged), so mode="edit" implies
+        # ``ctx.is_editing=True`` for downstream code that inspects the
+        # ctx. Enforce that here so callers can't disagree.
+        if mode not in (MODE_NEW, MODE_EDIT):
+            raise ValueError(
+                f"mode must be 'new' or 'edit', got {mode!r}")
+        self._mode = mode
+        if mode == MODE_EDIT and not ctx.is_editing:
+            # Coerce — the caller passed mode="edit" so treat the context
+            # as an edit even if the flag lagged. Copy the dataclass so
+            # the caller's instance isn't mutated.
+            from dataclasses import replace as _replace
+            ctx = _replace(ctx, is_editing=True)
         if inventory_scope not in (INVENTORY_EVENT, INVENTORY_LIBRARY):
             raise ValueError(
                 f"inventory_scope must be 'event' or 'library', got "
@@ -1867,10 +1927,22 @@ class NewCutDialog(QDialog):
         self._photos_cb: Optional[QCheckBox] = None
         self._videos_cb: Optional[QCheckBox] = None
 
-        # Window chrome — same title scheme as the legacy dialog.
+        # Window chrome. spec/162 §5 — the title flexes on mode:
+        #   * new  → "New Cut"        (both scopes; the header icon +
+        #                              the body decide event vs cross-event)
+        #   * edit → "Edit Cut · <Cut Name>"
+        # The legacy "New Collection" title survives while flavour=
+        # collection is still accepted; it retires with Round 2's
+        # Save/Load-Collection retirement.
         is_collection = flavour == FLAVOUR_COLLECTION
-        self.setWindowTitle(
-            tr("New Collection") if is_collection else tr("New Cut"))
+        if mode == MODE_EDIT:
+            cut_name = (ctx.name or "").strip()
+            base = tr("Edit Cut")
+            self.setWindowTitle(
+                f"{base} · {cut_name}" if cut_name else base)
+        else:
+            self.setWindowTitle(
+                tr("New Collection") if is_collection else tr("New Cut"))
         self.setModal(True)
 
         self._build_ui()
@@ -1928,14 +2000,25 @@ class NewCutDialog(QDialog):
         tile.setPixmap(tinted_svg_pixmap(glyph, 18, QColor(p["accent"])))
         h.addWidget(tile)
 
+        # spec/162 §4.1 — header title:
+        #   New Cut mode      → "New Cut"
+        #   Edit Cut mode     → "Edit Cut · <Cut Name>"
+        # The legacy "New Collection" title survives while the collection
+        # flavour is still routed through this dialog (retires Round 2).
         block = QHBoxLayout()
         block.setSpacing(8)
-        title = QLabel(
-            tr("New Collection") if self._flavour == FLAVOUR_COLLECTION
-            else tr("New Cut"))
+        if self._mode == MODE_EDIT:
+            cut_name = (self._ctx.name or "").strip()
+            head_text = tr("Edit Cut")
+            title = QLabel(
+                f"{head_text} · {cut_name}" if cut_name else head_text)
+        elif self._flavour == FLAVOUR_COLLECTION:
+            title = QLabel(tr("New Collection"))
+        else:
+            title = QLabel(tr("New Cut"))
         title.setObjectName("CardTitle")
         block.addWidget(title)
-        if self._ctx.event_name:
+        if self._ctx.event_name and self._mode != MODE_EDIT:
             sub = QLabel(f"· {self._ctx.event_name}")
             sub.setObjectName("Sub")
             block.addWidget(sub)
@@ -2842,22 +2925,49 @@ class NewCutDialog(QDialog):
         return host
 
     def _build_otherwise_section(self) -> QWidget:
-        """The Otherwise row (spec/90 §1.1, §1.3). Just the leading word
-        + a verdict pill. Always present; default verdict is ``skip``
-        (matches the most common pick-in shape per spec/90 §3.5)."""
+        """The Otherwise / Starts all row (spec/90 §1.1, §1.3;
+        contextual label per spec/162 §4.6). Just the leading word +
+        a verdict pill. Always present; default verdict is ``skip``
+        (matches the most common pick-in shape per spec/90 §3.5).
+
+        The leading label flexes on the current rule count:
+
+        * ``len(rules) == 0`` → ``Starts all:``  — no rule triggers
+          the pill's verdict on any file, so the phrasing reads as
+          the start state.
+        * ``len(rules) >= 1`` → ``Otherwise:``   — the pill's verdict
+          is the fallback for files no rule matched.
+
+        The pill's underlying value + storage are unchanged; only
+        the leading text swaps. :meth:`_refresh_otherwise_lead`
+        performs the swap on every rules-list mutation."""
         host = QWidget()
         host.setObjectName("OtherwiseSection")
         v = QHBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
-        lead = QLabel(tr("Otherwise"))
-        lead.setObjectName("OtherwiseLead")
-        v.addWidget(lead)
+        self._otherwise_lead = QLabel(self._otherwise_lead_text())
+        self._otherwise_lead.setObjectName("OtherwiseLead")
+        v.addWidget(self._otherwise_lead)
         self._otherwise_pill = _VerdictPill(self._otherwise, host)
         self._otherwise_pill.chosen.connect(self._on_otherwise_chosen)
         v.addWidget(self._otherwise_pill)
         v.addStretch()
         return host
+
+    def _otherwise_lead_text(self) -> str:
+        """The leading label — flexes on rule count. spec/162 §4.6."""
+        if self._rules:
+            return tr("Otherwise:")
+        return tr("Starts all:")
+
+    def _refresh_otherwise_lead(self) -> None:
+        """Update the leading label — called on every rules-list
+        mutation. Silently no-ops before the widget exists (i.e. during
+        the initial build pass)."""
+        lead = getattr(self, "_otherwise_lead", None)
+        if lead is not None:
+            lead.setText(self._otherwise_lead_text())
 
     # ---- rules wiring ---------------------------------------------- #
 
@@ -2884,6 +2994,10 @@ class NewCutDialog(QDialog):
             row.drag_released.connect(self._on_rule_drag_released)
             self._rules_layout.addWidget(row)
             self._rule_rows.append(row)
+        # spec/162 §4.6 — the Otherwise leading label flexes with the
+        # rule count. Every add / delete / reorder routes through
+        # :meth:`_refresh_rules_rows`, so hooking here catches them all.
+        self._refresh_otherwise_lead()
 
     def _on_add_rule_clicked(self) -> None:
         """Append a fresh rule with empty predicate + default ``skip``
@@ -3039,7 +3153,12 @@ class NewCutDialog(QDialog):
         grid.setColumnStretch(1, 1)
 
         # Row 0 — budget: Target | Max
+        # spec/162 §4.4 — the WHOLE Budget row hides when the check is
+        # unchecked (not merely disables). We keep references to
+        # ``_target_box`` / ``_max_box`` so :meth:`_on_budget_toggled`
+        # can flip their visibility together.
         target_box = QWidget()
+        self._target_box = target_box
         tv = QVBoxLayout(target_box)
         tv.setContentsMargins(0, 0, 0, 0)
         tv.setSpacing(2)
@@ -3053,9 +3172,11 @@ class NewCutDialog(QDialog):
         self._target_spin.valueChanged.connect(self._on_target_changed)
         tv.addWidget(self._target_spin)
         grid.addWidget(target_box, 0, 0)
+        target_box.setVisible(self._has_budget)
 
         # Max minutes.
         max_box = QWidget()
+        self._max_box = max_box
         mv = QVBoxLayout(max_box)
         mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(2)
@@ -3069,6 +3190,7 @@ class NewCutDialog(QDialog):
         self._max_spin.valueChanged.connect(self._on_max_changed)
         mv.addWidget(self._max_spin)
         grid.addWidget(max_box, 0, 1)
+        max_box.setVisible(self._has_budget)
 
         # Row 1 — timing: Per photo | Transition
         pp_box = QWidget()
@@ -3368,14 +3490,22 @@ class NewCutDialog(QDialog):
             self._card_style_combo.setEnabled(bool(self._separators))
 
     def _on_budget_toggled(self, checked: bool) -> None:
-        """Checkbox toggled — flip the budget state, grey or restore the
-        Target / Max spinners, and refresh the metrics line (the suffix
-        drops the "of N target" portion when no budget)."""
+        """Checkbox toggled — flip the budget state, HIDE or SHOW the
+        Target / Max spinner boxes (spec/162 §4.4 — the whole Budget
+        row hides when unchecked, not merely disables), and refresh
+        the metrics line (the suffix drops the "of N target" portion
+        when no budget)."""
         self._has_budget = bool(checked)
+        # Both spinners stay enabled while their host box is visible;
+        # visibility is the affordance now (spec/162 §4.4).
         if hasattr(self, "_target_spin"):
             self._target_spin.setEnabled(self._has_budget)
         if hasattr(self, "_max_spin"):
             self._max_spin.setEnabled(self._has_budget)
+        if hasattr(self, "_target_box"):
+            self._target_box.setVisible(self._has_budget)
+        if hasattr(self, "_max_box"):
+            self._max_box.setVisible(self._has_budget)
         self._refresh_metrics_from_state()
 
     def _on_target_changed(self, value: int) -> None:
@@ -3867,26 +3997,46 @@ class NewCutDialog(QDialog):
     # -------- Footer ------------------------------------------------- #
 
     def _build_footer(self) -> QWidget:
-        """The dialog footer — Cancel + Start ▶ only (spec/90 §5.5).
+        """The dialog footer — Cancel + primary CTA (spec/90 §5.5, updated
+        by spec/162 §5).
 
         Save as DC and Save as Recipe moved to the band headers so each
         save sits with the data it captures; the footer is purely about
-        closing the dialog (discard or run)."""
+        closing the dialog (discard or run). spec/162 §5 flexes both
+        labels on the dialog's mode:
+
+        * New Cut mode  → ``Cancel`` + ``▶ Freeze and Pick``
+        * Edit Cut mode → ``Discard Changes`` + ``▶ Save Changes and Pick``
+        """
         host = QWidget()
+        # spec/162 §4.6 — the button row lives inside the LaunchPad; the
+        # footer host wears the ``#LaunchPad`` role so the QSS ink-tinted
+        # strip paints correctly. Slice 3 in a future round moves the
+        # Name / Rules / Otherwise / summary rows into the same
+        # LaunchPad; for Round 1b just the button row + role wrapper
+        # land.
+        host.setObjectName("LaunchPad")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         h = QHBoxLayout(host)
         h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
         h.addStretch()
-        cancel = ghost_button(tr("Cancel"))
+        cancel_label = (
+            tr("Discard Changes") if self._mode == MODE_EDIT
+            else tr("Cancel"))
+        cancel = ghost_button(cancel_label)
         cancel.clicked.connect(self.reject)
         h.addWidget(cancel)
-        # Start — gated by :meth:`_refresh_start_enabled`. Disabled on
-        # empty source / probe error / empty pool; enabled when the last
-        # probe returned a non-empty pool with no errors.
-        self._start_btn = primary_button(tr("▶ Start"))
+        # Primary CTA — gated by :meth:`_refresh_start_enabled`. Disabled
+        # on empty source / probe error / empty pool; enabled when the
+        # last probe returned a non-empty pool with no errors.
+        start_label = (
+            tr("▶ Save Changes and Pick") if self._mode == MODE_EDIT
+            else tr("▶ Freeze and Pick"))
+        self._start_btn = primary_button(start_label)
         self._start_btn.setEnabled(False)
         self._start_btn.setToolTip(tr(
-            "Compose a Source and pick a verdict to enable Start."))
+            "Compose a Source and pick a verdict to enable this action."))
         self._start_btn.clicked.connect(self._on_start_clicked)
         h.addWidget(self._start_btn)
         return host
@@ -4230,6 +4380,9 @@ class NewCutDialog(QDialog):
                 if hasattr(self, "_per_photo_spin"):
                     self._per_photo_spin.setValue(self._per_photo_seconds)
             # Sync has_budget + the checkbox / spinner-enabled state.
+            # spec/162 §4.4 — the whole Budget row hides when no
+            # budget; keep the toggle + visibility in lockstep on a
+            # Recipe load too.
             self._has_budget = bool(has_target or has_max)
             if hasattr(self, "_budget_check"):
                 self._budget_check.blockSignals(True)
@@ -4239,6 +4392,10 @@ class NewCutDialog(QDialog):
                 self._target_spin.setEnabled(self._has_budget)
             if hasattr(self, "_max_spin"):
                 self._max_spin.setEnabled(self._has_budget)
+            if hasattr(self, "_target_box"):
+                self._target_box.setVisible(self._has_budget)
+            if hasattr(self, "_max_box"):
+                self._max_box.setVisible(self._has_budget)
             # spec/106 — load the recipe's soundtrack pick into the
             # music combo. ``None`` falls through to the "No music"
             # entry at index 0.

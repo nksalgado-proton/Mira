@@ -18,7 +18,7 @@ from mira.shared.recipe_store import (
     RecipeStore,
 )
 from mira.user_store.repo import UserStore
-from mira.ui.pages import new_recipe_dialog as nrd_mod
+from mira.ui.pages import new_cut_dialog as nrd_mod
 from mira.ui.pages.new_cut_dialog import (
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,

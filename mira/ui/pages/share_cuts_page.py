@@ -734,7 +734,11 @@ class CutRow(Card):
         info_wrap.setLayout(info)
         row.addWidget(info_wrap, 1)
 
-        # Action cluster — Open primary + Adjust ghost + ⋮ kebab.
+        # Action cluster — Open primary + Edit Cut ghost + ⋮ kebab.
+        # spec/162 Slice 9 — "Edit Cut" replaces the legacy "Adjust"
+        # label so the row-action verb matches the dialog title
+        # ("Edit Cut · Name"). Internal handler name (adjust_requested)
+        # stays; the rename is user-visible only.
         actions = QHBoxLayout()
         actions.setSpacing(8)
         open_btn = primary_button("Open")
@@ -742,7 +746,7 @@ class CutRow(Card):
             lambda: self.open_requested.emit(snapshot.cut_id)
         )
         actions.addWidget(open_btn)
-        adjust_btn = ghost_button("Adjust")
+        adjust_btn = ghost_button(tr("Edit Cut"))
         adjust_btn.clicked.connect(
             lambda: self.adjust_requested.emit(snapshot.cut_id)
         )

@@ -231,10 +231,15 @@ class CutDetailPage(QWidget):
         self._meta_lbl = QLabel("")
         self._meta_lbl.setObjectName("PageHint")
         head.addWidget(self._meta_lbl, stretch=1)
-        adjust = QPushButton(tr("Adjust"))
+        # spec/162 Slice 9 — the row action reads "Edit Cut" so the
+        # user's mental verb ("edit this Cut") matches the dialog they
+        # land in. Internal handler name (adjust_requested) stays; the
+        # rename is user-visible only.
+        adjust = QPushButton(tr("Edit Cut"))
         adjust.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         adjust.setToolTip(tr(
-            "Re-enter the picking session to add or remove files."))
+            "Open the composition dialog to change filters, format, or "
+            "rules on this Cut."))
         adjust.clicked.connect(
             lambda: self._cut_id and self.adjust_requested.emit(self._cut_id))
         head.addWidget(adjust)

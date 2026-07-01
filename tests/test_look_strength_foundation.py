@@ -86,6 +86,38 @@ def test_v4_event_db_migrates_clean(tmp_path):
         );
         INSERT INTO adjustment (item_id, look, edit_exported)
             VALUES ('it-1', 'punch', 0);
+        -- Item existed pre-v4 and the migration ladder ALTERs it at
+        -- several steps (v16→v17 rename tz_offset_minutes →
+        -- tz_offset_seconds, v24→v25 add preferred_virtual_mira). The
+        -- fixture only cares about adjustment.look_strength but the
+        -- ALTER steps blow up with "no such table: item" if we don't
+        -- seed a minimal item row. Pre-v17 shape (tz_offset_minutes
+        -- kept so the rename step has something to rename). No FKs
+        -- because trip_day / camera aren't seeded either — the tests
+        -- above don't exercise item-level constraints.
+        CREATE TABLE item (
+            id                     TEXT PRIMARY KEY,
+            kind                   TEXT NOT NULL,
+            provenance             TEXT NOT NULL DEFAULT 'captured',
+            origin_relpath         TEXT,
+            sha256                 TEXT,
+            byte_size              INTEGER,
+            materialized_at        TEXT,
+            materialized_phase     TEXT,
+            camera_id              TEXT,
+            day_number             INTEGER,
+            parent_item_id         TEXT,
+            capture_time_raw       TEXT,
+            capture_time_corrected TEXT,
+            tz_offset_minutes      INTEGER NOT NULL DEFAULT 0,
+            tz_source              TEXT NOT NULL DEFAULT 'none',
+            classification         TEXT,
+            classification_source  TEXT,
+            classification_rules_version TEXT,
+            classification_needs_review INTEGER NOT NULL DEFAULT 0,
+            extras_json            TEXT NOT NULL DEFAULT '{}',
+            created_at             TEXT NOT NULL
+        );
         CREATE TABLE event (
             id             INTEGER PRIMARY KEY CHECK (id = 1),
             uuid           TEXT NOT NULL UNIQUE,

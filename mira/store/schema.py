@@ -1617,6 +1617,23 @@ def _migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE event ADD COLUMN map_image_path TEXT")
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """True when ``column`` is already present on ``table`` in the live
+    DB. Used by post-v22 ADD COLUMN migrations so they behave
+    idempotently — the fresh-create DDL installs every column at the
+    current schema version, and the test-store rollback fixtures walk
+    the ladder backward without stripping every post-target column.
+    An ADD COLUMN against an already-present column raises
+    ``OperationalError: duplicate column name`` in SQLite; the guard
+    turns that into a no-op."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    # PRAGMA table_info returns rows shaped
+    # (cid, name, type, notnull, dflt_value, pk). Both raw tuples and
+    # Row objects support integer indexing, so the [1] read is stable
+    # across connection row_factory settings.
+    return any(r[1] == column for r in rows)
+
+
 def _migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
     """spec/159 — per-version ratings + delete flag on lineage.
 
@@ -1639,24 +1656,35 @@ def _migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
     The ``lineage`` table is guaranteed by every event.db created
     after v13 (the spec/54 versions-as-exports migration), so no
     presence guard is needed here.
+
+    Idempotent — each ADD COLUMN is guarded via :func:`_has_column`
+    so the migration is safe to re-run on a DB whose ``lineage`` rows
+    already carry these columns (test-store rollback fixtures walk the
+    ladder backward from the fresh-DDL shape without stripping every
+    post-target column). Indexes are already guarded with
+    ``IF NOT EXISTS``.
     """
-    conn.execute(
-        "ALTER TABLE lineage ADD COLUMN stars INTEGER "
-        "CHECK (stars IS NULL OR (stars BETWEEN 1 AND 5))"
-    )
-    conn.execute(
-        "ALTER TABLE lineage ADD COLUMN color_label TEXT "
-        "CHECK (color_label IS NULL OR color_label IN "
-        "('red','yellow','green','blue','purple'))"
-    )
-    conn.execute(
-        "ALTER TABLE lineage ADD COLUMN flag INTEGER NOT NULL DEFAULT 0 "
-        "CHECK (flag IN (0,1))"
-    )
-    conn.execute(
-        "ALTER TABLE lineage ADD COLUMN to_delete INTEGER NOT NULL DEFAULT 0 "
-        "CHECK (to_delete IN (0,1))"
-    )
+    if not _has_column(conn, "lineage", "stars"):
+        conn.execute(
+            "ALTER TABLE lineage ADD COLUMN stars INTEGER "
+            "CHECK (stars IS NULL OR (stars BETWEEN 1 AND 5))"
+        )
+    if not _has_column(conn, "lineage", "color_label"):
+        conn.execute(
+            "ALTER TABLE lineage ADD COLUMN color_label TEXT "
+            "CHECK (color_label IS NULL OR color_label IN "
+            "('red','yellow','green','blue','purple'))"
+        )
+    if not _has_column(conn, "lineage", "flag"):
+        conn.execute(
+            "ALTER TABLE lineage ADD COLUMN flag INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (flag IN (0,1))"
+        )
+    if not _has_column(conn, "lineage", "to_delete"):
+        conn.execute(
+            "ALTER TABLE lineage ADD COLUMN to_delete INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (to_delete IN (0,1))"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_lineage_stars "
         "ON lineage(stars) WHERE stars IS NOT NULL"
@@ -1687,11 +1715,16 @@ def _migrate_v24_to_v25(conn: sqlite3.Connection) -> None:
     ``set_lineage_preferred`` clears this column for the same source
     when it writes a real preferred row; ``set_item_preferred_virtual_mira``
     clears all ``lineage.is_preferred`` siblings for that source.
+
+    Idempotent — guarded via :func:`_has_column` so the migration is
+    safe to re-run on a DB whose ``item`` rows already carry the
+    column (test-store rollback fixtures + fresh-DDL callers).
     """
-    conn.execute(
-        "ALTER TABLE item ADD COLUMN preferred_virtual_mira INTEGER NOT NULL "
-        "DEFAULT 0 CHECK (preferred_virtual_mira IN (0,1))"
-    )
+    if not _has_column(conn, "item", "preferred_virtual_mira"):
+        conn.execute(
+            "ALTER TABLE item ADD COLUMN preferred_virtual_mira INTEGER NOT NULL "
+            "DEFAULT 0 CHECK (preferred_virtual_mira IN (0,1))"
+        )
 
 
 def _migrate_v23_to_v24(conn: sqlite3.Connection) -> None:
@@ -1706,11 +1739,16 @@ def _migrate_v23_to_v24(conn: sqlite3.Connection) -> None:
     Collection's downstream consumers (Cuts compose) fall back to a
     deterministic "most-recent ``mira_render`` first" pick when no
     preferred is set, so legacy events keep working without backfill.
+
+    Idempotent — guarded via :func:`_has_column` so the migration is
+    safe to re-run on a DB whose ``lineage`` rows already carry the
+    column. Index is already guarded with ``IF NOT EXISTS``.
     """
-    conn.execute(
-        "ALTER TABLE lineage ADD COLUMN is_preferred INTEGER NOT NULL "
-        "DEFAULT 0 CHECK (is_preferred IN (0,1))"
-    )
+    if not _has_column(conn, "lineage", "is_preferred"):
+        conn.execute(
+            "ALTER TABLE lineage ADD COLUMN is_preferred INTEGER NOT NULL "
+            "DEFAULT 0 CHECK (is_preferred IN (0,1))"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_lineage_preferred "
         "ON lineage(source_item_id) WHERE is_preferred = 1"

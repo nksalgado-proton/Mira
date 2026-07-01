@@ -3221,45 +3221,22 @@ class NewCutDialog(QDialog):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
 
-        # Budget toggle — unchecked = "no budget" (target_s/max_s emit
-        # as None; spinners hide). Stays ABOVE the grid as a section
-        # toggle without a box around it (spec/162 relayout B §B step 5).
-        self._budget_check = QCheckBox(tr("Set a runtime budget"))
-        self._budget_check.setObjectName("RuntimeBudgetCheck")
-        self._budget_check.setChecked(self._has_budget)
-        self._budget_check.toggled.connect(self._on_budget_toggled)
-        v.addWidget(self._budget_check)
-
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
 
-        # Row 0 — Budget: TARGET (MIN) | MAX (MIN). spec/162 §4.4:
-        # the whole Budget row hides when the check is unchecked (not
-        # merely disables).
-        self._target_spin = QSpinBox()
-        self._target_spin.setObjectName("RuntimeTargetSpin")
-        self._target_spin.setRange(1, 240)
-        self._target_spin.setValue(self._target_minutes)
-        self._target_spin.setSuffix(" min")
-        self._target_spin.setEnabled(self._has_budget)
-        self._target_spin.valueChanged.connect(self._on_target_changed)
-        self._target_box = form_field(tr("Target (min)"), self._target_spin)
-        self._target_box.setVisible(self._has_budget)
-        grid.addWidget(self._target_box, 0, 0)
-
-        self._max_spin = QSpinBox()
-        self._max_spin.setObjectName("RuntimeMaxSpin")
-        self._max_spin.setRange(1, 480)
-        self._max_spin.setValue(self._max_minutes)
-        self._max_spin.setSuffix(" min")
-        self._max_spin.setEnabled(self._has_budget)
-        self._max_spin.valueChanged.connect(self._on_max_changed)
-        self._max_box = form_field(tr("Max (min)"), self._max_spin)
-        self._max_box.setVisible(self._has_budget)
-        grid.addWidget(self._max_box, 0, 1)
+        # Row 0 — compound RUNTIME BUDGET box (spec/162 relayout E).
+        # The bare "Set a runtime budget" checkbox retires into a
+        # titled ``#FormFieldGroup`` so it stops reading as an orphan
+        # control. TARGET / MAX spinner boxes nest one intentional
+        # level inside it (matching every other spinner's
+        # ``#FormFieldGroup`` treatment); the whole target / max row
+        # still hides when the checkbox is unticked.
+        grid.addWidget(
+            form_field(tr("Runtime budget"), self._build_runtime_budget_widget()),
+            0, 0, 1, 2)
 
         # Row 1 — Timing: PER PHOTO (S) | TRANSITION (S).
         self._per_photo_spin = QDoubleSpinBox()
@@ -3354,24 +3331,89 @@ class NewCutDialog(QDialog):
         mw.addWidget(self._music_hint_label)
         grid.addWidget(form_field(tr("Music"), music_widget), 2, 1)
 
-        # Row 3 — Presentation part 2: OVERLAYS | SEPARATORS.
-        # spec/143 — separators on/off + card-style control. Sibling to
-        # the overlay / aspect / music blocks. Dropped during the spec/
-        # 90 Phase 4 sweep; without it the dialog silently fell back to
-        # the global ``use_separators`` setting and the user lost the
-        # per-Cut choice.
+        # Row 3 — Presentation part 2: OVERLAYS | DAY CARDS.
+        # Row 4 — Presentation part 3: CARD STYLE (subordinate to DAY
+        # CARDS — greys out when DAY CARDS is Off).
+        # spec/143 / spec/162 relayout E — the single SEPARATORS box
+        # split into two labelled boxes so each dropdown reads on its
+        # own. Field mapping:
+        #   * ``separators``   (bool  Off / Day cards) → DAY CARDS box
+        #   * ``card_style``   (enum) → CARD STYLE box
         if self._overlay_field_options:
             grid.addWidget(
                 form_field(tr("Overlays"), self._build_overlay_box()), 3, 0)
             grid.addWidget(
-                form_field(tr("Separators"), self._build_separators_box()),
+                form_field(tr("Day cards"), self._build_day_cards_widget()),
                 3, 1)
+            grid.addWidget(
+                form_field(tr("Card style"), self._build_card_style_widget()),
+                4, 0)
         else:
             grid.addWidget(
-                form_field(tr("Separators"), self._build_separators_box()),
+                form_field(tr("Day cards"), self._build_day_cards_widget()),
                 3, 0)
+            grid.addWidget(
+                form_field(tr("Card style"), self._build_card_style_widget()),
+                3, 1)
+        # ``_sync_card_style_enabled`` runs after both widgets exist so
+        # the CARD STYLE combo starts in the right enabled state.
+        self._sync_card_style_enabled()
 
         v.addLayout(grid)
+        return host
+
+    def _build_runtime_budget_widget(self) -> QWidget:
+        """spec/162 relayout E — the interior of the RUNTIME BUDGET
+        compound ``#FormFieldGroup``. The ``Set a runtime budget``
+        checkbox sits at the top; the TARGET / MAX spinner boxes nest
+        as their own ``#FormFieldGroup`` boxes side-by-side beneath,
+        hidden when the checkbox is unticked (spec/162 §4.4 — the
+        whole target / max row hides, not merely disables).
+
+        Nested ``#FormFieldGroup`` boxes are one intentional level of
+        grouping here (compound of related budget inputs); the
+        relayout-D concern was scaffolding frames around unrelated
+        content, not intentional groupings of siblings."""
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+
+        self._budget_check = QCheckBox(tr("Set a runtime budget"))
+        self._budget_check.setObjectName("RuntimeBudgetCheck")
+        self._budget_check.setChecked(self._has_budget)
+        self._budget_check.toggled.connect(self._on_budget_toggled)
+        v.addWidget(self._budget_check)
+
+        # Row hosting the two spinner boxes. spec/162 §4.4 — the whole
+        # row (both boxes) hides when ``_has_budget`` flips False.
+        self._budget_row = QWidget()
+        row = QHBoxLayout(self._budget_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+
+        self._target_spin = QSpinBox()
+        self._target_spin.setObjectName("RuntimeTargetSpin")
+        self._target_spin.setRange(1, 240)
+        self._target_spin.setValue(self._target_minutes)
+        self._target_spin.setSuffix(" min")
+        self._target_spin.setEnabled(self._has_budget)
+        self._target_spin.valueChanged.connect(self._on_target_changed)
+        self._target_box = form_field(tr("Target (min)"), self._target_spin)
+        row.addWidget(self._target_box, 1)
+
+        self._max_spin = QSpinBox()
+        self._max_spin.setObjectName("RuntimeMaxSpin")
+        self._max_spin.setRange(1, 480)
+        self._max_spin.setValue(self._max_minutes)
+        self._max_spin.setSuffix(" min")
+        self._max_spin.setEnabled(self._has_budget)
+        self._max_spin.valueChanged.connect(self._on_max_changed)
+        self._max_box = form_field(tr("Max (min)"), self._max_spin)
+        row.addWidget(self._max_box, 1)
+
+        self._budget_row.setVisible(self._has_budget)
+        v.addWidget(self._budget_row)
         return host
 
     def _build_overlay_box(self) -> QWidget:
@@ -3458,36 +3500,38 @@ class NewCutDialog(QDialog):
 
     # -------- Separators + card-style control (spec/143) ------------- #
 
-    def _build_separators_box(self) -> QWidget:
-        """spec/143 — the separators on/off picker + card-style select.
+    def _build_day_cards_widget(self) -> QWidget:
+        """spec/143 / spec/162 relayout E — the on/off toggle for
+        day-separator + opener cards (the ``separators`` boolean
+        field). Returned bare so the caller wraps it in a titled
+        ``#FormFieldGroup`` (DAY CARDS).
 
-        Built as a single QWidget the caller wraps in a titled
-        ``#FormFieldGroup``. The toggle drives whether export + play
-        insert day-separator and opener cards (the per-Cut counterpart
-        of the global ``use_separators`` setting). The card-style combo
-        picks the colour treatment for those cards — ``black`` /
-        ``single`` / ``multi`` — and greys out when separators are Off
-        so the user sees the disabled choice instead of editing a
-        setting that has no effect."""
-        box = QWidget()
-        sb = QVBoxLayout(box)
-        sb.setContentsMargins(0, 0, 0, 0)
-        sb.setSpacing(2)
-
+        The toggle drives whether export + play insert day-separator
+        and opener cards (the per-Cut counterpart of the global
+        ``use_separators`` setting)."""
         self._separators_combo = QComboBox()
         self._separators_combo.setObjectName("RuntimeSeparatorsCombo")
         self._separators_combo.setToolTip(tr(
             "Day-separator + opener cards between days. Off = play "
             "and export the photos with no cards; Day cards = insert "
-            "one card per new day (the style picker controls the "
+            "one card per new day (the CARD STYLE box picks the "
             "colour treatment)."))
         self._separators_combo.addItem(tr("Off"), userData=False)
         self._separators_combo.addItem(tr("Day cards"), userData=True)
         self._separators_combo.setCurrentIndex(1 if self._separators else 0)
         self._separators_combo.currentIndexChanged.connect(
             self._on_separators_changed)
-        sb.addWidget(self._separators_combo)
+        return self._separators_combo
 
+    def _build_card_style_widget(self) -> QWidget:
+        """spec/143 / spec/162 relayout E — the colour-treatment
+        picker for day-separator cards (the ``card_style`` enum
+        field: ``black`` / ``single`` / ``multi``). Returned bare so
+        the caller wraps it in a titled ``#FormFieldGroup`` (CARD
+        STYLE).
+
+        Greys out when DAY CARDS is Off so the user sees the disabled
+        choice instead of editing a setting with no effect."""
         self._card_style_combo = QComboBox()
         self._card_style_combo.setObjectName("RuntimeCardStyleCombo")
         self._card_style_combo.setToolTip(tr(
@@ -3504,9 +3548,7 @@ class NewCutDialog(QDialog):
             self._card_style_combo.setCurrentIndex(idx)
         self._card_style_combo.currentIndexChanged.connect(
             self._on_card_style_changed)
-        sb.addWidget(self._card_style_combo)
-        self._sync_card_style_enabled()
-        return box
+        return self._card_style_combo
 
     def _on_separators_changed(self, _index: int) -> None:
         """spec/143 — the toggle flipped. Track the new value and
@@ -3534,21 +3576,21 @@ class NewCutDialog(QDialog):
 
     def _on_budget_toggled(self, checked: bool) -> None:
         """Checkbox toggled — flip the budget state, HIDE or SHOW the
-        Target / Max spinner boxes (spec/162 §4.4 — the whole Budget
+        Target / Max spinner row (spec/162 §4.4 — the whole Budget
         row hides when unchecked, not merely disables), and refresh
         the metrics line (the suffix drops the "of N target" portion
-        when no budget)."""
+        when no budget). spec/162 relayout E — the row is a single
+        ``_budget_row`` container inside the compound RUNTIME BUDGET
+        box, so one setVisible flip carries both spinners."""
         self._has_budget = bool(checked)
-        # Both spinners stay enabled while their host box is visible;
+        # Both spinners stay enabled while their host row is visible;
         # visibility is the affordance now (spec/162 §4.4).
         if hasattr(self, "_target_spin"):
             self._target_spin.setEnabled(self._has_budget)
         if hasattr(self, "_max_spin"):
             self._max_spin.setEnabled(self._has_budget)
-        if hasattr(self, "_target_box"):
-            self._target_box.setVisible(self._has_budget)
-        if hasattr(self, "_max_box"):
-            self._max_box.setVisible(self._has_budget)
+        if hasattr(self, "_budget_row"):
+            self._budget_row.setVisible(self._has_budget)
         self._refresh_metrics_from_state()
 
     def _on_target_changed(self, value: int) -> None:
@@ -4366,10 +4408,8 @@ class NewCutDialog(QDialog):
                 self._target_spin.setEnabled(self._has_budget)
             if hasattr(self, "_max_spin"):
                 self._max_spin.setEnabled(self._has_budget)
-            if hasattr(self, "_target_box"):
-                self._target_box.setVisible(self._has_budget)
-            if hasattr(self, "_max_box"):
-                self._max_box.setVisible(self._has_budget)
+            if hasattr(self, "_budget_row"):
+                self._budget_row.setVisible(self._has_budget)
             # spec/106 — load the recipe's soundtrack pick into the
             # music combo. ``None`` falls through to the "No music"
             # entry at index 0.

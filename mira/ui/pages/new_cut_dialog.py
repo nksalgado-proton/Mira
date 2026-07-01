@@ -1828,12 +1828,15 @@ class NewCutDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self) -> None:
-        """The dialog frame — header · body · launch pad. spec/162 §4
-        restructures the body around a strict two-section accordion
-        (Section 1 Collection + Section 2 Format) wrapped in a
-        ``#RecipeContainer``. The launch pad below hosts the per-Cut
-        levers (Name / Rules / Otherwise / summary / buttons) — its
-        contents are NOT captured by "Save as Recipe…" (spec/162 §1).
+        """The dialog frame — header · body · footer buttons.
+
+        spec/162 §4 restructures the body around COLLECTION + FORMAT
+        sections wrapped in a (frameless) ``#RecipeContainer``.
+        spec/162 relayout D merges the per-Cut levers (Name / Rules /
+        Starts-all / metrics) into the same body scroll region beneath
+        a THIS CUT ``#SectionEyebrow`` and a hairline ``#DialogDivider``.
+        The footer keeps only the Cancel + primary CTA buttons so the
+        primary action stays visible while the body scrolls.
         """
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1842,7 +1845,7 @@ class NewCutDialog(QDialog):
         outer.addWidget(_divider())
         outer.addWidget(self._build_body(), 1)
         outer.addWidget(_divider())
-        outer.addWidget(self._build_launch_pad())
+        outer.addWidget(self._build_footer_buttons())
 
     def _build_header_bar(self) -> QWidget:
         host = QWidget()
@@ -1906,24 +1909,25 @@ class NewCutDialog(QDialog):
         return host
 
     def _build_body(self) -> QWidget:
-        """The dialog body per spec/162 §4 (relayout C) — the Recipe
-        container hosting two flat sections separated by
-        ``#SectionEyebrow`` dividers.
+        """The dialog body per spec/162 §4 (relayout C+D) — three flat
+        sections stacked in one scroll region, separated by
+        ``#SectionEyebrow`` dividers plus one ``#DialogDivider``
+        hairline between the Recipe half and the per-Cut half.
 
-        The scroll area holds one :class:`RecipeContainer`. Section 1
-        (Collection) hosts the Source + Filters; Section 2 (Format)
-        hosts the runtime + music + overlays + separators controls
-        laid out as a three-row flat grid per spec/162 §4.4. Both
-        sections are always visible — the strict-accordion arbitrator
-        from Slice 2 retired in relayout C; the primitives themselves
-        stay in :mod:`mira.ui.design.accordion` for possible reuse.
+        The scroll area holds one (frameless) :class:`RecipeContainer`
+        carrying COLLECTION (Source + Filters) and FORMAT (Runtime +
+        Overlays + Separators) sections, then a hairline divider, then
+        the THIS CUT section (Name / Rules / Starts-all-or-Otherwise /
+        metrics summary). The Cancel + primary CTA buttons live
+        outside the scroll region in :meth:`_build_footer_buttons` so
+        the primary action stays reachable while the body scrolls.
+        spec/162 relayout D — the per-Cut levers merged into the same
+        scroll region so the Recipe / per-Cut split reads purely as
+        eyebrow structure, not a two-slab layout.
 
-        The per-Cut levers (Name, Rules, Otherwise, summary strip,
-        button row) live in the LaunchPad below the scroll area —
-        see :meth:`_build_launch_pad`. This split respects spec/162
-        §1: Stage A (the Recipe container) is what a saved Recipe
-        captures; the LaunchPad is the per-Cut work outside that
-        capture."""
+        This split respects spec/162 §1: Stage A (the Recipe
+        container) is what a saved Recipe captures; the THIS CUT
+        section is the per-Cut work outside that capture."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1935,6 +1939,19 @@ class NewCutDialog(QDialog):
         v.setSpacing(14)
 
         v.addWidget(self._build_recipe_container_wrap())
+
+        # spec/162 relayout D — hairline divider marks the boundary
+        # between the Recipe half (COLLECTION + FORMAT) and the per-Cut
+        # half (THIS CUT). Stronger than the SectionEyebrow gradient
+        # rule because the two halves have different semantics.
+        v.addWidget(_divider())
+
+        # THIS CUT eyebrow + its content (name / rules / otherwise /
+        # metrics). No summary chip — the metrics strip beneath the
+        # boxes already reads out state.
+        self._eyebrow_this_cut = SectionHeader(tr("This Cut"))
+        v.addWidget(self._eyebrow_this_cut)
+        v.addWidget(self._build_launch_pad_content())
 
         v.addStretch()
         scroll.setWidget(inner)
@@ -1977,10 +1994,16 @@ class NewCutDialog(QDialog):
             else tr("No Recipe store wired — saving / loading disabled."))
         self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
 
+        # spec/162 relayout D — the outer Recipe frame retires so the
+        # ``#FormFieldGroup`` boxes read as the only frames in the body.
+        # ``bordered=False`` drops both the ``#RecipeContainer`` fill /
+        # border and the ``#RecipeContainerHeader`` hairline divider;
+        # the header row's widgets + the body layout structure stay.
         self._recipe_container = RecipeContainer(
             recipe_name=self._recipe_display_name(),
             load_button=self._load_btn,
             save_button=self._save_recipe_btn,
+            bordered=False,
         )
 
         # spec/93 §7 — the binding badge + migration note ride in the
@@ -2083,33 +2106,28 @@ class NewCutDialog(QDialog):
         v.addWidget(self._build_runtime_section())
         return host
 
-    def _build_launch_pad(self) -> QWidget:
-        """The LaunchPad (spec/162 §4.6) — the per-Cut controls +
-        summary strip + button row that sit BELOW the Recipe
-        container. Nothing in here is captured by "Save as Recipe…"
-        (spec/162 §1).
+    def _build_launch_pad_content(self) -> QWidget:
+        """The per-Cut section content (spec/162 §4.6 / relayout D) —
+        the Name / Rules / Starts-all-or-Otherwise boxes + the metrics
+        summary strip. Nothing in here is captured by "Save as Recipe…"
+        (spec/162 §1). The Cancel + primary CTA buttons live in the
+        footer outside the scroll region (see
+        :meth:`_build_footer_buttons`).
 
-        Layout, top to bottom:
-        * Name-this-Cut row (a ``#LaunchPadRow``).
-        * Rules block (title + Add-rule button + rule rows) — a
-          ``#RulesList``.
-        * Contextual Starts-all / Otherwise verdict row.
-        * Summary strip (``#LaunchPadSummaryStrip``) — the existing
-          metrics readout wrapped in the new role.
-        * Button row — Cancel / Discard Changes on the left, primary
-          Freeze-and-Pick / Save-Changes-and-Pick on the right.
+        spec/162 relayout D — the ``#LaunchPad`` ink-tinted slab
+        retires; the section identity now comes from the THIS CUT
+        ``#SectionEyebrow`` above this widget + the ``#FormFieldGroup``
+        boxes below it. The wrapper carries no object name so no QSS
+        chrome paints.
         """
         host = QWidget()
-        host.setObjectName("LaunchPad")
-        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(host)
-        v.setContentsMargins(22, 14, 22, 14)
+        v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(10)
 
         # spec/162 relayout B — each per-Cut lever wraps in a titled
-        # ``#FormFieldGroup`` box; the launch pad no longer relies on
-        # bare micro-labels or leading ``Starts all:`` / ``Otherwise:``
-        # QLabels for identity.
+        # ``#FormFieldGroup`` box; no bare micro-labels or leading
+        # ``Starts all:`` / ``Otherwise:`` QLabels for identity.
 
         # NAME box — line edit + tag preview.
         v.addWidget(form_field(tr("Name"), self._build_name_section()))
@@ -2129,25 +2147,26 @@ class NewCutDialog(QDialog):
             self._otherwise_lead_text(), self._build_otherwise_section())
         v.addWidget(self._otherwise_box)
 
-        # Summary strip — wraps the existing MetricsSection widget in
-        # the new #LaunchPadSummaryStrip role. When warnings exist,
-        # :meth:`_refresh_launch_pad_summary_tone` flips
-        # ``tone="warn"`` for the amber QSS treatment.
-        summary_wrap = QWidget()
-        summary_wrap.setObjectName("LaunchPadSummaryStrip")
-        summary_wrap.setAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground, True)
-        summary_layout = QVBoxLayout(summary_wrap)
-        summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setSpacing(4)
-        summary_layout.addWidget(self._build_metrics_section())
-        self._launch_pad_summary = summary_wrap
-        v.addWidget(summary_wrap)
+        # Metrics summary strip — passive readout, no box around it.
+        # spec/162 relayout D — the ``#LaunchPadSummaryStrip`` role
+        # retires with the slab; the metrics section already styles
+        # itself via ``#MetricsLine`` / ``#MetricsBanner``. The
+        # ``_launch_pad_summary`` attr stays for
+        # :meth:`_refresh_launch_pad_summary_tone` to flip a ``tone``
+        # property that downstream QSS can key on later; no visible
+        # chrome paints today.
+        self._launch_pad_summary = self._build_metrics_section()
+        v.addWidget(self._launch_pad_summary)
+        return host
 
-        # Button row — Cancel / Discard Changes + primary CTA.
-        button_row = QWidget()
-        h = QHBoxLayout(button_row)
-        h.setContentsMargins(0, 4, 0, 0)
+    def _build_footer_buttons(self) -> QWidget:
+        """The dialog footer — Cancel / Discard Changes on the left,
+        primary CTA on the right. Lives outside the scroll region so
+        the primary action stays reachable while the body scrolls
+        (spec/162 relayout D)."""
+        host = QWidget()
+        h = QHBoxLayout(host)
+        h.setContentsMargins(22, 14, 22, 14)
         h.setSpacing(10)
         h.addStretch()
         cancel_label = (
@@ -2165,7 +2184,6 @@ class NewCutDialog(QDialog):
             "Compose a Source and pick a verdict to enable this action."))
         self._start_btn.clicked.connect(self._on_start_clicked)
         h.addWidget(self._start_btn)
-        v.addWidget(button_row)
         return host
 
     # -------- Live summary helpers (spec/162 §4.3, §4.4) -------------- #
@@ -2306,10 +2324,14 @@ class NewCutDialog(QDialog):
                 self._format_summary_text())
 
     def _refresh_launch_pad_summary_tone(self, warnings: int) -> None:
-        """Flip the ``tone="warn"`` property on the
-        ``#LaunchPadSummaryStrip`` wrapper when the warning count is
-        non-zero, so QSS paints the amber treatment. Safe before the
-        wrapper exists."""
+        """Flip the ``tone="warn"`` dynamic property on the metrics
+        summary widget when the warning count is non-zero. Safe before
+        the widget exists.
+
+        spec/162 relayout D — the ``#LaunchPadSummaryStrip`` role
+        retired with the slab; the ``tone`` property still lands on
+        the metrics widget so a future QSS rule can key on it. Under
+        the current stylesheet the flip is visually a no-op."""
         wrap = getattr(self, "_launch_pad_summary", None)
         if wrap is None:
             return
@@ -4045,53 +4067,6 @@ class NewCutDialog(QDialog):
         if style is not None:
             style.unpolish(widget)
             style.polish(widget)
-
-    # -------- Footer ------------------------------------------------- #
-
-    def _build_footer(self) -> QWidget:
-        """The dialog footer — Cancel + primary CTA (spec/90 §5.5, updated
-        by spec/162 §5).
-
-        Save as DC and Save as Recipe moved to the band headers so each
-        save sits with the data it captures; the footer is purely about
-        closing the dialog (discard or run). spec/162 §5 flexes both
-        labels on the dialog's mode:
-
-        * New Cut mode  → ``Cancel`` + ``▶ Freeze and Pick``
-        * Edit Cut mode → ``Discard Changes`` + ``▶ Save Changes and Pick``
-        """
-        host = QWidget()
-        # spec/162 §4.6 — the button row lives inside the LaunchPad; the
-        # footer host wears the ``#LaunchPad`` role so the QSS ink-tinted
-        # strip paints correctly. Slice 3 in a future round moves the
-        # Name / Rules / Otherwise / summary rows into the same
-        # LaunchPad; for Round 1b just the button row + role wrapper
-        # land.
-        host.setObjectName("LaunchPad")
-        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        h = QHBoxLayout(host)
-        h.setContentsMargins(22, 14, 22, 14)
-        h.setSpacing(10)
-        h.addStretch()
-        cancel_label = (
-            tr("Discard Changes") if self._mode == MODE_EDIT
-            else tr("Cancel"))
-        cancel = ghost_button(cancel_label)
-        cancel.clicked.connect(self.reject)
-        h.addWidget(cancel)
-        # Primary CTA — gated by :meth:`_refresh_start_enabled`. Disabled
-        # on empty source / probe error / empty pool; enabled when the
-        # last probe returned a non-empty pool with no errors.
-        start_label = (
-            tr("▶ Save Changes and Pick") if self._mode == MODE_EDIT
-            else tr("▶ Freeze and Pick"))
-        self._start_btn = primary_button(start_label)
-        self._start_btn.setEnabled(False)
-        self._start_btn.setToolTip(tr(
-            "Compose a Source and pick a verdict to enable this action."))
-        self._start_btn.clicked.connect(self._on_start_clicked)
-        h.addWidget(self._start_btn)
-        return host
 
     # ------------------------------------------------------------------ #
     # Save as Recipe…  (spec/90 §7 Phase 5)

@@ -283,10 +283,25 @@ class RecipeContainer(QFrame):
         *,
         load_button: QWidget | None = None,
         save_button: QWidget | None = None,
+        bordered: bool = True,
         parent: QWidget | None = None,
     ) -> None:
+        """Build the Stage-A frame.
+
+        ``bordered`` (default ``True``) controls whether the widget
+        picks up the ``#RecipeContainer`` + ``#RecipeContainerHeader``
+        QSS roles that paint the card2 fill + accent_soft border +
+        hairline header divider. Pass ``bordered=False`` from callers
+        that want the header + body structure without the visible
+        frame (spec/162 relayout D — NewCutDialog stops painting the
+        outer Recipe frame so the ``#FormFieldGroup`` boxes read as
+        the only frames in the body). External callers keep the
+        default and their visual output is unchanged.
+        """
         super().__init__(parent)
-        self.setObjectName("RecipeContainer")
+        self._bordered = bool(bordered)
+        if self._bordered:
+            self.setObjectName("RecipeContainer")
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -294,7 +309,8 @@ class RecipeContainer(QFrame):
 
         # ── #RecipeContainerHeader row ──────────────────────
         self._header = QFrame(self)
-        self._header.setObjectName("RecipeContainerHeader")
+        if self._bordered:
+            self._header.setObjectName("RecipeContainerHeader")
         header_row = QHBoxLayout(self._header)
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(8)

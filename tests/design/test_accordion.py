@@ -157,6 +157,32 @@ def test_recipe_container_injects_load_and_save_buttons(qapp) -> None:
     assert save.parent() is c.header_widget()
 
 
+def test_recipe_container_bordered_true_paints_the_frame(qapp) -> None:
+    """spec/162 relayout D — the default (`bordered=True`) keeps the
+    `#RecipeContainer` + `#RecipeContainerHeader` QSS roles so any
+    external caller sees the framed treatment unchanged."""
+    c = RecipeContainer()
+    assert c.objectName() == "RecipeContainer"
+    assert c.header_widget().objectName() == "RecipeContainerHeader"
+
+
+def test_recipe_container_bordered_false_drops_the_frame(qapp) -> None:
+    """spec/162 relayout D — `bordered=False` drops the object names
+    on the outer frame + the header row so the QSS card2 fill +
+    accent_soft border + hairline header divider don't paint. The
+    widget still owns the same layout structure + header widgets +
+    body layout — only the visual chrome retires."""
+    load = QPushButton("Load Recipe…")
+    save = QPushButton("Save as Recipe…")
+    c = RecipeContainer(
+        load_button=load, save_button=save, bordered=False)
+    assert c.objectName() == ""
+    assert c.header_widget().objectName() == ""
+    # Load / Save buttons still land in the header row.
+    assert load.parent() is c.header_widget()
+    assert save.parent() is c.header_widget()
+
+
 # ─────────────────────────────────────────────────────────────────
 # StrictAccordionGroup
 # ─────────────────────────────────────────────────────────────────

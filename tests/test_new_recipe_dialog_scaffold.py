@@ -344,6 +344,30 @@ def test_recipe_container_hosts_two_section_eyebrows(qapp):
     assert "FORMAT" in eyebrow_labels
 
 
+def test_body_carries_this_cut_eyebrow_below_recipe_container(qapp):
+    """spec/162 relayout D — the per-Cut half joins the scroll body
+    beneath a THIS CUT ``#SectionEyebrow`` + a hairline
+    ``#DialogDivider``. All three eyebrows (COLLECTION / FORMAT /
+    THIS CUT) render in the same body."""
+    dlg = _cut_dialog(qapp)
+    assert hasattr(dlg, "_eyebrow_this_cut")
+    body_eyebrows = {
+        lbl.text() for lbl in dlg.findChildren(QLabel)
+        if lbl.objectName() == "SectionEyebrow"
+    }
+    assert body_eyebrows == {"COLLECTION", "FORMAT", "THIS CUT"}
+
+
+def test_recipe_container_paints_no_frame_in_new_cut_dialog(qapp):
+    """spec/162 relayout D — the outer Recipe frame retires. The
+    NewCutDialog passes ``bordered=False`` so the ``#RecipeContainer``
+    fill / border and the ``#RecipeContainerHeader`` hairline divider
+    don't paint. Both object names read empty."""
+    dlg = _cut_dialog(qapp)
+    assert dlg._recipe_container.objectName() == ""
+    assert dlg._recipe_container.header_widget().objectName() == ""
+
+
 def test_initial_resize_accommodates_widest_header_row(qapp):
     """spec/90 §5 — the dialog opens wide enough that the Recipe
     container header row doesn't fall off the right edge."""
@@ -466,23 +490,18 @@ def test_edit_mode_cancel_reads_discard_changes(qapp):
     assert "Cancel" not in texts
 
 
-def test_footer_wears_launch_pad_role(qapp):
-    """spec/162 §4.6 — the primary button sits inside a launch-pad
-    container wearing the #LaunchPad role so Slice 1's ink-tinted QSS
-    strip paints. In Round 2a the LaunchPad is the outer container of a
-    QWidget tree (name row → rules → otherwise → summary → button row);
-    walk up from the primary button to find the ancestor."""
+def test_no_launch_pad_slab_ancestor_above_primary(qapp):
+    """spec/162 relayout D — the coloured ``#LaunchPad`` slab retired.
+    The primary CTA sits in a plain footer widget with no styled
+    ancestor. Retires the earlier assertion that a ``#LaunchPad``
+    ancestor existed above the primary button (Round 2a)."""
     dlg = _cut_dialog(qapp)
     ancestor = dlg._start_btn
-    found = None
     while ancestor is not None:
-        if ancestor.objectName() == "LaunchPad":
-            found = ancestor
-            break
+        assert ancestor.objectName() != "LaunchPad", (
+            "unexpected #LaunchPad ancestor — relayout D dropped the slab"
+        )
         ancestor = ancestor.parent()
-    assert found is not None, (
-        "expected a #LaunchPad ancestor above the primary button"
-    )
 
 
 def test_otherwise_lead_reads_starts_all_when_no_rules(qapp):

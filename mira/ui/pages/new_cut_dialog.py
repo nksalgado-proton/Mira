@@ -83,6 +83,7 @@ from mira.ui.design import (
     RecipeContainer,
     StrictAccordionGroup,
     confirm,
+    form_field,
     ghost_button,
     line_input,
     primary_button,
@@ -1755,6 +1756,26 @@ class NewCutDialog(QDialog):
         self._photos_cb: Optional[QCheckBox] = None
         self._videos_cb: Optional[QCheckBox] = None
 
+        # spec/162 relayout B — rating filter widgets (spec/159 §4.5).
+        # STARS / COLOURS / FLAGS are the event-scope filter dimensions
+        # the Cut composition now surfaces alongside Style / Media.
+        # Defaults match the FilterBar's "unfiltered" seed: any stars,
+        # no colour restriction, any flag state.
+        self._min_stars: Optional[int] = None
+        self._colour_labels: set = set()
+        self._flag: str = "any"
+        self._star_combo: Optional[QComboBox] = None
+        self._colour_row = None
+        self._flag_combo: Optional[QComboBox] = None
+
+        # spec/162 relayout B — cross-event filter widgets. Only built
+        # when ``show_hardware=True`` (cross-event scope); event scope
+        # leaves them ``None`` so read paths skip cleanly.
+        self._cross_camera_multi = None
+        self._cross_lens_multi = None
+        self._date_from_edit = None
+        self._date_to_edit = None
+
         # Window chrome. spec/162 §5 — the title flexes on mode:
         #   * new  → "New Cut"        (both scopes; the header icon +
         #                              the body decide event vs cross-event)
@@ -1954,12 +1975,15 @@ class NewCutDialog(QDialog):
             save_button=self._save_recipe_btn,
         )
 
-        # spec/93 §7 — the binding badge + migration note continue to
-        # ride in the Recipe header row. They're informational only
-        # (no click target), so they slot alongside the Load / Save
-        # buttons cleanly.
+        # spec/93 §7 — the binding badge + migration note ride in the
+        # Recipe header row. spec/162 relayout B §C.10 — the fresh
+        # dialog's default "Global" reading is noise (the header is a
+        # busy area), so the badge hides until the classifier surfaces
+        # a non-Global placement. :meth:`_refresh_binding_badge` flips
+        # visibility to match.
         header_layout = self._recipe_container.header_widget().layout()
         self._binding_badge = BindingBadge()
+        self._binding_badge.setVisible(False)
         # Insert before the Load / Save buttons (after the stretch that
         # RecipeContainer's ctor adds), so the reading order left-to-
         # right is:  Recipe: [name]   [binding-badge] [migration] ...  [Load] [Save]
@@ -2000,51 +2024,50 @@ class NewCutDialog(QDialog):
 
     def _build_collection_content(self) -> QWidget:
         """Section 1 · Collection — the pool composition (Source +
-        Filters). Event scope adds a non-editable
-        ``Starting from your Base Collection`` caption at the top
-        (spec/162 §4.3). Cross-event scope keeps the current
-        Scope-source composition row (the operand-picker sentence)
-        until Round 3 replaces it with a proper `#StartingFromRow`
-        chip strip."""
+        Filters). spec/162 relayout B: every input lives inside a
+        ``#FormFieldGroup`` box; no left-side labels, no bare ``SOURCE``
+        micro-header.
+
+        * Event scope: a non-editable ``Starting from your Base
+          Collection`` subhead + the filter grid (STARS · COLOURS ·
+          FLAGS · STYLE · MEDIA). The source picker retires here
+          entirely — the Base Collection is implicit (spec/162 §7.1).
+        * Cross-event scope: the composable-source sentence wraps in
+          a ``STARTING FROM`` box; the filter grid extends with
+          CAMERA · LENS · DATES boxes.
+        """
         host = QWidget()
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 8, 0, 0)
         v.setSpacing(10)
 
-        # spec/162 §4.3 — the "Starting from" row. Event-scope reads a
-        # non-editable caption; cross-event carries the Scope-source
-        # sentence (the operand picker).
-        starting_row = QWidget()
-        starting_row.setObjectName("StartingFromRow")
-        starting_row.setAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground, True)
-        starting_h = QHBoxLayout(starting_row)
-        starting_h.setContentsMargins(0, 0, 0, 0)
         if self._scope == SCOPE_EVENT:
+            # spec/162 §7.1 — event-scope Cuts source from the Base
+            # Collection implicitly. No picker; the caption is the
+            # entire "starting from" affordance.
             caption = QLabel(tr("Starting from your Base Collection"))
             caption.setObjectName("Sub")
-            starting_h.addWidget(caption)
-            starting_h.addStretch()
-        v.addWidget(starting_row)
+            v.addWidget(caption)
+        else:
+            # Cross-event scope — spec/162 Round 3's composable-source
+            # sentence wraps in a titled STARTING FROM box (spec/162
+            # relayout B).
+            v.addWidget(form_field(
+                tr("Starting from"), self._build_source_section()))
+            if self._show_scope:
+                # Scope stays as a labelled sentence per spec/162 §D
+                # ("leave [scope] alone at cross-event scope").
+                v.addWidget(self._build_scope_section())
 
-        # Scope section (cross-event only) — keeps the current
-        # composable source sentence. Round 3 replaces this with the
-        # `#StartingFromRow` chip stack + `[+ or…]` picker.
-        if self._show_scope:
-            v.addWidget(self._build_scope_section())
-
-        # Source composition — the operand picker sentence + chip
-        # stack. Kept at both scopes for now; Round 3 hides it at
-        # event scope in favour of the pure caption above.
-        v.addWidget(self._build_source_section())
-
-        # Filters (Style + Media at event scope; extended at
-        # cross-event once Round 3's FilterBar extension lands).
-        # spec/81 §3 path A — the Pin→Cut flow passes ``show_filters=
-        # False`` so the pinned Collection's filters ride via the
-        # source operand rather than a duplicate inline wall.
+        # Filter grid — five boxes at event scope, extended at
+        # cross-event with CAMERA / LENS / DATES. spec/81 §3 path A
+        # honoured: ``show_filters=False`` still suppresses the wall.
         if self._show_filters:
-            v.addWidget(self._build_filters_section())
+            v.addWidget(self._build_filters_grid())
+            # spec/113 — the "filters active" indicator ("Showing N of M
+            # · Clear filters") sits as a passive summary beneath the
+            # grid. It's a readout, not an input — no box around it.
+            v.addWidget(self._build_filter_indicator_row())
         return host
 
     def _build_format_content(self) -> QWidget:
@@ -2082,31 +2105,28 @@ class NewCutDialog(QDialog):
         v.setContentsMargins(22, 14, 22, 14)
         v.setSpacing(10)
 
-        # Name-this-Cut row (wraps :meth:`_build_name_section`).
-        name_row = QWidget()
-        name_row.setObjectName("LaunchPadRow")
-        name_row.setAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground, True)
-        name_row_layout = QVBoxLayout(name_row)
-        name_row_layout.setContentsMargins(0, 0, 0, 0)
-        name_row_layout.setSpacing(4)
-        name_row_layout.addWidget(self._build_name_section())
-        v.addWidget(name_row)
+        # spec/162 relayout B — each per-Cut lever wraps in a titled
+        # ``#FormFieldGroup`` box; the launch pad no longer relies on
+        # bare micro-labels or leading ``Starts all:`` / ``Otherwise:``
+        # QLabels for identity.
 
-        # Rules block (wraps :meth:`_build_rules_section`) inside a
-        # ``#RulesList`` role wrapper.
-        rules_wrap = QWidget()
-        rules_wrap.setObjectName("RulesList")
-        rules_wrap.setAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground, True)
-        rules_layout = QVBoxLayout(rules_wrap)
-        rules_layout.setContentsMargins(0, 0, 0, 0)
-        rules_layout.setSpacing(4)
-        rules_layout.addWidget(self._build_rules_section())
-        v.addWidget(rules_wrap)
+        # NAME box — line edit + tag preview.
+        v.addWidget(form_field(tr("Name"), self._build_name_section()))
 
-        # Contextual Otherwise / Starts-all row.
-        v.addWidget(self._build_otherwise_section())
+        # RULES · N box — the rule list + [+ Add rule] button. Title
+        # count flexes on every rules-list mutation via
+        # :meth:`_refresh_otherwise_lead`.
+        self._rules_box = form_field(
+            tr("Rules · {n}").replace("{n}", str(len(self._rules))),
+            self._build_rules_section())
+        v.addWidget(self._rules_box)
+
+        # STARTS ALL / OTHERWISE box — the verdict pill sits inside.
+        # The title flexes contextually with the rule count so the
+        # phrasing reads honestly (spec/162 §4.6).
+        self._otherwise_box = form_field(
+            self._otherwise_lead_text(), self._build_otherwise_section())
+        v.addWidget(self._otherwise_box)
 
         # Summary strip — wraps the existing MetricsSection widget in
         # the new #LaunchPadSummaryStrip role. When warnings exist,
@@ -2311,11 +2331,14 @@ class NewCutDialog(QDialog):
     # helpers used to cover.
 
     def _build_name_section(self) -> QWidget:
+        """The Name-this-Cut widget — a line edit + a live tag preview
+        beneath it. spec/162 relayout B: the leading ``NAME`` micro
+        label retired; the caller wraps this widget in a titled
+        ``#FormFieldGroup`` box (see :meth:`_build_launch_pad`)."""
         host = QWidget()
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
-        v.addWidget(_micro(tr("Name")))
         self._name_edit = line_input(tr("Type a name to see its tag."))
         v.addWidget(self._name_edit)
         self._name_tag_hint = QLabel("(tag will preview here)")
@@ -2372,12 +2395,15 @@ class NewCutDialog(QDialog):
         ``Start from [chip] or [chip] …`` with a ``+`` affordance at
         the end that opens the operand picker popover. Phase 4a does not
         render the join-word dropdown UI — every chip is joined with
-        ``or`` by default; the picker / swap UI lands in Phase 4c."""
+        ``or`` by default; the picker / swap UI lands in Phase 4c.
+
+        spec/162 relayout B: the leading ``SOURCE`` micro-label retired
+        with the surrounding ``#FormFieldGroup`` box — the caller wraps
+        this widget in a ``STARTING FROM`` field per spec/162 §7.1."""
         host = QWidget()
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
-        v.addWidget(_micro(tr("Source")))
 
         # The sentence row hosts the "Start from" lead label, chips +
         # join-word labels, and the trailing ``+`` button. Rebuilt on
@@ -2401,7 +2427,14 @@ class NewCutDialog(QDialog):
         chip with its preceding join-word affordance, then the trailing
         ``+`` button. Phase 4c hooks each between-chip join word to
         :class:`_JoinChevron`, so the user can swap one-click between
-        ``or`` / ``and`` / ``but not in`` (spec/90 §3.2)."""
+        ``or`` / ``and`` / ``but not in`` (spec/90 §3.2).
+
+        spec/162 relayout B / §7.1 — the source picker retires at event
+        scope. No-op if the widgets weren't built."""
+        if not hasattr(self, "_source_row"):
+            self._refresh_source_summary()
+            self._refresh_save_button_states()
+            return
         # Clear the row.
         while self._source_row.count():
             item = self._source_row.takeAt(0)
@@ -2500,7 +2533,12 @@ class NewCutDialog(QDialog):
 
     def _refresh_source_summary(self) -> None:
         """Call ``pool_probe`` with the current expression; fall back to
-        the chip count when no probe is wired (smoke tests)."""
+        the chip count when no probe is wired (smoke tests).
+
+        spec/162 relayout B — no-op at event scope where the source
+        picker retires (no ``_source_summary`` widget)."""
+        if not hasattr(self, "_source_summary"):
+            return
         expr = self.source_expression()
         if self._pool_probe is not None:
             try:
@@ -2652,113 +2690,254 @@ class NewCutDialog(QDialog):
 
     # -------- Filters ------------------------------------------------ #
 
-    def _build_filters_section(self) -> QWidget:
-        """The Filters block (spec/90 §4) — Style + Media everywhere;
-        Camera + Lens + Faces only when ``show_hardware=True``."""
+    def _build_filters_grid(self) -> QWidget:
+        """The Filters block (spec/90 §4) rebuilt for spec/162 relayout
+        B — every dimension lives in its own titled ``#FormFieldGroup``
+        box. The bare left-side labels (``Style:``, ``Media:``, …)
+        retired; the box titles carry the identity now.
+
+        Layout — a :class:`QGridLayout` that pairs the narrow controls
+        (Flags, Media) side-by-side and lets the wider ones (Style) span
+        two columns:
+
+        ::
+
+            ┌ STARS ─────┐ ┌ COLOURS ───┐
+            └────────────┘ └────────────┘
+            ┌ FLAGS ─────┐ ┌ MEDIA ─────┐
+            └────────────┘ └────────────┘
+            ┌ STYLE ──────────────────┐
+            └─────────────────────────┘
+
+        At cross-event scope four more boxes join — CAMERA, LENS,
+        DATES (PLACES omitted until spec/162 §8 lands the per-lineage
+        place attribution).
+        """
         host = QWidget()
-        v = QVBoxLayout(host)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
-        v.addWidget(_micro(tr("Filters")))
+        grid = QGridLayout(host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
-        v.addLayout(self._build_style_row())
-        v.addLayout(self._build_media_row())
+        grid.addWidget(form_field(tr("Stars"), self._build_stars_widget()), 0, 0)
+        grid.addWidget(form_field(tr("Colours"), self._build_colours_widget()), 0, 1)
+        grid.addWidget(form_field(tr("Flags"), self._build_flag_widget()), 1, 0)
+        grid.addWidget(form_field(tr("Media"), self._build_media_widget()), 1, 1)
+        grid.addWidget(
+            form_field(tr("Style"), self._build_style_widget()),
+            2, 0, 1, 2)
 
+        row = 3
         if self._show_hardware:
-            # Per spec/90 §4.2 — the dialog adapts to the user's inventory.
-            # A single-camera photographer doesn't need a Camera row at
-            # all; same for lens.
+            # spec/90 §4.2 — the dialog adapts to the user's inventory.
+            # A single-camera / single-lens photographer skips those
+            # dimensions entirely.
             if len(self._ctx.available_cameras) >= 2:
-                v.addLayout(self._build_camera_row())
+                grid.addWidget(
+                    form_field(tr("Camera"), self._build_camera_widget()),
+                    row, 0)
             if len(self._ctx.available_lenses) >= 2:
-                v.addLayout(self._build_lens_row())
-            # spec/94 Phase 4b — face surface stays behind its own
+                grid.addWidget(
+                    form_field(tr("Lens"), self._build_lens_widget()),
+                    row, 1)
+            row += 1
+            # spec/94 Phase 4b — Faces surface stays behind its own
             # flag (spec/91 deferred). Callers that flip
-            # ``show_hardware=True`` for the EXIF / gear lift no
-            # longer drag the Faces placeholder along.
+            # ``show_hardware=True`` for the EXIF / gear lift no longer
+            # drag the Faces placeholder along.
             if self._show_faces:
-                v.addWidget(_placeholder(tr("Faces: (Phase 4c)")))
+                grid.addWidget(
+                    _placeholder(tr("Faces: (Phase 4c)")), row, 0, 1, 2)
+                row += 1
+        if self._scope == SCOPE_CROSS_EVENT:
+            # spec/162 §8 — cross-event scope adds a date range knob.
+            # Places is intentionally omitted until Mira attaches a
+            # per-lineage place attribution (see FilterBar's parallel
+            # comment for context).
+            grid.addWidget(
+                form_field(tr("Dates"), self._build_dates_widget()),
+                row, 0, 1, 2)
         return host
 
-    def _build_chips_row(self, label_text: str, chips) -> QHBoxLayout:
-        """spec/152 §X — one filter row laid out as ``label + wrapping
-        chips``. The chips ride a :class:`FlowLayout` so they wrap to
-        the next line when the dialog is narrow instead of stretching
-        the whole dialog horizontally (the pre-fix inline ``QHBoxLayout
-        + addStretch`` pushed the floor wider with every additional
-        Style / Camera / Lens). The label stays fixed-width on the
-        left so the rows align visually."""
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        label = QLabel(label_text)
-        label.setObjectName("Faint")
-        label.setMinimumWidth(64)
-        label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        row.addWidget(label, 0, Qt.AlignmentFlag.AlignTop)
-        chips_host = QWidget()
-        chips_flow = FlowLayout(chips_host, spacing=6)
-        for chip in chips:
-            chips_flow.addWidget(chip)
-        row.addWidget(chips_host, 1)
-        return row
+    # -- individual filter widgets (spec/162 relayout B) ------------ #
 
-    def _build_style_row(self) -> QHBoxLayout:
-        """spec/119 — style filters are real :class:`QCheckBox`es so the
-        active state is unmistakable. The retired ``#PillToggle`` /
-        ``#StyleChip`` path lit only a soft tint when checked (and three
-        spec/113-era passes failed to make it readable); a checkbox
-        carries the OS-native indicator. They reuse the dialog's
-        ``DaysTableCheck`` role so the row visually matches the Media
-        Photos / Videos checkboxes that have always been real
-        QCheckBoxes."""
-        chips = []
+    def _build_stars_widget(self) -> QWidget:
+        """spec/159 §4.5 — the STARS combo. ``Any`` = no filter; ``1+``
+        through ``5`` narrow to lineage with at least that many stars."""
+        self._star_combo = QComboBox()
+        self._star_combo.setObjectName("FilterStarsCombo")
+        self._star_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for label, value in (
+            (tr("Any"), None),
+            ("★ 1+", 1),
+            ("★ 2+", 2),
+            ("★ 3+", 3),
+            ("★ 4+", 4),
+            ("★ 5", 5),
+        ):
+            self._star_combo.addItem(label, value)
+        idx = max(0, self._star_combo.findData(self._min_stars))
+        self._star_combo.setCurrentIndex(idx)
+        self._star_combo.activated.connect(self._on_stars_picked)
+        return self._star_combo
+
+    def _build_colours_widget(self) -> QWidget:
+        """spec/159 §4.5 — the COLOURS multi-swatch row. Reuses the
+        :class:`ColorLabelMultiRow` widget from the exported-grid
+        filter so the visual signal matches."""
+        from mira.ui.exported.rating_widgets import ColorLabelMultiRow
+        self._colour_row = ColorLabelMultiRow()
+        self._colour_row.setValue(self._colour_labels)
+        self._colour_row.value_changed.connect(self._on_colours_changed)
+        return self._colour_row
+
+    def _build_flag_widget(self) -> QWidget:
+        """spec/159 §4.5 — the FLAGS tri-state combo."""
+        self._flag_combo = QComboBox()
+        self._flag_combo.setObjectName("FilterFlagCombo")
+        self._flag_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for label, value in (
+            (tr("Any"), "any"),
+            (tr("⚑ Flagged"), "yes"),
+            (tr("Unflagged"), "no"),
+        ):
+            self._flag_combo.addItem(label, value)
+        idx = max(0, self._flag_combo.findData(self._flag))
+        self._flag_combo.setCurrentIndex(idx)
+        self._flag_combo.activated.connect(self._on_flag_picked)
+        return self._flag_combo
+
+    def _build_style_widget(self) -> QWidget:
+        """spec/119 — Style filter chips are real :class:`QCheckBox`es
+        so the active state is unmistakable. They wrap via a
+        :class:`FlowLayout` so long vocabularies don't stretch the
+        dialog wide (spec/152 §X)."""
+        host = QWidget()
+        flow = FlowLayout(host, spacing=6)
         for style in self._ctx.available_styles:
             chip = QCheckBox(style)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(style in self._ctx.selected_styles)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._style_chips[style] = chip
-            chips.append(chip)
-        return self._build_chips_row(tr("Style"), chips)
+            flow.addWidget(chip)
+        return host
 
-    def _build_media_row(self) -> QHBoxLayout:
+    def _build_media_widget(self) -> QWidget:
+        host = QWidget()
+        flow = FlowLayout(host, spacing=6)
         self._photos_cb = QCheckBox(tr("Photos"))
         self._photos_cb.setObjectName("DaysTableCheck")
         self._photos_cb.setChecked(self._ctx.include_photos)
         self._photos_cb.toggled.connect(self._on_filter_chip_toggled)
+        flow.addWidget(self._photos_cb)
         self._videos_cb = QCheckBox(tr("Videos"))
         self._videos_cb.setObjectName("DaysTableCheck")
         self._videos_cb.setChecked(self._ctx.include_videos)
         self._videos_cb.toggled.connect(self._on_filter_chip_toggled)
-        return self._build_chips_row(
-            tr("Media"), [self._photos_cb, self._videos_cb])
+        flow.addWidget(self._videos_cb)
+        return host
 
-    def _build_camera_row(self) -> QHBoxLayout:
-        """spec/119 — camera filter chips are real :class:`QCheckBox`es
-        for the same reason as the style row above. Same handler, same
-        keying — the read sites read ``.isChecked()`` unchanged."""
-        chips = []
+    def _build_camera_widget(self) -> QWidget:
+        """spec/119 — Camera filter chips. Wraps via FlowLayout."""
+        host = QWidget()
+        flow = FlowLayout(host, spacing=6)
         for cam in self._ctx.available_cameras:
             chip = QCheckBox(cam)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(cam in self._ctx.selected_cameras)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._camera_chips[cam] = chip
-            chips.append(chip)
-        return self._build_chips_row(tr("Camera"), chips)
+            flow.addWidget(chip)
+        return host
 
-    def _build_lens_row(self) -> QHBoxLayout:
-        """spec/119 — lens filter chips: see :meth:`_build_camera_row`."""
-        chips = []
+    def _build_lens_widget(self) -> QWidget:
+        """spec/119 — Lens filter chips. Wraps via FlowLayout."""
+        host = QWidget()
+        flow = FlowLayout(host, spacing=6)
         for lens in self._ctx.available_lenses:
             chip = QCheckBox(lens)
             chip.setObjectName("DaysTableCheck")
             chip.setChecked(lens in self._ctx.selected_lenses)
             chip.toggled.connect(self._on_filter_chip_toggled)
             self._lens_chips[lens] = chip
-            chips.append(chip)
-        return self._build_chips_row(tr("Lens"), chips)
+            flow.addWidget(chip)
+        return host
+
+    def _build_dates_widget(self) -> QWidget:
+        """spec/162 §8 — DATES range picker. Two :class:`QDateEdit`
+        widgets with the calendar popup; the ``Any`` special-value text
+        lets the user clear either bound. Only rendered at cross-event
+        scope."""
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self._date_from_edit = QDateEdit()
+        self._date_from_edit.setObjectName("ProcessDateEdit")
+        self._date_from_edit.setCalendarPopup(True)
+        self._date_from_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_from_edit.setSpecialValueText(tr("Any"))
+        self._date_from_edit.setMinimumDate(QDate(1970, 1, 1))
+        self._date_from_edit.setDate(self._date_from_edit.minimumDate())
+        self._date_from_edit.dateChanged.connect(self._on_filter_chip_toggled)
+        self._date_to_edit = QDateEdit()
+        self._date_to_edit.setObjectName("ProcessDateEdit")
+        self._date_to_edit.setCalendarPopup(True)
+        self._date_to_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_to_edit.setSpecialValueText(tr("Any"))
+        self._date_to_edit.setMinimumDate(QDate(1970, 1, 1))
+        self._date_to_edit.setDate(self._date_to_edit.minimumDate())
+        self._date_to_edit.dateChanged.connect(self._on_filter_chip_toggled)
+        row.addWidget(self._date_from_edit)
+        row.addWidget(QLabel("–"))
+        row.addWidget(self._date_to_edit)
+        row.addStretch()
+        return host
+
+    def _on_stars_picked(self, _index: int = 0) -> None:
+        if self._star_combo is None:
+            return
+        self._min_stars = self._star_combo.currentData()
+        self._on_filter_chip_toggled()
+
+    def _on_colours_changed(self, value) -> None:
+        self._colour_labels = set(value or ())
+        self._on_filter_chip_toggled()
+
+    def _on_flag_picked(self, _index: int = 0) -> None:
+        if self._flag_combo is None:
+            return
+        value = self._flag_combo.currentData()
+        self._flag = value if value in ("any", "yes", "no") else "any"
+        self._on_filter_chip_toggled()
+
+    def _build_filter_indicator_row(self) -> QWidget:
+        """spec/113 / spec/162 relayout B — the "Showing N of M · Clear
+        filters" passive summary line that lives beneath the filter
+        grid. Rebuilt here so it lands under Section 1 instead of in
+        the launch pad's metrics strip. Hidden until the probe path
+        detects at least one active filter."""
+        self._filter_indicator_row = QWidget()
+        self._filter_indicator_row.setObjectName("FilterActiveRow")
+        fi_layout = QHBoxLayout(self._filter_indicator_row)
+        fi_layout.setContentsMargins(0, 0, 0, 0)
+        fi_layout.setSpacing(8)
+        self._filter_indicator_label = QLabel("")
+        self._filter_indicator_label.setObjectName("Sub")
+        self._filter_indicator_label.setWordWrap(True)
+        fi_layout.addWidget(self._filter_indicator_label, 1)
+        self._filter_clear_btn = QPushButton(tr("Clear filters"))
+        self._filter_clear_btn.setObjectName("FilterClear")
+        self._filter_clear_btn.setToolTip(tr(
+            "Reset every filter (stars, colours, flags, style, media, "
+            "hardware) and restore the unfiltered pool."))
+        self._filter_clear_btn.clicked.connect(self._on_clear_filters)
+        fi_layout.addWidget(self._filter_clear_btn, 0)
+        self._filter_indicator_row.setVisible(False)
+        return self._filter_indicator_row
 
     # -------- Placeholder sections (Phase 4b/4c/4d) ------------------- #
 
@@ -2783,7 +2962,9 @@ class NewCutDialog(QDialog):
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
-        v.addWidget(_micro(tr("Rules")))
+        # spec/162 relayout B — the leading ``RULES`` micro-label
+        # retired; the caller wraps this widget in a titled
+        # ``RULES · N`` ``#FormFieldGroup`` box.
 
         self._rules_container = QWidget(host)
         self._rules_layout = QVBoxLayout(self._rules_container)
@@ -2812,16 +2993,19 @@ class NewCutDialog(QDialog):
           is the fallback for files no rule matched.
 
         The pill's underlying value + storage are unchanged; only
-        the leading text swaps. :meth:`_refresh_otherwise_lead`
-        performs the swap on every rules-list mutation."""
+        the box title swaps. :meth:`_refresh_otherwise_lead` performs
+        the swap on every rules-list mutation.
+
+        spec/162 relayout B: the leading ``Starts all:`` / ``Otherwise:``
+        QLabel retired — the ``#FormFieldGroup`` box title carries the
+        identity now. This method returns just the verdict pill inside
+        a thin host so the launch pad can wrap it in a contextually-
+        titled box."""
         host = QWidget()
         host.setObjectName("OtherwiseSection")
         v = QHBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
-        self._otherwise_lead = QLabel(self._otherwise_lead_text())
-        self._otherwise_lead.setObjectName("OtherwiseLead")
-        v.addWidget(self._otherwise_lead)
         self._otherwise_pill = _VerdictPill(self._otherwise, host)
         self._otherwise_pill.chosen.connect(self._on_otherwise_chosen)
         v.addWidget(self._otherwise_pill)
@@ -2829,18 +3013,28 @@ class NewCutDialog(QDialog):
         return host
 
     def _otherwise_lead_text(self) -> str:
-        """The leading label — flexes on rule count. spec/162 §4.6."""
+        """The contextual title text — flexes on rule count.
+        spec/162 §4.6."""
         if self._rules:
-            return tr("Otherwise:")
-        return tr("Starts all:")
+            return tr("Otherwise")
+        return tr("Starts all")
 
     def _refresh_otherwise_lead(self) -> None:
-        """Update the leading label — called on every rules-list
-        mutation. Silently no-ops before the widget exists (i.e. during
-        the initial build pass)."""
-        lead = getattr(self, "_otherwise_lead", None)
-        if lead is not None:
-            lead.setText(self._otherwise_lead_text())
+        """Update the contextual title on the ``#FormFieldGroup`` box
+        wrapping the Otherwise verdict pill. Called on every rules-list
+        mutation. Silently no-ops before the box exists (i.e. during
+        the initial build pass). spec/162 relayout B — the leading
+        ``Starts all:`` / ``Otherwise:`` QLabel retired; the box title
+        carries the identity now."""
+        box = getattr(self, "_otherwise_box", None)
+        if box is not None:
+            box.setTitle(self._otherwise_lead_text().upper())
+        # Rules · N box title carries a running rule count.
+        rules_box = getattr(self, "_rules_box", None)
+        if rules_box is not None:
+            rules_box.setTitle(
+                tr("Rules · {n}").replace(
+                    "{n}", str(len(self._rules))).upper())
 
     # ---- rules wiring ---------------------------------------------- #
 
@@ -2989,54 +3183,36 @@ class NewCutDialog(QDialog):
     # -------- Runtime presentation (Phase 4d) ------------------------ #
 
     def _build_runtime_section(self) -> QWidget:
-        """Small triple-spinner row carrying the runtime presentation
-        settings (spec/61 §2 step 5 / spec/90 §10). Phase 4d only needs
-        Target / Max / Per-photo to feed the metrics row's runtime math;
-        Music + slide-cards still live on the spec/61 §3.1 settings
-        surface and don't influence the live count.
-
-        spec/90 §5.1 presentation block: a "Set a runtime budget"
-        checkbox sits above the Target / Max spinners. When unchecked,
-        the Target + Max spinners go disabled and the emitted
-        ``presentation.target_s`` / ``max_s`` are ``None`` — the
-        picker session renders "no limit" honestly. Per-photo is
-        slide-rate (not a budget) and stays enabled regardless."""
+        """Section 2 · Format — the Budget / Timing / Presentation grid
+        (spec/162 §4.4). spec/162 relayout B: every spinner and combo
+        lives inside a ``#FormFieldGroup`` box; the row-label pattern
+        (``Budget``, ``Timing``, ``Presentation`` sitting as labels to
+        the left of each row) retired — the individual box titles
+        carry the identity."""
         host = QWidget()
         host.setObjectName("RuntimeSection")
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
-        v.addWidget(_micro(tr("Runtime")))
+        v.setSpacing(8)
 
         # Budget toggle — unchecked = "no budget" (target_s/max_s emit
-        # as None; spinners disabled).
+        # as None; spinners hide). Stays ABOVE the grid as a section
+        # toggle without a box around it (spec/162 relayout B §B step 5).
         self._budget_check = QCheckBox(tr("Set a runtime budget"))
         self._budget_check.setObjectName("RuntimeBudgetCheck")
         self._budget_check.setChecked(self._has_budget)
         self._budget_check.toggled.connect(self._on_budget_toggled)
         v.addWidget(self._budget_check)
 
-        # spec/152 §X — Runtime controls in a 2-column grid instead of
-        # one wide horizontal row. Eight knobs in a single QHBoxLayout
-        # forced the dialog past ~1100 px wide; pairing them by purpose
-        # (budget · timing · format · presentation) reads better AND
-        # fits at 660 px wide.
         grid = QGridLayout()
-        grid.setSpacing(10)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
 
-        # Row 0 — budget: Target | Max
-        # spec/162 §4.4 — the WHOLE Budget row hides when the check is
-        # unchecked (not merely disables). We keep references to
-        # ``_target_box`` / ``_max_box`` so :meth:`_on_budget_toggled`
-        # can flip their visibility together.
-        target_box = QWidget()
-        self._target_box = target_box
-        tv = QVBoxLayout(target_box)
-        tv.setContentsMargins(0, 0, 0, 0)
-        tv.setSpacing(2)
-        tv.addWidget(QLabel(tr("Target (min)")))
+        # Row 0 — Budget: TARGET (MIN) | MAX (MIN). spec/162 §4.4:
+        # the whole Budget row hides when the check is unchecked (not
+        # merely disables).
         self._target_spin = QSpinBox()
         self._target_spin.setObjectName("RuntimeTargetSpin")
         self._target_spin.setRange(1, 240)
@@ -3044,17 +3220,10 @@ class NewCutDialog(QDialog):
         self._target_spin.setSuffix(" min")
         self._target_spin.setEnabled(self._has_budget)
         self._target_spin.valueChanged.connect(self._on_target_changed)
-        tv.addWidget(self._target_spin)
-        grid.addWidget(target_box, 0, 0)
-        target_box.setVisible(self._has_budget)
+        self._target_box = form_field(tr("Target (min)"), self._target_spin)
+        self._target_box.setVisible(self._has_budget)
+        grid.addWidget(self._target_box, 0, 0)
 
-        # Max minutes.
-        max_box = QWidget()
-        self._max_box = max_box
-        mv = QVBoxLayout(max_box)
-        mv.setContentsMargins(0, 0, 0, 0)
-        mv.setSpacing(2)
-        mv.addWidget(QLabel(tr("Max (min)")))
         self._max_spin = QSpinBox()
         self._max_spin.setObjectName("RuntimeMaxSpin")
         self._max_spin.setRange(1, 480)
@@ -3062,16 +3231,11 @@ class NewCutDialog(QDialog):
         self._max_spin.setSuffix(" min")
         self._max_spin.setEnabled(self._has_budget)
         self._max_spin.valueChanged.connect(self._on_max_changed)
-        mv.addWidget(self._max_spin)
-        grid.addWidget(max_box, 0, 1)
-        max_box.setVisible(self._has_budget)
+        self._max_box = form_field(tr("Max (min)"), self._max_spin)
+        self._max_box.setVisible(self._has_budget)
+        grid.addWidget(self._max_box, 0, 1)
 
-        # Row 1 — timing: Per photo | Transition
-        pp_box = QWidget()
-        pv = QVBoxLayout(pp_box)
-        pv.setContentsMargins(0, 0, 0, 0)
-        pv.setSpacing(2)
-        pv.addWidget(QLabel(tr("Per photo (s)")))
+        # Row 1 — Timing: PER PHOTO (S) | TRANSITION (S).
         self._per_photo_spin = QDoubleSpinBox()
         self._per_photo_spin.setObjectName("RuntimePerPhotoSpin")
         self._per_photo_spin.setRange(0.5, 60.0)
@@ -3080,20 +3244,13 @@ class NewCutDialog(QDialog):
         self._per_photo_spin.setValue(self._per_photo_seconds)
         self._per_photo_spin.setSuffix(" s")
         self._per_photo_spin.valueChanged.connect(self._on_per_photo_changed)
-        pv.addWidget(self._per_photo_spin)
-        grid.addWidget(pp_box, 1, 0)
+        grid.addWidget(
+            form_field(tr("Per photo (s)"), self._per_photo_spin), 1, 0)
 
         # spec/152 §3 — crossfade transition between consecutive
         # slides. Sibling to the per-photo seconds (both belong to
         # the *show*'s timing) and displayed in seconds to match.
-        # 0 reverts to hard cuts. Stored internally as ms; the spinbox
-        # divides on display, multiplies in ``_on_transition_changed``
-        # before stashing on ``_transition_ms``.
-        tr_box = QWidget()
-        tv = QVBoxLayout(tr_box)
-        tv.setContentsMargins(0, 0, 0, 0)
-        tv.setSpacing(2)
-        tv.addWidget(QLabel(tr("Transition (s)")))
+        # 0 reverts to hard cuts. Stored internally as ms.
         self._transition_spin = QDoubleSpinBox()
         self._transition_spin.setObjectName("RuntimeTransitionSpin")
         self._transition_spin.setRange(0.0, 10.0)
@@ -3107,20 +3264,15 @@ class NewCutDialog(QDialog):
             "rehearsal wall time. 0 = no transition (hard cuts)."))
         self._transition_spin.valueChanged.connect(
             self._on_transition_changed)
-        tv.addWidget(self._transition_spin)
-        grid.addWidget(tr_box, 1, 1)
+        grid.addWidget(
+            form_field(tr("Transition (s)"), self._transition_spin), 1, 1)
 
-        # Row 2 — format: Aspect | Music
+        # Row 2 — Presentation part 1: ASPECT | MUSIC.
         # spec/111 — aspect picker. Sibling to the per-photo duration:
         # both belong to the *show*, not the event. Drives the
         # separator / opener card dimensions on export AND the PTE
         # [Main] AspectRatio override (spec/107).
         from core.cut_aspect import all_aspects
-        aspect_box = QWidget()
-        av = QVBoxLayout(aspect_box)
-        av.setContentsMargins(0, 0, 0, 0)
-        av.setSpacing(2)
-        av.addWidget(QLabel(tr("Aspect")))
         self._aspect_combo = QComboBox()
         self._aspect_combo.setObjectName("RuntimeAspectCombo")
         self._aspect_combo.setToolTip(tr(
@@ -3134,20 +3286,15 @@ class NewCutDialog(QDialog):
             self._aspect_combo.setCurrentIndex(idx)
         self._aspect_combo.currentIndexChanged.connect(
             self._on_aspect_changed)
-        av.addWidget(self._aspect_combo)
-        grid.addWidget(aspect_box, 2, 0)
+        grid.addWidget(form_field(tr("Aspect"), self._aspect_combo), 2, 0)
 
-        # spec/106 — music / soundtrack picker. "No music" sits at the
-        # top so a Cut can opt out cleanly; the rest are the mood
-        # folders the host scanned from the configured audio library.
-        # When no categories are available (no library set, or library
-        # empty), the combo disables and the hint label below explains
-        # how to enable music (the page's pre-computed ``music_hint``).
-        music_box = QWidget()
-        mb = QVBoxLayout(music_box)
-        mb.setContentsMargins(0, 0, 0, 0)
-        mb.setSpacing(2)
-        mb.addWidget(QLabel(tr("Music")))
+        # spec/106 — music / soundtrack picker. Housed with the aspect
+        # combo + a hint label beneath the combo when the library is
+        # unset / empty.
+        music_widget = QWidget()
+        mw = QVBoxLayout(music_widget)
+        mw.setContentsMargins(0, 0, 0, 0)
+        mw.setSpacing(2)
         self._music_combo = QComboBox()
         self._music_combo.setObjectName("RuntimeMusicCombo")
         self._music_combo.addItem(tr("No music"), userData=None)
@@ -3172,36 +3319,31 @@ class NewCutDialog(QDialog):
         # No categories AND no prefill → disable + show the hint.
         if not self._music_categories and not self._music_category:
             self._music_combo.setEnabled(False)
-        mb.addWidget(self._music_combo)
+        mw.addWidget(self._music_combo)
         self._music_hint_label = QLabel(self._music_hint or "")
         self._music_hint_label.setObjectName("PageHint")
         self._music_hint_label.setWordWrap(True)
         self._music_hint_label.setVisible(
             bool(self._music_hint) and not self._music_categories)
-        mb.addWidget(self._music_hint_label)
-        grid.addWidget(music_box, 2, 1)
+        mw.addWidget(self._music_hint_label)
+        grid.addWidget(form_field(tr("Music"), music_widget), 2, 1)
 
-        # Row 3 — presentation: Overlays | Separators (when the host
-        # didn't suppress overlays, otherwise Separators alone in the
-        # left column so the row isn't a lonely right-aligned tile).
-        # spec/114 — overlay control: mode combo + a fields multi-select
-        # next door. ``Off`` = no overlays (today's behaviour); the
-        # field pills go disabled. ``Embedded`` writes IPTC into the
-        # JPEG (link-pure for non-where fields, in-place IPTC writes
-        # for where). ``Burn-in`` draws the selected fields into the
-        # pixels of the rendered copy. The export layer + the spec/107
-        # PTE generator both already honour these — only the dialog
-        # was missing.
+        # Row 3 — Presentation part 2: OVERLAYS | SEPARATORS.
         # spec/143 — separators on/off + card-style control. Sibling to
         # the overlay / aspect / music blocks. Dropped during the spec/
         # 90 Phase 4 sweep; without it the dialog silently fell back to
         # the global ``use_separators`` setting and the user lost the
         # per-Cut choice.
         if self._overlay_field_options:
-            grid.addWidget(self._build_overlay_box(), 3, 0)
-            grid.addWidget(self._build_separators_box(), 3, 1)
+            grid.addWidget(
+                form_field(tr("Overlays"), self._build_overlay_box()), 3, 0)
+            grid.addWidget(
+                form_field(tr("Separators"), self._build_separators_box()),
+                3, 1)
         else:
-            grid.addWidget(self._build_separators_box(), 3, 0)
+            grid.addWidget(
+                form_field(tr("Separators"), self._build_separators_box()),
+                3, 0)
 
         v.addLayout(grid)
         return host
@@ -3212,13 +3354,12 @@ class NewCutDialog(QDialog):
         on when ≥1 flag is checked, off when none. (The old Off / Embedded
         / Burn-in combo is gone — burn-in is retired; the generated PTE
         always carries the fields as separate :Text objects.) Built as a
-        single QWidget so the Runtime row slots it like the music / aspect
-        blocks."""
+        single QWidget the caller wraps in a titled
+        ``#FormFieldGroup``."""
         box = QWidget()
         ob = QVBoxLayout(box)
         ob.setContentsMargins(0, 0, 0, 0)
         ob.setSpacing(2)
-        ob.addWidget(QLabel(tr("Overlays")))
 
         # spec/153 — there is one overlay behaviour now (separate PTE text);
         # ``overlay_mode`` stays ``embedded`` internally so the export path
@@ -3294,19 +3435,18 @@ class NewCutDialog(QDialog):
     def _build_separators_box(self) -> QWidget:
         """spec/143 — the separators on/off picker + card-style select.
 
-        Built as a single QWidget so the surrounding Runtime row slots
-        it like the overlay / aspect / music blocks. The toggle drives
-        whether export + play insert day-separator and opener cards
-        (the per-Cut counterpart of the global ``use_separators``
-        setting). The card-style combo picks the colour treatment for
-        those cards — ``black`` / ``single`` / ``multi`` — and greys
-        out when separators are Off so the user sees the disabled
-        choice instead of editing a setting that has no effect."""
+        Built as a single QWidget the caller wraps in a titled
+        ``#FormFieldGroup``. The toggle drives whether export + play
+        insert day-separator and opener cards (the per-Cut counterpart
+        of the global ``use_separators`` setting). The card-style combo
+        picks the colour treatment for those cards — ``black`` /
+        ``single`` / ``multi`` — and greys out when separators are Off
+        so the user sees the disabled choice instead of editing a
+        setting that has no effect."""
         box = QWidget()
         sb = QVBoxLayout(box)
         sb.setContentsMargins(0, 0, 0, 0)
         sb.setSpacing(2)
-        sb.addWidget(QLabel(tr("Separators")))
 
         self._separators_combo = QComboBox()
         self._separators_combo.setObjectName("RuntimeSeparatorsCombo")
@@ -3452,7 +3592,10 @@ class NewCutDialog(QDialog):
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
-        v.addWidget(_micro(tr("Metrics")))
+        # spec/162 relayout B — the leading ``METRICS`` micro-label
+        # retired; the strip reads as a passive summary (``#Sub`` /
+        # ``#MetricsLine`` for the runtime math), not as a titled
+        # section. No box around it.
 
         # Error / hint banner — hidden until a probe surfaces something.
         self._metrics_banner = QLabel("")
@@ -3461,32 +3604,9 @@ class NewCutDialog(QDialog):
         self._metrics_banner.setVisible(False)
         v.addWidget(self._metrics_banner)
 
-        # spec/113 — "filters active" indicator + Clear filters CTA.
-        # Without a visible cue, a stray click on a style chip silently
-        # shrinks the Cut and the user has no way to see WHY their pool
-        # is smaller than expected. The row sits between the error
-        # banner and the metrics line so it lands in the user's eyeline
-        # alongside the count drop it explains. Hidden by default; the
-        # probe path (:meth:`_refresh_filter_indicator`) shows it iff
-        # any filter is active.
-        self._filter_indicator_row = QWidget()
-        self._filter_indicator_row.setObjectName("FilterActiveRow")
-        fi_layout = QHBoxLayout(self._filter_indicator_row)
-        fi_layout.setContentsMargins(0, 0, 0, 0)
-        fi_layout.setSpacing(8)
-        self._filter_indicator_label = QLabel("")
-        self._filter_indicator_label.setObjectName("FilterActiveIndicator")
-        self._filter_indicator_label.setWordWrap(True)
-        fi_layout.addWidget(self._filter_indicator_label, 1)
-        self._filter_clear_btn = QPushButton(tr("Clear filters"))
-        self._filter_clear_btn.setObjectName("FilterClear")
-        self._filter_clear_btn.setToolTip(tr(
-            "Reset every filter (style, media type, hardware) and "
-            "restore the unfiltered pool."))
-        self._filter_clear_btn.clicked.connect(self._on_clear_filters)
-        fi_layout.addWidget(self._filter_clear_btn, 0)
-        self._filter_indicator_row.setVisible(False)
-        v.addWidget(self._filter_indicator_row)
+        # spec/162 relayout B — the "filters active" indicator relocated
+        # to :meth:`_build_filter_indicator_row` (sits beneath the
+        # Section 1 filter grid) so it's near the controls it explains.
         # Cache the unfiltered pool size from the last successful probe
         # so the indicator can display "showing X of Y" without paying
         # for an extra resolver call on every keystroke. ``None`` =
@@ -3590,6 +3710,10 @@ class NewCutDialog(QDialog):
                     "event_name_for_id raised — using id stub: %s", exc)
                 event_name = ""
         self._binding_badge.set_placement(placement, event_name=event_name)
+        # spec/162 relayout B §C.10 — hide the badge when it's showing
+        # the default "Global" reading; only surface it for meaningful
+        # (Bound / Cross-event) placements.
+        self._binding_badge.setVisible(placement != PLACEMENT_GLOBAL)
         self._maybe_show_migration_note(placement, event_name)
         self._last_placement = placement
 
@@ -3771,6 +3895,13 @@ class NewCutDialog(QDialog):
             1 for chip in self._style_chips.values() if chip.isChecked())
         if self._media_type() != "both":
             count += 1
+        # spec/162 relayout B — rating dimensions count toward "active".
+        if self._min_stars is not None:
+            count += 1
+        if self._colour_labels:
+            count += 1
+        if self._flag != "any":
+            count += 1
         if self._show_hardware:
             count += sum(
                 1 for chip in self._camera_chips.values() if chip.isChecked())
@@ -3786,7 +3917,13 @@ class NewCutDialog(QDialog):
         pool size on this composition is the spec/113 ``Y`` (unfiltered
         total) — the denominator the indicator quotes."""
         unfiltered = dict(composition)
-        unfiltered["filters"] = {"styles": [], "media_type": "both"}
+        unfiltered["filters"] = {
+            "styles": [],
+            "media_type": "both",
+            "min_stars": None,
+            "colour_labels": [],
+            "flag": "any",
+        }
         return unfiltered
 
     def _refresh_filter_indicator(
@@ -3867,6 +4004,27 @@ class NewCutDialog(QDialog):
                     chip.setChecked(False)
                     chip.blockSignals(False)
                     changed = True
+        # spec/162 relayout B — rating dimensions reset with the rest.
+        if self._min_stars is not None:
+            self._min_stars = None
+            if self._star_combo is not None:
+                self._star_combo.blockSignals(True)
+                self._star_combo.setCurrentIndex(0)
+                self._star_combo.blockSignals(False)
+            changed = True
+        if self._colour_labels:
+            self._colour_labels = set()
+            if self._colour_row is not None:
+                self._colour_row.setValue(set())
+            changed = True
+        if self._flag != "any":
+            self._flag = "any"
+            if self._flag_combo is not None:
+                self._flag_combo.blockSignals(True)
+                idx = self._flag_combo.findData("any")
+                self._flag_combo.setCurrentIndex(max(0, idx))
+                self._flag_combo.blockSignals(False)
+            changed = True
         # Hide the indicator immediately; the re-probe will keep it
         # hidden (no filter is active) but a snappy local update beats
         # waiting for the debounce timer.
@@ -4163,6 +4321,27 @@ class NewCutDialog(QDialog):
             self._photos_cb.setChecked(media_type in ("both", "photo"))
         if self._videos_cb is not None:
             self._videos_cb.setChecked(media_type in ("both", "video"))
+        # spec/162 relayout B — rating dimensions round-trip through
+        # ``filters``.
+        raw_stars = filters.get("min_stars")
+        self._min_stars = (
+            int(raw_stars) if isinstance(raw_stars, (int, float)) else None)
+        if self._star_combo is not None:
+            idx = self._star_combo.findData(self._min_stars)
+            self._star_combo.blockSignals(True)
+            self._star_combo.setCurrentIndex(max(0, idx))
+            self._star_combo.blockSignals(False)
+        raw_colours = filters.get("colour_labels") or []
+        self._colour_labels = {str(c) for c in raw_colours if c}
+        if self._colour_row is not None:
+            self._colour_row.setValue(self._colour_labels)
+        raw_flag = filters.get("flag") or "any"
+        self._flag = raw_flag if raw_flag in ("any", "yes", "no") else "any"
+        if self._flag_combo is not None:
+            idx = self._flag_combo.findData(self._flag)
+            self._flag_combo.blockSignals(True)
+            self._flag_combo.setCurrentIndex(max(0, idx))
+            self._flag_combo.blockSignals(False)
         if self._show_hardware:
             cams = filters.get("camera_ids") or []
             for cam, chip in self._camera_chips.items():
@@ -4429,7 +4608,9 @@ class NewCutDialog(QDialog):
         re-entry."""
         if not hasattr(self, "_start_btn"):
             return
-        if not self._source_chips:
+        # spec/162 §7.1 — event-scope Cuts source implicitly from the
+        # Base Collection; empty ``_source_chips`` is not a blocker.
+        if not self._source_chips and self._scope != SCOPE_EVENT:
             self._start_btn.setEnabled(False)
             return
         if self._is_editing:
@@ -4546,7 +4727,10 @@ class NewCutDialog(QDialog):
         retired with the sub-dialogs they enabled."""
         from mira.ui.read_only import disable_if_read_only
 
-        has_source = bool(self._source_chips)
+        # spec/162 §7.1 — event-scope Cuts source implicitly from the
+        # Base Collection; the "has source" gate is satisfied without
+        # any chips in that mode.
+        has_source = bool(self._source_chips) or self._scope == SCOPE_EVENT
         if hasattr(self, "_save_recipe_btn"):
             has_name = bool(self._name_edit.text().strip())
             self._save_recipe_btn.setEnabled(
@@ -4732,11 +4916,22 @@ class NewCutDialog(QDialog):
 
     def filters_payload(self) -> dict:
         """Read the current filter selections into the
-        ``composition['filters']`` shape spec/90 §5.1 documents."""
+        ``composition['filters']`` shape spec/90 §5.1 documents.
+
+        spec/162 relayout B — the rating dimensions (``min_stars`` /
+        ``colour_labels`` / ``flag``) from spec/159 §4.5 emit
+        alongside style + media; they only surface when active so a
+        clean Cut carries an empty filters dict."""
         out: Dict[str, Any] = {
             "styles": self._selected_styles(),
             "media_type": self._media_type(),
         }
+        if self._min_stars is not None:
+            out["min_stars"] = int(self._min_stars)
+        if self._colour_labels:
+            out["colour_labels"] = sorted(self._colour_labels)
+        if self._flag != "any":
+            out["flag"] = self._flag
         if self._show_hardware:
             cams = self._selected_cameras()
             if cams:

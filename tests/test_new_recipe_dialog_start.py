@@ -90,9 +90,17 @@ def _resolution(pool_size: int, picked: int = 0) -> RecipeResolution:
 
 
 def test_start_disabled_with_empty_source(qapp):
-    """Empty source → Start can never enable (the picker needs a pool)."""
-    dlg = _dialog(qapp, ctx=_ctx(with_source=False),
-                  recipe_probe=lambda _comp: _resolution(10, picked=5))
+    """spec/162 §7.1 relayout B — cross-event Cuts still need a
+    composed Source to open the picker (there's no implicit universe);
+    event-scope Cuts source implicitly from the Base Collection and no
+    longer depend on ``_source_chips`` for the gate."""
+    dlg = _dialog(
+        qapp,
+        ctx=_ctx(with_source=False),
+        scope=SCOPE_CROSS_EVENT,
+        show_scope=True,
+        inventory_scope=INVENTORY_LIBRARY,
+        recipe_probe=lambda _comp: _resolution(10, picked=5))
     dlg._run_probe()
     assert dlg._start_btn.isEnabled() is False
 

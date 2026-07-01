@@ -131,9 +131,11 @@ def test_save_button_disabled_when_no_store(qapp):
 
 
 def test_save_button_disabled_when_source_empty(qapp, store):
-    """spec/90 §5.5 + §1.1 — a Recipe with no Source is meaningless;
-    even with a wired store and a typed Name, the button stays disabled
-    until the user composes a Source."""
+    """spec/90 §5.5 + §1.1 — a cross-event Recipe with no Source is
+    meaningless; even with a wired store and a typed Name, the button
+    stays disabled until the user composes a Source. spec/162 §7.1
+    relayout B — the assertion runs at cross-event scope now (event
+    scope sources implicitly from the Base Collection)."""
     empty_ctx = NewRecipeContext(
         event_name="Costa Rica 2026",
         available_pools=[OperandOption(
@@ -141,7 +143,8 @@ def test_save_button_disabled_when_source_empty(qapp, store):
         available_styles=["macro"],
         # selected_source is left empty.
     )
-    dlg = _dialog(qapp, store, ctx=empty_ctx)
+    dlg = _dialog(
+        qapp, store, scope=SCOPE_CROSS_EVENT, show_scope=True, ctx=empty_ctx)
     dlg._name_edit.setText("short")
     assert not dlg._source_chips
     assert dlg._save_recipe_btn.isEnabled() is False

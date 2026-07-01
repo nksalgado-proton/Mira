@@ -197,7 +197,9 @@ def test_join_chevron_flips_after_chosen(qapp):
 
 
 def test_source_row_join_chevron_swaps_to_and(qapp):
-    dlg = _cut_dialog(qapp)
+    # spec/162 §7.1 relayout B — the source picker retires at event
+    # scope; exercising it happens on the cross-event dialog.
+    dlg = _collection_dialog(qapp)
     dlg._add_source_chip(dlg._ctx.available_pools[0])   # exported
     dlg._add_source_chip(dlg._ctx.available_pools[1])   # long
     # Find the join chevron in the row.
@@ -216,7 +218,9 @@ def test_source_row_join_chevron_swaps_to_and(qapp):
 
 
 def test_source_row_join_chevron_swaps_to_but_not_in(qapp):
-    dlg = _cut_dialog(qapp)
+    # spec/162 §7.1 relayout B — the source picker retires at event
+    # scope; exercising it happens on the cross-event dialog.
+    dlg = _collection_dialog(qapp)
     dlg._add_source_chip(dlg._ctx.available_pools[0])
     dlg._add_source_chip(dlg._ctx.available_pools[1])
     # Pull a fresh chevron — _refresh_source_row rebuilt the widgets
@@ -232,8 +236,9 @@ def test_source_row_join_chevron_swaps_to_but_not_in(qapp):
 
 def test_source_first_chip_has_no_chevron(qapp):
     """The first chip's join is always ``+`` (empty-accumulator union).
-    No chevron is rendered before it."""
-    dlg = _cut_dialog(qapp)
+    No chevron is rendered before it. spec/162 §7.1 relayout B — the
+    source picker retires at event scope; the test runs cross-event."""
+    dlg = _collection_dialog(qapp)
     dlg._add_source_chip(dlg._ctx.available_pools[0])
     chevrons = [
         w for i in range(dlg._source_row.count())

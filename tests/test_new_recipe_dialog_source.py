@@ -10,8 +10,10 @@ from __future__ import annotations
 import pytest
 
 from mira.ui.pages.new_cut_dialog import (
+    SCOPE_CROSS_EVENT,
     SCOPE_EVENT,
     INVENTORY_EVENT,
+    INVENTORY_LIBRARY,
     JOIN_OR,
     NewRecipeContext,
     NewCutDialog,
@@ -34,11 +36,14 @@ def _make_ctx(**over) -> NewRecipeContext:
 
 
 def _dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
+    """spec/162 relayout B — the source picker retires at event scope
+    (spec/162 §7.1); tests that exercise the picker widget itself run
+    at cross-event scope where it lives."""
     kw = dict(
-        scope=SCOPE_EVENT,
-        show_scope=False,
-        show_hardware=False,
-        inventory_scope=INVENTORY_EVENT,
+        scope=SCOPE_CROSS_EVENT,
+        show_scope=True,
+        show_hardware=True,
+        inventory_scope=INVENTORY_LIBRARY,
         ctx=ctx or _make_ctx(),
     )
     kw.update(over)

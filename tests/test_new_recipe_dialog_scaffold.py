@@ -228,9 +228,11 @@ def test_window_title_matches_flavour(qapp):
 
 
 def test_start_button_disabled_with_empty_source(qapp):
-    """Phase 4e — Start is gated on a non-empty source + a successful probe.
-    A fresh dialog has no source chips, so Start stays disabled."""
-    dlg = _cut_dialog(qapp)
+    """spec/162 §7.1 relayout B — the source picker retires at event
+    scope (the Base Collection is implicit), so the Start gate now
+    tracks source chips at cross-event scope only. A fresh cross-event
+    dialog has no source chips → Start stays disabled."""
+    dlg = _collection_dialog(qapp)
     assert dlg._start_btn.isEnabled() is False
 
 
@@ -480,7 +482,7 @@ def test_otherwise_lead_reads_starts_all_when_no_rules(qapp):
     """spec/162 §4.6 — the leading label reads ‘Starts all:’ when no
     rule has been added yet."""
     dlg = _cut_dialog(qapp)
-    assert dlg._otherwise_lead.text() == "Starts all:"
+    assert dlg._otherwise_box.title() == "STARTS ALL"
 
 
 def test_otherwise_lead_reads_otherwise_after_a_rule_is_added(qapp):
@@ -488,7 +490,7 @@ def test_otherwise_lead_reads_otherwise_after_a_rule_is_added(qapp):
     least one rule has been added."""
     dlg = _cut_dialog(qapp)
     dlg._on_add_rule_clicked()
-    assert dlg._otherwise_lead.text() == "Otherwise:"
+    assert dlg._otherwise_box.title() == "OTHERWISE"
 
 
 def test_otherwise_lead_flexes_back_when_last_rule_is_deleted(qapp):
@@ -496,9 +498,9 @@ def test_otherwise_lead_flexes_back_when_last_rule_is_deleted(qapp):
     the user deletes the last rule."""
     dlg = _cut_dialog(qapp)
     dlg._on_add_rule_clicked()
-    assert dlg._otherwise_lead.text() == "Otherwise:"
+    assert dlg._otherwise_box.title() == "OTHERWISE"
     dlg._delete_rule(dlg._rule_rows[0])
-    assert dlg._otherwise_lead.text() == "Starts all:"
+    assert dlg._otherwise_box.title() == "STARTS ALL"
 
 
 def test_budget_row_hides_when_budget_check_unticks(qapp):

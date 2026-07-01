@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
@@ -52,17 +53,43 @@ class SectionHeader(QWidget):
     visual cleft. The accent fades out across the row so the rule reads
     as a soft underline, not a hard divider — matches the design-system's
     quieter group rules.
+
+    spec/162 relayout C — an optional right-aligned summary chip
+    (``#AccordionSummaryChip``) rides on the eyebrow row so callers that
+    used to hang a live readout off the accordion header can carry the
+    same readout into the flat-section layout. Pass ``summary=`` to
+    seed it; :meth:`set_summary` updates it. When the summary is empty
+    the chip hides so a bare eyebrow row stays uncluttered.
     """
 
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        parent: QWidget | None = None,
+        *,
+        summary: str = "",
+    ) -> None:
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 14, 0, 4)
         v.setSpacing(6)
         p = PALETTE[_palette_mode()]
+
+        # Row 1 — eyebrow + optional summary chip.
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         lbl = QLabel(text.upper())
         lbl.setObjectName("SectionEyebrow")  # spec/92 §2.4 (redesign.qss)
-        v.addWidget(lbl)
+        row.addWidget(lbl)
+        row.addStretch(1)
+        self._summary = QLabel("", self)
+        self._summary.setObjectName("AccordionSummaryChip")
+        self._summary.hide()
+        row.addWidget(self._summary)
+        v.addLayout(row)
+
+        # Row 2 — the accent-fade underline rule.
         rule = QFrame()
         rule.setFixedHeight(1)
         rule.setStyleSheet(  # pragma: no-qss — decorative accent-fade gradient (computed)
@@ -74,6 +101,23 @@ class SectionHeader(QWidget):
             " border: none;"
         )
         v.addWidget(rule)
+
+        if summary:
+            self.set_summary(summary)
+
+    def set_summary(self, text: str) -> None:
+        """Update the right-aligned summary chip. Empty text hides the
+        chip; a non-empty string shows it."""
+        text = (text or "").strip()
+        if text:
+            self._summary.setText(text)
+            self._summary.show()
+        else:
+            self._summary.clear()
+            self._summary.hide()
+
+    def summary_text(self) -> str:
+        return self._summary.text()
 
 
 def field(

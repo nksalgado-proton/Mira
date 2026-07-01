@@ -323,18 +323,25 @@ def test_recipe_container_present_with_both_recipe_buttons(qapp):
     assert any("Save as Recipe" in t for t in texts)
 
 
-def test_recipe_container_hosts_two_accordion_sections(qapp):
-    """spec/162 §4.2 / §4.5 — exactly two AccordionSections sit inside
-    the RecipeContainer (Collection + Format), arbitrated by a strict-
-    accordion group with Section 1 initially expanded."""
+def test_recipe_container_hosts_two_section_eyebrows(qapp):
+    """spec/162 §4.2 / relayout C — the accordion retires. The
+    RecipeContainer body carries two flat sections, each headed by a
+    ``#SectionEyebrow`` (COLLECTION / FORMAT), always visible. No
+    chevrons, no numbered circles, no strict-accordion arbitrator."""
     dlg = _cut_dialog(qapp)
-    sections = dlg._recipe_container.sections()
-    assert len(sections) == 2
-    assert sections[0] is dlg._section_collection
-    assert sections[1] is dlg._section_format
-    assert dlg._section_collection.is_expanded() is True
-    assert dlg._section_format.is_expanded() is False
-    assert dlg._accordion_group.expanded_index() == 0
+    assert hasattr(dlg, "_eyebrow_collection")
+    assert hasattr(dlg, "_eyebrow_format")
+    # No accordion machinery survives on the dialog.
+    assert not hasattr(dlg, "_section_collection")
+    assert not hasattr(dlg, "_section_format")
+    assert not hasattr(dlg, "_accordion_group")
+    # Both eyebrows read as visible section headers with expected caps.
+    eyebrow_labels = {
+        lbl.text() for lbl in dlg._recipe_container.findChildren(QLabel)
+        if lbl.objectName() == "SectionEyebrow"
+    }
+    assert "COLLECTION" in eyebrow_labels
+    assert "FORMAT" in eyebrow_labels
 
 
 def test_initial_resize_accommodates_widest_header_row(qapp):
@@ -504,10 +511,10 @@ def test_otherwise_lead_flexes_back_when_last_rule_is_deleted(qapp):
 
 
 def test_budget_row_hides_when_budget_check_unticks(qapp):
-    """spec/162 §4.4 — the WHOLE Budget row hides when the checkbox is
-    unchecked (not merely disables). Section 2 (Format) has to be the
-    expanded accordion section for the row to be visible in the first
-    place, so we flip it before the assertion."""
+    """spec/162 §4.4 / relayout C — the WHOLE Budget row hides when
+    the checkbox is unchecked (not merely disables). Both sections are
+    always visible now (the accordion retired), so the target / max
+    boxes are on-screen from first paint."""
     ctx = _ctx()
     ctx.has_budget = True
     dlg = NewCutDialog(
@@ -515,10 +522,6 @@ def test_budget_row_hides_when_budget_check_unticks(qapp):
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     dlg.show()
-    # Expand Section 2 (Format) so the runtime row is on-screen; use
-    # setVisible directly on the target/max boxes for the assertion so
-    # the accordion expand animation doesn't race the check.
-    dlg._section_format.set_expanded(True)
     assert dlg._target_box.isVisible() is True
     assert dlg._max_box.isVisible() is True
 

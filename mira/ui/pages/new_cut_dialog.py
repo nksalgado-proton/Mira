@@ -76,12 +76,11 @@ from mira.shared.recipe_store import (
 from mira.ui.base.binding_badge import BindingBadge
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
-    AccordionSection,
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
     GLYPH_CUT,
     RecipeContainer,
-    StrictAccordionGroup,
+    SectionHeader,
     confirm,
     form_field,
     ghost_button,
@@ -1907,15 +1906,17 @@ class NewCutDialog(QDialog):
         return host
 
     def _build_body(self) -> QWidget:
-        """The dialog body per spec/162 §4 — the Recipe container +
-        strict accordion.
+        """The dialog body per spec/162 §4 (relayout C) — the Recipe
+        container hosting two flat sections separated by
+        ``#SectionEyebrow`` dividers.
 
-        The scroll area holds one :class:`RecipeContainer` with two
-        :class:`AccordionSection`s: Section 1 (Collection) hosts the
-        Source + Filters, Section 2 (Format) hosts the runtime + music
-        + overlays + separators controls laid out as a three-row flat
-        grid per spec/162 §4.4. A :class:`StrictAccordionGroup`
-        enforces exactly-one-expanded per spec/162 §4.5.
+        The scroll area holds one :class:`RecipeContainer`. Section 1
+        (Collection) hosts the Source + Filters; Section 2 (Format)
+        hosts the runtime + music + overlays + separators controls
+        laid out as a three-row flat grid per spec/162 §4.4. Both
+        sections are always visible — the strict-accordion arbitrator
+        from Slice 2 retired in relayout C; the primitives themselves
+        stay in :mod:`mira.ui.design.accordion` for possible reuse.
 
         The per-Cut levers (Name, Rules, Otherwise, summary strip,
         button row) live in the LaunchPad below the scroll area —
@@ -1939,13 +1940,20 @@ class NewCutDialog(QDialog):
         scroll.setWidget(inner)
         return scroll
 
-    # -------- Recipe container + strict accordion (spec/162 §4) ------ #
+    # -------- Recipe container + section eyebrows (spec/162 relayout C) - #
 
     def _build_recipe_container_wrap(self) -> QWidget:
-        """Build the ``#RecipeContainer`` frame + its two accordion
-        sections. Creates the Load / Save Recipe ghost buttons here
-        (rather than in a separate ``_build_recipe_toolbar``) so they
-        can be injected into the container's header row directly.
+        """Build the ``#RecipeContainer`` frame + its two flat sections.
+        Creates the Load / Save Recipe ghost buttons here (rather than
+        in a separate ``_build_recipe_toolbar``) so they can be
+        injected into the container's header row directly.
+
+        spec/162 relayout C — the strict accordion retires. Both
+        sections are always visible; the separator is the canonical
+        ``#SectionEyebrow`` (small accent caps + accent-fade rule)
+        matching IDENTITY / LOGISTICS in the Event Header dialog. The
+        live summary chip that used to ride the accordion header now
+        rides the right slot of the eyebrow row.
 
         Section 1 = Collection (Source + Filters).
         Section 2 = Format (Runtime + Overlays + Separators laid out
@@ -1994,32 +2002,25 @@ class NewCutDialog(QDialog):
         self._migration_note.setVisible(False)
         header_layout.insertWidget(header_layout.count() - 2, self._migration_note)
 
+        # spec/162 relayout C — reach into the RecipeContainer's body
+        # layout to stack four widgets (eyebrow → content → eyebrow →
+        # content). The AccordionSection + StrictAccordionGroup
+        # primitives stay in ``mira/ui/design/accordion.py`` untouched
+        # for possible reuse; only the NewCutDialog callers retire.
+        body_layout = self._recipe_container._body_layout
+
         # Section 1 — Collection.
-        section1_content = self._build_collection_content()
-        self._section_collection = AccordionSection(
-            title=tr("① Collection"),
-            content=section1_content,
-            summary=self._collection_summary_text(),
-        )
-        self._recipe_container.add_section(self._section_collection)
+        self._eyebrow_collection = SectionHeader(
+            tr("Collection"), summary=self._collection_summary_text())
+        body_layout.addWidget(self._eyebrow_collection)
+        body_layout.addWidget(self._build_collection_content())
 
         # Section 2 — Format.
-        section2_content = self._build_format_content()
-        self._section_format = AccordionSection(
-            title=tr("② Format"),
-            content=section2_content,
-            summary=self._format_summary_text(),
-        )
-        self._recipe_container.add_section(self._section_format)
+        self._eyebrow_format = SectionHeader(
+            tr("Format"), summary=self._format_summary_text())
+        body_layout.addWidget(self._eyebrow_format)
+        body_layout.addWidget(self._build_format_content())
 
-        # Strict-accordion arbitrator (spec/162 §4.5) — exactly one
-        # section expanded at a time, no all-collapsed state. Kept as
-        # an instance attr so tests can reach it.
-        self._accordion_group = StrictAccordionGroup(
-            [self._section_collection, self._section_format],
-            initially_expanded=0,
-            allow_all_collapsed=False,
-        )
         return self._recipe_container
 
     def _build_collection_content(self) -> QWidget:
@@ -2292,13 +2293,16 @@ class NewCutDialog(QDialog):
         return " · ".join(parts)
 
     def _refresh_section_summaries(self) -> None:
-        """Update both accordion header summary chips. Safe before the
-        sections are built (no-ops when the attrs don't exist yet)."""
-        if hasattr(self, "_section_collection"):
-            self._section_collection.set_summary(
+        """Update both section eyebrow summary chips. Safe before the
+        sections are built (no-ops when the attrs don't exist yet).
+
+        spec/162 relayout C — the chips now ride the right slot of the
+        ``#SectionEyebrow`` rows, not the retired accordion headers."""
+        if hasattr(self, "_eyebrow_collection"):
+            self._eyebrow_collection.set_summary(
                 self._collection_summary_text())
-        if hasattr(self, "_section_format"):
-            self._section_format.set_summary(
+        if hasattr(self, "_eyebrow_format"):
+            self._eyebrow_format.set_summary(
                 self._format_summary_text())
 
     def _refresh_launch_pad_summary_tone(self, warnings: int) -> None:

@@ -1,18 +1,25 @@
 """The DCDetailPage delete flow — multi-select, cascade-aware
 confirm, single-cell undo (Nelson 2026-06-15 task).
 
-Pins the page-level behaviour that builds on the engine guarantees
-in ``test_pool_delete_cascade.py``:
+**RETIRED (spec/162 Round 3 green-up, 2026-07-01).** spec/159 §11
+retargeted the surface: selection state is no longer an in-memory
+``_selected`` set + single-cell quick-delete + Ctrl+Z; it is now a
+persistent ``lineage.to_delete`` flag mutated through the review
+dialog, with only the batch confirm as the safety. Every test in
+this file exercises the retired grammar (``page._selected``,
+``page._on_cell_activated`` → toggle, ``_clear_selection``,
+single-cell ``_on_delete_clicked`` → quick delete + Ctrl+Z restore).
 
-* Click a cell → toggles the deletion mark; the delete button only
-  appears when ≥1 cell is marked.
-* Single-cell delete is quick (no confirm); Ctrl+Z restores the
-  file bytes + lineage row.
-* Multi-cell delete fires the confirm dialog whose body names the
-  file count AND the unique Cut count via ``cuts_containing_any``.
-* On confirmed batch delete: every selected lineage row drops + the
-  FK CASCADE handles cut_member cleanup; the page refreshes its
-  ``_files`` from the live ``exported_files()`` query.
+Replacement coverage for the shipped surface lives in
+``tests/test_spec159_dc_detail_page.py`` (border-click routes to the
+review viewer, ``to_delete`` mutation goes through the dialog, "Clear
+marks" releases the flag on every visible row) and
+``tests/test_pool_delete_cascade.py`` (the FK cascade the deletion
+still rides on the underlying engine).
+
+The whole module is skipped rather than deleted so the historical
+grammar the pre-spec/159 surface committed to stays readable in the
+tree.
 """
 from __future__ import annotations
 
@@ -25,6 +32,13 @@ from mira.gateway.event_gateway import EventGateway
 from mira.store import models as m
 from mira.store.repo import EventStore
 from mira.ui.shared.dc_detail_page import DCDetailPage
+
+pytestmark = pytest.mark.skip(
+    reason="spec/159 §11 retired the DCDetailPage selection + quick-"
+           "delete + Ctrl+Z grammar these tests pin. Shipped surface "
+           "is covered by tests/test_spec159_dc_detail_page.py + "
+           "tests/test_pool_delete_cascade.py."
+)
 
 FIXED_NOW = "2026-06-15T12:00:00+00:00"
 

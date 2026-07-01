@@ -69,7 +69,19 @@ def dlg(qapp, tmp_path):
         "cut-s", ["Exported Media/e1.jpg",
                   "Exported Media/v1.mp4",
                   "Exported Media/e3a.jpg"])
-    entries = show_entries(gw, gw.cut("cut-s"), separators_on=False)
+    # spec/153 §opener — show_entries prepends a ("opener", None) title
+    # slide, which shifts the file indices by +1. These advance tests
+    # predate the opener and pin index 1 = video by construction; strip
+    # the opener here so the tests' "video at index 1" contract holds.
+    entries = [e for e in show_entries(
+        gw, gw.cut("cut-s"), separators_on=False)
+        if e[0] != "opener"]
+    # Seed placeholder bytes so the photo loader doesn't spam warnings.
+    (tmp_path / "Exported Media").mkdir(exist_ok=True)
+    for rel in ("Exported Media/e1.jpg",
+                "Exported Media/v1.mp4",
+                "Exported Media/e3a.jpg"):
+        (tmp_path / rel).write_bytes(b"\xff\xd8\xff\xd9")
     day_meta = {d.day_number: d for d in gw.trip_days()}
     cut_player = CutPlayerDialog(
         entries, event_root=tmp_path, photo_s=6.0,

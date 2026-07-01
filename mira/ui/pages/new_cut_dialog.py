@@ -1772,6 +1772,15 @@ class NewCutDialog(QDialog):
                 tr("New Collection") if is_collection else tr("New Cut"))
         self.setModal(True)
 
+        # spec/162 §7.3 — cross-event Cuts are search-result-first, not
+        # presentation-first: the user opens a cross-event Cut to see
+        # the grid of results, not to play it as a slideshow. When
+        # composing a NEW Cut at cross-event scope, seed Section 2 with
+        # search-defaults (hide the budget row, hard cuts, no music,
+        # When + Where + Source-label overlays, separators off). Edit
+        # mode preserves the existing Cut's saved Format values.
+        self._apply_cross_event_new_defaults()
+
         self._build_ui()
 
         if self._ctx.name:
@@ -2176,24 +2185,80 @@ class NewCutDialog(QDialog):
                 return tr("Collection · {n} files").replace("{n}", str(n))
         return tr("Collection")
 
+    def _apply_cross_event_new_defaults(self) -> None:
+        """spec/162 §7.3 — seed Section 2 with the search-first defaults
+        when composing a new cross-event Cut.
+
+        Runs after context-derived state is populated but before
+        :meth:`_build_ui` so the UI reads the correct values on first
+        paint. No-op when ``mode == MODE_EDIT`` (prefill wins) or when
+        ``scope == SCOPE_EVENT`` (event-Cut defaults are still Nelson's
+        presentation-first values).
+
+        Defaults applied:
+          * Budget row hidden — ``_has_budget=False``.
+          * Transition 0.0 s (hard cuts).
+          * Music: no category.
+          * Overlays: ``When`` + ``Where`` on; ``Camera`` + ``Exposure``
+            off; per-slide ``Source label`` on.
+          * Separators off.
+
+        Aspect + per-photo cadence stay on the event-Cut defaults per
+        spec/162 §7.3 (unchanged between scopes)."""
+        if self._scope != SCOPE_CROSS_EVENT or self._mode != MODE_NEW:
+            return
+        # Budget row hidden. Keep the min-value seeds so a user who
+        # ticks the checkbox open lands on sensible spinner defaults.
+        self._has_budget = False
+        # Hard cuts. Suppress the "user overrode the global default"
+        # flag so the emitted draft carries the honest 0 value rather
+        # than reading as an untouched global.
+        self._transition_ms = 0
+        self._transition_user_set = True
+        # No soundtrack.
+        self._music_category = None
+        # Overlays: When + Where on by default. The valid keys come
+        # from :mod:`core.cut_overlay`; a host that didn't wire the
+        # vocabulary yet gets an empty list (the control hides).
+        from core import cut_overlay as _co
+        available = {opt[0] for opt in self._overlay_field_options}
+        wanted = [k for k in (_co.FIELD_WHEN, _co.FIELD_WHERE)
+                  if k in available]
+        self._overlay_fields = wanted
+        # Per-slide source label ON — spec/154 default flips at cross-
+        # event scope.
+        self._source_label = True
+        # Separators off.
+        self._separators = False
+
     def _format_summary_text(self) -> str:
         """Section 2's live summary chip text (spec/162 §4.4).
         Condenses the significant Format choices: aspect · target /
-        no-budget · music category · overlay count."""
+        no-budget · music category · overlay count.
+
+        Cross-event Cuts read as search-first — the chip drops the
+        music slot (music is off by default) and appends a trailing
+        "search defaults" hint so the user reads at a glance that the
+        Format row is not slideshow-focused. Any explicit change (the
+        user opens Format and ticks music, or ticks Separators) still
+        surfaces in the chip; the "search defaults" hint only rides on
+        the untouched shape."""
         parts: list[str] = [tr("Format")]
         # Aspect
         if getattr(self, "_aspect", None):
             parts.append(str(self._aspect))
+        cross_event = self._scope == SCOPE_CROSS_EVENT
         # Target minutes
         if self._has_budget:
             parts.append(tr("{n} min").replace(
                 "{n}", str(self._target_minutes)))
         else:
             parts.append(tr("no budget"))
-        # Music
+        # Music — event scope always shows; cross-event skips the
+        # explicit "no music" line since the default is silence.
         if self._music_category:
             parts.append(str(self._music_category).lower())
-        else:
+        elif not cross_event:
             parts.append(tr("no music"))
         # Overlays
         n_over = len(self._overlay_fields)
@@ -2201,6 +2266,8 @@ class NewCutDialog(QDialog):
             parts.append(
                 tr("{n} overlays").replace("{n}", str(n_over))
                 if n_over != 1 else tr("1 overlay"))
+        if cross_event:
+            parts.append(tr("search defaults"))
         return " · ".join(parts)
 
     def _refresh_section_summaries(self) -> None:

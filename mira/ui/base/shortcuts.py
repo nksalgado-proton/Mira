@@ -32,12 +32,15 @@ from mira.ui.i18n import tr
 ShortcutRow = Tuple[str, str]
 
 
-def show_shortcuts(parent: QWidget, title: str,
-                   rows: Iterable[ShortcutRow]) -> None:
-    """Open the modal shortcuts dialog. ``rows`` is a list of
-    ``(key, action)`` pairs; a row with empty ``key`` is rendered as
-    a section heading (used by surfaces with many bindings to keep
-    the table readable)."""
+def build_shortcuts_dialog(parent: QWidget, title: str,
+                           rows: Iterable[ShortcutRow]) -> QDialog:
+    """Construct the modal shortcuts dialog without exec-ing it. The
+    public :func:`show_shortcuts` runs :meth:`QDialog.exec` on the
+    result; tests build the dialog directly and inspect its child
+    labels without spinning the modal event loop (the conftest
+    QDialog.exec stub short-circuits exec anyway, so a test that
+    relied on ``QTimer.singleShot`` firing INSIDE exec would never
+    fire post-conftest fix)."""
     dlg = QDialog(parent)
     dlg.setObjectName("ShortcutsDialog")
     dlg.setWindowTitle(tr("Keyboard shortcuts"))
@@ -81,6 +84,16 @@ def show_shortcuts(parent: QWidget, title: str,
     bb.rejected.connect(dlg.reject)
     bb.accepted.connect(dlg.accept)
     v.addWidget(bb)
+    return dlg
+
+
+def show_shortcuts(parent: QWidget, title: str,
+                   rows: Iterable[ShortcutRow]) -> None:
+    """Open the modal shortcuts dialog. ``rows`` is a list of
+    ``(key, action)`` pairs; a row with empty ``key`` is rendered as
+    a section heading (used by surfaces with many bindings to keep
+    the table readable)."""
+    dlg = build_shortcuts_dialog(parent, title, rows)
     dlg.exec()
 
 
@@ -117,4 +130,9 @@ def show_global_shortcuts(parent: QWidget) -> None:
     show_shortcuts(parent, tr("Mira — keyboard shortcuts"), rows)
 
 
-__all__ = ["ShortcutRow", "show_shortcuts", "show_global_shortcuts"]
+__all__ = [
+    "ShortcutRow",
+    "build_shortcuts_dialog",
+    "show_shortcuts",
+    "show_global_shortcuts",
+]

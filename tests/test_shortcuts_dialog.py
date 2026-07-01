@@ -1,70 +1,64 @@
 """The shared ShortcutsDialog: rows render with the right QSS roles,
 section dividers span both columns, and the dialog closes cleanly
-without blocking the test harness."""
+without blocking the test harness.
+
+Pre-2026-07-01 these tests relied on ``QTimer.singleShot(0, _grab)``
+firing INSIDE :meth:`QDialog.exec`. The conftest QDialog.exec stub
+(commit ``d06238e``) returns Rejected immediately without spinning
+the modal event loop, so the timer never fires. The test now
+constructs the dialog through :func:`build_shortcuts_dialog` (the
+extracted no-exec variant of :func:`show_shortcuts`) and inspects
+its child labels directly — no timer, no exec, no dependency on
+event-loop spinning.
+"""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QGridLayout, QLabel
+from PyQt6.QtWidgets import QDialog, QLabel
 
-from mira.ui.base.shortcuts import show_shortcuts
-
-
-def _find_dialog(qapp) -> QDialog | None:
-    for w in qapp.topLevelWidgets():
-        if isinstance(w, QDialog) and w.objectName() == "ShortcutsDialog":
-            return w
-    return None
+from mira.ui.base.shortcuts import build_shortcuts_dialog
 
 
 def test_show_shortcuts_renders_rows_with_qss_roles(qapp):
-    """The dialog is modal — close it before it exec()s so the test
-    doesn't park. We hook the dialog the moment it shows and inspect
-    its child grid before closing."""
-    captured: dict = {}
-
-    def _grab():
-        dlg = _find_dialog(qapp)
-        if dlg is None:
-            QTimer.singleShot(20, _grab)
-            return
-        labels = [c for c in dlg.findChildren(QLabel)]
-        captured["roles"] = sorted({lb.objectName() for lb in labels
-                                    if lb.objectName()})
-        captured["actions"] = [lb.text() for lb in labels
-                               if lb.objectName() == "ShortcutAction"]
-        captured["keys"] = [lb.text() for lb in labels
-                            if lb.objectName() == "ShortcutKey"]
-        captured["sections"] = [lb.text() for lb in labels
-                                if lb.objectName() == "ShortcutSection"]
-        dlg.accept()
-
-    QTimer.singleShot(0, _grab)
-    show_shortcuts(None, "Test surface", [
+    """Section rows have an empty key → no ``ShortcutKey`` label for
+    them; every other row carries key + action + the shared QSS
+    roles."""
+    dlg = build_shortcuts_dialog(None, "Test surface", [
         ("", "Decide"),
         ("P", "Pick"),
         ("X", "Skip"),
         ("", "Navigate"),
         ("◀ / ▶", "Previous / next"),
     ])
-    # Section rows have an empty key → no "ShortcutKey" label for them.
-    assert captured["keys"] == ["P", "X", "◀ / ▶"]
-    assert captured["actions"] == ["Pick", "Skip", "Previous / next"]
-    assert captured["sections"] == ["Decide", "Navigate"]
-    # The shared roles are all present.
-    assert "ShortcutKey" in captured["roles"]
-    assert "ShortcutAction" in captured["roles"]
-    assert "ShortcutSection" in captured["roles"]
-    assert "ShortcutsHeading" in captured["roles"]
+    try:
+        labels = list(dlg.findChildren(QLabel))
+        roles = sorted({lb.objectName() for lb in labels
+                        if lb.objectName()})
+        actions = [lb.text() for lb in labels
+                   if lb.objectName() == "ShortcutAction"]
+        keys = [lb.text() for lb in labels
+                if lb.objectName() == "ShortcutKey"]
+        sections = [lb.text() for lb in labels
+                    if lb.objectName() == "ShortcutSection"]
+        assert keys == ["P", "X", "◀ / ▶"]
+        assert actions == ["Pick", "Skip", "Previous / next"]
+        assert sections == ["Decide", "Navigate"]
+        # The shared roles are all present.
+        assert "ShortcutKey" in roles
+        assert "ShortcutAction" in roles
+        assert "ShortcutSection" in roles
+        assert "ShortcutsHeading" in roles
+    finally:
+        dlg.deleteLater()
 
 
 def test_show_shortcuts_with_no_section_rows(qapp):
     """Simple flat tables (no section dividers) render as one grid."""
-    def _grab():
-        dlg = _find_dialog(qapp)
-        if dlg is None:
-            QTimer.singleShot(20, _grab)
-            return
-        dlg.accept()
-
-    QTimer.singleShot(0, _grab)
-    show_shortcuts(None, "Tiny", [("F1", "Help"), ("Esc", "Back")])
+    dlg = build_shortcuts_dialog(None, "Tiny",
+                                 [("F1", "Help"), ("Esc", "Back")])
+    try:
+        assert isinstance(dlg, QDialog)
+        keys = [lb.text() for lb in dlg.findChildren(QLabel)
+                if lb.objectName() == "ShortcutKey"]
+        assert keys == ["F1", "Esc"]
+    finally:
+        dlg.deleteLater()

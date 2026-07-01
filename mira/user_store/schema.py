@@ -34,7 +34,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -891,6 +891,32 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """spec/162 §2 (Round 2d.A) — retire user-saved Collections.
+
+    Deletes every ``recipe`` row with ``flavour='collection'``. **This
+    delete is irreversible; user-saved Collections retire from the
+    product per spec/162 §2.** The ``+ Save as Collection…`` UI landed
+    2026-06-XX and retired 2026-07-01 with the two-stage redesign; any
+    surviving rows are Collections users saved in the interim window,
+    and they can no longer be composed or loaded from the app, so they
+    would sit as dead weight forever without this sweep.
+
+    Idempotent: running twice on the same DB is a no-op after the
+    first run — the second sweep finds zero matching rows. The
+    ``dynamic_collection`` table is untouched (spec/162 leaves the
+    DC surface intact at the storage layer even though the UI
+    retires).
+
+    Not retired here: the ``flavour`` column itself, or the
+    ``UNIQUE(flavour, name)`` constraint. Round 2d keeps the column
+    cheap-and-reversible per spec/162 §2 — the column has no
+    user-facing meaning after this migration but is not worth an
+    extra migration to drop.
+    """
+    conn.execute("DELETE FROM recipe WHERE flavour = 'collection'")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -901,6 +927,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v7_to_v8,
     _migrate_v8_to_v9,
     _migrate_v9_to_v10,
+    _migrate_v10_to_v11,
 ]
 
 

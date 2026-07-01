@@ -619,7 +619,13 @@ def test_recipe_list_scope_rejects_unknown(tmp_path):
 def test_migrate_v9_to_v10_adds_scope_column_and_backfills(tmp_path):
     """spec/162 §9 — v9→v10 adds recipe.scope with a safe 'event'
     backfill. Every pre-existing row lands at scope='event' because
-    pre-spec/162 cross-event composition had no Save-as-Recipe path."""
+    pre-spec/162 cross-event composition had no Save-as-Recipe path.
+
+    NOTE: the migration chain runs through v10→v11 too (spec/162 §2 —
+    Round 2d.A) which sweeps every ``flavour='collection'`` row. To
+    keep this test's assertion stable across future scope-only
+    schema bumps, we only seed cut rows here — the collection-sweep
+    behaviour has its own test below."""
     from mira.user_store import schema
 
     store = _make_store(tmp_path)
@@ -630,7 +636,8 @@ def test_migrate_v9_to_v10_adds_scope_column_and_backfills(tmp_path):
     conn.execute("DROP INDEX IF EXISTS ix_recipe_scope")
     conn.execute("ALTER TABLE recipe DROP COLUMN scope")
     conn.execute("UPDATE schema_info SET schema_version = 9 WHERE id = 1")
-    # Seed a couple of pre-v10 rows.
+    # Seed two cut rows only — the Round 2d.A migration that also runs
+    # here would sweep away any collection rows we seeded.
     conn.execute(
         "INSERT INTO recipe (id, name, flavour, composition_json, "
         "created_at, updated_at) "
@@ -638,7 +645,7 @@ def test_migrate_v9_to_v10_adds_scope_column_and_backfills(tmp_path):
     conn.execute(
         "INSERT INTO recipe (id, name, flavour, composition_json, "
         "created_at, updated_at) "
-        "VALUES ('r2', 'legacy-collection', 'collection', '{}', ?, ?)",
+        "VALUES ('r2', 'another-legacy-cut', 'cut', '{}', ?, ?)",
         (NOW, NOW))
 
     schema.migrate(conn)
@@ -656,3 +663,81 @@ def test_migrate_v9_to_v10_adds_scope_column_and_backfills(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='index'")}
     assert "ix_recipe_scope" in idx_names
     store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/162 §2 Round 2d.A — retire user-saved Collections
+# --------------------------------------------------------------------------- #
+
+
+def test_migrate_v10_to_v11_deletes_collection_flavour_rows(tmp_path):
+    """spec/162 §2 — the migration sweeps every flavour='collection'
+    row from the recipe table. Cut Recipes and every other table stay
+    untouched."""
+    from mira.user_store import schema
+
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Wind back to v10 shape and seed a mixed set of rows so the DELETE
+    # has both hits and non-hits to exercise.
+    conn.execute("UPDATE schema_info SET schema_version = 10 WHERE id = 1")
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "scope, created_at, updated_at) "
+        "VALUES ('r1', 'cut-keeper', 'cut', '{}', 'event', ?, ?)",
+        (NOW, NOW))
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "scope, created_at, updated_at) "
+        "VALUES ('r2', 'legacy-collection', 'collection', '{}', "
+        "'event', ?, ?)",
+        (NOW, NOW))
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "scope, created_at, updated_at) "
+        "VALUES ('r3', 'another-collection', 'collection', '{}', "
+        "'event', ?, ?)",
+        (NOW, NOW))
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    surviving = [dict(r) for r in conn.execute(
+        "SELECT id, flavour FROM recipe ORDER BY id").fetchall()]
+    assert surviving == [{"id": "r1", "flavour": "cut"}]
+
+
+def test_migrate_v10_to_v11_is_idempotent(tmp_path):
+    """Second run on the migrated DB is a no-op — the DELETE finds
+    nothing to remove."""
+    from mira.user_store import schema
+
+    store = _make_store(tmp_path)
+    conn = store.conn
+    conn.execute("UPDATE schema_info SET schema_version = 10 WHERE id = 1")
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "scope, created_at, updated_at) "
+        "VALUES ('r1', 'legacy-collection', 'collection', '{}', "
+        "'event', ?, ?)",
+        (NOW, NOW))
+
+    schema.migrate(conn)
+    # First run cleared the collection row.
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM recipe").fetchone()["n"]
+    assert count == 0
+    # Second run explicitly re-invokes the migration step — must be a
+    # no-op (SQLite `DELETE ... WHERE flavour='collection'` on an empty
+    # or already-swept table affects zero rows and doesn't raise).
+    from mira.user_store.schema import _migrate_v10_to_v11
+    _migrate_v10_to_v11(conn)
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM recipe").fetchone()["n"]
+    assert count == 0
+
+
+# Note: ``dynamic_collection`` lives in event.db (per-event), not in
+# the user_store's mira.db, so there's no user-store-side sanity test
+# for its survival here. The user-store migration only touches the
+# ``recipe`` table; the DC storage seam is a different code path.

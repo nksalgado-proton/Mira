@@ -143,10 +143,11 @@ class EventsPage(QWidget):
         # here. Cross-event work (Cuts, Collections, Recipes) moved
         # to the top-level :class:`LibraryPage` reachable via the
         # Share menu's "Cross-event Cuts and Collections…" entry. The
-        # events page focuses on its one job: the per-event list. The
-        # ``_open_new_cross_event_dc`` method below stays as the host
-        # hook the LibraryPage's "+ New Cut" button routes through —
-        # one source of truth for the Collection-list dialog.
+        # events page focuses on its one job: the per-event list.
+        # spec/162 Round 3c — LibraryPage's "+ New Cut" button now
+        # routes through :meth:`MainWindow._open_new_cross_event_cut_
+        # from_library`; the events_page hook that used to sit here
+        # retired (dead code from Round 2b/3e).
 
         # 2-4. The Events band — an unnamed bordered band (same #CrossEventBand
         # treatment) wrapping the toolbar, empty state, and the scrolling tile

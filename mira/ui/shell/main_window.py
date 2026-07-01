@@ -974,27 +974,292 @@ class MainWindow(QMainWindow):
         self._help_shortcut = help_sc
 
     def _open_new_cross_event_cut_from_library(self) -> None:
-        """spec/162 Round 2b — the Library page's '+ New Cut' button.
+        """spec/162 Round 3c wire-up — the Library page's ``+ New Cut``
+        button.
 
-        The pre-spec/162 flow routed through
-        ``events_page._open_new_cross_event_dc`` → the standalone
-        ``CrossEventDcsDialog`` (Manage Collections) → user clicks
-        Pin → Cut → NewCutDialog. That dialog + intermediate flow
-        retire with spec/162 §2 (the Save/Load-Collection surface).
-        This session leaves the button live but routes it to a
-        deferred stub — Round 3 lands the full cross-event New Cut
-        composition surface (`NewCutDialog(scope=SCOPE_CROSS_EVENT)`
-        with proper cross-event source composition + FilterBar
-        extension). Clicking today shows a no-op notice."""
+        Mirrors :meth:`ShareCutsPage._on_new_cut` at cross-event scope:
+        checks preconditions, builds a
+        :class:`NewRecipeContext` from the library gateway, opens
+        :class:`NewCutDialog` at ``scope=SCOPE_CROSS_EVENT``, and on
+        Start hands the emitted :class:`CrossEventCutDraft` to
+        :class:`CrossEventCutSession.from_draft` and drives the
+        commit through :class:`CrossEventPickerDialog`."""
         from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self,
-            "Cross-event New Cut",
-            "The cross-event New Cut composition surface is under "
-            "construction — spec/162 Round 3.\n\n"
-            "Until then, use the per-event New Cut on the Share page "
-            "of an open event.",
+
+        library_gw = self.gateway.library_gateway()
+
+        # Precondition — the library must have at least one event with
+        # something in ``global_items`` to cross-event over. An empty
+        # library shows the informative message and returns.
+        events = library_gw.list_events_for_scope()
+        if not events:
+            QMessageBox.information(
+                self,
+                tr("New cross-event Cut"),
+                tr(
+                    "Nothing has been exported across your events yet — "
+                    "Cuts are built from exported finals. Export some "
+                    "photos in an event's Edit phase first."),
+            )
+            return
+
+        ctx = self._build_cross_event_recipe_context(library_gw, events)
+        dlg = self._make_new_cross_event_cut_dialog(library_gw, ctx)
+        drafts: list = []
+        dlg.start_requested.connect(drafts.append)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not drafts:
+            return
+        draft = drafts[0]
+        self._start_cross_event_pin_session(library_gw, draft)
+
+    def _build_cross_event_recipe_context(self, library_gw, events):
+        """Assemble the :class:`NewRecipeContext` a cross-event
+        ``NewCutDialog`` needs: base ``#exported`` operand + cross-
+        event DCs (saved_filter rows) + cross-event Cuts + the scope
+        catalogue (events / event collections) + hardware vocabulary
+        (cameras / lenses) + style / music inventory.
+
+        Sibling of :meth:`ShareCutsPage._build_recipe_context`
+        (event scope). Extracted here rather than living on
+        LibraryPage so the page stays gateway-agnostic — the host
+        (MainWindow) owns the wiring."""
+        from mira.ui.pages.new_cut_dialog import (
+            NewRecipeContext, OperandOption,
         )
+        from core import audio_library
+
+        # Operand inventory — base + DCs + cross-event Cuts.
+        exported_count = sum(int(e.get("item_count") or 0) for e in events)
+        available_pools: list[OperandOption] = [
+            OperandOption(
+                name="#exported", count=exported_count,
+                kind="base", tag="exported"),
+        ]
+        dcs = library_gw.dynamic_collections()
+        dc_tags: set[str] = set()
+        for dc in dcs:
+            dc_tags.add(dc.tag)
+        cut_rows: list = []
+        try:
+            cut_rows = library_gw.cross_event_cuts()
+        except Exception:                                  # noqa: BLE001
+            log.exception("cross_event_cuts probe failed")
+        cut_tags = {c.tag for c in cut_rows}
+        collisions = dc_tags & cut_tags
+        for dc in dcs:
+            try:
+                live = len(library_gw.resolve_dc_keys(
+                    library_gw.dc_expr(dc), library_gw.dc_filters(dc)))
+            except Exception:                              # noqa: BLE001
+                live = 0
+            suffix = " — Collection" if dc.tag in collisions else ""
+            available_pools.append(OperandOption(
+                name=f"#{dc.tag}{suffix}", count=live,
+                kind="dc", id=dc.id or None, tag=dc.tag))
+        for c in cut_rows:
+            suffix = " — Cut" if c.tag in collisions else ""
+            available_pools.append(OperandOption(
+                name=f"#{c.tag}{suffix}", count=0,
+                kind="cut", id=getattr(c, "id", None), tag=c.tag))
+
+        # Scope inventory — events + event collections.
+        available_events = [
+            OperandOption(
+                name=f"[{ev.get('name') or '(unnamed)'}]",
+                count=int(ev.get("item_count") or 0),
+                kind="event", uuid=ev.get("uuid"))
+            for ev in events
+        ]
+        available_event_collections: list = []
+        ec_factory = getattr(self.gateway, "event_collection_store", None)
+        if callable(ec_factory):
+            try:
+                for ec in ec_factory().list():
+                    available_event_collections.append(OperandOption(
+                        name=f"[{ec.name}]", count=len(ec.event_uuids or ()),
+                        kind="event_collection", id=ec.id, tag=ec.name))
+            except Exception:                              # noqa: BLE001
+                log.exception("event_collection_store enumeration failed")
+
+        # Hardware + style catalogues — library-wide.
+        cameras = [c for c, _n in library_gw.available_cameras()]
+        lenses = [l for l, _n in library_gw.available_lenses()]
+        # The cross-event Style vocabulary is the classification tag —
+        # spec/32 §2 (see :meth:`LibraryGateway.available_classifications`).
+        try:
+            styles = [s for s, _n in library_gw.available_classifications()]
+        except Exception:                                  # noqa: BLE001
+            styles = []
+
+        # Music + hint (same shape as ShareCutsPage._dialog_kwargs).
+        try:
+            settings = self.gateway.settings.load()
+            audio_path = getattr(settings, "audio_library_path", "") or ""
+        except Exception:                                  # noqa: BLE001
+            audio_path = ""
+        music_categories = audio_library.list_moods(audio_path)
+        if music_categories:
+            music_hint: Optional[str] = None
+        elif audio_path:
+            music_hint = tr(
+                "No category folders found in {path} — create subfolders "
+                "(e.g. happy, calm) with your music inside.").replace(
+                "{path}", str(audio_path))
+        else:
+            music_hint = tr(
+                "Set the audio library folder in Settings to enable music.")
+
+        # spec/114 — overlay field vocabulary.
+        from core import cut_overlay as _co
+        overlay_field_options = [
+            (_co.FIELD_WHEN, tr("When")),
+            (_co.FIELD_WHERE, tr("Where")),
+            (_co.FIELD_HOW1, tr("Camera")),
+            (_co.FIELD_HOW2, tr("Exposure")),
+        ]
+
+        ctx = NewRecipeContext(
+            event_name="",
+            available_pools=available_pools,
+            available_events=available_events,
+            available_event_collections=available_event_collections,
+            available_styles=list(styles),
+            available_cameras=list(cameras),
+            available_lenses=list(lenses),
+            music_categories=list(music_categories),
+            music_hint=music_hint,
+            overlay_field_options=overlay_field_options,
+            separators=False,   # cross-event default (spec/81 §3.1)
+        )
+        return ctx
+
+    def _make_new_cross_event_cut_dialog(self, library_gw, ctx):
+        """Construct the cross-event ``NewCutDialog`` wired to the
+        library gateway's probes + recipe store."""
+        from mira.ui.pages.new_cut_dialog import (
+            INVENTORY_LIBRARY,
+            MODE_NEW,
+            NewCutDialog,
+            SCOPE_CROSS_EVENT,
+        )
+        return NewCutDialog(
+            scope=SCOPE_CROSS_EVENT,
+            mode=MODE_NEW,
+            show_scope=True,
+            show_hardware=True,
+            inventory_scope=INVENTORY_LIBRARY,
+            ctx=ctx,
+            pool_probe=lambda expr: len(library_gw.resolve_dc(expr)),
+            recipe_probe=lambda comp: library_gw.resolve_recipe(comp),
+            recipe_store=self.gateway.recipe_store(),
+            parent=self,
+        )
+
+    def _start_cross_event_pin_session(self, library_gw, draft) -> None:
+        """Build a :class:`CrossEventCutSession` from the dialog's
+        draft, open the :class:`CrossEventPickerDialog`, and commit
+        the result via the library gateway on success."""
+        from PyQt6.QtWidgets import QMessageBox
+        from mira.shared.cross_event_cut_session import (
+            CrossEventCutSession,
+            pick_anchor_event,
+        )
+        from mira.ui.pages.cross_event_picker_dialog import (
+            CrossEventPickerDialog,
+        )
+        try:
+            session = CrossEventCutSession.from_draft(library_gw, draft)
+        except Exception as exc:                           # noqa: BLE001
+            log.exception("CrossEventCutSession.from_draft failed")
+            QMessageBox.warning(
+                self, tr("New cross-event Cut"),
+                tr("Couldn't resolve the composition: {err}").replace(
+                    "{err}", str(exc)))
+            return
+        if not session.files:
+            QMessageBox.information(
+                self, tr("New cross-event Cut"),
+                tr(
+                    "The composition resolved to zero files. Adjust the "
+                    "source or filters and try again."),
+            )
+            return
+        if session.anchor_event_id is None:
+            session.anchor_event_id = (
+                getattr(draft, "anchor_event_id", None)
+                or pick_anchor_event(session.files))
+        picker = CrossEventPickerDialog(
+            session,
+            commit_callback=lambda s: self._commit_cross_event_cut(
+                s, library_gw),
+            thumb_resolver=self._cross_event_thumb_resolver,
+            parent=self,
+        )
+        picker.committed.connect(lambda _s: self.library_page.refresh())
+        picker.exec()
+
+    def _cross_event_thumb_resolver(self, sess_file):
+        """Cached export thumb for one cross-event candidate, or
+        ``None``. Sibling of
+        ``events_page._cross_event_thumb_resolver`` — never generates
+        a thumb synchronously (the known first-open freeze); a miss
+        returns ``None`` so the grid paints a neutral placeholder."""
+        from PyQt6.QtGui import QPixmap
+        from core import photo_thumb_cache
+        try:
+            entry = self.gateway.index.get(sess_file.event_uuid)
+            if entry is None:
+                return None
+            root = self.gateway.index.resolve_root(
+                entry, self.gateway.photos_base_path())
+            if root is None:
+                return None
+            rel = sess_file.export_relpath or sess_file.origin_relpath
+            if not rel:
+                return None
+            thumb = photo_thumb_cache.resolve_export_thumb(root, root / rel)
+            if thumb is None:
+                return None
+            pm = QPixmap(str(thumb))
+            return pm if not pm.isNull() else None
+        except Exception:                                  # noqa: BLE001
+            log.exception("cross-event thumb resolve failed")
+            return None
+
+    def _commit_cross_event_cut(self, session, library_gw) -> None:
+        """Drive ``session.commit`` against the library gateway.
+        Sibling of ``events_page._direct_commit_cross_event_cut``.
+
+        spec/98 — on a name collision ("taken"), offer **Replace**:
+        adopt the existing cross-event cut's id onto the session and
+        re-commit. Cancel re-raises so the picker's existing warning
+        surfaces and the user can rename."""
+        try:
+            session.commit(library_gw)
+        except ValueError as exc:
+            if str(exc) != "taken":
+                raise
+            from core import cut_names as _names
+            from mira.ui.design import confirm
+            slug = _names.slugify(session.name)
+            existing = library_gw.cross_event_cut_by_tag(slug)
+            if existing is None:
+                raise
+            if not confirm(
+                self,
+                tr("Replace existing?"),
+                tr("A Cut named '{name}' already exists. Replace it?")
+                .replace("{name}", session.name),
+                primary_text=tr("Replace"),
+            ):
+                raise
+            prior_id = session.cut_id
+            session.cut_id = existing.id
+            try:
+                session.commit(library_gw)
+            except Exception:                              # noqa: BLE001
+                session.cut_id = prior_id
+                raise
 
     def _on_titlebar_back(self) -> None:
         """Route the shared title-bar Back to the current page's back action —

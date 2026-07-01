@@ -534,3 +534,125 @@ def test_migrate_v6_to_v7_adds_recipe_event_collection_and_person_column(tmp_pat
     assert row["display_name"] == "Pedro"
     assert row["representative_face_id"] is None
     store.close()
+
+
+# --------------------------------------------------------------------------- #
+# spec/162 §9 Round 2c — recipe.scope column
+# --------------------------------------------------------------------------- #
+
+
+def test_recipe_default_scope_is_event(tmp_path):
+    """spec/162 §9 — fresh recipes get scope='event' when the caller
+    doesn't say otherwise. Pre-Round-3 callers save event-scope
+    Recipes by default."""
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create("event-only", "cut", _BASIC_COMPOSITION)
+        assert recipe.scope == "event"
+    finally:
+        us.close()
+
+
+def test_recipe_create_accepts_explicit_scope(tmp_path):
+    """The caller can pin scope explicitly. Round 3's cross-event
+    dialog surface will pass scope='cross-event'."""
+    rs, us = _store(tmp_path)
+    try:
+        recipe = rs.create(
+            "cross-event-one", "collection", _BASIC_COMPOSITION,
+            scope="cross-event",
+        )
+        assert recipe.scope == "cross-event"
+    finally:
+        us.close()
+
+
+def test_recipe_create_rejects_unknown_scope(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="scope"):
+            rs.create(
+                "bad-scope", "cut", _BASIC_COMPOSITION,
+                scope="everywhere",
+            )
+    finally:
+        us.close()
+
+
+def test_recipe_list_scope_filter(tmp_path):
+    """spec/162 §6 — the Load Recipe picker filters by the current
+    dialog scope. RecipeStore.list(scope=...) drives that."""
+    rs, us = _store(tmp_path)
+    try:
+        rs.create("event-a", "cut", _BASIC_COMPOSITION)
+        rs.create("event-b", "cut", _BASIC_COMPOSITION)
+        rs.create(
+            "cross-a", "collection", _BASIC_COMPOSITION,
+            scope="cross-event",
+        )
+        rs.create(
+            "cross-b", "collection", _BASIC_COMPOSITION,
+            scope="cross-event",
+        )
+
+        event_only = rs.list(scope="event")
+        assert [r.name for r in event_only] == ["event-a", "event-b"]
+
+        cross_only = rs.list(scope="cross-event")
+        assert [r.name for r in cross_only] == ["cross-a", "cross-b"]
+
+        # Unfiltered returns everything.
+        assert len(rs.list()) == 4
+    finally:
+        us.close()
+
+
+def test_recipe_list_scope_rejects_unknown(tmp_path):
+    rs, us = _store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="scope"):
+            rs.list(scope="everywhere")
+    finally:
+        us.close()
+
+
+def test_migrate_v9_to_v10_adds_scope_column_and_backfills(tmp_path):
+    """spec/162 §9 — v9→v10 adds recipe.scope with a safe 'event'
+    backfill. Every pre-existing row lands at scope='event' because
+    pre-spec/162 cross-event composition had no Save-as-Recipe path."""
+    from mira.user_store import schema
+
+    store = _make_store(tmp_path)
+    conn = store.conn
+    # Wind the store back to v9 shape: DROP the ix_recipe_scope index
+    # first (SQLite refuses to drop a column referenced by an index),
+    # then the column itself, then set the version.
+    conn.execute("DROP INDEX IF EXISTS ix_recipe_scope")
+    conn.execute("ALTER TABLE recipe DROP COLUMN scope")
+    conn.execute("UPDATE schema_info SET schema_version = 9 WHERE id = 1")
+    # Seed a couple of pre-v10 rows.
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "created_at, updated_at) "
+        "VALUES ('r1', 'legacy-cut', 'cut', '{}', ?, ?)", (NOW, NOW))
+    conn.execute(
+        "INSERT INTO recipe (id, name, flavour, composition_json, "
+        "created_at, updated_at) "
+        "VALUES ('r2', 'legacy-collection', 'collection', '{}', ?, ?)",
+        (NOW, NOW))
+
+    schema.migrate(conn)
+
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
+    # Every pre-v10 row backfilled to 'event'.
+    rows = conn.execute(
+        "SELECT id, scope FROM recipe ORDER BY id").fetchall()
+    assert [dict(r) for r in rows] == [
+        {"id": "r1", "scope": "event"},
+        {"id": "r2", "scope": "event"},
+    ]
+    # The picker index landed on the migrated DB.
+    idx_names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "ix_recipe_scope" in idx_names
+    store.close()

@@ -64,14 +64,17 @@ class _RecipeStoreStub:
         self.by_name_calls: list = []
         self._um = um
 
-    def create(self, *, name, flavour, composition):
-        self.create_calls.append((name, flavour, composition))
+    def create(self, *, name, flavour, composition, scope="event"):
+        # spec/162 §9 Round 2c — RecipeStore.create gained a scope
+        # keyword. The stub accepts + records it so the dialog's save
+        # path (which passes scope=self._scope) doesn't TypeError.
+        self.create_calls.append((name, flavour, composition, scope))
         if self._raise_on_create:
             raise RecipeNameTakenError(flavour, name)
         return self._um.Recipe(
             id="new", name=name, flavour=flavour,
             composition_json=json.dumps(composition),
-            created_at=NOW, updated_at=NOW)
+            created_at=NOW, updated_at=NOW, scope=scope)
 
     def by_name(self, flavour, name):
         self.by_name_calls.append((flavour, name))

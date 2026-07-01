@@ -274,6 +274,13 @@ class Recipe:
     created_at: str
     updated_at: str
     extras_json: str = '{}'
+    # spec/162 §9 — 'event' | 'cross-event'. The Load Recipe picker
+    # filters by the current dialog's scope; every pre-v10 row is
+    # backfilled to 'event' by _migrate_v9_to_v10. New field appended
+    # after ``extras_json`` so positional Recipe(id, name, flavour,
+    # composition_json, created_at, updated_at) call-sites remain
+    # source-compatible.
+    scope: str = 'event'
 
 
 @dataclass

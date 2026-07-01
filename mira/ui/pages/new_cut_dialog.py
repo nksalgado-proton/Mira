@@ -4401,6 +4401,10 @@ class NewCutDialog(QDialog):
                     name=name,
                     flavour=self._flavour,
                     composition=self.composition(),
+                    # spec/162 §9 — Save-as-Recipe stamps the current
+                    # dialog scope on the row so the Load Recipe picker
+                    # can filter cleanly later.
+                    scope=self._scope,
                 )
             except RecipeNameTakenError:
                 # spec/98 — offer Replace; Cancel keeps the legacy "pick
@@ -4481,9 +4485,16 @@ class NewCutDialog(QDialog):
             return
         store = self._recipe_store
         flavour = self._flavour
+        # spec/162 §6 — pin the picker to the current dialog scope so a
+        # cross-event Recipe never surfaces in an event-scope dialog
+        # (and vice versa). include_other is honoured but the scope
+        # filter is applied uniformly afterward — the two toggles are
+        # orthogonal.
+        scope = self._scope
 
         def recipes_for(include_other: bool):
-            return store.list(flavour=flavour, include_other=include_other)
+            return store.list(
+                flavour=flavour, include_other=include_other, scope=scope)
 
         dlg = _LoadRecipeDialog(
             recipes_for=recipes_for, flavour=flavour, parent=self)

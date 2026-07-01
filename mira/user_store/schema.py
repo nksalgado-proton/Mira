@@ -34,7 +34,7 @@ from typing import Callable, Optional, Union
 log = logging.getLogger(__name__)
 
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # --------------------------------------------------------------------------- #
 # DDL — spec/53 §2, statement-for-statement. All durable tables — there is no
@@ -311,10 +311,18 @@ CREATE TABLE saved_filter (
 -- recipe (spec/61 §2). spec/90 supersedes ``cut_template`` once the dialog
 -- rewrite lands (§7 Phase 4); Phase 1 leaves both tables present so the
 -- existing dialog keeps working.
+-- spec/162 §9 — `scope` column added at schema v10 (Round 2c). Distinguishes
+-- event-scope Recipes (reusable across events; source = "the current event's
+-- Base Collection") from cross-event Recipes (frozen library-wide source
+-- composition + filters). Backfilled to 'event' — safe because pre-spec/162
+-- cross-event composition lived in NewCrossEventDcDialog which had no
+-- Save-as-Recipe path, so no existing rows are actually cross-event.
 CREATE TABLE recipe (
   id                TEXT PRIMARY KEY,
   name              TEXT NOT NULL,
   flavour           TEXT NOT NULL CHECK (flavour IN ('cut','collection')),
+  scope             TEXT NOT NULL DEFAULT 'event'
+                    CHECK (scope IN ('event','cross-event')),
   composition_json  TEXT NOT NULL CHECK (json_valid(composition_json)),
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
@@ -322,6 +330,7 @@ CREATE TABLE recipe (
   UNIQUE (flavour, name)
 );
 CREATE INDEX ix_recipe_flavour ON recipe(flavour);
+CREATE INDEX ix_recipe_scope   ON recipe(scope);
 
 -- ===== event_collection (D) — saved event sets (spec/90 §5.3) ==============
 -- Cross-event analogue of a DC, at the EVENT level (vs spec/81's DC at the
@@ -854,6 +863,34 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
         "ALTER TABLE cut ADD COLUMN aspect TEXT NOT NULL DEFAULT '16:9'")
 
 
+def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """spec/162 §9 (Round 2c) — Recipes gain a ``scope`` column
+    ({'event', 'cross-event'}) so the Load Recipe picker can filter by
+    the dialog's current scope (spec/162 §6).
+
+    Backfills every existing row to ``'event'`` — safe because
+    pre-spec/162 cross-event Recipe composition lived in
+    ``NewCrossEventDcDialog``, which had no Save-as-Recipe surface. No
+    existing rows are cross-event; the backfill is a pure default,
+    not a semantic guess.
+
+    SQLite ``ALTER TABLE ADD COLUMN`` cannot express a CHECK constraint
+    at add-time; the ``CHECK (scope IN (…))`` guard lives in the DDL
+    for fresh installs. The gateway seam validates ``scope`` on writes
+    for migrated databases so the invariant holds either way.
+
+    Also adds the ``ix_recipe_scope`` index that mirrors the DDL, so
+    the Load Recipe picker's ``WHERE scope = ?`` filter stays fast at
+    both fresh-install and migrated installs.
+    """
+    conn.execute(
+        "ALTER TABLE recipe ADD COLUMN scope TEXT NOT NULL DEFAULT 'event'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_recipe_scope ON recipe(scope)"
+    )
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1_to_v2,
     _migrate_v2_to_v3,
@@ -863,6 +900,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v6_to_v7,
     _migrate_v7_to_v8,
     _migrate_v8_to_v9,
+    _migrate_v9_to_v10,
 ]
 
 

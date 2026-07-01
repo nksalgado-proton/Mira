@@ -131,17 +131,27 @@ class RecipeStore:
         name: str,
         flavour: str,
         composition: Mapping[str, Any],
+        *,
+        scope: str = 'event',
     ) -> um.Recipe:
         """Create a new Recipe row. ``composition`` is serialised to JSON
         internally. Raises :class:`RecipeNameTakenError` on a (flavour, name)
-        collision; raises ``ValueError`` for an invalid flavour or an empty
-        name."""
+        collision; raises ``ValueError`` for an invalid flavour, an empty
+        name, or an out-of-vocabulary scope.
+
+        spec/162 §9 — ``scope`` defaults to ``'event'`` so pre-spec/162
+        call-sites (SaveRecipe path in event-scope NewCutDialog) don't
+        need touching. Round 3's cross-event dialog surface will pass
+        ``scope='cross-event'`` explicitly."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("recipe name must be a non-empty string")
         self._check_flavour(flavour)
+        if scope not in ('event', 'cross-event'):
+            raise ValueError(
+                f"scope must be 'event' or 'cross-event', got {scope!r}")
 
         if self._recipes_library is not None:
-            return self._json_create(name, flavour, composition)
+            return self._json_create(name, flavour, composition, scope=scope)
 
         self._check_unique(flavour, name)
         now = self._now()
@@ -152,6 +162,7 @@ class RecipeStore:
             composition_json=json.dumps(dict(composition or {})),
             created_at=now,
             updated_at=now,
+            scope=scope,
         )
         try:
             with self.user_store.transaction():
@@ -170,6 +181,8 @@ class RecipeStore:
         name: str,
         flavour: str,
         composition: Mapping[str, Any],
+        *,
+        scope: str = 'event',
     ) -> um.Recipe:
         """JSON-tree creation. Uniqueness check folds (flavour, name) by
         walking the library; on collision raises the typed error so the
@@ -182,6 +195,7 @@ class RecipeStore:
         now = self._now()
         payload = dict(composition or {})
         payload["flavour"] = flavour
+        payload["scope"] = scope
         payload["created_at"] = now
         payload["updated_at"] = now
         df = DefinitionFile(
@@ -199,6 +213,12 @@ class RecipeStore:
         :class:`Recipe` so existing callers see the same row shape."""
         payload = dict(df.payload or {})
         flavour = payload.pop("flavour", FLAVOUR_CUT)
+        # spec/162 §9 — scope is 'event' by default when the payload
+        # predates the column (pre-Round 2c JSON files). Round 3's
+        # cross-event save path writes 'cross-event' explicitly.
+        scope = payload.pop("scope", "event")
+        if scope not in ("event", "cross-event"):
+            scope = "event"
         created_at = payload.pop("created_at", "")
         updated_at = payload.pop("updated_at", created_at)
         composition_json = json.dumps(payload)
@@ -209,6 +229,7 @@ class RecipeStore:
             composition_json=composition_json,
             created_at=created_at or _utc_now_iso(),
             updated_at=updated_at or created_at or _utc_now_iso(),
+            scope=scope,
         )
 
     def _json_update(
@@ -371,6 +392,7 @@ class RecipeStore:
         *,
         flavour: Optional[str] = None,
         include_other: bool = False,
+        scope: Optional[str] = None,
     ) -> List[um.Recipe]:
         """List Recipes, ordered for the dialog's "Load Recipe…" list.
 
@@ -381,33 +403,42 @@ class RecipeStore:
 
         ``flavour=None`` returns every row, sorted by (flavour, name) —
         ``include_other`` is then a no-op (the filter is already off).
+
+        spec/162 §6 — ``scope`` narrows the list to Recipes of that scope
+        so the Load Recipe picker in the event-scope dialog never shows
+        cross-event Recipes (and vice versa). Applied AFTER the flavour
+        filter + ordering; ``scope=None`` (default) returns every scope.
         Tests in :mod:`tests.test_recipe_store` pin this contract."""
         if flavour is not None:
             self._check_flavour(flavour)
+        if scope is not None and scope not in ('event', 'cross-event'):
+            raise ValueError(
+                f"scope must be 'event' or 'cross-event', got {scope!r}")
 
         if self._recipes_library is not None:
-            return self._json_list(flavour=flavour, include_other=include_other)
+            rows = self._json_list(flavour=flavour, include_other=include_other)
+            if scope is not None:
+                rows = [r for r in rows if r.scope == scope]
+            return rows
 
         if flavour is None:
-            # No filter — sort by (flavour, name) so Cut Recipes group
-            # together and Collection Recipes group together.
             rows = self.user_store.conn.execute(
                 "SELECT * FROM recipe ORDER BY flavour, name, id"
             ).fetchall()
-            return [self._row_to_recipe(r) for r in rows]
-
-        if include_other:
-            # Same-flavour first (the dialog's primary pool), other flavour
-            # appended after for the §5.5 cross-pollination case. The CASE
-            # expression ranks the requested flavour as 0 and the other as 1.
+            recipes = [self._row_to_recipe(r) for r in rows]
+        elif include_other:
             rows = self.user_store.conn.execute(
                 "SELECT * FROM recipe "
                 "ORDER BY CASE flavour WHEN ? THEN 0 ELSE 1 END, name, id",
                 (flavour,),
             ).fetchall()
-            return [self._row_to_recipe(r) for r in rows]
+            recipes = [self._row_to_recipe(r) for r in rows]
+        else:
+            recipes = self.user_store.query_by(um.Recipe, flavour=flavour)
 
-        return self.user_store.query_by(um.Recipe, flavour=flavour)
+        if scope is not None:
+            recipes = [r for r in recipes if r.scope == scope]
+        return recipes
 
     # ----- internal -------------------------------------------------------- #
 
@@ -416,7 +447,15 @@ class RecipeStore:
         """Hand-roll the row → dataclass mapping for the queries above. The
         UserStore's generic ``query_by`` already does this for filter-by-
         column lookups; the ``ORDER BY CASE`` form on :meth:`list` uses raw
-        SQL, so the same coercion happens here."""
+        SQL, so the same coercion happens here.
+
+        spec/162 §9 — ``scope`` reads via ``sqlite3.Row.keys()`` guard so a
+        row from a pre-v10 test fixture (no scope column) degrades cleanly
+        to ``'event'`` rather than KeyError-ing."""
+        try:
+            scope = row["scope"] or "event"
+        except (IndexError, KeyError):
+            scope = "event"
         return um.Recipe(
             id=row["id"],
             name=row["name"],
@@ -425,6 +464,7 @@ class RecipeStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             extras_json=row["extras_json"],
+            scope=scope,
         )
 
 

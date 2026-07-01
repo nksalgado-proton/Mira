@@ -49,9 +49,13 @@ def picker_page(qapp, tmp_path):
         p.viewport.shutdown_video()
     except Exception:                                              # noqa: BLE001
         pass
+    # Drain twice — once so any queued teardown handler runs while the
+    # widgets are still alive, again after deleteLater so the Qt event
+    # loop empties before the next fixture arms its media state.
     from PyQt6.QtWidgets import QApplication
     QApplication.processEvents()
     p.deleteLater()
+    QApplication.processEvents()
 
 
 # ── set_speed: programmatic update is silent ────────────────────────

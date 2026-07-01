@@ -65,7 +65,11 @@ def picker_page(qapp, tmp_path):
     yield p
     # Drain anything the viewport queued (ExifTool prefetch on a video
     # path that doesn't exist would otherwise error at teardown after
-    # the page is gone). Then disarm the video and delete.
+    # the page is gone). Then disarm the video and delete. Second
+    # drain after deleteLater lets the Qt event loop empty its queue
+    # before the next fixture arms its own media state — without it
+    # a queued teardown handler tripped on freed callbacks and pytest
+    # reported "TypeError: 'NoneType' object is not callable".
     try:
         p.viewport.shutdown_video()
     except Exception:                                              # noqa: BLE001
@@ -76,6 +80,11 @@ def picker_page(qapp, tmp_path):
     except Exception:                                              # noqa: BLE001
         pass
     p.deleteLater()
+    try:
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+    except Exception:                                              # noqa: BLE001
+        pass
 
 
 def _touch_video_file(path: Path) -> Path:

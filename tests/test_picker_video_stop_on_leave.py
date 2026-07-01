@@ -81,8 +81,22 @@ def test_picker_hide_event_calls_shutdown_video(picker_page, tmp_path):
     (programmatic navigation, page-stack swap, window close) stops
     the video. ``hideEvent`` is the catch-all."""
     called: list[bool] = []
+    original_shutdown = picker_page.viewport.shutdown_video
+
+    def _tracked_shutdown() -> None:
+        called.append(True)
+        try:
+            original_shutdown()
+        except Exception:                                          # noqa: BLE001
+            pass
+
+    # Delegate to the real shutdown_video AFTER recording the call so
+    # QMediaPlayer state actually clears before the fixture's
+    # deleteLater — a bare no-op stub leaves queued teardown callbacks
+    # tripping on freed Qt objects and pytest reports a TypeError in
+    # the event loop.
     picker_page.viewport.shutdown_video = (   # type: ignore[assignment]
-        lambda: called.append(True))
+        _tracked_shutdown)
     picker_page.show()
     _land_on_video(picker_page, tmp_path)
     picker_page.hide()

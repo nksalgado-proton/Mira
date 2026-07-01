@@ -195,7 +195,11 @@ class OperandOption:
 
     name: str               # display string, e.g. '#exported' or '[Alaska]'
     count: int = 0          # live count beside the name (spec/90 §3.4)
-    # 'base' | 'dc' | 'cut' | 'event_collection' | 'event' | 'date_range'
+    # 'base' | 'cut' | 'event_collection' | 'event' | 'date_range'
+    # spec/162 Round 2d.F — 'dc' retired from the operand picker.
+    # OperandOption instances tagged kind='dc' may still be constructed
+    # by callers that haven't been swept (see share_cuts_page._dialog_
+    # kwargs); the picker just skips them in its section render.
     kind: str = "base"
     id: Optional[str] = None
     tag: Optional[str] = None  # canonical tag without '#'; falls back to ``name``
@@ -737,9 +741,13 @@ class _OperandPickerPopover(QFrame):
             self._populate_scope_sections()
             return
 
+        # spec/162 Round 2d.F — the ``Collections`` (kind='dc') operand
+        # section retires from the picker. DC storage stays at the
+        # gateway layer (Round 2d.E deferred that surface to Round 3)
+        # but the New Cut composer no longer surfaces them as
+        # composable operands. Base universes + Cuts remain.
         order = [
             ("base", tr("Base universes")),
-            ("dc", tr("Collections")),
             ("cut", tr("Cuts")),
         ]
         for kind, label in order:

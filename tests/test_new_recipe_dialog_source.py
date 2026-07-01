@@ -51,30 +51,30 @@ def _dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
 
 
 def test_picker_lists_pools_by_kind(qapp):
+    """spec/162 Round 2d.F — the picker lists Base universes + Cuts.
+    Collections (kind='dc') retired from the operand section render."""
     ctx = _make_ctx()
     picker = _OperandPickerPopover(ctx.available_pools)
     rows_text = [btn.text() for _pool, btn in picker._rows]
-    # All three pools surfaced.
     assert any("#exported" in t for t in rows_text)
     assert any("#long" in t for t in rows_text)
-    assert any("#best" in t for t in rows_text)
+    # DCs no longer surface in the picker.
+    assert not any("#best" in t for t in rows_text)
 
 
 def test_picker_search_narrows_rows(qapp):
+    """spec/162 Round 2d.F — search over the surviving Base + Cut
+    entries. DC entries no longer appear."""
     ctx = _make_ctx()
     picker = _OperandPickerPopover(ctx.available_pools)
-    picker._search.setText("best")
-    # Only the matching row stays visible. Use ``not isHidden()`` rather
-    # than ``isVisible()`` — the popover hasn't been shown yet, so
-    # ``isVisible()`` returns False for every child unconditionally; what
-    # we actually care about is whether the row's own visibility flag
-    # was flipped by the filter.
+    picker._search.setText("long")
+    # Only the matching Cut row stays visible.
     visible = [pool.name for pool, btn in picker._rows if not btn.isHidden()]
-    assert visible == ["#best"]
-    # Clearing the search re-shows everything.
+    assert visible == ["#long"]
+    # Clearing the search re-shows everything (Base + Cuts; no DCs).
     picker._search.setText("")
     visible_all = [pool.name for pool, btn in picker._rows if not btn.isHidden()]
-    assert set(visible_all) == {"#exported", "#long", "#best"}
+    assert set(visible_all) == {"#exported", "#long"}
 
 
 def test_picker_emits_chosen_for_clicked_row(qapp):

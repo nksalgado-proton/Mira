@@ -31,7 +31,17 @@ def picker_page(qapp, tmp_path):
     gw = Gateway(settings=settings, index=index)
     p = PickerPage(gw)
     yield p
+    # Clear QMediaPlayer state + drain twice so queued teardown
+    # callbacks fire while widgets are still alive (mirrors the
+    # picker fixtures elsewhere in the suite).
+    try:
+        p.viewport.shutdown_video()
+    except Exception:                                              # noqa: BLE001
+        pass
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
     p.deleteLater()
+    QApplication.processEvents()
 
 
 def _cull(item_id, kind, path):

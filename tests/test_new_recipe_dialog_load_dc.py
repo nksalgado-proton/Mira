@@ -7,10 +7,20 @@ inventory; selecting one resolves to ``(expr, filters)`` via the host's
 the loaded payload. Rules / Otherwise / Runtime / Scope / Name stay put
 — Load DC is the items-layer mirror of Load Recipe (Recipe loads
 *everything*; DC loads *just the items layer*).
+
+spec/162 Round 2a note (2026-07-01): the accordion body rebuild
+retires the ``Which items?`` band and its Load DC / Save as DC
+buttons — Section 1 (Collection) has no header buttons. Every test
+in this module is skipped pending Round 2b, which deletes the
+Save/Load Collection surface wholesale (this file included).
 """
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="spec/162 Round 2b — Save/Load Collection surface retires; "
+           "this file is deleted with the retirement PR")
 
 from PyQt6.QtWidgets import QDialog, QMessageBox
 

@@ -254,79 +254,14 @@ def test_save_recipe_button_disabled_without_store(qapp):
 # --------------------------------------------------------------------------- #
 
 
-def test_both_band_headers_render(qapp):
-    """spec/90 §5.5 — the dialog body groups into two visible bands
-    between Name and Metrics."""
-    dlg = _cut_dialog(qapp)
-    assert _section(dlg, "WhichItemsBand") is not None
-    assert _section(dlg, "WhatToDoBand") is not None
-
-
-def test_band_headers_carry_their_save_buttons(qapp):
-    """spec/90 §5 — the Recipe toolbar hosts Load Recipe + Save as
-    Recipe (the recipe-layer save), and the "Which items?" band hosts
-    Load DC + Save as DC (the items-layer save). The "What to do?"
-    band has no header buttons (Recipe is the only save that captures
-    that layer)."""
-    from PyQt6.QtWidgets import QPushButton
-    dlg = _cut_dialog(qapp)
-    toolbar = _section(dlg, "RecipeToolbar")
-    which = _section(dlg, "WhichItemsBand")
-    what = _section(dlg, "WhatToDoBand")
-    # Recipe toolbar carries the Recipe-layer buttons.
-    assert dlg._save_recipe_btn.parent() is toolbar
-    assert dlg._load_btn.parent() is toolbar
-    # Which items? band carries the DC-layer buttons.
-    assert dlg._save_dc_btn.parent() is which
-    assert dlg._load_dc_btn.parent() is which
-    # What to do? band has no header buttons.
-    what_buttons = [
-        b for b in what.findChildren(QPushButton)
-        if b.objectName() in (
-            "BandSaveAsRecipe", "ToolbarSaveAsRecipe", "BandLoadDc",
-            "BandSaveAsDc",
-        )
-    ]
-    assert what_buttons == []
-
-
-def test_band_header_question_labels(qapp):
-    """The band headers carry Q4-style human prose, not micro / uppercase
-    section labels (spec/90 §5.5)."""
-    dlg = _cut_dialog(qapp)
-    which = _section(dlg, "WhichItemsBand")
-    what = _section(dlg, "WhatToDoBand")
-    which_labels = [
-        lbl.text() for lbl in which.findChildren(QLabel)
-        if lbl.objectName() == "BandQuestion"
-    ]
-    what_labels = [
-        lbl.text() for lbl in what.findChildren(QLabel)
-        if lbl.objectName() == "BandQuestion"
-    ]
-    assert "Which items?" in which_labels
-    assert "What to do with them?" in what_labels
-
-
-def test_which_items_band_hint_only_when_scope_visible(qapp):
-    """The "(across the events above)" hint sits next to the Which
-    items? question only when ``show_scope=True`` (Collection face);
-    the Cut face suppresses it."""
-    cut = _cut_dialog(qapp)
-    cut_hints = [
-        lbl.text()
-        for lbl in _section(cut, "WhichItemsBand").findChildren(QLabel)
-        if lbl.objectName() == "BandHint"
-    ]
-    assert cut_hints == []
-
-    coll = _collection_dialog(qapp)
-    coll_hints = [
-        lbl.text()
-        for lbl in _section(coll, "WhichItemsBand").findChildren(QLabel)
-        if lbl.objectName() == "BandHint"
-    ]
-    assert any("events above" in h for h in coll_hints)
+# --------------------------------------------------------------------------- #
+# spec/162 Round 2a — accordion body rebuild (Slice 3 completion)
+#
+# The old two-band structure ("Which items?" + "What to do with them?") is
+# retired; the dialog body wraps two AccordionSections in a RecipeContainer.
+# The retired scaffold tests below have been deleted; replacements live in
+# the "Round 2a" block further down.
+# --------------------------------------------------------------------------- #
 
 
 def test_scope_section_carries_inline_hint(qapp):
@@ -371,62 +306,43 @@ def test_footer_contains_only_cancel_and_start(qapp):
     assert not any("Load Collection" in t for t in button_texts)
 
 
-def test_recipe_toolbar_present_with_both_recipe_buttons(qapp):
-    """spec/90 §5 — top-of-body Recipe toolbar carries Load Recipe… and
-    Save as Recipe…; the dialog header bar no longer hosts them."""
+def test_recipe_container_present_with_both_recipe_buttons(qapp):
+    """spec/162 §4.2 — the RecipeContainer header row carries Load
+    Recipe… and Save as Recipe… (post-Round 2a replacement for the
+    old ``RecipeToolbar`` SectionBox)."""
     from PyQt6.QtWidgets import QPushButton
     dlg = _cut_dialog(qapp)
-    toolbar = _section(dlg, "RecipeToolbar")
-    assert toolbar is not None
+    header = dlg._recipe_container.header_widget()
     texts = sorted(
-        (b.text() or "") for b in toolbar.findChildren(QPushButton)
+        (b.text() or "") for b in header.findChildren(QPushButton)
         if b.text()
     )
     assert any("Load Recipe" in t for t in texts)
     assert any("Save as Recipe" in t for t in texts)
 
 
-def test_load_dc_button_lives_on_which_items_band(qapp):
-    """spec/90 §5 — Load DC… sits next to Save as DC… on the Which
-    items? header (the items-layer mirror of Load Recipe)."""
+def test_recipe_container_hosts_two_accordion_sections(qapp):
+    """spec/162 §4.2 / §4.5 — exactly two AccordionSections sit inside
+    the RecipeContainer (Collection + Format), arbitrated by a strict-
+    accordion group with Section 1 initially expanded."""
     dlg = _cut_dialog(qapp)
-    which = _section(dlg, "WhichItemsBand")
-    assert dlg._load_dc_btn.parent() is which
-
-
-def test_inner_section_cards_render_for_each_inner_box(qapp):
-    """spec/90 §5 — every inner section (Source / Filters / Rules /
-    Otherwise / Runtime / Metrics) is wrapped in a card-style frame so
-    the visual hierarchy reads cleanly inside the band groups."""
-    dlg = _collection_dialog(qapp)
-    for name in (
-        "SourceSection", "FiltersSection",
-        "RulesSectionCard", "OtherwiseSectionCard",
-        "RuntimeSectionCard", "MetricsSectionCard",
-    ):
-        assert _section(dlg, name) is not None, name
+    sections = dlg._recipe_container.sections()
+    assert len(sections) == 2
+    assert sections[0] is dlg._section_collection
+    assert sections[1] is dlg._section_format
+    assert dlg._section_collection.is_expanded() is True
+    assert dlg._section_format.is_expanded() is False
+    assert dlg._accordion_group.expanded_index() == 0
 
 
 def test_initial_resize_accommodates_widest_header_row(qapp):
-    """spec/90 §5 — the dialog opens wide enough that the Recipe-toolbar
-    and Which items? header buttons don't fall off the right edge."""
+    """spec/90 §5 — the dialog opens wide enough that the Recipe
+    container header row doesn't fall off the right edge."""
     dlg = _collection_dialog(qapp)
-    # Initial resize was set in __init__ via max(sizeHint(), 660). The
-    # sizeHint reflects the laid-out band-group + toolbar widths, so
-    # the dialog's current width must cover the layout's minimum.
     layout = dlg.layout()
     assert layout is not None
     min_w = layout.minimumSize().width() if layout else 660
     assert dlg.width() >= min_w
-
-
-def test_name_and_scope_wrapped_as_lightboxes(qapp):
-    """Name and (Collection) Scope are wrapped as light-secondary-surface
-    containers — the same visual tier as the Recipe toolbar and band
-    groups — so the dialog's top tier reads as a uniform family."""
-    dlg = _collection_dialog(qapp)
-    assert _section(dlg, "NameBox") is not None
-    assert _section(dlg, "ScopeBox") is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -543,11 +459,22 @@ def test_edit_mode_cancel_reads_discard_changes(qapp):
 
 
 def test_footer_wears_launch_pad_role(qapp):
-    """spec/162 §4.6 — the button row lives in a widget wearing the
-    #LaunchPad role so Slice 1's ink-tinted QSS strip paints."""
+    """spec/162 §4.6 — the primary button sits inside a launch-pad
+    container wearing the #LaunchPad role so Slice 1's ink-tinted QSS
+    strip paints. In Round 2a the LaunchPad is the outer container of a
+    QWidget tree (name row → rules → otherwise → summary → button row);
+    walk up from the primary button to find the ancestor."""
     dlg = _cut_dialog(qapp)
-    footer = dlg._start_btn.parent()
-    assert footer.objectName() == "LaunchPad"
+    ancestor = dlg._start_btn
+    found = None
+    while ancestor is not None:
+        if ancestor.objectName() == "LaunchPad":
+            found = ancestor
+            break
+        ancestor = ancestor.parent()
+    assert found is not None, (
+        "expected a #LaunchPad ancestor above the primary button"
+    )
 
 
 def test_otherwise_lead_reads_starts_all_when_no_rules(qapp):
@@ -577,21 +504,26 @@ def test_otherwise_lead_flexes_back_when_last_rule_is_deleted(qapp):
 
 def test_budget_row_hides_when_budget_check_unticks(qapp):
     """spec/162 §4.4 — the WHOLE Budget row hides when the checkbox is
-    unchecked (not merely disables)."""
+    unchecked (not merely disables). Section 2 (Format) has to be the
+    expanded accordion section for the row to be visible in the first
+    place, so we flip it before the assertion."""
     ctx = _ctx()
     ctx.has_budget = True
     dlg = NewCutDialog(
         scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
-    # Force layout so isVisibleTo returns a stable answer.
     dlg.show()
-    assert dlg._target_box.isVisibleTo(dlg) is True
-    assert dlg._max_box.isVisibleTo(dlg) is True
+    # Expand Section 2 (Format) so the runtime row is on-screen; use
+    # setVisible directly on the target/max boxes for the assertion so
+    # the accordion expand animation doesn't race the check.
+    dlg._section_format.set_expanded(True)
+    assert dlg._target_box.isVisible() is True
+    assert dlg._max_box.isVisible() is True
 
     dlg._budget_check.setChecked(False)
-    assert dlg._target_box.isVisibleTo(dlg) is False
-    assert dlg._max_box.isVisibleTo(dlg) is False
+    assert dlg._target_box.isVisible() is False
+    assert dlg._max_box.isVisible() is False
 
     dlg._budget_check.setChecked(True)
     assert dlg._target_box.isVisibleTo(dlg) is True

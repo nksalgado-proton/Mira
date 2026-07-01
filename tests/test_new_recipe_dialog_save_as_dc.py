@@ -21,6 +21,15 @@ from __future__ import annotations
 
 import pytest
 
+# spec/162 Round 2a — the accordion body rebuild retires the
+# ``Which items?`` band. The band-header Save as DC button (part of
+# the Save/Load Collection surface) is gone from the dialog; Round 2b
+# deletes the corresponding gateway method, this test file included.
+# Every test here is skipped until then.
+pytestmark = pytest.mark.skip(
+    reason="spec/162 Round 2b — Save/Load Collection surface retires; "
+           "this file is deleted with the retirement PR")
+
 from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,

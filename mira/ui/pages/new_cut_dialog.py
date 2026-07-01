@@ -78,9 +78,12 @@ from mira.shared.recipe_store import (
 from mira.ui.base.binding_badge import BindingBadge
 from mira.ui.base.flow_layout import FlowLayout
 from mira.ui.design import (
+    AccordionSection,
     GLYPH_CROSS,
     GLYPH_CROSS_EVENT,
     GLYPH_CUT,
+    RecipeContainer,
+    StrictAccordionGroup,
     confirm,
     ghost_button,
     line_input,
@@ -1971,6 +1974,13 @@ class NewCutDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self) -> None:
+        """The dialog frame — header · body · launch pad. spec/162 §4
+        restructures the body around a strict two-section accordion
+        (Section 1 Collection + Section 2 Format) wrapped in a
+        ``#RecipeContainer``. The launch pad below hosts the per-Cut
+        levers (Name / Rules / Otherwise / summary / buttons) — its
+        contents are NOT captured by "Save as Recipe…" (spec/162 §1).
+        """
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1978,7 +1988,7 @@ class NewCutDialog(QDialog):
         outer.addWidget(_divider())
         outer.addWidget(self._build_body(), 1)
         outer.addWidget(_divider())
-        outer.addWidget(self._build_footer())
+        outer.addWidget(self._build_launch_pad())
 
     def _build_header_bar(self) -> QWidget:
         host = QWidget()
@@ -2042,23 +2052,22 @@ class NewCutDialog(QDialog):
         return host
 
     def _build_body(self) -> QWidget:
-        """The dialog body — three visual tiers per spec/90 §5:
+        """The dialog body per spec/162 §4 — the Recipe container +
+        strict accordion.
 
-        * **Recipe toolbar** (top) — light secondary surface, no border,
-          hosts the *Recipe* label + Load Recipe… + Save as Recipe…
-          buttons. The Recipe save captures the whole composition.
-        * **Name** + (Collection only) **Scope** — sit between the
-          toolbar and the items group. Scope is the universe both saves
-          operate within; neither captures it.
-        * **Which items?** group — secondary-tint container wrapping the
-          Source and Filters inner cards. The group header carries
-          *Load DC…* and *Save as DC…* (the items layer becomes a
-          reusable DC).
-        * **What to do with them?** group — secondary-tint container
-          wrapping the Rules, Otherwise, Runtime, and Metrics inner
-          cards. No header buttons (Recipe is the only save that
-          captures this layer).
-        """
+        The scroll area holds one :class:`RecipeContainer` with two
+        :class:`AccordionSection`s: Section 1 (Collection) hosts the
+        Source + Filters, Section 2 (Format) hosts the runtime + music
+        + overlays + separators controls laid out as a three-row flat
+        grid per spec/162 §4.4. A :class:`StrictAccordionGroup`
+        enforces exactly-one-expanded per spec/162 §4.5.
+
+        The per-Cut levers (Name, Rules, Otherwise, summary strip,
+        button row) live in the LaunchPad below the scroll area —
+        see :meth:`_build_launch_pad`. This split respects spec/162
+        §1: Stage A (the Recipe container) is what a saved Recipe
+        captures; the LaunchPad is the per-Cut work outside that
+        capture."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -2069,18 +2078,330 @@ class NewCutDialog(QDialog):
         v.setContentsMargins(22, 18, 22, 18)
         v.setSpacing(14)
 
-        v.addWidget(self._build_recipe_toolbar())
-        v.addWidget(self._wrap_as_lightbox(
-            self._build_name_section(), object_name="NameBox"))
-        if self._show_scope:
-            v.addWidget(self._wrap_as_lightbox(
-                self._build_scope_section(), object_name="ScopeBox"))
-        v.addWidget(self._build_which_items_group())
-        v.addWidget(self._build_what_to_do_group())
+        v.addWidget(self._build_recipe_container_wrap())
 
         v.addStretch()
         scroll.setWidget(inner)
         return scroll
+
+    # -------- Recipe container + strict accordion (spec/162 §4) ------ #
+
+    def _build_recipe_container_wrap(self) -> QWidget:
+        """Build the ``#RecipeContainer`` frame + its two accordion
+        sections. Creates the Load / Save Recipe ghost buttons here
+        (rather than in a separate ``_build_recipe_toolbar``) so they
+        can be injected into the container's header row directly.
+
+        Section 1 = Collection (Source + Filters).
+        Section 2 = Format (Runtime + Overlays + Separators laid out
+                    as the spec/162 §4.4 three-row grid).
+        """
+        # Load Recipe / Save as Recipe ghost buttons — injected into
+        # the RecipeContainer's header row via the constructor.
+        self._load_btn = ghost_button(tr("Load Recipe…"))
+        self._load_btn.setEnabled(self._recipe_store is not None)
+        self._load_btn.setToolTip(
+            tr("Pre-fill every section from a saved Recipe.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._load_btn.clicked.connect(self._on_load_recipe_clicked)
+
+        self._save_recipe_btn = ghost_button(tr("Save as Recipe…"))
+        self._save_recipe_btn.setObjectName("ToolbarSaveAsRecipe")
+        self._save_recipe_btn.setToolTip(
+            tr("Save the whole composition as a Recipe to re-instantiate later.")
+            if self._recipe_store is not None
+            else tr("No Recipe store wired — saving / loading disabled."))
+        self._save_recipe_btn.clicked.connect(self._on_save_recipe_clicked)
+
+        self._recipe_container = RecipeContainer(
+            recipe_name=self._recipe_display_name(),
+            load_button=self._load_btn,
+            save_button=self._save_recipe_btn,
+        )
+
+        # spec/93 §7 — the binding badge + migration note continue to
+        # ride in the Recipe header row. They're informational only
+        # (no click target), so they slot alongside the Load / Save
+        # buttons cleanly.
+        header_layout = self._recipe_container.header_widget().layout()
+        self._binding_badge = BindingBadge()
+        # Insert before the Load / Save buttons (after the stretch that
+        # RecipeContainer's ctor adds), so the reading order left-to-
+        # right is:  Recipe: [name]   [binding-badge] [migration] ...  [Load] [Save]
+        header_layout.insertWidget(header_layout.count() - 2, self._binding_badge)
+        self._migration_note = QLabel("")
+        self._migration_note.setObjectName("MigrationNote")
+        self._migration_note.setWordWrap(False)
+        self._migration_note.setVisible(False)
+        header_layout.insertWidget(header_layout.count() - 2, self._migration_note)
+
+        # Section 1 — Collection.
+        section1_content = self._build_collection_content()
+        self._section_collection = AccordionSection(
+            title=tr("① Collection"),
+            content=section1_content,
+            summary=self._collection_summary_text(),
+        )
+        self._recipe_container.add_section(self._section_collection)
+
+        # Section 2 — Format.
+        section2_content = self._build_format_content()
+        self._section_format = AccordionSection(
+            title=tr("② Format"),
+            content=section2_content,
+            summary=self._format_summary_text(),
+        )
+        self._recipe_container.add_section(self._section_format)
+
+        # Strict-accordion arbitrator (spec/162 §4.5) — exactly one
+        # section expanded at a time, no all-collapsed state. Kept as
+        # an instance attr so tests can reach it.
+        self._accordion_group = StrictAccordionGroup(
+            [self._section_collection, self._section_format],
+            initially_expanded=0,
+            allow_all_collapsed=False,
+        )
+        return self._recipe_container
+
+    def _build_collection_content(self) -> QWidget:
+        """Section 1 · Collection — the pool composition (Source +
+        Filters). Event scope adds a non-editable
+        ``Starting from your Base Collection`` caption at the top
+        (spec/162 §4.3). Cross-event scope keeps the current
+        Scope-source composition row (the operand-picker sentence)
+        until Round 3 replaces it with a proper `#StartingFromRow`
+        chip strip."""
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
+
+        # spec/162 §4.3 — the "Starting from" row. Event-scope reads a
+        # non-editable caption; cross-event carries the Scope-source
+        # sentence (the operand picker).
+        starting_row = QWidget()
+        starting_row.setObjectName("StartingFromRow")
+        starting_row.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        starting_h = QHBoxLayout(starting_row)
+        starting_h.setContentsMargins(0, 0, 0, 0)
+        if self._scope == SCOPE_EVENT:
+            caption = QLabel(tr("Starting from your Base Collection"))
+            caption.setObjectName("Sub")
+            starting_h.addWidget(caption)
+            starting_h.addStretch()
+        v.addWidget(starting_row)
+
+        # Scope section (cross-event only) — keeps the current
+        # composable source sentence. Round 3 replaces this with the
+        # `#StartingFromRow` chip stack + `[+ or…]` picker.
+        if self._show_scope:
+            v.addWidget(self._build_scope_section())
+
+        # Source composition — the operand picker sentence + chip
+        # stack. Kept at both scopes for now; Round 3 hides it at
+        # event scope in favour of the pure caption above.
+        v.addWidget(self._build_source_section())
+
+        # Filters (Style + Media at event scope; extended at
+        # cross-event once Round 3's FilterBar extension lands).
+        # spec/81 §3 path A — the Pin→Cut flow passes ``show_filters=
+        # False`` so the pinned Collection's filters ride via the
+        # source operand rather than a duplicate inline wall.
+        if self._show_filters:
+            v.addWidget(self._build_filters_section())
+        return host
+
+    def _build_format_content(self) -> QWidget:
+        """Section 2 · Format — the three-row flat grid per spec/162
+        §4.4. Reuses :meth:`_build_runtime_section`'s widget verbatim;
+        the section internals already ship the Budget · Timing ·
+        Presentation grid shape."""
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
+        v.addWidget(self._build_runtime_section())
+        return host
+
+    def _build_launch_pad(self) -> QWidget:
+        """The LaunchPad (spec/162 §4.6) — the per-Cut controls +
+        summary strip + button row that sit BELOW the Recipe
+        container. Nothing in here is captured by "Save as Recipe…"
+        (spec/162 §1).
+
+        Layout, top to bottom:
+        * Name-this-Cut row (a ``#LaunchPadRow``).
+        * Rules block (title + Add-rule button + rule rows) — a
+          ``#RulesList``.
+        * Contextual Starts-all / Otherwise verdict row.
+        * Summary strip (``#LaunchPadSummaryStrip``) — the existing
+          metrics readout wrapped in the new role.
+        * Button row — Cancel / Discard Changes on the left, primary
+          Freeze-and-Pick / Save-Changes-and-Pick on the right.
+        """
+        host = QWidget()
+        host.setObjectName("LaunchPad")
+        host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(host)
+        v.setContentsMargins(22, 14, 22, 14)
+        v.setSpacing(10)
+
+        # Name-this-Cut row (wraps :meth:`_build_name_section`).
+        name_row = QWidget()
+        name_row.setObjectName("LaunchPadRow")
+        name_row.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        name_row_layout = QVBoxLayout(name_row)
+        name_row_layout.setContentsMargins(0, 0, 0, 0)
+        name_row_layout.setSpacing(4)
+        name_row_layout.addWidget(self._build_name_section())
+        v.addWidget(name_row)
+
+        # Rules block (wraps :meth:`_build_rules_section`) inside a
+        # ``#RulesList`` role wrapper.
+        rules_wrap = QWidget()
+        rules_wrap.setObjectName("RulesList")
+        rules_wrap.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        rules_layout = QVBoxLayout(rules_wrap)
+        rules_layout.setContentsMargins(0, 0, 0, 0)
+        rules_layout.setSpacing(4)
+        rules_layout.addWidget(self._build_rules_section())
+        v.addWidget(rules_wrap)
+
+        # Contextual Otherwise / Starts-all row.
+        v.addWidget(self._build_otherwise_section())
+
+        # Summary strip — wraps the existing MetricsSection widget in
+        # the new #LaunchPadSummaryStrip role. When warnings exist,
+        # :meth:`_refresh_launch_pad_summary_tone` flips
+        # ``tone="warn"`` for the amber QSS treatment.
+        summary_wrap = QWidget()
+        summary_wrap.setObjectName("LaunchPadSummaryStrip")
+        summary_wrap.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True)
+        summary_layout = QVBoxLayout(summary_wrap)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(4)
+        summary_layout.addWidget(self._build_metrics_section())
+        self._launch_pad_summary = summary_wrap
+        v.addWidget(summary_wrap)
+
+        # Button row — Cancel / Discard Changes + primary CTA.
+        button_row = QWidget()
+        h = QHBoxLayout(button_row)
+        h.setContentsMargins(0, 4, 0, 0)
+        h.setSpacing(10)
+        h.addStretch()
+        cancel_label = (
+            tr("Discard Changes") if self._mode == MODE_EDIT
+            else tr("Cancel"))
+        cancel = ghost_button(cancel_label)
+        cancel.clicked.connect(self.reject)
+        h.addWidget(cancel)
+        start_label = (
+            tr("▶ Save Changes and Pick") if self._mode == MODE_EDIT
+            else tr("▶ Freeze and Pick"))
+        self._start_btn = primary_button(start_label)
+        self._start_btn.setEnabled(False)
+        self._start_btn.setToolTip(tr(
+            "Compose a Source and pick a verdict to enable this action."))
+        self._start_btn.clicked.connect(self._on_start_clicked)
+        h.addWidget(self._start_btn)
+        v.addWidget(button_row)
+        return host
+
+    # -------- Live summary helpers (spec/162 §4.3, §4.4) -------------- #
+
+    def _recipe_display_name(self) -> str:
+        """Text shown in the RecipeContainer header's Recipe-name label.
+        Reads the ctx name if the dialog was constructed with a Recipe
+        prefill (Edit Cut mode or a fresh dialog with an initial
+        Recipe); otherwise the ``(new · unsaved)`` placeholder."""
+        name = (self._ctx.name or "").strip()
+        if name:
+            return name
+        return tr("(new · unsaved)")
+
+    def _refresh_recipe_container_name(self, name: str = "") -> None:
+        """Push a fresh Recipe name into the RecipeContainer's header
+        label. Called from :meth:`_apply_recipe` after a Load Recipe
+        and from :meth:`_on_save_recipe_clicked` after a Save. Empty
+        ``name`` restores the "(new · unsaved)" placeholder."""
+        container = getattr(self, "_recipe_container", None)
+        if container is None:
+            return
+        clean = (name or "").strip()
+        container.set_recipe_name(clean or tr("(new · unsaved)"))
+
+    def _collection_summary_text(self) -> str:
+        """Section 1's live summary chip text (spec/162 §4.3).
+        ``Collection · N files`` where N reads off the last successful
+        probe. Falls back to ``Collection`` when no probe has fired
+        yet."""
+        res = self._last_resolution
+        if res is not None:
+            pool = getattr(res, "pool", None)
+            if pool is not None:
+                try:
+                    n = len(pool)
+                except TypeError:
+                    n = 0
+                return tr("Collection · {n} files").replace("{n}", str(n))
+        return tr("Collection")
+
+    def _format_summary_text(self) -> str:
+        """Section 2's live summary chip text (spec/162 §4.4).
+        Condenses the significant Format choices: aspect · target /
+        no-budget · music category · overlay count."""
+        parts: list[str] = [tr("Format")]
+        # Aspect
+        if getattr(self, "_aspect", None):
+            parts.append(str(self._aspect))
+        # Target minutes
+        if self._has_budget:
+            parts.append(tr("{n} min").replace(
+                "{n}", str(self._target_minutes)))
+        else:
+            parts.append(tr("no budget"))
+        # Music
+        if self._music_category:
+            parts.append(str(self._music_category).lower())
+        else:
+            parts.append(tr("no music"))
+        # Overlays
+        n_over = len(self._overlay_fields)
+        if n_over > 0:
+            parts.append(
+                tr("{n} overlays").replace("{n}", str(n_over))
+                if n_over != 1 else tr("1 overlay"))
+        return " · ".join(parts)
+
+    def _refresh_section_summaries(self) -> None:
+        """Update both accordion header summary chips. Safe before the
+        sections are built (no-ops when the attrs don't exist yet)."""
+        if hasattr(self, "_section_collection"):
+            self._section_collection.set_summary(
+                self._collection_summary_text())
+        if hasattr(self, "_section_format"):
+            self._section_format.set_summary(
+                self._format_summary_text())
+
+    def _refresh_launch_pad_summary_tone(self, warnings: int) -> None:
+        """Flip the ``tone="warn"`` property on the
+        ``#LaunchPadSummaryStrip`` wrapper when the warning count is
+        non-zero, so QSS paints the amber treatment. Safe before the
+        wrapper exists."""
+        wrap = getattr(self, "_launch_pad_summary", None)
+        if wrap is None:
+            return
+        wrap.setProperty("tone", "warn" if warnings > 0 else "")
+        style = wrap.style()
+        if style is not None:
+            style.unpolish(wrap)
+            style.polish(wrap)
 
     # -------- Recipe toolbar (spec/90 §5) ---------------------------- #
 
@@ -3411,6 +3732,9 @@ class NewCutDialog(QDialog):
             if chip.isChecked()
         }
         self._overlay_fields = [k for k in _co.OVERLAY_FIELDS if k in keys]
+        # spec/162 §4.4 — the Format summary chip carries the overlay
+        # count.
+        self._refresh_section_summaries()
 
     # -------- Separators + card-style control (spec/143) ------------- #
 
@@ -3538,6 +3862,8 @@ class NewCutDialog(QDialog):
         data = self._aspect_combo.currentData()
         from core.cut_aspect import normalise as _normalise_aspect
         self._aspect = _normalise_aspect(data)
+        # spec/162 §4.4 — the Format summary chip carries the aspect.
+        self._refresh_section_summaries()
 
     def _on_music_changed(self, _index: int) -> None:
         """spec/106 — track the picker's current value so
@@ -3547,6 +3873,9 @@ class NewCutDialog(QDialog):
         data = self._music_combo.currentData()
         self._music_category = (
             str(data) if isinstance(data, str) and data else None)
+        # spec/162 §4.4 — the Format summary chip surfaces the music
+        # category (or "no music").
+        self._refresh_section_summaries()
 
     # -------- Live metrics row (Phase 4d) ---------------------------- #
 
@@ -3752,7 +4081,12 @@ class NewCutDialog(QDialog):
         """Re-render the metrics line using the last successful
         resolution + the current runtime settings. Doesn't re-run the
         probe — used for spin-box changes where the resolver output
-        hasn't changed, only the projected runtime numbers."""
+        hasn't changed, only the projected runtime numbers.
+
+        Also refreshes the accordion header summary chips so Section
+        2 (Format) reflects aspect / target / music / overlay changes
+        immediately, even before the probe fires."""
+        self._refresh_section_summaries()
         if self._last_resolution is None:
             return
         self._apply_metrics(self._last_resolution)
@@ -3821,6 +4155,9 @@ class NewCutDialog(QDialog):
         else:
             text = head + f"{_format_mm_ss(total_s)} {tr('runtime')}"
         self._metrics_label.setText(text)
+        # spec/162 §4.3, §4.4 — refresh the accordion header summary
+        # chips off the same probe result the metrics line renders from.
+        self._refresh_section_summaries()
 
     def _apply_rule_breakdown(
         self,
@@ -4096,6 +4433,9 @@ class NewCutDialog(QDialog):
                     dlg.show_error(str(exc))
                     continue
                 self.recipe_saved.emit(recipe)
+                # spec/162 §4.2 — RecipeContainer header follows the
+                # freshly-saved name.
+                self._refresh_recipe_container_name(name)
                 self._toast(tr(
                     "Recipe '{name}' updated.").format(name=name))
                 return
@@ -4103,6 +4443,9 @@ class NewCutDialog(QDialog):
                 dlg.show_error(str(exc))
                 continue
             self.recipe_saved.emit(recipe)
+            # spec/162 §4.2 — RecipeContainer header follows the freshly-
+            # saved name.
+            self._refresh_recipe_container_name(name)
             self._toast(tr("Recipe '{name}' saved.").format(name=name))
             return
 
@@ -4299,7 +4642,11 @@ class NewCutDialog(QDialog):
         the metrics line so the mismatch is honest."""
         composition = RecipeStore.composition(recipe)
         self._apply_composition(composition)
-        self._name_edit.setText(getattr(recipe, "name", "") or "")
+        loaded_name = getattr(recipe, "name", "") or ""
+        self._name_edit.setText(loaded_name)
+        # spec/162 §4.2 — the RecipeContainer header's Recipe-name label
+        # follows the loaded Recipe's name.
+        self._refresh_recipe_container_name(loaded_name)
         loaded_flavour = getattr(recipe, "flavour", self._flavour)
         if loaded_flavour != self._flavour:
             self._apply_cross_flavour_banner(loaded_flavour, composition)

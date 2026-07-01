@@ -192,13 +192,9 @@ class LibraryPage(QWidget):
     #: events page already builds, so the LibraryPage stays page-
     #: shaped (no dialog construction inline).
     new_cut_requested = pyqtSignal()
-    #: Emitted when the user clicks **Manage Collections…** in the
-    #: Collections band. Routes to the SAME host-driven Collections
-    #: dialog as ``new_cut_requested`` — the one the events page wires
-    #: with ``pin_requested`` so **Pin → Cut** actually fires. Opening
-    #: the dialog inline here (the prior behaviour) left that signal
-    #: unconnected, so Pin → Cut was a silent no-op.
-    manage_collections_requested = pyqtSignal()
+    # spec/162 Round 2b — the ``manage_collections_requested`` signal
+    # + the Manage-Collections band retire. Round 3 replaces the whole
+    # Collections surface with the Base Collection card.
 
     def __init__(self, gateway, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -208,8 +204,6 @@ class LibraryPage(QWidget):
         self.uses_titlebar_back = True
         self._cuts_rows_layout: Optional[QVBoxLayout] = None
         self._cuts_empty_label: Optional[QLabel] = None
-        self._collections_count_label: Optional[QLabel] = None
-        self._recipes_count_label: Optional[QLabel] = None
         self._build_layout()
 
     # ------------------------------------------------------------------ #
@@ -259,8 +253,12 @@ class LibraryPage(QWidget):
         outer.addLayout(title_row)
 
         outer.addWidget(self._build_cuts_band())
-        outer.addWidget(self._build_collections_band())
-        outer.addWidget(self._build_recipes_band())
+        # spec/162 Round 2b (2026-07-01) — the Collections + Recipes
+        # bands retire. Round 3 collapses the whole page toward the
+        # ShareCutsPage-mirror shape (Base Collection card + flat Cuts
+        # list under a pink identity rail — spec/162 §3.2). For now the
+        # cross-event Cuts band stays as-is; the space the retired
+        # bands used simply closes up.
         outer.addStretch(1)
 
         scroll.setWidget(host)
@@ -312,55 +310,11 @@ class LibraryPage(QWidget):
 
         return band
 
-    def _build_collections_band(self) -> QWidget:
-        band = QFrame()
-        band.setObjectName("SurfaceBand")
-        layout = QHBoxLayout(band)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        title = QLabel(tr("Collections"))
-        title.setObjectName("CardTitle")
-        col.addWidget(title)
-        self._collections_count_label = QLabel("")
-        self._collections_count_label.setObjectName("Sub")
-        col.addWidget(self._collections_count_label)
-        layout.addLayout(col, 1)
-        manage = ghost_button(tr("Manage Collections…"))
-        manage.setToolTip(tr(
-            "Browse, rename, or delete your Collections — the saved "
-            "queries Cuts pin from."))
-        manage.clicked.connect(self._on_manage_collections)
-        layout.addWidget(manage)
-        return band
-
-    def _build_recipes_band(self) -> QWidget:
-        band = QFrame()
-        band.setObjectName("SurfaceBand")
-        layout = QHBoxLayout(band)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        title = QLabel(tr("Recipes"))
-        title.setObjectName("CardTitle")
-        col.addWidget(title)
-        self._recipes_count_label = QLabel("")
-        self._recipes_count_label.setObjectName("Sub")
-        col.addWidget(self._recipes_count_label)
-        layout.addLayout(col, 1)
-        # spec/93 §4 + §9: the OS file manager IS the management surface
-        # for Recipes (a folder tree under <library_root>/Recipes/). v1
-        # of the Library page just surfaces the count; the cascading-menu
-        # browser is the natural follow-up.
-        hint = QLabel(tr(
-            "Manage in your file manager under "
-            "<library_root>/Recipes/."))
-        hint.setObjectName("Faint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        return band
+    # spec/162 Round 2b (2026-07-01) — _build_collections_band /
+    # _build_recipes_band + _on_manage_collections retired. Round 3
+    # replaces the Collections surface with the Base Collection card at
+    # library scope (spec/162 §3.2). Recipes stay dialog-only surface for
+    # now (spec/162 §11 defers the browsable Recipes surface).
 
     # ------------------------------------------------------------------ #
     # State
@@ -404,28 +358,11 @@ class LibraryPage(QWidget):
         self._refresh_counts()
 
     def _refresh_counts(self) -> None:
-        lg = self._library_gateway()
-        n_coll = len(lg.dynamic_collections()) if lg is not None else 0
-        if self._collections_count_label is not None:
-            self._collections_count_label.setText(tr(
-                "{n} saved").replace("{n}", str(n_coll)))
-        # Recipes — counted via the recipes_library tree if wired.
-        n_rec = self._count_recipes()
-        if self._recipes_count_label is not None:
-            self._recipes_count_label.setText(tr(
-                "{n} saved").replace("{n}", str(n_rec)))
-
-    def _count_recipes(self) -> int:
-        """Best-effort: count Recipe rows via RecipeStore if the
-        umbrella exposes one. Falls back to 0 silently."""
-        try:
-            rs = self._gateway.recipe_store()
-        except Exception:                                      # noqa: BLE001
-            return 0
-        try:
-            return len(rs.list())
-        except Exception:                                      # noqa: BLE001
-            return 0
+        # spec/162 Round 2b — the Collections + Recipes count labels
+        # retired with their bands. Method kept as a no-op so callers
+        # (refresh(), signal handlers) don't need updating; Round 3's
+        # Base Collection card carries its own count logic.
+        return
 
     # ------------------------------------------------------------------ #
     # Gateway helpers
@@ -461,18 +398,11 @@ class LibraryPage(QWidget):
         connection, the click is a quiet no-op."""
         self.new_cut_requested.emit()
 
-    def _on_manage_collections(self) -> None:
-        """Manage Collections… — opens the Collections list dialog via
-        the host (spec/93 §9 — the file manager is the management
-        surface; this dialog is the in-app view of the same tree).
-
-        Emits a signal rather than constructing the dialog inline: the
-        host opens the SAME dialog the events page already wires with
-        ``pin_requested`` → ``_pin_cross_event_dc``, so **Pin → Cut**
-        fires. Building it here left that signal unconnected, making
-        Pin → Cut a silent no-op. Tests connect to the signal; absent a
-        connection, the click is a quiet no-op."""
-        self.manage_collections_requested.emit()
+    # spec/162 Round 2b (2026-07-01) — _on_manage_collections + the
+    # Manage Collections… button + the manage_collections_requested
+    # signal retire. The Manage Collections surface (CrossEventDcsDialog)
+    # retires wholesale with spec/162 §2's Save/Load-Collection
+    # retirement.
 
     @staticmethod
     def _cut_card_style(cut) -> str:

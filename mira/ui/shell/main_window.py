@@ -469,12 +469,7 @@ class MainWindow(QMainWindow):
             lambda: self._on_entry(ENTRY_DASHBOARD))
         self.library_page.new_cut_requested.connect(
             self._open_new_cross_event_cut_from_library)
-        # Manage Collections… opens the SAME wired Collections dialog as
-        # + New Cut — the events-page opener connects pin_requested, so
-        # Pin → Cut fires. (The Library page used to open this dialog
-        # inline without that wiring, leaving Pin → Cut dead.)
-        self.library_page.manage_collections_requested.connect(
-            self._open_new_cross_event_cut_from_library)
+        # spec/162 Round 2b — Manage Collections band + signal retired.
         self.new_event_page.event_created.connect(self._on_new_event_created)
         self.new_event_page.cancelled.connect(self._on_new_event_cancelled)
         self.phases_page.back_requested.connect(self._on_event_back)
@@ -979,16 +974,27 @@ class MainWindow(QMainWindow):
         self._help_shortcut = help_sc
 
     def _open_new_cross_event_cut_from_library(self) -> None:
-        """spec/94 Phase 4a-iii — the Library page's '+ New Cut' button.
-        Routes to the events page's existing Collection-list flow:
-        from there the user picks a Collection and clicks **Pin → Cut**,
-        which opens the Collection face of NewCutDialog. v1 keeps
-        the routing one-hop; a future slice may surface the Pin dialog
-        from the Library page directly."""
-        self.events_page._open_new_cross_event_dc()
-        # Refresh the Library page's cuts list when the user lands back
-        # — the new Cut they pinned should appear without an extra tap.
-        self.library_page.refresh()
+        """spec/162 Round 2b — the Library page's '+ New Cut' button.
+
+        The pre-spec/162 flow routed through
+        ``events_page._open_new_cross_event_dc`` → the standalone
+        ``CrossEventDcsDialog`` (Manage Collections) → user clicks
+        Pin → Cut → NewCutDialog. That dialog + intermediate flow
+        retire with spec/162 §2 (the Save/Load-Collection surface).
+        This session leaves the button live but routes it to a
+        deferred stub — Round 3 lands the full cross-event New Cut
+        composition surface (`NewCutDialog(scope=SCOPE_CROSS_EVENT)`
+        with proper cross-event source composition + FilterBar
+        extension). Clicking today shows a no-op notice."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "Cross-event New Cut",
+            "The cross-event New Cut composition surface is under "
+            "construction — spec/162 Round 3.\n\n"
+            "Until then, use the per-event New Cut on the Share page "
+            "of an open event.",
+        )
 
     def _on_titlebar_back(self) -> None:
         """Route the shared title-bar Back to the current page's back action —

@@ -385,26 +385,17 @@ class EventsPage(QWidget):
         self._filter_btn.style().polish(self._filter_btn)
         self._clear_btn.setVisible(active)
 
-    # ── cross-event DC entry (spec/81 Phase 2 Item 5) ──────────────────
+    # ── cross-event DC entry (retired spec/162 Round 2b) ──────────────
 
-    def _open_new_cross_event_dc(self) -> None:
-        """Open the cross-event collections browser. The list shows existing
-        cross-event Dynamic Collections (saved_filter rows), lets the user
-        edit / delete / pin / create new ones. Pin → opens the cross-event
-        New Cut dialog → commits via :class:`CrossEventCutSession`."""
-        if self.gateway is None:
-            return
-        from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
-
-        # spec/94 Phase 1b — route through the Gateway's factory so the
-        # JSON tree is the single live source for DC CRUD.
-        lg = self.gateway.library_gateway()
-        dialog = CrossEventDcsDialog(
-            lg, umbrella_gateway=self.gateway, parent=self)
-        dialog.pin_requested.connect(
-            lambda dc: self._pin_cross_event_dc(lg, dc))
-        dialog.view_cuts_requested.connect(self._open_cross_event_cuts)
-        dialog.exec()
+    # spec/162 Round 2b (2026-07-01) — ``_open_new_cross_event_dc`` was
+    # the entry point to the standalone ``CrossEventDcsDialog`` (Manage
+    # Collections). That whole surface — the Manage-Collections list, the
+    # ``+ New Collection`` action, the Save/Load-Collection sub-dialogs
+    # inside ``NewCutDialog`` — retires wholesale with spec/162 §2. The
+    # ``_pin_cross_event_dc`` method below stays as dead code for now;
+    # it drove the DC-to-Cut Pin flow that only fires from the retired
+    # dialog. Round 3's cross-event source-composition surface replaces
+    # its behaviour.
 
     def _open_cross_event_cuts(self) -> None:
         """Open the cross-event Cuts browser. The browser gathers cuts with

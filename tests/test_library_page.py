@@ -105,15 +105,14 @@ def _row(*, cut_id, tag="best", member_count=5,
 
 
 def test_constructs_with_empty_gateway(qapp):
-    """The page paints with no Cuts + no Collections — every band
-    renders, the cuts band shows the empty hint, counts read zero."""
+    """The page paints with no Cuts — the cuts band shows the empty
+    hint. spec/162 Round 2b retired the Collections + Recipes count
+    labels along with their bands."""
     gw = _FakeUmbrella(cuts=[])
     page = LibraryPage(gw)
     page.refresh()
     assert page._cuts_empty_label is not None
     assert not page._cuts_empty_label.isHidden()
-    assert page._collections_count_label.text() == "0 saved"
-    assert page._recipes_count_label.text() == "0 saved"
     page.deleteLater()
 
 
@@ -233,14 +232,9 @@ def test_delete_confirm_no_does_nothing(qapp, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_counts_reflect_gateway(qapp):
-    gw = _FakeUmbrella(cuts=[], recipe_count=7)
-    gw._lg.collections = [object(), object(), object()]
-    page = LibraryPage(gw)
-    page.refresh()
-    assert page._collections_count_label.text() == "3 saved"
-    assert page._recipes_count_label.text() == "7 saved"
-    page.deleteLater()
+# spec/162 Round 2b — test_counts_reflect_gateway + test_manage_
+# collections_emits_signal retired with the Collections + Recipes
+# bands.
 
 
 def test_new_cut_button_emits_signal(qapp):
@@ -250,19 +244,6 @@ def test_new_cut_button_emits_signal(qapp):
     page.new_cut_requested.connect(lambda: fired.append("new"))
     page._on_new_cut()
     assert fired == ["new"]
-    page.deleteLater()
-
-
-def test_manage_collections_emits_signal(qapp):
-    """Manage Collections… must route through the host (the wired
-    Collections dialog) rather than opening an inline, unwired copy —
-    otherwise its Pin → Cut button is a silent no-op."""
-    gw = _FakeUmbrella()
-    page = LibraryPage(gw)
-    fired = []
-    page.manage_collections_requested.connect(lambda: fired.append("manage"))
-    page._on_manage_collections()
-    assert fired == ["manage"]
     page.deleteLater()
 
 

@@ -39,11 +39,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: the share-cuts page (event-scope DC list), and the new recipe dialog.
 #: Adding a new user-facing surface? Add it here so future drift gets
 #: caught at the test bar, not in a screenshot.
+#: spec/162 Round 2b — cross_event_dcs_dialog.py retired; the vocabulary
+#: sweep drops it here so future edits don't trip on the missing file.
+#: new_recipe_dialog.py → new_cut_dialog.py (Round 1a rename).
 _SCANNED_FILES = (
     "mira/ui/pages/cross_event_cuts_dialog.py",
-    "mira/ui/pages/cross_event_dcs_dialog.py",
     "mira/ui/pages/new_cross_event_dc_dialog.py",
-    "mira/ui/pages/new_recipe_dialog.py",
+    "mira/ui/pages/new_cut_dialog.py",
     "mira/ui/pages/share_cuts_page.py",
     "mira/ui/shared/dc_detail_page.py",
     "mira/ui/pages/_cross_event_band.py",

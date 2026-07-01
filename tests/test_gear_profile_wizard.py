@@ -190,6 +190,9 @@ def test_genre_picker_offers_all_wizard_genres(qapp, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2b — CrossEventDcsDialog + its Manage-Gear "
+           "button retired with the Save/Load Collection surface")
 def test_dc_list_dialog_has_manage_gear_button(qapp, tmp_path):
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     lg, store = _open_lg(tmp_path)
@@ -198,6 +201,9 @@ def test_dc_list_dialog_has_manage_gear_button(qapp, tmp_path):
     store.close()
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2b — CrossEventDcsDialog + its Manage-Gear "
+           "button retired with the Save/Load Collection surface")
 def test_dc_list_dialog_manage_gear_opens_wizard(qapp, tmp_path, monkeypatch):
     """Clicking "Manage my gear…" instantiates the wizard. We monkeypatch
     out exec so the test stays headless."""

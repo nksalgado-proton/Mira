@@ -323,6 +323,9 @@ def test_reconcile_skips_unresolvable_events_without_raising(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2b — CrossEventDcsDialog retired with the "
+           "Save/Load Collection surface")
 def test_events_page_new_dc_signal_opens_list_dialog(qapp, tmp_path,
                                                     monkeypatch):
     """Clicking + Collection on the band opens
@@ -352,6 +355,10 @@ def test_events_page_new_dc_signal_opens_list_dialog(qapp, tmp_path,
     gw.close()
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2b — the DC-Pin → Cut flow retired with the "
+           "Save/Load Collection surface; Round 3 replaces it with "
+           "cross-event source composition inside NewCutDialog")
 def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
                                                     monkeypatch):
     """Clicking Pin → Cut on a DC row opens the New Collection face of

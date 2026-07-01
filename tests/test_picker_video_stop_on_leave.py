@@ -26,7 +26,16 @@ def picker_page(qapp, tmp_path):
     gw = Gateway(settings=settings, index=index)
     p = PickerPage(gw)
     yield p
+    # Some tests monkeypatch viewport.shutdown_video to a no-op stub.
+    # When the page is subsequently hidden / deleted, the real
+    # QMediaPlayer state stays armed and a queued teardown callback
+    # trips on a callable that was replaced with None-ish state. Drain
+    # the event queue before deleteLater so any pending signal handler
+    # runs while the objects are still alive, then delete.
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
     p.deleteLater()
+    QApplication.processEvents()
 
 
 def _cull(item_id: str, kind: str, path: Path) -> SimpleNamespace:

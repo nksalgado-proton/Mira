@@ -87,7 +87,9 @@ def test_video_cells_carry_the_video_badge(qapp, gw, tmp_path):
     the photo cache, no badge to label them as videos) so the user
     couldn't pick/skip them. Every video cell now carries the
     ``cluster_type='video'`` badge so it reads as a video at a glance,
-    poster or no poster."""
+    poster or no poster. Nelson 2026-06-25 — ``cluster_count`` stays
+    at 0 for videos because ×1 was reading as "1× speed"; the badge
+    alone signals the kind."""
     page = _page(gw, tmp_path)
     page._open_day(1)                           # day 2 has the video
     items = page._grid.items()
@@ -96,7 +98,8 @@ def test_video_cells_carry_the_video_badge(qapp, gw, tmp_path):
     video_cell = by_payload["Exported Media/v1.mp4"]
     assert photo_cell.cluster_type is None
     assert video_cell.cluster_type == "video"
-    assert video_cell.cluster_count == 1
+    # spec/144 badge alone signals the kind; ×N count chip stays hidden.
+    assert video_cell.cluster_count == 0
 
 
 def test_border_click_toggles_ledger_and_budget(qapp, gw, tmp_path):

@@ -83,6 +83,16 @@ _CELL_PX = 220
 _GRID_THUMB_TARGET = QSize(_CELL_PX, _CELL_PX)
 _CELL_SIZE = QSize(_CELL_PX, _CELL_PX)
 
+# spec/162 §3.2 / §7.2 Round 3d — scope constants for the DCDetailPage.
+# ``event`` is the shipped behaviour (drill-down over one event's
+# ``#exported`` universe). ``cross-event`` is the library-scope variant:
+# a flat grid over every event's ``#exported`` rows via the umbrella
+# gateway's :meth:`Gateway.library_exported_grid_items`. The two
+# constants live at module scope so hosts + tests can pass them by
+# name; :class:`FilterBar` has parallel constants of the same shape.
+SCOPE_EVENT = "event"
+SCOPE_CROSS_EVENT = "cross-event"
+
 #: Cap on the Ctrl+Z stack — same bound the Days-Grid uses. Each
 #: entry holds the deleted file's bytes in memory, so ~16 × ~5 MB
 #: = ~80 MB ceiling.
@@ -172,12 +182,34 @@ class DCDetailPage(QWidget):
     #: open and stays put).
     review_requested = pyqtSignal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        scope: str = SCOPE_EVENT,
+    ) -> None:
         super().__init__(parent)
         # QSS object name kept for back-compat (assets/themes/redesign.qss
         # rules attach to ``#PoolDetailPage``).
         self.setObjectName("PoolDetailPage")
+        # spec/162 §3.2 Round 3d — scope constructor parameter. Event
+        # scope preserves the shipped drill-down over one event's
+        # #exported universe. Cross-event scope flips the page to the
+        # library-wide flat grid over every #exported file across every
+        # event; write-side actions (delete, per-row ratings) are read-
+        # only at cross-event scope for this session — the surface's
+        # role is search + review, not per-file mutation.
+        if scope not in (SCOPE_EVENT, SCOPE_CROSS_EVENT):
+            raise ValueError(
+                f"DCDetailPage scope must be 'event' or 'cross-event', "
+                f"got {scope!r}")
+        self._scope: str = scope
         self._eg = None
+        # spec/162 §3.2 Round 3d — cross-event scope keeps a reference
+        # to the umbrella gateway so :meth:`_refresh` can walk
+        # :meth:`Gateway.library_exported_grid_items`. ``None`` at event
+        # scope (never touched by the shipped code path).
+        self._umbrella_gateway = None
         self._root: Optional[Path] = None
         self._files: List[m.Lineage] = []
         self._thumbs: Dict[str, QPixmap] = {}
@@ -264,10 +296,19 @@ class DCDetailPage(QWidget):
         # (which read as non-standard, especially the menu checkmarks
         # next to colour names instead of colour swatches). Reusable
         # widget; the host owns the LineageFilter state.
-        from mira.ui.exported.filter_bar import FilterBar
+        from mira.ui.exported.filter_bar import (
+            SCOPE_CROSS_EVENT as _BAR_SCOPE_CROSS,
+            SCOPE_EVENT as _BAR_SCOPE_EVENT,
+            FilterBar,
+        )
         from mira.ui.exported.filter_popup import LineageFilter
         self._filter: LineageFilter = LineageFilter()
-        self._filter_bar = FilterBar(self)
+        # spec/162 §8 — the FilterBar's scope drives the widget set:
+        # event scope shows the shipped five knobs; cross-event scope
+        # adds Camera / Lens / Dates.
+        bar_scope = (_BAR_SCOPE_CROSS if self._scope == SCOPE_CROSS_EVENT
+                     else _BAR_SCOPE_EVENT)
+        self._filter_bar = FilterBar(self, scope=bar_scope)
         self._filter_bar.filter_changed.connect(self._on_filter_changed)
         outer.addWidget(self._filter_bar)
 
@@ -278,7 +319,16 @@ class DCDetailPage(QWidget):
         # Back is in the shared title bar now (routed via
         # ShareCutsPage.on_titlebar_back). The grid's own back_requested
         # (Esc / edge) still fires the same signal.
-        self._header_lbl = QLabel(tr("#exported — the base Collection"))
+        # spec/162 §3.2 / §7.2 — the drill-down header flexes on scope:
+        # event scope reads "the base Collection"; cross-event scope
+        # reads "library" so the user sees at a glance which universe
+        # they're browsing.
+        if self._scope == SCOPE_CROSS_EVENT:
+            self._header_lbl = QLabel(
+                tr("#exported — Base Collection · library"))
+        else:
+            self._header_lbl = QLabel(
+                tr("#exported — the base Collection"))
         self._header_lbl.setObjectName("DayGridHeader")
         chrome.addWidget(self._header_lbl, stretch=1)
         outer.addLayout(chrome)
@@ -321,8 +371,95 @@ class DCDetailPage(QWidget):
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
+    def open_library_pool(self, gateway) -> None:
+        """spec/162 §3.2 / §7.2 (Round 3d) — bind to the umbrella
+        gateway + render the library-wide flat grid of every #exported
+        file across every event.
+
+        Only valid when the page was constructed with
+        ``scope=SCOPE_CROSS_EVENT``. At event scope this raises so a
+        caller passing the wrong gateway shape hears about it
+        loudly.
+
+        Every write-side action (delete, per-row rating writes) is a
+        no-op at library scope for this session — the library-scope
+        detail page's role is search + review; mutations still happen
+        on the per-event surface. The FilterBar's cross-event
+        dimensions (Camera / Lens / Dates) light up so the user can
+        narrow the union grid."""
+        if self._scope != SCOPE_CROSS_EVENT:
+            raise RuntimeError(
+                "open_library_pool requires scope=SCOPE_CROSS_EVENT")
+        self._umbrella_gateway = gateway
+        self._eg = None
+        self._root = Path(".")
+        # spec/162 §3.2 — the photo cache expects a per-event root; the
+        # library-scope path resolves each cell's on-disk bytes from
+        # the source event separately in :meth:`_request_missing_thumbs`
+        # (Round 3d minimal cut wires them via absolute paths inside
+        # the enriched row; the shared cache is bypassed for now).
+        try:
+            self._cache.set_event_context(self._root, {})
+        except Exception:                                          # noqa: BLE001
+            pass
+        self._undo_stack.clear()
+        self._mode = "flat"
+        self._cluster_item_id = None
+        self._compare_marked = set()
+        from mira.ui.exported.filter_popup import LineageFilter
+        self._filter = LineageFilter()
+        if hasattr(self, "_filter_bar"):
+            self._filter_bar.set_filter(self._filter)
+        # spec/162 §8 — populate the cross-event dimension inventories
+        # (Camera / Lens) from the enriched rows. Called after
+        # :meth:`_refresh_cross_event_rows` populates ``self._files``.
+        self._refresh_cross_event_rows()
+        # Hide the write-side toolbar buttons at library scope.
+        self._delete_btn.setVisible(False)
+        self._clear_btn.setVisible(False)
+        # Populate FilterBar's cross-event inventory hooks from the
+        # union of enriched rows.
+        self._filter_bar.set_available_cameras(
+            {getattr(r, "camera", None) for r in self._files
+             if getattr(r, "camera", None)})
+        self._filter_bar.set_available_lenses(
+            {getattr(r, "lens_model", None) for r in self._files
+             if getattr(r, "lens_model", None)})
+        self._rebuild_cells()
+        self._update_chrome()
+
+    def _refresh_cross_event_rows(self) -> None:
+        """spec/162 §3.2 Round 3d — load the library-wide enriched
+        row projection into ``self._files``. Each row is a
+        ``SimpleNamespace`` from the gateway aggregator with
+        ``export_relpath`` / ``camera`` / ``lens_model`` /
+        ``capture_date`` + the review-chrome fields, plus
+        ``event_id`` / ``event_name``.
+
+        The rest of the page's grid pipeline reads through duck-typed
+        ``getattr`` calls, so the SimpleNamespace shape lands cleanly
+        without any typing round-trip."""
+        if self._umbrella_gateway is None:
+            self._files = []
+            return
+        try:
+            self._files = list(
+                self._umbrella_gateway.library_exported_grid_items())
+        except Exception:                                          # noqa: BLE001
+            log.exception("library_exported_grid_items failed")
+            self._files = []
+        # Cluster machinery (Mira-render intent, virtual pending
+        # tiles, preferred-virtual-mira flags) is per-event; wipe the
+        # sets so the library-scope grid renders flat.
+        self._mira_intent_ids = set()
+        self._virtual_mira_preferred_ids = set()
+
     def open_pool(self, eg) -> None:
         """Bind to a live event gateway + render the pool."""
+        if self._scope != SCOPE_EVENT:
+            raise RuntimeError(
+                "open_pool requires scope=SCOPE_EVENT — "
+                "use open_library_pool for cross-event scope")
         self._eg = eg
         self._root = Path(eg.event_root) if eg.event_root else Path(".")
         self._cache.set_event_context(self._root, {})
@@ -350,6 +487,9 @@ class DCDetailPage(QWidget):
         lives on lineage and persists across opens."""
         self._undo_stack.clear()
         self._eg = None
+        # spec/162 §3.2 Round 3d — drop the umbrella reference too so a
+        # library-scope open followed by close doesn't leak the ref.
+        self._umbrella_gateway = None
         self._root = None
         self._files = []
         self._thumbs = {}
@@ -380,6 +520,15 @@ class DCDetailPage(QWidget):
     # ── data → cells ──────────────────────────────────────────────────
 
     def _refresh(self) -> None:
+        # spec/162 §3.2 Round 3d — library scope short-circuits into
+        # the cross-event union grid. Compare-marks + write-side state
+        # stay in sync so a future Round can flip on read-write
+        # actions per event.
+        if self._scope == SCOPE_CROSS_EVENT:
+            self._refresh_cross_event_rows()
+            self._rebuild_cells()
+            self._update_chrome()
+            return
         if self._eg is None or self._root is None:
             return
         # Use the lenient query so the pool's set matches the Export
@@ -440,6 +589,9 @@ class DCDetailPage(QWidget):
         if self._mode == "cluster":
             cluster_label = self._cluster_header_label()
             self._header_lbl.setText(cluster_label)
+        elif self._scope == SCOPE_CROSS_EVENT:
+            self._header_lbl.setText(
+                tr("#exported — Base Collection · library"))
         else:
             self._header_lbl.setText(
                 tr("#exported — the base Collection"))
@@ -484,6 +636,25 @@ class DCDetailPage(QWidget):
                 if cells or not self._filter.is_active():
                     cells.append(self._make_mira_pending_cell(
                         self._cluster_item_id))
+            return cells
+
+        # spec/162 §3.2 Round 3d — library scope is a flat grid: every
+        # #exported file across every event, one cell each, no
+        # cluster folding. source_item_id may collide across events
+        # (per-event UUIDs); clustering would fold unrelated files.
+        # The rest of the flat-cell paint path (thumbs, ratings,
+        # filter) works unchanged.
+        if self._scope == SCOPE_CROSS_EVENT:
+            cells: List[_GridCell] = []
+            for f in self._files:
+                if not self._filter.matches(f):
+                    continue
+                cells.append(_GridCell(
+                    kind="flat",
+                    cover_relpath=getattr(f, "export_relpath", ""),
+                    rows=[f],
+                    source_item_id=getattr(f, "source_item_id", None),
+                ))
             return cells
 
         # Flat mode — group by source_item_id (None stays ungrouped).
@@ -672,6 +843,14 @@ class DCDetailPage(QWidget):
 
     def _request_missing_thumbs(self) -> None:
         if self._root is None:
+            return
+        # spec/162 §3.2 Round 3d — library scope: cells reference
+        # per-event export_relpaths but this page's cache is bound to
+        # a single root. Skip the thumb fetch at cross-event scope for
+        # this session; the grid paints placeholders. A future round
+        # can thread a per-event root resolver through the cache
+        # request path.
+        if self._scope == SCOPE_CROSS_EVENT:
             return
         # Only fetch what the current view actually paints — cluster
         # mode shows a subset, no point pulling thumbs the user can't
@@ -1261,8 +1440,16 @@ class DCDetailPage(QWidget):
         n_shown_rows = self._visible_lineage_row_count()
         if hasattr(self, "_filter_bar"):
             self._filter_bar.setRenderedCount(n_shown_rows, n_files)
-        self._delete_btn.setVisible(n_marked > 0)
-        self._clear_btn.setVisible(n_marked > 0)
+        # spec/162 §3.2 Round 3d — the write-side toolbar (Delete /
+        # Clear marks) stays hidden at cross-event scope. The library-
+        # scope surface's role is search + review; mutations happen on
+        # the per-event pool page.
+        if self._scope == SCOPE_CROSS_EVENT:
+            self._delete_btn.setVisible(False)
+            self._clear_btn.setVisible(False)
+        else:
+            self._delete_btn.setVisible(n_marked > 0)
+            self._clear_btn.setVisible(n_marked > 0)
         if n_marked > 0:
             self._delete_btn.setText(
                 tr("⌫ Delete {n} marked…").replace("{n}", str(n_marked)))

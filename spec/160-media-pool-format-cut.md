@@ -66,6 +66,36 @@ conversation.
 
 Everything below is detail on those three things.
 
+### 1.1 Two faces, one narrower on purpose
+
+A Cut is a Cut at both scopes — same three nouns, same engine, same
+composition event. But the two jobs the dialog does are different, and
+the surface adapts:
+
+- **Event-scope Cut** — the everyday job. The user just came back from
+  a trip, culled, edited, and shipped. They **know** the content. What
+  they need from the dialog: pick which of the shipped photos go in,
+  choose a Format, freeze. The mental question is *"which of my
+  shipped shots make this share?"*
+- **Library-scope Cut** — the power job. The user is searching a
+  lifetime archive for a theme. The mental question is *"where are all
+  the wildlife shots I love, across everything I've ever shot?"* The
+  full spec/32 §2 facet catalogue (camera, lens, flash, ISO, focal
+  length, temporal, location, faces) earns its keep here — those are
+  the axes of the search.
+
+**Principle.** The event face **deliberately hides** every widget that
+doesn't help the shipping job — not to lock the user out but to keep
+the common flow small and fast. Every hidden widget on the event face
+is one fewer decision on the way to the Picker.
+
+The library face carries the full catalogue. Same widget, same engine,
+wider chrome.
+
+This is not an implementation shortcut — it's a load-bearing design
+choice that reflects how the two jobs genuinely differ. Full
+field-by-field visibility matrix is in §6.2.
+
 ---
 
 ## 2. Media Pool (retires "Collection" as a UI noun)
@@ -286,20 +316,43 @@ Every Cut dialog renders the same three sections:
    + the Picker session (§4.3), or an "already picked / already skipped"
    pass loaded from a saved Cut.
 
-### 6.2 Scope-driven chrome differences
+### 6.2 Field-by-field visibility matrix
 
-Two visibility flags decide what's shown:
+Per the §1.1 principle, the event face hides every widget that doesn't
+help the shipping job. The library face carries the full catalogue.
+Every field in the dialog belongs to exactly one row of this table —
+the audit + surface-plan work in §9 must not introduce a fourth
+state (partial visibility, conditional visibility, etc.). Two faces,
+one matrix.
 
-- **`show_scope`** — cross-event only. Event dialog: scope = current
-  event, hidden. Library dialog: Scope sentence at the top, composed
-  from Events / Event Collections / date ranges (spec/90 §3.1).
-- **`show_hardware_filters`** — cross-event only. Event dialog: no
-  camera / lens / faces (they add no value when composing from one
-  event's shipped set). Library dialog: full facet catalogue.
+| Section | Field | Event face | Library face | Rationale |
+|---|---|---|---|---|
+| **Scope** | Selector (Events / Event Collections / date ranges) | Hidden (fixed to current event) | Visible | Event Cut = this trip, nothing to choose |
+| **Media Pool → Source** | `#exported` (base universe) | Visible + default | Visible | The shipping set |
+| **Media Pool → Source** | `#collected` / `#picked` / `#edited` (lower ladder rungs) | **Hidden** | Visible | Non-shipped items don't belong in a share; but do belong in a lifetime search |
+| **Media Pool → Source** | Other Pools / Cuts as operands | This event's only | Library-wide | Operand inventory auto-filters (spec/90 §3.4) |
+| **Media Pool → Filters** | Style (macro / portrait / landscape / …) | Visible | Visible | The one filter that matters for audience-facing shipping |
+| **Media Pool → Filters** | Media type (photo / video) | Visible | Visible | Common everywhere |
+| **Media Pool → Filters** | Curatorial ratings (stars / colour / flag) | Visible (spec/159 lineage-level) | Visible (spec/32 item-level; add lineage per §8 when the projection lands) | Ratings drive the "portfolio-only" lens at every scope |
+| **Media Pool → Filters** | Camera | **Hidden** | Visible | An event is (mostly) one gear pool; filtering by camera adds no signal there |
+| **Media Pool → Filters** | Lens | **Hidden** | Visible | Same reasoning |
+| **Media Pool → Filters** | Flash on/off | **Hidden** | Visible | Same reasoning |
+| **Media Pool → Filters** | ISO / Aperture / Shutter / Focal length (min-max) | **Hidden** | Visible | Technical facets — search-tool territory, not share-composition |
+| **Media Pool → Filters** | Temporal (capture from / to) | **Hidden** | Visible | Event has its own date range implicitly |
+| **Media Pool → Filters** | Location (country / city) | **Hidden** | Visible | Event has its own location implicitly |
+| **Media Pool → Filters** | Faces (person multi-select) | **Hidden** (opt-in via user setting) | Visible (opt-in via user setting) | Face surface behind its own flag (spec/94 Phase 4b); scope-agnostic when on |
+| **Media Pool → Rules** | Chip + join-word predicate composition | Visible; operand vocabulary = this event's Pools + Cuts + `#exported` | Visible; operand vocabulary = full library | Rules exist at both scopes; the operand pool is what differs |
+| **Format** | *(every field — aspect ratio, duration, timing, transitions, audio, overlays, separators)* | **Identical** at both scopes | **Identical** at both scopes | Format is scope-free by definition (§3.3) |
+| **Freeze** | "Start all picked / start all skipped" toggle + Picker session | **Identical** at both scopes | **Identical** at both scopes | Freeze is scope-free |
 
-The operand inventory picker (spec/90 §3.4) auto-filters by scope:
-event dialog sees this event's Pools + Cuts + `#exported`; library
-dialog sees every Pool + Cut library-wide.
+**Reading the matrix.** Roughly half the Media Pool filters are hidden
+on the event face. Everything on the Format + Freeze sections is the
+same. The dialog *feels* dramatically smaller on the event face — and
+that's the point.
+
+If a future spec proposes exposing a currently-hidden field on the
+event face, it must argue against §1.1: what shipping job does that
+widget help? "Nice to have" is not an answer.
 
 ### 6.3 Save-as actions
 

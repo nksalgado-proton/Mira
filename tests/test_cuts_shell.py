@@ -92,8 +92,12 @@ def test_open_event_builds_exported_plus_cut_snapshots(qapp, gw, tmp_path):
     cut = cuts[0]
     assert cut.name == "short_version"
     assert cut.item_count == 1
-    # 1 photo + 1 separator × 6 s = 12 s
-    assert cut.duration_seconds == 12
+    # spec/143 §X + spec/152 §3 — the tile now counts the opener slide
+    # AND the transition slot per photo/separator (the pre-spec/152
+    # tile read (photo + sep) × photo_s; post-spec/152 the arithmetic
+    # matches the rehearsal/PTE total). 1 photo + 1 sep + 1 opener,
+    # each at (photo_s=6.0 + transition_s=2.0) = 3 × 8 = 24 s.
+    assert cut.duration_seconds == 24
     # `created_at` is None for never-exported in the fake gateway
     assert cut.exported_date == ""
 
@@ -109,8 +113,14 @@ def test_no_user_cuts_yields_empty_cuts_list(qapp, gw, tmp_path):
 def test_separators_setting_off_changes_duration(qapp, gw, tmp_path):
     shell = _shell(gw, use_separators=False)
     cut = shell.list_page._cuts[0]         # noqa: SLF001
-    # 1 photo only, no separator card -> 6 s
-    assert cut.duration_seconds == 6
+    # spec/143 §X — the per-Cut ``cut.separators`` value wins over the
+    # global ``use_separators`` setting. The fixture Cut carries the
+    # default ``separators=True`` on the row, so the tile still counts
+    # the separator slide even though the app-wide toggle is off. Same
+    # 3-slide arithmetic as the base test — 1 photo + 1 sep + 1 opener
+    # at 8 s each = 24 s. (A cut with ``separators=False`` explicitly
+    # set on the row would land at 1 photo + 1 opener = 16 s.)
+    assert cut.duration_seconds == 24
 
 
 def test_cut_row_is_fixed_height_and_list_scrolls(qapp, gw):

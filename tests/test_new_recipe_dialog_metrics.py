@@ -117,8 +117,10 @@ def test_metrics_row_renders_pool_size_picked_runtime_target(qapp):
     text = dlg._metrics_label.text()
     assert "386" in text
     assert "11" in text
-    # Default per_photo_seconds = 6.0 → 11 * 6.0 = 66s → 1:06.
-    assert "1:06" in text
+    # spec/152 §3 — the metrics line adds the transition slot per
+    # non-video slide. Default per_photo=6.0 + default transition=2.0
+    # → 11 * 8.0 = 88s → 1:28.
+    assert "1:28" in text
     # Default target = 10 min → 10:00.
     assert "10:00" in text
     assert "in pool" in text
@@ -133,13 +135,14 @@ def test_metrics_row_updates_when_per_photo_changes(qapp):
 
     dlg = _dialog(qapp, recipe_probe=probe)
     dlg._run_probe()
-    # 10 * 6.0s = 60s → 1:00.
-    assert "1:00" in dlg._metrics_label.text()
+    # spec/152 §3 — 10 * (6.0 + 2.0 transition) = 80s → 1:20.
+    assert "1:20" in dlg._metrics_label.text()
 
-    # Set per-photo to 12 seconds → 10 * 12 = 120s → 2:00. The probe
-    # doesn't re-run (pool/seed didn't change); only the line refreshes.
+    # Set per-photo to 12 seconds → 10 * (12 + 2 transition) = 140s → 2:20.
+    # The probe doesn't re-run (pool/seed didn't change); only the line
+    # refreshes.
     dlg._on_per_photo_changed(12.0)
-    assert "2:00" in dlg._metrics_label.text()
+    assert "2:20" in dlg._metrics_label.text()
 
 
 def test_metrics_row_updates_when_target_changes(qapp):
@@ -503,8 +506,8 @@ def test_metrics_line_drops_target_suffix_when_no_budget(qapp):
     text = dlg._metrics_label.text()
     assert "386" in text
     assert "11" in text
-    # 11 * 6.0 = 66s → 1:06.
-    assert "1:06" in text
+    # spec/152 §3 — 11 * (6.0 + 2.0 transition) = 88s → 1:28.
+    assert "1:28" in text
     # The "of N target" suffix is GONE; "runtime" appears instead.
     assert "target" not in text
     assert "runtime" in text

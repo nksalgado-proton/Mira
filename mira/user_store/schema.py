@@ -415,6 +415,22 @@ CREATE INDEX ix_gear_profile_active ON gear_profile(kind, is_active) WHERE is_ac
 -- whose ``cut_member`` rows all live in one event is event-scope; a Cut with
 -- members from two or more events is cross-event and lives here.
 --
+-- NOTE (audit anchor): the module docstring's v2 "retired ``cut``" claim is
+-- true history — spec/61 slice 10 did retire the original user-level cut
+-- table. v8 RE-INTRODUCED it for the cross-event surface (spec/94 Phase
+-- 4a-ii). Live callers of THIS table (not event.db's cut) at the time of
+-- writing:
+--   * :mod:`mira.gateway.library_gateway` — the CRUD path (list / rename /
+--     update / delete / touch cross-event Cuts). Every write here goes
+--     through ``self.user_store.transaction()``; ~8 methods hit this table.
+--   * :mod:`mira.shared.cross_event_sweeps` — the DC-orphan sweep NULLs
+--     ``source_dc_id`` on any Cut whose source disappeared. Runs against
+--     both stores (mira.db here, event.db separately).
+--   * :mod:`core.cross_event_cut_migrate` — the spec/93 §3 migration path
+--     that moves promoted rows from event.db INTO this table.
+-- Any future agent tempted to "clean up" the DDL block because of the v2
+-- retirement note should grep those three modules first.
+--
 -- Shape matches event.db's v8 ``cut`` table field-for-field, with two
 -- semantic shifts:
 --   * ``source_dc_id`` is always opaque TEXT here too (no FK across stores).

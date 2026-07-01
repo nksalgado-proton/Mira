@@ -353,6 +353,117 @@ class ColorLabelRow(QWidget):
         p.end()
 
 
+# ── ColorLabelMultiRow ───────────────────────────────────────────────
+
+
+class ColorLabelMultiRow(QWidget):
+    """Multi-select sibling of :class:`ColorLabelRow`.
+
+    Used by the §4.5 filter bar: the user picks ANY subset of the five
+    LRC labels, then the cell list narrows to lineage rows whose label
+    is in the chosen set. Selected swatches paint with the white halo
+    + check; unselected swatches stay flat. Click toggles.
+    """
+
+    #: ``set[str]`` — emits a fresh snapshot of the selection.
+    value_changed = pyqtSignal(set)
+
+    _SW_PX = 26
+    _GAP_PX = 5
+    _PAD_PX = 3
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ColorLabelMultiRow")
+        self._value: set = set()
+        self._hover_key: Optional[str] = None
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def value(self) -> set:
+        return set(self._value)
+
+    def setValue(self, labels) -> None:
+        """Push a set without emitting (used by the host to seed
+        state on construction or after :meth:`reset`)."""
+        new_val = {
+            k for k in labels or () if k in COLOR_LABEL_HEX}
+        if new_val != self._value:
+            self._value = new_val
+            self.update()
+
+    def _toggle(self, key: str) -> None:
+        if key in self._value:
+            self._value.discard(key)
+        else:
+            self._value.add(key)
+        self.value_changed.emit(set(self._value))
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        n = len(COLOR_LABEL_ORDER)
+        w = self._PAD_PX * 2 + self._SW_PX * n + self._GAP_PX * (n - 1)
+        h = self._PAD_PX * 2 + self._SW_PX
+        return QSize(w, h)
+
+    def _swatch_rect(self, idx: int) -> QRectF:
+        left = self._PAD_PX + idx * (self._SW_PX + self._GAP_PX)
+        return QRectF(left, self._PAD_PX, self._SW_PX, self._SW_PX)
+
+    def _key_at(self, x: float) -> Optional[str]:
+        for i, key in enumerate(COLOR_LABEL_ORDER):
+            if self._swatch_rect(i).contains(QPointF(x, self._PAD_PX + 1)):
+                return key
+        return None
+
+    def mouseMoveEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
+        key = self._key_at(ev.position().x())
+        if key != self._hover_key:
+            self._hover_key = key
+            self.update()
+
+    def leaveEvent(self, _ev) -> None:  # noqa: N802
+        if self._hover_key is not None:
+            self._hover_key = None
+            self.update()
+
+    def mousePressEvent(self, ev: QMouseEvent) -> None:  # noqa: N802
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        key = self._key_at(ev.position().x())
+        if key is None:
+            return
+        self._toggle(key)
+
+    def paintEvent(self, _ev) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for i, key in enumerate(COLOR_LABEL_ORDER):
+            r = self._swatch_rect(i)
+            colour = QColor(COLOR_LABEL_HEX[key])
+            is_active = (key in self._value)
+            is_hover = (self._hover_key == key) and not is_active
+            sw_rect = QRectF(r)
+            if is_hover:
+                sw_rect.adjust(-1, -1, 1, 1)
+            p.setBrush(QBrush(colour))
+            p.setPen(QPen(QColor(0, 0, 0, 110), 1))
+            p.drawRoundedRect(sw_rect, 5, 5)
+            if is_active:
+                halo = QRectF(r).adjusted(-2, -2, 2, 2)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor("#ffffff"), 2.2))
+                p.drawRoundedRect(halo, 7, 7)
+                p.setPen(QPen(QColor("#ffffff"), 2.4,
+                              Qt.PenStyle.SolidLine,
+                              Qt.PenCapStyle.RoundCap,
+                              Qt.PenJoinStyle.RoundJoin))
+                p.drawPath(_checkmark_path(r))
+        p.end()
+
+
 # ── FlagToggle ────────────────────────────────────────────────────────
 
 class FlagToggle(QWidget):
@@ -736,6 +847,7 @@ __all__ = [
     "STYLES",
     "StarRow",
     "ColorLabelRow",
+    "ColorLabelMultiRow",
     "FlagToggle",
     "DeleteToggle",
     "PreferredToggle",

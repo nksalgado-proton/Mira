@@ -228,9 +228,11 @@ class DCDetailPage(QWidget):
         self._tag_lbl = QLabel("#exported")
         self._tag_lbl.setObjectName("PoolCountLabel")
         head.addWidget(self._tag_lbl)
-        self._meta_lbl = QLabel("")
-        self._meta_lbl.setObjectName("PageHint")
-        head.addWidget(self._meta_lbl, stretch=1)
+        # Nelson 2026-06-30 — the legacy "{n} exported file(s)" tag
+        # next to ``#exported`` rendered without a separator ("exported
+        # 500 exported file(s)") and duplicated information the new
+        # FilterBar's "Showing N of M" indicator carries. Dropped.
+        head.addStretch(1)
         # spec/159 — "Delete N marked…" primary action. Visible only
         # when at least one lineage row carries ``to_delete = 1``;
         # opens a confirm dialog naming the file + cut-cascade count.
@@ -255,6 +257,19 @@ class DCDetailPage(QWidget):
         self._compare_btn.clicked.connect(self._on_compare_clicked)
         head.addWidget(self._compare_btn)
         outer.addLayout(head)
+
+        # spec/159 §4.5 (Nelson 2026-06-30 eyeball pivot) — the filter
+        # is a group-box bar between the title row and the section
+        # header, replacing the previous QToolButton + popup menu
+        # (which read as non-standard, especially the menu checkmarks
+        # next to colour names instead of colour swatches). Reusable
+        # widget; the host owns the LineageFilter state.
+        from mira.ui.exported.filter_bar import FilterBar
+        from mira.ui.exported.filter_popup import LineageFilter
+        self._filter: LineageFilter = LineageFilter()
+        self._filter_bar = FilterBar(self)
+        self._filter_bar.filter_changed.connect(self._on_filter_changed)
+        outer.addWidget(self._filter_bar)
 
         # ── Grid chrome (Back + header) ──────────────────────────────
         chrome = QHBoxLayout()
@@ -319,6 +334,13 @@ class DCDetailPage(QWidget):
         self._mode = "flat"
         self._cluster_item_id = None
         self._compare_marked = set()
+        # spec/159 §4.6 — filter is session-local: a fresh open is a
+        # fresh, unfiltered view. The bar's controls re-sync via
+        # ``set_filter``; the host owns the predicate.
+        from mira.ui.exported.filter_popup import LineageFilter
+        self._filter = LineageFilter()
+        if hasattr(self, "_filter_bar"):
+            self._filter_bar.set_filter(self._filter)
         self._refresh()
 
     def close_event(self) -> None:
@@ -335,6 +357,10 @@ class DCDetailPage(QWidget):
         self._cluster_item_id = None
         self._mira_intent_ids = set()
         self._compare_marked = set()
+        from mira.ui.exported.filter_popup import LineageFilter
+        self._filter = LineageFilter()
+        if hasattr(self, "_filter_bar"):
+            self._filter_bar.set_filter(self._filter)
 
     def on_titlebar_back(self) -> None:
         """Shared title-bar Back hook (spec/142).
@@ -427,6 +453,13 @@ class DCDetailPage(QWidget):
         rows + a virtual "Mira render" intent when the adjustment row
         is non-default AND no ``mira_render`` lineage row already
         exists. Cluster threshold = 2 ship intents.
+
+        spec/159 §4.5 — the session-local ``self._filter`` is applied
+        AFTER cluster formation: a cluster cover stays visible when
+        at least one of its members passes the filter; an individual
+        flat cell stays visible only when its own row passes. The
+        virtual Mira-pending member follows the cluster's verdict
+        (no per-row state to test against the rating filter).
         """
         if self._mode == "cluster" and self._cluster_item_id:
             rows = [f for f in self._files
@@ -440,10 +473,17 @@ class DCDetailPage(QWidget):
                     source_item_id=getattr(r, "source_item_id", None),
                 )
                 for r in rows
+                if self._filter.matches(r)
             ]
             if self._has_virtual_mira_intent(self._cluster_item_id, rows):
-                cells.append(self._make_mira_pending_cell(
-                    self._cluster_item_id))
+                # Virtual member rides along whenever any member of
+                # the cluster passes — the user opened this sub-grid
+                # to compare versions, and excluding the virtual member
+                # would defeat the comparison even when the filter
+                # would technically reject it.
+                if cells or not self._filter.is_active():
+                    cells.append(self._make_mira_pending_cell(
+                        self._cluster_item_id))
             return cells
 
         # Flat mode — group by source_item_id (None stays ungrouped).
@@ -474,6 +514,10 @@ class DCDetailPage(QWidget):
                        and self._has_virtual_mira_intent(sid, rows))
             total_intents = len(rows) + (1 if virtual else 0)
             if total_intents >= 2 and sid is not None:
+                # Cluster: cover survives if ANY inner version passes
+                # the filter (drill-in shows the matching subset).
+                if not any(self._filter.matches(r) for r in rows):
+                    continue
                 cells.append(_GridCell(
                     kind="cluster",
                     cover_relpath=rows[0].export_relpath,
@@ -483,6 +527,8 @@ class DCDetailPage(QWidget):
                 ))
             else:
                 row = rows[0]
+                if not self._filter.matches(row):
+                    continue
                 cells.append(_GridCell(
                     kind="flat",
                     cover_relpath=row.export_relpath,
@@ -713,6 +759,15 @@ class DCDetailPage(QWidget):
             self._close_cluster()
             return
         self.back_requested.emit()
+
+    # ── spec/159 §4.5 — Filter ────────────────────────────────────────
+
+    def _on_filter_changed(self, value) -> None:
+        """Filter popup notified us of a change — store the new
+        snapshot and re-render the grid."""
+        self._filter = value
+        self._rebuild_cells()
+        self._update_chrome()
 
     # ── spec/159 §6 — Compare ─────────────────────────────────────────
 
@@ -1199,15 +1254,34 @@ class DCDetailPage(QWidget):
     def _update_chrome(self) -> None:
         n_files = len(self._files)
         n_marked = len(self._marked_relpaths())
-        # Header counts + delete-button label.
-        self._meta_lbl.setText(
-            tr("{n} exported file(s)").replace("{n}", str(n_files)))
+        # Filter-bar "Showing N of M" indicator — paints the visible
+        # cell count (one cell per cluster cover OR per flat row) over
+        # the total lineage row count. Falls back to the bare row
+        # count when the filter is inactive (matches no-filter UX).
+        n_shown_rows = self._visible_lineage_row_count()
+        if hasattr(self, "_filter_bar"):
+            self._filter_bar.setRenderedCount(n_shown_rows, n_files)
         self._delete_btn.setVisible(n_marked > 0)
         self._clear_btn.setVisible(n_marked > 0)
         if n_marked > 0:
             self._delete_btn.setText(
                 tr("⌫ Delete {n} marked…").replace("{n}", str(n_marked)))
         self._refresh_compare_btn()
+
+    def _visible_lineage_row_count(self) -> int:
+        """How many real lineage rows the current cell list represents.
+
+        A cluster cover counts every member (the cells the user could
+        drill into); a flat cell counts its own row; ``mira_pending``
+        cells contribute nothing (they aren't lineage rows). Used by
+        the FilterBar's "Showing N of M" indicator."""
+        n = 0
+        for c in getattr(self, "_cells", []):
+            if c.kind == "cluster":
+                n += len(c.rows)
+            elif c.kind == "flat":
+                n += 1
+        return n
 
     # ── delete ────────────────────────────────────────────────────────
 

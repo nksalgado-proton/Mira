@@ -421,71 +421,22 @@ def test_back_emits_closed(qapp, gw, tmp_path):
     assert got == [True]
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2d.B — Save-as-DC surface retires with the "
+           "ShareCutsPage Collections tab; the ``_dcs`` attribute is "
+           "gone. Round 2d.E retires the gateway DC methods next.")
 def test_save_as_dc_creates_a_dc_and_refreshes(qapp, gw, tmp_path):
-    """Spec/81 §2 polish (C.7): the New Cut dialog's "Save as DC…" button
-    fires the host's dc_saver with the current cut_info; the host calls
-    gateway.create_dc and refreshes the page so the DC appears in the
-    DCs tab."""
-    shell = _shell(gw)
-    # Confirm there are no user DCs yet (only the empty list).
-    assert shell.list_page._dcs == []                       # noqa: SLF001
-    # Simulate the dialog's save by calling _save_dc directly with a
-    # cut_info-shaped dict. Pool = +#exported -short_version, styles =
-    # ["macro"], photos only.
-    shell._save_dc("Best macros", {
-        "pool": {"#exported": 1, "#short_version": -1},
-        "styles": ["macro"],
-        "include_photos": True,
-        "include_videos": False,
-    })
-    # The gateway has the new DC.
-    tags = [dc.tag for dc in gw.dynamic_collections()]
-    assert "best_macros" in tags
-    # The page's DC tab snapshot now carries the new DC.
-    assert any(d.name == "best_macros" for d in shell.list_page._dcs)
+    """Retired — see the skip reason above for the deletion trail."""
+    ...
 
 
+@pytest.mark.skip(
+    reason="spec/162 Round 2d.B — the dialog's dc_creator closure "
+           "retires with the Collection operand type (Round 2d.F); "
+           "the ``_dcs`` attribute is gone.")
 def test_make_new_recipe_dialog_wires_dc_creator(qapp, gw, tmp_path):
-    """spec/90 §5 — the page's dialog factory wires a dc_creator closure
-    that calls the per-event gateway's ``create_dc`` and returns an
-    :class:`OperandOption` ready to drop into the operand inventory.
-    Calling it directly mirrors what the dialog's naming sub-dialog does
-    on OK; the DC lands in the gateway and the page's DC inventory both."""
-    from mira.user_store.repo import UserStore
-    us = UserStore.create(tmp_path / "mira.db", app_version="t",
-                          created_at="2026-06-20T12:00:00+00:00")
-
-    class _G:
-        def __init__(self, eg, settings, us):
-            self._eg = eg
-            self.settings = settings
-            self.user_store = us
-
-        def open_event(self, _id): return self._eg
-
-    g = _G(gw, Settings(), us)
-    shell = ShareCutsPage(g)
-    assert shell.open_event("evt-c")
-    kwargs = shell._dialog_kwargs()
-    dlg = shell._make_new_recipe_dialog(kwargs)
-    assert dlg._dc_creator is not None
-    # Drive the closure the dialog's sub-dialog would call on OK.
-    operand = dlg._dc_creator(
-        "Clean exports",
-        [["+", "exported"]],
-        {"styles": [], "media_type": "both"},
-    )
-    # The DC is live in the gateway.
-    tags = [dc.tag for dc in gw.dynamic_collections()]
-    assert "clean_exports" in tags
-    # The returned OperandOption carries the new DC's identity.
-    assert operand.kind == "dc"
-    assert operand.tag == "clean_exports"
-    assert operand.id
-    # The page refreshed; the DCs tab snapshot picks the new DC up.
-    assert any(d.name == "clean_exports" for d in shell.list_page._dcs)
-    dlg.deleteLater()
-    us.close()
+    """Retired — see the skip reason above."""
+    ...
 
 
 def test_dialog_kwargs_offers_existing_dcs(qapp, gw, tmp_path):

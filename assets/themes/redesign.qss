@@ -2628,3 +2628,134 @@ QWidget#MediaHost[state="picked"]    { border-color: {success}; }
 QWidget#CutBudgetLine {
     background-color: transparent;
 }
+
+/* ===== spec/162 · Cut composition surface — role catalog additions =====
+ * Twelve new roles for the redesigned New Cut / Edit Cut dialog
+ * (spec/162 §12). Slice 1 lands them in `redesign.qss` only; the
+ * widgets that consume them arrive in Slice 3 onwards. Pixel values
+ * pinned in spec/92 §2.8 + Appendix B.8. No existing role is retired
+ * here — the retirements in spec/162 §2 land in Slice 5. */
+
+/* Recipe container — visual frame wrapping Stage A (the Recipe toolbar
+ * row + the two accordion sections). Reads at a glance as "everything
+ * inside this frame is what a saved Recipe captures." Spec/162 §4.2
+ * leaves the exact treatment open-ended ("soft accent-tinted outline +
+ * subtle wash; a lighter shade of `SectionBox`"): chose {card2} fill +
+ * accent_soft border so it sits between #SectionBox (transparent +
+ * hairline {line}) and a full #Card — bounded but not modal-within-
+ * modal. Lg radius keeps it calmer than the dialog frame around it. */
+QFrame#RecipeContainer     { background: {card2};
+                             border: 1px solid {accent_soft};
+                             border-radius: {radius_lg}px;
+                             padding: 14px; }
+
+/* Recipe container header — the toolbar row inside #RecipeContainer
+ * (Recipe name label + Load/Save Recipe ghost buttons). Transparent
+ * so the container wash reads through; a 1px {line} bottom divider
+ * separates the header row from the accordion body per §4.2. */
+QFrame#RecipeContainerHeader { background: transparent;
+                               border: none;
+                               border-bottom: 1px solid {line};
+                               padding: 2px 4px 10px 4px; }
+
+/* Accordion section — one card per Section (① Collection / ② Format).
+ * Transparent + hairline border + md radius: matches the calm
+ * #SectionBox family so the two sections don't compete with the outer
+ * #RecipeContainer. The `expanded="true|false"` dynamic property lives
+ * on this frame; it drives the ▾/▸ chevron in the accordion header
+ * (the section box itself does not change appearance when expanded). */
+QFrame#AccordionSection    { background: transparent;
+                             border: 1px solid {line};
+                             border-radius: {radius_md}px; }
+
+/* Accordion header — the clickable row that toggles expand/collapse
+ * (§4.5). Transparent by default; hover + pressed light up like the
+ * #Ghost button so the affordance is unmistakable. Cursor is applied
+ * by the app-level event filter in ui/base/clickable_cursor.py. The
+ * chevron glyph + title label + summary chip are children laid out by
+ * the widget; this rule owns the row chrome only. */
+QWidget#AccordionHeader    { background: transparent;
+                             border: none;
+                             padding: 10px 12px; }
+QWidget#AccordionHeader:hover           { background: {card2}; }
+QWidget#AccordionHeader[pressed="true"] { background: {card2}; }
+
+/* Accordion summary chip — the right-aligned live-summary chip inside
+ * an #AccordionHeader (e.g. `Collection · 137 files`, `Format · 16:9 ·
+ * 3 min · ambient · 2 overlays`). Tone-variant of #Chip: mirrors the
+ * `idle` tone (card2 fill + ink_soft + weight 600) so it reads as
+ * information, not as a control. Same radius + padding as #Chip. */
+QLabel#AccordionSummaryChip { background: {card2}; color: {ink_soft};
+                              border-radius: 13px;
+                              padding: 5px 11px;
+                              font-size: 12px; font-weight: 600; }
+
+/* Starting-from row — the "Starting from …" line at Section 1's top
+ * (§4.3). Transparent container; content sits inside — a non-editable
+ * caption QLabel at event scope, a chip-stack + operand-picker
+ * `[+ or…]` button at cross-event scope. This role owns the row
+ * spacing only. */
+QWidget#StartingFromRow    { background: transparent;
+                             padding: 4px 2px; }
+
+/* Starting chip — anchor chip at the cross-event Source composition
+ * (e.g. `Base Collection · Namibia 2022`, `Event: Zambia 2024`). The
+ * "universe" tone from the spec/162 §12 table: accent_soft fill +
+ * accent text — the same tinted-anchor look as #CutHeaderTile and
+ * #DayBadge so it reads as "the pool starts here". Larger + more
+ * anchored than a plain #Chip so it reads as the composition's
+ * starting point rather than a status pill. */
+QLabel#StartingChip        { background: {accent_soft}; color: {accent};
+                             border: none; border-radius: 9px;
+                             padding: 4px 10px;
+                             font-size: 12px; font-weight: 700; }
+
+/* Launch pad — the per-Cut controls container at the bottom of the
+ * dialog (§4.6): Name-this-Cut / Rules / Otherwise / summary strip /
+ * buttons. Visually OUTSIDE #RecipeContainer so the user reads it as
+ * "the levers here are per-Cut, not captured by Save-as-Recipe…".
+ * Spec/162 §4.6 asks for "a soft ink-tinted strip"; chose {track} —
+ * the same soft ink tint used behind scrollbars and StageBar — which
+ * reads as ink-tinted without competing with the containing dialog. */
+QWidget#LaunchPad          { background: {track};
+                             border: none;
+                             border-radius: {radius_md}px;
+                             padding: 12px 14px; }
+
+/* Launch pad row — one labelled row inside #LaunchPad (Name this Cut,
+ * Rules, Otherwise). Left label + right control cluster laid out by
+ * the widget; this role owns the row spacing only. */
+QWidget#LaunchPadRow       { background: transparent;
+                             padding: 6px 0; }
+
+/* Launch pad summary strip — the one-line ready-state readout above
+ * the button row (`N files · duration · budget · N warnings`). Muted
+ * secondary text by default; `[tone="warn"]` flips the strip's colour
+ * to {amber} + weight 600 so a non-zero warning count draws the eye
+ * without turning the strip into a full warning banner. */
+QLabel#LaunchPadSummaryStrip { color: {ink_soft};
+                               background: transparent;
+                               font-size: 12px;
+                               padding: 6px 4px; }
+QLabel#LaunchPadSummaryStrip[tone="warn"] { color: {amber};
+                                            font-weight: 600; }
+
+/* Warning strip — inline amber warning readout, reused inside
+ * #LaunchPadSummaryStrip when warnings are present. Same amber-wash
+ * family as #TzSuggestionBanner so warning UI is coherent across the
+ * app. */
+QLabel#WarningStrip        { color: {amber};
+                             background-color: rgba(251,191,36,0.18);
+                             border: 1px solid {amber};
+                             border-radius: {radius_sm}px;
+                             padding: 4px 10px;
+                             font-weight: 600; }
+
+/* Rules list — the container holding the ordered rules layout in the
+ * launch pad (drag-to-reorder `(predicate, verdict)` rows migrating in
+ * verbatim from today's dialog). Transparent + no border — individual
+ * rule rows carry their own chrome; this role owns the list-level
+ * spacing. */
+QWidget#RulesList          { background: transparent;
+                             border: none;
+                             padding: 4px 0; }

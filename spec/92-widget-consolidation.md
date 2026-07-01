@@ -401,6 +401,63 @@ mixed`. Radius: `sm=8 md=11 lg=14 xl=18`. Shadow: `shadow_alpha`.
 No new token is added without a line in this section. No literal colour appears
 outside this dict.
 
+### §2.8 Cut composition redesign roles (spec/162)
+
+Twelve new roles introduced by the New Cut / Edit Cut dialog redesign
+([spec/162](162-cut-composition-surface-redesign.md) §12). Slice 1 of that
+redesign lands them in `redesign.qss` and this catalog; the widgets that
+consume them arrive in Slice 3 onward. **No existing role is retired here** —
+the retirements listed in spec/162 §2 (the Collections tab, `#ShareTabs`,
+`#ShareTabPane`, `#CrossEventBand`) land in Slice 5.
+
+**Recipe frame + accordion.** The dialog's Stage A sits inside one
+`#RecipeContainer` frame with a distinctive accent-tinted outline (a lighter
+shade of `#SectionBox`); its top row is `#RecipeContainerHeader` (the
+Recipe-name label + `Load Recipe…` / `Save as Recipe…` ghost buttons, with a
+1-px hairline divider along the bottom). Below the divider live two
+`#AccordionSection` cards, each capped by a clickable `#AccordionHeader`
+row; the `expanded="true|false"` dynamic property on the section drives the
+▾/▸ chevron in the header. The right-aligned live-summary chip inside every
+accordion header is an `#AccordionSummaryChip` — a tone-variant of `#Chip`
+(idle-tone family — `{card2}` fill, `{ink_soft}` text, weight 600) so it
+reads as *information*, not as a control.
+
+**Source composition.** Section 1's "Starting from …" line is an
+`#StartingFromRow` container. At cross-event scope it hosts one or more
+`#StartingChip` anchor chips (the *universe* tone — `{accent_soft}` fill +
+`{accent}` text, the same tinted-anchor look as `#CutHeaderTile` /
+`#DayBadge`) joined by operand chips + a trailing `[+ or…]` operand-picker
+button. At event scope the row hosts a non-editable caption `QLabel`.
+
+**Launch pad.** The bottom-of-dialog per-Cut controls container is
+`#LaunchPad` — a soft ink-tinted strip (`{track}` fill, no border) that
+reads as "outside the Recipe frame". Individual rows inside it wear
+`#LaunchPadRow` (Name-this-Cut / Rules / Otherwise). The rules block is
+`#RulesList` (the existing rule rows migrate in verbatim). Above the button
+row sits a `#LaunchPadSummaryStrip` one-liner (`N files · duration ·
+budget · N warnings`); when warnings > 0 the strip carries `tone="warn"`
+and its text flips to `{amber}`. Deeper inline warning UI reuses
+`#WarningStrip` — the amber-wash family shared with `#TzSuggestionBanner`.
+
+| Role | Widget | Job | Variants |
+|---|---|---|---|
+| `#RecipeContainer` | `QFrame` | Stage-A frame (Recipe toolbar + accordion) | — |
+| `#RecipeContainerHeader` | `QFrame` | Toolbar row inside `#RecipeContainer` | — |
+| `#AccordionSection` | `QFrame` | Each of the two Sections (Collection, Format) | `[expanded="true\|false"]` (drives the child header chevron) |
+| `#AccordionHeader` | `QWidget` | Clickable toggle row inside `#AccordionSection` | `[pressed="true"]` |
+| `#AccordionSummaryChip` | `QLabel` | Right-aligned summary chip inside `#AccordionHeader` | — (idle-tone variant of `#Chip`) |
+| `#StartingFromRow` | `QWidget` | The "Starting from" line at Section 1 top | — |
+| `#StartingChip` | `QLabel` | Anchor chip at cross-event Source composition | — (universe tone: `{accent_soft}` + `{accent}`) |
+| `#LaunchPad` | `QWidget` | Per-Cut controls container at bottom of dialog | — |
+| `#LaunchPadRow` | `QWidget` | Labelled row inside `#LaunchPad` | — |
+| `#LaunchPadSummaryStrip` | `QLabel` | Ready-state readout above the button row | `[tone="warn"]` |
+| `#WarningStrip` | `QLabel` | Inline amber warning readout | — |
+| `#RulesList` | `QWidget` | Rules-container inside `#LaunchPad` | — |
+
+Exact pixel values in **Appendix B.8**. Where spec/162 left a treatment
+open-ended (`#RecipeContainer`'s outline + wash; `#LaunchPad`'s ink tint),
+the choice + one-line justification is recorded there.
+
 ---
 
 ## §3. The single-stylesheet target
@@ -844,3 +901,24 @@ amber red pink blue track bg_glow picked skipped compare mixed` · radius
 `sm/md/lg/xl` · `shadow_alpha`. The handful of `rgba(...)` literals above
 (chip tints, translucent overlays) are the **only** sanctioned non-token colours;
 they should become alpha-of-token helpers during Stage 2 where practical.
+
+### B.8 spec/162 Cut composition roles
+
+Pinned pixel values for the twelve new roles from spec/162 §12 / spec/92
+§2.8. Where the spec left a treatment open-ended, the choice + a one-line
+justification is inlined in the Notes column.
+
+| Role | Background | Border | Radius | Padding | Notes |
+|---|---|---|---|---|---|
+| `#RecipeContainer` | `{card2}` | `1px solid {accent_soft}` | `lg` (14) | `14px` | Open-ended in spec/162 §4.2 ("soft accent-tinted outline + subtle wash; a lighter shade of `SectionBox`"): `{card2}` fill + `{accent_soft}` border place it between `#SectionBox` and `#Card` — bounded but not modal-within-modal |
+| `#RecipeContainerHeader` | transparent | `border-bottom: 1px solid {line}` | 0 | `2px 4px 10px 4px` | 1-px hairline bottom divider separates the Recipe toolbar row from the accordion body (§4.2) |
+| `#AccordionSection` | transparent | `1px solid {line}` | `md` (11) | — | Matches the calm `#SectionBox` hairline family so the two Sections don't compete with the outer `#RecipeContainer`. `[expanded]` on this frame drives the child header chevron |
+| `#AccordionHeader` | transparent (hover: `{card2}`; `[pressed="true"]`: `{card2}`) | none | 0 | `10px 12px` | Clickable row; hover + pressed tint mirror the `#Ghost` button affordance so the toggle is unmistakable |
+| `#AccordionSummaryChip` | `{card2}` | none | 13 | `5px 11px` | 12px / weight 600 / `{ink_soft}` — reads as information (idle-tone variant of `#Chip`) |
+| `#StartingFromRow` | transparent | none | 0 | `4px 2px` | Container only; the content (label at event scope, chip stack + `[+ or…]` at cross-event) sits inside |
+| `#StartingChip` | `{accent_soft}` | none | 9 | `4px 10px` | 12px / weight 700 / `{accent}` — the *universe* anchor look shared with `#CutHeaderTile` / `#DayBadge` |
+| `#LaunchPad` | `{track}` | none | `md` (11) | `12px 14px` | Open-ended in spec/162 §4.6 ("soft ink-tinted strip"): `{track}` is the soft ink tint already used behind scrollbars and `#StageBar`, reads as ink-tinted without competing with the containing dialog surface |
+| `#LaunchPadRow` | transparent | none | 0 | `6px 0` | Row spacing only; left label + right control cluster laid out by the widget |
+| `#LaunchPadSummaryStrip` | transparent | none | 0 | `6px 4px` | 12px / `{ink_soft}` by default. `[tone="warn"]` → `{amber}` + weight 600 (drives the eye when warnings > 0 without turning the strip into a full amber banner) |
+| `#WarningStrip` | `rgba(251,191,36,0.18)` | `1px solid {amber}` | `sm` (8) | `4px 10px` | weight 600 / `{amber}` — reuses the `#TzSuggestionBanner` amber-wash family for warning coherence |
+| `#RulesList` | transparent | none | 0 | `4px 0` | List-level spacing only; individual rule rows carry their own chrome |

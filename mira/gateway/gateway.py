@@ -1327,6 +1327,112 @@ class Gateway:
             )
         return _hook
 
+    def library_exported_summary(self) -> Dict[str, int]:
+        """spec/162 §3.2 (Round 3c) — the library-scope Base Collection
+        card's live summary: total exported file count + the number of
+        events that contributed at least one file.
+
+        Walks every event in the index and sums their per-event
+        ``exported_files()`` counts. Unopenable events are skipped
+        silently (a missing / renamed folder can't contribute; the
+        library card degrades to the openable-events total rather
+        than raising). Cheap enough for the page's :meth:`refresh`
+        path — one thin :meth:`EventGateway.exported_files` per
+        event.
+
+        Returns ``{"file_count": total, "event_count": n_events}``.
+        Empty library returns zeros.
+        """
+        total = 0
+        n_events = 0
+        for entry in self.list_events():
+            event_id = entry.get("id") or entry.get("uuid") or ""
+            if not event_id:
+                continue
+            eg = self._safe_open_event(event_id)
+            if eg is None:
+                continue
+            try:
+                count = len(eg.exported_files())
+            except Exception:                                  # noqa: BLE001
+                count = 0
+            finally:
+                try:
+                    eg.close()
+                except Exception:                              # noqa: BLE001
+                    pass
+            if count > 0:
+                total += count
+                n_events += 1
+        return {"file_count": total, "event_count": n_events}
+
+    def library_exported_grid_items(self) -> list:
+        """spec/162 §3.2 (Round 3d) — the library-scope Base Collection
+        drill-down's grid feed: every ``#exported`` lineage row across
+        every event, flat.
+
+        Each returned dict carries the row's on-disk key + the enrich
+        fields the cross-event :class:`LineageFilter` reads
+        (``camera``, ``lens_model``, ``capture_date``) joined from the
+        source item, plus the review-chrome fields
+        (``stars`` / ``color_label`` / ``flag`` / ``to_delete``) the
+        grid paints. ``event_id`` / ``event_name`` ride along so the
+        detail page's ``origin`` chip can point at the source event.
+
+        A dict rather than a dataclass so the grid can duck-type against
+        the enriched row without a schema round-trip; :meth:`LineageFilter
+        .matches` uses ``getattr`` so ``types.SimpleNamespace``-wrapping
+        the dict inside the caller works verbatim."""
+        from types import SimpleNamespace
+        out: list = []
+        for entry in self.list_events():
+            event_id = entry.get("id") or entry.get("uuid") or ""
+            if not event_id:
+                continue
+            event_name = entry.get("name") or ""
+            eg = self._safe_open_event(event_id)
+            if eg is None:
+                continue
+            try:
+                for lin in eg.exported_files_all():
+                    row = SimpleNamespace(
+                        export_relpath=lin.export_relpath,
+                        stars=lin.stars,
+                        color_label=lin.color_label,
+                        flag=lin.flag,
+                        to_delete=lin.to_delete,
+                        provenance=lin.provenance,
+                        source_item_id=lin.source_item_id,
+                        event_id=event_id,
+                        event_name=event_name,
+                        camera=None,
+                        lens_model=None,
+                        capture_date=None,
+                    )
+                    src_id = lin.source_item_id
+                    if src_id:
+                        try:
+                            item = eg.item(src_id)
+                        except Exception:                          # noqa: BLE001
+                            item = None
+                        if item is not None:
+                            camera_id = getattr(item, "camera_id", None)
+                            row.camera = camera_id or None
+                            row.lens_model = (
+                                getattr(item, "lens_model", None) or None)
+                            row.capture_date = (
+                                getattr(item, "capture_time_corrected", None)
+                                or None)
+                    out.append(row)
+            except Exception:                                  # noqa: BLE001
+                pass
+            finally:
+                try:
+                    eg.close()
+                except Exception:                              # noqa: BLE001
+                    pass
+        return out
+
     def cross_event_cuts(self) -> list:
         """All cross-event Cuts — one row per ``cut`` row in **mira.db**
         (spec/93 §3, spec/94 Phase 4a-ii). The pre-Phase 4a path walked

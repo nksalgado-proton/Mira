@@ -33,6 +33,31 @@ from typing import Callable, Optional, Union
 
 log = logging.getLogger(__name__)
 
+
+# --------------------------------------------------------------------------- #
+# Migration idempotency helper
+# --------------------------------------------------------------------------- #
+
+
+def _has_column(
+    conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True when ``table.column`` is already present in the DB.
+
+    Every ``ALTER TABLE ADD COLUMN`` in the migration ladder guards
+    on this helper. Rationale: the fresh-install DDL always installs
+    the full column set at the current :data:`SCHEMA_VERSION`, so a
+    test fixture that stamps ``schema_version = N`` on an
+    already-fully-columned DB and then re-runs :func:`migrate`
+    forward would hit ``ALTER TABLE ... ADD COLUMN`` against a
+    column that already exists — sqlite3 raises
+    ``duplicate column name``. Every additive migration in this
+    module reads this helper before its ADD, making the ladder
+    idempotent. Mirrors the parallel helper in
+    :mod:`mira.store.schema` (spec-neutral discipline, added
+    2026-07-01)."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
 #: Schema version owned by us. Bump together with an entry appended to MIGRATIONS.
 SCHEMA_VERSION = 11
 
@@ -686,7 +711,9 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     Additive — ALTER TABLE ADD COLUMN. The next gateway sync repopulates;
     existing rows show NULL until then (the cross-event commit path
     falls back to the fanout for un-synced events)."""
-    conn.execute("ALTER TABLE global_items ADD COLUMN export_relpath TEXT")
+    if not _has_column(conn, "global_items", "export_relpath"):
+        conn.execute(
+            "ALTER TABLE global_items ADD COLUMN export_relpath TEXT")
 
 
 def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
@@ -731,14 +758,18 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
         "participants",        # JSON array; nullable
         "event_start", "event_end",
     ):
-        conn.execute(f"ALTER TABLE global_items ADD COLUMN {col} TEXT")
-    # Partial indexes mirror the fresh-install DDL.
+        if not _has_column(conn, "global_items", col):
+            conn.execute(
+                f"ALTER TABLE global_items ADD COLUMN {col} TEXT")
+    # Partial indexes mirror the fresh-install DDL. IF NOT EXISTS
+    # keeps the ladder idempotent when a fixture stamps a lower
+    # schema_version on a fully-columned DB and replays.
     for sql in (
-        "CREATE INDEX ix_global_items_event_type      ON global_items(event_type)      WHERE event_type IS NOT NULL",
-        "CREATE INDEX ix_global_items_event_subtype   ON global_items(event_subtype)   WHERE event_subtype IS NOT NULL",
-        "CREATE INDEX ix_global_items_experience_type ON global_items(experience_type) WHERE experience_type IS NOT NULL",
-        "CREATE INDEX ix_global_items_event_start     ON global_items(event_start)     WHERE event_start IS NOT NULL",
-        "CREATE INDEX ix_global_items_event_end       ON global_items(event_end)       WHERE event_end IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_global_items_event_type      ON global_items(event_type)      WHERE event_type IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_global_items_event_subtype   ON global_items(event_subtype)   WHERE event_subtype IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_global_items_experience_type ON global_items(experience_type) WHERE experience_type IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_global_items_event_start     ON global_items(event_start)     WHERE event_start IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_global_items_event_end       ON global_items(event_end)       WHERE event_end IS NOT NULL",
     ):
         conn.execute(sql)
 
@@ -785,8 +816,9 @@ CREATE TABLE event_collection (
   updated_at   TEXT NOT NULL,
   extras_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(extras_json))
 )""")
-    conn.execute(
-        "ALTER TABLE person ADD COLUMN representative_face_id TEXT")
+    if not _has_column(conn, "person", "representative_face_id"):
+        conn.execute(
+            "ALTER TABLE person ADD COLUMN representative_face_id TEXT")
 
 
 def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
@@ -859,8 +891,9 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     cannot add a CHECK constraint; validation lives at the gateway
     seam for migrated rows. Fresh installs get the full CHECK in the
     DDL above."""
-    conn.execute(
-        "ALTER TABLE cut ADD COLUMN aspect TEXT NOT NULL DEFAULT '16:9'")
+    if not _has_column(conn, "cut", "aspect"):
+        conn.execute(
+            "ALTER TABLE cut ADD COLUMN aspect TEXT NOT NULL DEFAULT '16:9'")
 
 
 def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
@@ -883,9 +916,10 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
     the Load Recipe picker's ``WHERE scope = ?`` filter stays fast at
     both fresh-install and migrated installs.
     """
-    conn.execute(
-        "ALTER TABLE recipe ADD COLUMN scope TEXT NOT NULL DEFAULT 'event'"
-    )
+    if not _has_column(conn, "recipe", "scope"):
+        conn.execute(
+            "ALTER TABLE recipe ADD COLUMN scope TEXT NOT NULL DEFAULT 'event'"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_recipe_scope ON recipe(scope)"
     )

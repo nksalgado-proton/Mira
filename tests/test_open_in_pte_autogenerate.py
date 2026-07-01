@@ -371,6 +371,21 @@ def test_generate_pte_slot_writes_pte_into_resolved_folder(
     page._generate_pte_into_resolved_folder = (
         lambda c, folder: scp.ShareCutsPage._generate_pte_into_resolved_folder(
             page, c, folder))
+    # spec/158 landed a middle layer between the on_generate handler
+    # and the leaf writer: ``_on_generate_pte_for_cut`` →
+    # ``_generate_pte_for_folder`` (asks-before-overwrite +
+    # summary-box) → ``_generate_pte_into_folder`` (the actual
+    # writer). Bind the middle layer too so the AttributeError on the
+    # _Stub goes away; delegate to the leaf with overwrite=True
+    # (matches spec/158's resolved-folder contract).
+    page._pte_project_path = (
+        lambda c, folder: scp.ShareCutsPage._pte_project_path(
+            page, c, folder))
+    page._confirm_pte_overwrite = lambda pte_path: True
+    page._add_open_buttons = lambda box, folder, pte_file: None
+    page._generate_pte_for_folder = (
+        lambda c, folder: scp.ShareCutsPage._generate_pte_for_folder(
+            page, c, folder))
     page._on_generate_pte_for_cut = (
         lambda cid: scp.ShareCutsPage._on_generate_pte_for_cut(page, cid))
 

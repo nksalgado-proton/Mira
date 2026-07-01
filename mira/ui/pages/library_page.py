@@ -8,7 +8,7 @@ entry to cross-event work. Three SurfaceBand sections:
   Play (full-screen rehearsal pulling bytes from each source event),
   Export (the existing :func:`export_cross_event_cut` pipeline), Open
   (the detail viewer). Header button **+ New Cut** opens the Collection
-  face of :class:`NewRecipeDialog`.
+  face of :class:`NewCutDialog`.
 * **Collections** — count + **Manage Collections…** which opens the
   existing :class:`CrossEventDcsDialog` (renamed user-facing to
   "Collections" per spec/93 vocab).
@@ -186,7 +186,7 @@ class LibraryPage(QWidget):
     #: destination, by default).
     back_requested = pyqtSignal()
     #: Emitted when the user clicks **+ New Cut** in the Cuts band.
-    #: The host (MainWindow) drives the actual NewRecipeDialog
+    #: The host (MainWindow) drives the actual NewCutDialog
     #: Collection face — the dialog construction needs the same
     #: classify-placement + recipe_store + dc_creator wiring the
     #: events page already builds, so the LibraryPage stays page-
@@ -453,7 +453,7 @@ class LibraryPage(QWidget):
     # ------------------------------------------------------------------ #
 
     def _on_new_cut(self) -> None:
-        """+ New Cut — opens the Collection face of NewRecipeDialog
+        """+ New Cut — opens the Collection face of NewCutDialog
         via the host. The dialog construction needs the gateway-side
         wiring the events page already builds (classify_placement,
         recipe_store, dc_creator, …) — so we emit a signal and let

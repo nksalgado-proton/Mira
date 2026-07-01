@@ -19,12 +19,12 @@ from core.recipe_resolver import (
     RecipeResolutionError,
     RuleMatchInfo,
 )
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     VERDICT_PICK,
     VERDICT_SKIP,
@@ -44,7 +44,7 @@ def _pools():
     ]
 
 
-def _dialog(qapp, *, recipe_probe=None, **over) -> NewRecipeDialog:
+def _dialog(qapp, *, recipe_probe=None, **over) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=_pools(),
         available_styles=["macro"],
@@ -58,7 +58,7 @@ def _dialog(qapp, *, recipe_probe=None, **over) -> NewRecipeDialog:
         recipe_probe=recipe_probe,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 def _fake_resolution(pool_size: int = 0, picked: int = 0,
@@ -445,7 +445,7 @@ def test_composition_no_budget_emits_null_target_and_max(qapp):
         available_styles=["macro"],
         has_budget=False,
     )
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
@@ -460,7 +460,7 @@ def test_budget_checkbox_unchecked_disables_target_and_max_spinners(qapp):
     unchecked. Per-photo stays enabled (it's slide-rate, not a budget)."""
     ctx = NewRecipeContext(
         available_pools=_pools(), has_budget=False)
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
@@ -494,7 +494,7 @@ def test_metrics_line_drops_target_suffix_when_no_budget(qapp):
         available_styles=["macro"],
         has_budget=False,
     )
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
         recipe_probe=lambda _c: _fake_resolution(pool_size=386, picked=11),
@@ -546,7 +546,7 @@ def test_apply_composition_with_budget_checks_box(qapp):
     """Loading a Recipe with a real budget flips the checkbox on +
     populates the spinners."""
     ctx = NewRecipeContext(available_pools=_pools(), has_budget=False)
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )

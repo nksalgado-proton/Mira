@@ -144,7 +144,7 @@ def test_cut_row_is_fixed_height_and_list_scrolls(qapp, gw):
 
 def test_make_new_recipe_dialog_wires_recipe_store(qapp, gw, tmp_path):
     """spec/90 Phase 4e — the page's dialog factory builds the
-    :class:`NewRecipeDialog` in its Cut-face configuration and wires
+    :class:`NewCutDialog` in its Cut-face configuration and wires
     every probe + the user-store-backed :class:`RecipeStore`. Without
     this the Save / Load Recipe buttons would stay disabled in
     production."""
@@ -172,7 +172,7 @@ def test_make_new_recipe_dialog_wires_recipe_store(qapp, gw, tmp_path):
     dlg._name_edit.setText("clean_exports")
     assert dlg._save_recipe_btn.isEnabled() is True
     # The Cut face hides Scope + hardware.
-    from mira.ui.pages.new_recipe_dialog import FLAVOUR_CUT
+    from mira.ui.pages.new_cut_dialog import FLAVOUR_CUT
     assert dlg._flavour == FLAVOUR_CUT
     assert dlg._show_scope is False
     assert dlg._show_hardware is False
@@ -272,7 +272,7 @@ def test_adjust_prefill_with_real_budget_keeps_has_budget_true(qapp, gw,
     real values opens the dialog with has_budget=True and spinners
     showing the right numbers."""
     from types import SimpleNamespace
-    from mira.ui.pages.new_recipe_dialog import (
+    from mira.ui.pages.new_cut_dialog import (
         FLAVOUR_CUT,
         INVENTORY_EVENT,
         NewRecipeContext,

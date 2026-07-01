@@ -26,9 +26,9 @@ import pytest
 from core.cut_aspect import (
     ASPECT_1_1, ASPECT_3_2, ASPECT_4_3, ASPECT_16_9,
 )
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT, INVENTORY_EVENT,
-    NewRecipeContext, NewRecipeDialog, OperandOption,
+    NewRecipeContext, NewCutDialog, OperandOption,
 )
 from mira.ui.pages.share_cuts_page import ShareCutsPage
 
@@ -42,8 +42,8 @@ def _ctx() -> NewRecipeContext:
     )
 
 
-def _dialog(qapp, ctx: NewRecipeContext) -> NewRecipeDialog:
-    return NewRecipeDialog(
+def _dialog(qapp, ctx: NewRecipeContext) -> NewCutDialog:
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,

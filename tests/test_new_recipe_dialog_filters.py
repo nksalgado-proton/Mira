@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
 )
 
 
@@ -27,7 +27,7 @@ def _cut_dialog(
     lenses=(),
     include_photos=True,
     include_videos=True,
-) -> NewRecipeDialog:
+) -> NewCutDialog:
     ctx = NewRecipeContext(
         event_name="Evt",
         available_styles=list(styles),
@@ -36,7 +36,7 @@ def _cut_dialog(
         include_photos=include_photos,
         include_videos=include_videos,
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,
@@ -51,7 +51,7 @@ def _collection_dialog(
     lenses=("100-500mm", "24-70mm"),
     selected_cameras=(),
     selected_lenses=(),
-) -> NewRecipeDialog:
+) -> NewCutDialog:
     ctx = NewRecipeContext(
         event_name="",
         available_styles=["macro"],
@@ -60,7 +60,7 @@ def _collection_dialog(
         selected_cameras=list(selected_cameras),
         selected_lenses=list(selected_lenses),
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_COLLECTION,
         show_scope=True,
         show_hardware=True,
@@ -97,7 +97,7 @@ def test_initial_selected_styles_round_trip(qapp):
         available_styles=["macro", "wildlife"],
         selected_styles=["macro"],
     )
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )

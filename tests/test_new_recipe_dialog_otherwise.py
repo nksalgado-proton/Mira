@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     VERDICT_PICK,
     VERDICT_SKIP,
@@ -24,7 +24,7 @@ from mira.ui.pages.new_recipe_dialog import (
 )
 
 
-def _dialog(qapp, *, otherwise=VERDICT_SKIP) -> NewRecipeDialog:
+def _dialog(qapp, *, otherwise=VERDICT_SKIP) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=[
             OperandOption(name="#exported", count=12, kind="base"),
@@ -32,7 +32,7 @@ def _dialog(qapp, *, otherwise=VERDICT_SKIP) -> NewRecipeDialog:
         available_styles=["macro"],
         otherwise=otherwise,
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,
@@ -80,7 +80,7 @@ def test_otherwise_invalid_seed_falls_back_to_skip(qapp):
         ],
         otherwise="maybe",   # not a valid verdict
     )
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )

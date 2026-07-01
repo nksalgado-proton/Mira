@@ -1,4 +1,4 @@
-"""spec/90 Phase 4e — :class:`NewRecipeDialog` Save / Load wiring.
+"""spec/90 Phase 4e — :class:`NewCutDialog` Save / Load wiring.
 
 * Save flow: the footer "Save as Recipe…" button opens the name dialog;
   on OK it calls :meth:`RecipeStore.create` with the current composition
@@ -22,11 +22,11 @@ from mira.shared.recipe_store import (
     FLAVOUR_CUT,
     RecipeStore,
 )
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     VERDICT_PICK,
     VERDICT_SKIP,
@@ -74,8 +74,8 @@ def _dialog(
     show_hardware: bool = False,
     show_scope: bool = False,
     ctx: NewRecipeContext = None,
-) -> NewRecipeDialog:
-    return NewRecipeDialog(
+) -> NewCutDialog:
+    return NewCutDialog(
         flavour=flavour,
         show_scope=show_scope,
         show_hardware=show_hardware,
@@ -121,7 +121,7 @@ def test_save_button_enabled_when_store_wired_and_name_set(qapp, store):
 def test_save_button_disabled_when_no_store(qapp):
     """No store wired (smokes / unit tests) → button stays disabled
     regardless of Source / Name."""
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
     )

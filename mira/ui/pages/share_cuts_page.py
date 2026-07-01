@@ -64,17 +64,17 @@ from mira.ui.i18n import tr
 from mira.ui.shared.cut_detail_page import CutDetailPage
 from mira.ui.shared.cut_session_page import CutSessionPage
 # spec/90 §7 Phase 5: the New Cut dialog is the two-faced
-# :class:`NewRecipeDialog` widget — the Cut-face configuration (no Scope,
+# :class:`NewCutDialog` widget — the Cut-face configuration (no Scope,
 # no hardware filters, event-scope inventory). The handoff value is a
 # :class:`CutDraft` the dialog builds via the spec/90 Phase 3 adapter
 # (:func:`recipe_to_cut_draft`); the page connects to
-# :attr:`NewRecipeDialog.start_requested` to receive it.
+# :attr:`NewCutDialog.start_requested` to receive it.
 from mira.shared.recipe_store import RecipeStore
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 
@@ -1388,7 +1388,7 @@ class ShareCutsPage(QWidget):
     _EXPORTED_TAG = "exported"
 
     def _dialog_kwargs(self) -> dict:
-        """Bundle the per-event facts the :class:`NewRecipeDialog` needs.
+        """Bundle the per-event facts the :class:`NewCutDialog` needs.
         Returns a dict the page passes both ways: tests inspect the
         kwargs to confirm the gateway feeds are wired, and the dialog
         ctor reads the context + probes off it. Kept stable across
@@ -1697,8 +1697,8 @@ class ShareCutsPage(QWidget):
         *,
         prefill: Optional[object] = None,
         heading_text: Optional[str] = None,
-    ) -> NewRecipeDialog:
-        """Construct the :class:`NewRecipeDialog` from page kwargs +
+    ) -> NewCutDialog:
+        """Construct the :class:`NewCutDialog` from page kwargs +
         prefill. Wires every probe + the recipe store; sets the window
         title when a heading override is given (Edit Cut)."""
         eg = self._eg
@@ -1706,7 +1706,7 @@ class ShareCutsPage(QWidget):
         # Cut face = flavour='cut' + no scope + no hardware + event inventory
         # per spec/90 §2.1. ``recipe_probe`` returns a RecipeResolution so the
         # metrics + Start gate use the resolver's pool/seed map directly.
-        dlg = NewRecipeDialog(
+        dlg = NewCutDialog(
             flavour=FLAVOUR_CUT,
             show_scope=False,
             show_hardware=False,
@@ -1737,7 +1737,7 @@ class ShareCutsPage(QWidget):
         return dlg
 
     def _make_dc_loader(self):
-        """Build the :meth:`NewRecipeDialog.dc_loader` closure for the
+        """Build the :meth:`NewCutDialog.dc_loader` closure for the
         Cut-face dialog (spec/90 §5). Resolves an
         :class:`OperandOption` to ``(expr, filters)`` so Load DC can
         replace the dialog's Source + Filters with the saved DC's
@@ -1761,7 +1761,7 @@ class ShareCutsPage(QWidget):
         return dc_loader
 
     def _make_dc_creator(self):
-        """Build the :meth:`NewRecipeDialog.dc_creator` closure for the
+        """Build the :meth:`NewCutDialog.dc_creator` closure for the
         Cut-face dialog (spec/90 §5). Translates the dialog's
         ``filters_payload()`` dict back into the gateway's
         ``styles`` / ``media_type`` parameters and refreshes the page
@@ -1798,7 +1798,7 @@ class ShareCutsPage(QWidget):
     # ── spec/94 Phase 1b — placement classifier + event-name lookup ──
 
     def _make_placement_classifier(self):
-        """Build the closure NewRecipeDialog calls on every probe to
+        """Build the closure NewCutDialog calls on every probe to
         drive the binding badge + the spec/93 §5 placement rule.
 
         Walks the composition's operand closure via the gateway:
@@ -1873,7 +1873,7 @@ class ShareCutsPage(QWidget):
         return _classify
 
     def _make_recipes_tree_provider(self):
-        """Return the callable that hands NewRecipeDialog the file
+        """Return the callable that hands NewCutDialog the file
         library's TreeNode (spec/93 §4 / §9). Mounting the
         :class:`CascadingTreeMenu` against this provider replaces the
         flat ``_LoadRecipeDialog`` for users with a Gateway-backed
@@ -2084,7 +2084,7 @@ class ShareCutsPage(QWidget):
         (A test once exec()'d the real dialog and parked a window on
         Nelson's desktop for 24 minutes. Never again.)
 
-        Spec/90 Phase 4e: opens :class:`NewRecipeDialog` and returns the
+        Spec/90 Phase 4e: opens :class:`NewCutDialog` and returns the
         :class:`CutDraft` the dialog's ``start_requested`` signal emits.
         Returns ``None`` if the user cancelled."""
         heading = tr("Edit Cut") if prefill is not None else None

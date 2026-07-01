@@ -1,30 +1,32 @@
-"""Surface 13 successor — :class:`NewRecipeDialog` (spec/90 Phase 4).
+""":class:`NewCutDialog` — the New Cut / Edit Cut composition surface.
 
-Two faces, one widget (spec/90 §2.3):
+Renamed from ``new_recipe_dialog.py`` / ``NewRecipeDialog`` as part of
+spec/162 Round 1a (2026-07-01). Round 1a is a pure file + class rename;
+the two-flavour body + ``flavour`` constructor param survive verbatim.
+spec/162 Round 1b rebuilds ``_build_body`` around the new Recipe-
+container + strict-accordion + launch-pad shape and introduces the
+``scope`` / ``mode`` parameters.
+
+Historical shape (spec/90 §2.3): two faces, one widget, driven by a
+``flavour`` constructor flag.
 
 * **Cut flavour** (``flavour="cut"``, ``show_scope=False``,
-  ``show_hardware=False``, ``inventory_scope="event"``) — the audience-facing
-  event Cut dialog. Renders Source + Filters (Style + Media only) + Rules +
-  Otherwise + presentation. Scope is the current event and hidden;
-  Camera / Lens / Faces are hidden by default (spec/90 §2.1, §4).
+  ``show_hardware=False``, ``inventory_scope="event"``) — the audience-
+  facing event Cut dialog. Renders Source + Filters (Style + Media
+  only) + Rules + Otherwise + presentation. Scope is the current event
+  and hidden; Camera / Lens / Faces are hidden by default
+  (spec/90 §2.1, §4).
 * **Collection flavour** (``flavour="collection"``, ``show_scope=True``,
   ``show_hardware=True``, ``inventory_scope="library"``) — the
-  cross-event curation dialog. Renders all five sections; Scope sits at the
-  top with event / Event-Collection / date-range chips; Camera / Lens /
-  Faces join the Filters block (spec/90 §2.2, §4).
-
-Phase 4a–e build the widget incrementally: scaffold (4a), Scope (4b),
-Rules + verb + join-word popovers (4c), live metrics + resolver probe
-(4d), and the Save / Load Recipe footer + Start-button wiring (4e —
-which also retires the legacy ``new_cut_dialog`` module). The widget is
-now the production New Cut surface; :class:`mira.ui.pages.share_cuts_page.ShareCutsPage`
-opens it directly.
+  cross-event curation dialog. Renders all five sections; Scope sits
+  at the top with event / Event-Collection / date-range chips;
+  Camera / Lens / Faces join the Filters block (spec/90 §2.2, §4).
 
 The widget's public surface matches the spec/90 §2.3 contract — four
 boolean / enum flags pin the visible sections, the inventory + facets
 ride the :class:`NewRecipeContext` dataclass, live probes connect to
-the gateway (``pool_probe`` / ``totals_probe`` / ``recipe_probe``), and
-the optional :class:`RecipeStore` enables the Save as Recipe… +
+the gateway (``pool_probe`` / ``totals_probe`` / ``recipe_probe``),
+and the optional :class:`RecipeStore` enables the Save as Recipe… +
 Load Recipe… buttons.
 """
 from __future__ import annotations
@@ -1610,7 +1612,7 @@ class _RuleRow(QFrame):
 # --------------------------------------------------------------------------- #
 
 
-class NewRecipeDialog(QDialog):
+class NewCutDialog(QDialog):
     """The New Cut / New Collection dialog (spec/90 §2 — two faces).
 
     Phase 4a ships the scaffold + Source + Filters. Rules / Otherwise /
@@ -4825,7 +4827,7 @@ __all__ = [
     "PICKER_TARGET_RULE_PREDICATE",
     "DateRangeQuickSelect",
     "NewRecipeContext",
-    "NewRecipeDialog",
+    "NewCutDialog",
     "OperandOption",
     "_LoadDcDialog",
     "_SaveAsDcNameDialog",

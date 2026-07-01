@@ -1,6 +1,6 @@
 """Real-asset screenshot smoke for Surface 13 (the New Cut / New Recipe dialog).
 
-Drives :class:`mira.ui.pages.new_recipe_dialog.NewRecipeDialog` in its
+Drives :class:`mira.ui.pages.new_cut_dialog.NewCutDialog` in its
 Cut-face configuration (the audience-facing event Cut dialog,
 spec/90 §2.1) — the same code path :class:`ShareCutsPage` exercises in
 production after spec/90 Phase 4e retired the legacy
@@ -32,12 +32,12 @@ sys.path.insert(0, str(_REPO))
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    from mira.ui.pages.new_recipe_dialog import (
+    from mira.ui.pages.new_cut_dialog import (
         FLAVOUR_CUT,
         INVENTORY_EVENT,
         JOIN_OR,
         NewRecipeContext,
-        NewRecipeDialog,
+        NewCutDialog,
         OperandOption,
     )
     from mira.ui.theme import apply_theme
@@ -67,7 +67,7 @@ def main() -> int:
             target_minutes=10, max_minutes=15,
             per_photo_seconds=6.5,
         )
-        dlg = NewRecipeDialog(
+        dlg = NewCutDialog(
             flavour=FLAVOUR_CUT,
             show_scope=False,
             show_hardware=False,

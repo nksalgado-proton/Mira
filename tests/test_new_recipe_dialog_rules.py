@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
     INVENTORY_EVENT,
@@ -24,7 +24,7 @@ from mira.ui.pages.new_recipe_dialog import (
     JOIN_AND,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     PICKER_TARGET_RULE_PREDICATE,
     VERDICT_PICK,
@@ -53,7 +53,7 @@ def _people():
     ]
 
 
-def _cut_dialog(qapp, **over) -> NewRecipeDialog:
+def _cut_dialog(qapp, **over) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=_pools(),
         available_styles=["macro"],
@@ -66,10 +66,10 @@ def _cut_dialog(qapp, **over) -> NewRecipeDialog:
         ctx=ctx,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
-def _collection_dialog(qapp, *, people=None, **over) -> NewRecipeDialog:
+def _collection_dialog(qapp, *, people=None, **over) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=_pools(),
         available_styles=["macro"],
@@ -83,7 +83,7 @@ def _collection_dialog(qapp, *, people=None, **over) -> NewRecipeDialog:
         ctx=ctx,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -401,7 +401,7 @@ def test_dialog_opens_rule_predicate_picker_with_faces(qapp):
     dlg = _collection_dialog(qapp, show_faces=True)
     dlg._on_add_rule_clicked()
     row = dlg._rule_rows[0]
-    from mira.ui.pages.new_recipe_dialog import _OperandPickerPopover as P
+    from mira.ui.pages.new_cut_dialog import _OperandPickerPopover as P
     dlg._open_rule_predicate_picker(row, anchor=row)
     assert isinstance(dlg._picker_popover, P)
     headers = _section_headers(dlg._picker_popover)

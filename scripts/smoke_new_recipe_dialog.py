@@ -1,6 +1,6 @@
 """Screenshot smoke for the New-Cut / New-Recipe dialog (spec/90, spec/92).
 
-Renders ``NewRecipeDialog`` in both flavours (Cut + Collection) and both
+Renders ``NewCutDialog`` in both flavours (Cut + Collection) and both
 themes. The Collection flavour exercises every section box in the
 spec/92 §2.3 SectionBox collapse (Recipe toolbar, Name, Scope, Which
 items? band + Source + Filters, What to do? band + Rules + Otherwise +
@@ -29,7 +29,7 @@ sys.path.insert(0, str(_REPO))
 
 
 def _ctx(cameras=(), lenses=(), styles=("macro", "wildlife")):
-    from mira.ui.pages.new_recipe_dialog import NewRecipeContext, OperandOption
+    from mira.ui.pages.new_cut_dialog import NewRecipeContext, OperandOption
     return NewRecipeContext(
         event_name="Costa Rica 2026",
         available_pools=[
@@ -57,19 +57,19 @@ def _render(app, dlg, name: str, mode: str) -> None:
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    from mira.ui.pages.new_recipe_dialog import (
+    from mira.ui.pages.new_cut_dialog import (
         FLAVOUR_COLLECTION,
         FLAVOUR_CUT,
         INVENTORY_EVENT,
         INVENTORY_LIBRARY,
-        NewRecipeDialog,
+        NewCutDialog,
     )
     from mira.ui.theme import apply_theme
 
     for mode in ("dark", "light"):
         apply_theme(app, mode)
 
-        cut = NewRecipeDialog(
+        cut = NewCutDialog(
             flavour=FLAVOUR_CUT,
             show_scope=False,
             show_hardware=False,
@@ -78,7 +78,7 @@ def main() -> int:
         )
         _render(app, cut, "cut", mode)
 
-        coll = NewRecipeDialog(
+        coll = NewCutDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
             show_hardware=True,

@@ -1,7 +1,7 @@
-"""spec/90 §5 — :class:`NewRecipeDialog` Save as DC wiring.
+"""spec/90 §5 — :class:`NewCutDialog` Save as DC wiring.
 
 The picker's "Save as DC…" affordance opens a small naming sub-dialog and
-calls the host's :attr:`NewRecipeDialog.dc_creator` callable with
+calls the host's :attr:`NewCutDialog.dc_creator` callable with
 ``(name, expr, filters)``. The host returns the freshly-created DC as an
 :class:`OperandOption` ready to drop into the operand inventory:
 
@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import pytest
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     PICKER_TARGET_RULE_PREDICATE,
     PICKER_TARGET_SCOPE,
@@ -55,7 +55,7 @@ def _ctx(**over) -> NewRecipeContext:
     return NewRecipeContext(**kw)
 
 
-def _dialog(qapp, *, dc_creator=None, ctx=None, **over) -> NewRecipeDialog:
+def _dialog(qapp, *, dc_creator=None, ctx=None, **over) -> NewCutDialog:
     kw = dict(
         flavour=FLAVOUR_CUT,
         show_scope=False,
@@ -65,7 +65,7 @@ def _dialog(qapp, *, dc_creator=None, ctx=None, **over) -> NewRecipeDialog:
         dc_creator=dc_creator,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #

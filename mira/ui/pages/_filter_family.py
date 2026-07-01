@@ -16,7 +16,7 @@ This module owns:
 * The two catalogue builders — :func:`build_cross_event_catalogue` (the
   full spec/32 §2 set used by the cross-event DC dialog) and
   :func:`build_event_scope_catalogue` (the thin Style + media type set,
-  ready for a future :class:`NewRecipeDialog` Cut-face adoption).
+  ready for a future :class:`NewCutDialog` Cut-face adoption).
 
 The host provides the editor-factory primitives (``make_multi`` /
 ``make_single`` / etc.) — the catalogue captures them in lambdas so the

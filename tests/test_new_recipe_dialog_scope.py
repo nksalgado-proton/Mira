@@ -16,14 +16,14 @@ from types import SimpleNamespace
 import pytest
 
 from mira.ui.pages import new_recipe_dialog as nrd
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     PICKER_TARGET_SCOPE,
     PICKER_TARGET_SOURCE,
@@ -49,7 +49,7 @@ def _event_collections():
     ]
 
 
-def _collection_dialog(qapp, *, ctx=None, **over) -> NewRecipeDialog:
+def _collection_dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
     if ctx is None:
         ctx = NewRecipeContext(
             available_pools=[
@@ -67,10 +67,10 @@ def _collection_dialog(qapp, *, ctx=None, **over) -> NewRecipeDialog:
         ctx=ctx,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
-def _cut_dialog(qapp, **over) -> NewRecipeDialog:
+def _cut_dialog(qapp, **over) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=[
             OperandOption(name="#exported", count=12, kind="base"),
@@ -85,7 +85,7 @@ def _cut_dialog(qapp, **over) -> NewRecipeDialog:
         ctx=ctx,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -226,7 +226,7 @@ def test_two_scope_chips_render_join_chevron_between_them(qapp):
     :class:`_JoinChevron` so the user can swap one-click between
     ``or`` / ``and`` / ``but not in``. ``join_word()`` returns the
     bare word (without the chevron glyph)."""
-    from mira.ui.pages.new_recipe_dialog import _JoinChevron
+    from mira.ui.pages.new_cut_dialog import _JoinChevron
     dlg = _collection_dialog(qapp)
     dlg._add_scope_chip(_events()[0])
     dlg._add_scope_chip(_events()[1])

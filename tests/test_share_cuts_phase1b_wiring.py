@@ -2,7 +2,7 @@
 event_name_for_id, and the cascading-menu recipe provider.
 
 ShareCutsPage's ``_make_*`` helpers are the seam between the
-NewRecipeDialog and the Gateway's JSON-tree libraries. These tests
+NewCutDialog and the Gateway's JSON-tree libraries. These tests
 exercise each helper in isolation against a minimal stub gateway —
 spinning the full page would drag in the whole Pick/Edit surface."""
 from __future__ import annotations

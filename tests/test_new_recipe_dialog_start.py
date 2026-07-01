@@ -1,4 +1,4 @@
-"""spec/90 Phase 4e — :class:`NewRecipeDialog` Start button wiring.
+"""spec/90 Phase 4e — :class:`NewCutDialog` Start button wiring.
 
 * Start is disabled with an empty Source.
 * Start is disabled when the probe raises :class:`RecipeResolutionError`.
@@ -24,14 +24,14 @@ from mira.shared.cut_draft import (
     PIN_PICK_IN,
     PIN_WEED_OUT,
 )
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     VERDICT_SKIP,
 )
@@ -67,8 +67,8 @@ def _ctx(*, with_source: bool = False) -> NewRecipeContext:
 def _dialog(qapp, *, recipe_probe=None, ctx=None,
             flavour=FLAVOUR_CUT, show_scope=False,
             show_hardware=False,
-            inventory_scope=INVENTORY_EVENT) -> NewRecipeDialog:
-    return NewRecipeDialog(
+            inventory_scope=INVENTORY_EVENT) -> NewCutDialog:
+    return NewCutDialog(
         flavour=flavour,
         show_scope=show_scope,
         show_hardware=show_hardware,
@@ -127,7 +127,7 @@ def test_show_filters_false_drops_the_filter_section(qapp):
     """The cross-event Pin → Cut flow passes show_filters=False: the dialog
     builds no Style / Camera / Lens / Media widgets, and composition carries
     empty filters (the pinned Collection filters via the source operand)."""
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_COLLECTION, show_scope=True, show_hardware=True,
         show_filters=False, inventory_scope=INVENTORY_LIBRARY,
         ctx=_ctx(with_source=True))

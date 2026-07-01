@@ -36,12 +36,12 @@ import pytest
 from mira.gateway.event_gateway import EventGateway
 from mira.gateway.library_gateway import LibraryGateway
 from mira.store.repo import EventStore
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 from mira.ui.pages.share_cuts_page import ShareCutsPage
@@ -73,7 +73,7 @@ def _dialog(
         separators=separators,
         card_style=card_style,
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,
@@ -286,7 +286,7 @@ def test_create_cut_persists_separators_and_card_style(tmp_path):
 
 def test_cross_event_dialog_emits_separators_in_composition(qapp):
     """spec/143 §4 — the cross-event surface uses the same
-    NewRecipeDialog under ``INVENTORY_LIBRARY``. The contract is
+    NewCutDialog under ``INVENTORY_LIBRARY``. The contract is
     identical: pick on/off + style, composition carries both."""
     dlg = _dialog(qapp, separators=False, inventory=INVENTORY_LIBRARY)
     try:

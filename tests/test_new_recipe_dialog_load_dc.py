@@ -1,4 +1,4 @@
-"""spec/90 §5 — :class:`NewRecipeDialog` Load DC wiring.
+"""spec/90 §5 — :class:`NewCutDialog` Load DC wiring.
 
 The Which items? band carries a *Load DC…* button next to *Save as DC…*.
 Clicking it opens a small picker over the available DCs in the operand
@@ -14,12 +14,12 @@ import pytest
 
 from PyQt6.QtWidgets import QDialog, QMessageBox
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     VERDICT_SKIP,
     _LoadDcDialog,
@@ -48,7 +48,7 @@ def _ctx(**over) -> NewRecipeContext:
     return NewRecipeContext(**kw)
 
 
-def _dialog(qapp, *, dc_loader=None, ctx=None, **over) -> NewRecipeDialog:
+def _dialog(qapp, *, dc_loader=None, ctx=None, **over) -> NewCutDialog:
     kw = dict(
         flavour=FLAVOUR_CUT,
         show_scope=False,
@@ -58,7 +58,7 @@ def _dialog(qapp, *, dc_loader=None, ctx=None, **over) -> NewRecipeDialog:
         dc_loader=dc_loader,
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +155,7 @@ def test_load_dc_with_empty_items_layer_skips_confirm(qapp, monkeypatch):
 
     confirms = []
     monkeypatch.setattr(
-        NewRecipeDialog, "_confirm_replace_items",
+        NewCutDialog, "_confirm_replace_items",
         lambda self: confirms.append(True) or True)
 
     chosen_op = next(p for p in dlg._ctx.available_pools if p.kind == "dc")
@@ -191,7 +191,7 @@ def test_load_dc_with_existing_state_asks_to_confirm(qapp, monkeypatch):
 
     confirms = []
     monkeypatch.setattr(
-        NewRecipeDialog, "_confirm_replace_items",
+        NewCutDialog, "_confirm_replace_items",
         lambda self: confirms.append(True) or True)
     monkeypatch.setattr(
         _LoadDcDialog, "exec",
@@ -217,7 +217,7 @@ def test_load_dc_cancel_in_confirm_keeps_existing_state(qapp, monkeypatch):
     dlg._refresh_source_row()
 
     monkeypatch.setattr(
-        NewRecipeDialog, "_confirm_replace_items", lambda self: False)
+        NewCutDialog, "_confirm_replace_items", lambda self: False)
     monkeypatch.setattr(
         _LoadDcDialog, "exec",
         lambda self: (self._list.setCurrentRow(0)
@@ -243,7 +243,7 @@ def test_load_dc_does_not_touch_rules_or_otherwise(qapp, monkeypatch):
     dlg._target_minutes = 30
 
     monkeypatch.setattr(
-        NewRecipeDialog, "_confirm_replace_items", lambda self: True)
+        NewCutDialog, "_confirm_replace_items", lambda self: True)
     monkeypatch.setattr(
         _LoadDcDialog, "exec",
         lambda self: (self._list.setCurrentRow(0)

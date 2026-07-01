@@ -19,12 +19,12 @@ from mira.shared.recipe_store import (
 )
 from mira.user_store.repo import UserStore
 from mira.ui.pages import new_recipe_dialog as nrd_mod
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     _SaveAsDcNameDialog,
     _SaveRecipeNameDialog,
@@ -97,9 +97,9 @@ def _existing_recipe() -> "any":
 
 
 def _open_save_dialog(qapp, store):
-    """Build NewRecipeDialog with the stub store + drive
+    """Build NewCutDialog with the stub store + drive
     _on_save_recipe_clicked by patching the inner naming dialog exec."""
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
@@ -200,7 +200,7 @@ def test_recipe_replace_falls_back_when_by_name_misses(qapp, monkeypatch):
 
 
 def _open_dc_dialog(qapp, *, dc_creator, dc_replacer=None):
-    """Build a Collection NewRecipeDialog with a stub dc_creator (+
+    """Build a Collection NewCutDialog with a stub dc_creator (+
     optional dc_replacer) and return it ready for
     ``_open_save_as_dc_dialog``."""
     ctx = NewRecipeContext(
@@ -211,7 +211,7 @@ def _open_dc_dialog(qapp, *, dc_creator, dc_replacer=None):
         selected_source=[(JOIN_OR, OperandOption(
             name="#exported", count=10, kind="base", tag="exported"))],
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour="collection",
         show_scope=True, show_hardware=False,
         inventory_scope=INVENTORY_LIBRARY, ctx=ctx,

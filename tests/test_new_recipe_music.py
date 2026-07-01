@@ -4,7 +4,7 @@ The data path is fully intact end-to-end (the gateway's `create_cut` /
 `update_cut` already accept `music_category`; the export's audio
 playlist reads it; the page already builds + threads
 `music_categories` / `music_hint`). spec/106 plugs the picker back
-into `NewRecipeDialog` and stops `presentation_payload()` from
+into `NewCutDialog` and stops `presentation_payload()` from
 silently dropping the field.
 
 These tests pin:
@@ -31,11 +31,11 @@ import pytest
 from core import audio_library
 from mira.shared.cut_draft import PIN_PICK_IN
 from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 
@@ -44,7 +44,7 @@ from mira.ui.pages.new_recipe_dialog import (
 
 
 def _dialog(qapp, *, music_categories=None, music_hint=None,
-            music_category=None) -> NewRecipeDialog:
+            music_category=None) -> NewCutDialog:
     ctx = NewRecipeContext(
         available_pools=[OperandOption(
             name="#exported", count=10, kind="base")],
@@ -53,7 +53,7 @@ def _dialog(qapp, *, music_categories=None, music_hint=None,
         music_hint=music_hint,
         music_category=music_category,
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,

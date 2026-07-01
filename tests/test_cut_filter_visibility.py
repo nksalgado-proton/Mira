@@ -24,12 +24,12 @@ from __future__ import annotations
 import pytest
 
 from core.recipe_resolver import RecipeResolution
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 
@@ -76,7 +76,7 @@ def _make_dialog(qapp, *, show_hardware=True):
         size = state["filtered"] if active else state["unfiltered"]
         return _resolution(size)
 
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=show_hardware,
@@ -228,7 +228,7 @@ def test_indicator_quotes_unfiltered_pool_via_second_probe(qapp):
         active = bool((composition.get("filters") or {}).get("styles"))
         return _resolution(50 if active else 200)
 
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,
@@ -334,7 +334,7 @@ def test_indicator_works_for_library_inventory_dialog(qapp):
         active = bool(filters.get("styles"))
         return _resolution(40 if active else 120)
 
-    dlg = NewRecipeDialog(
+    dlg = NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,

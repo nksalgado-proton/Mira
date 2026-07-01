@@ -26,12 +26,12 @@ from mira.gateway.event_gateway import EventGateway
 from mira.gateway.library_gateway import LibraryGateway
 from mira.shared.cut_export import export_cut
 from mira.store.repo import EventStore
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 from mira.user_store.repo import UserStore
@@ -70,7 +70,7 @@ def _dialog(qapp, *, overlay_field_options=None,
         overlay_fields=list(overlay_fields),
         source_label=source_label,
     )
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,

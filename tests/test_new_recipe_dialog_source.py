@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
     _OperandPickerPopover,
 )
@@ -33,7 +33,7 @@ def _make_ctx(**over) -> NewRecipeContext:
     return NewRecipeContext(available_pools=pools, **kw)
 
 
-def _dialog(qapp, *, ctx=None, **over) -> NewRecipeDialog:
+def _dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
     kw = dict(
         flavour=FLAVOUR_CUT,
         show_scope=False,
@@ -42,7 +42,7 @@ def _dialog(qapp, *, ctx=None, **over) -> NewRecipeDialog:
         ctx=ctx or _make_ctx(),
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -93,7 +93,7 @@ def test_source_picker_hides_save_as_dc_entry(qapp):
     """spec/90 §5.5 — the Source-target popover no longer carries its
     own Save as DC entry; the band-header button on "Which items?" is
     the canonical path so the picker stays focused on operand pick."""
-    from mira.ui.pages.new_recipe_dialog import PICKER_TARGET_SOURCE
+    from mira.ui.pages.new_cut_dialog import PICKER_TARGET_SOURCE
     ctx = _make_ctx()
     picker = _OperandPickerPopover(
         ctx.available_pools, target=PICKER_TARGET_SOURCE)
@@ -104,7 +104,7 @@ def test_rule_predicate_picker_save_as_dc_emits_signal(qapp):
     """The popover Save as DC entry stays on the rule-predicate target —
     spec/90 §5.5 — that's the only entry point for saving a predicate
     as a reusable DC."""
-    from mira.ui.pages.new_recipe_dialog import PICKER_TARGET_RULE_PREDICATE
+    from mira.ui.pages.new_cut_dialog import PICKER_TARGET_RULE_PREDICATE
     ctx = _make_ctx()
     picker = _OperandPickerPopover(
         ctx.available_pools, target=PICKER_TARGET_RULE_PREDICATE)
@@ -141,7 +141,7 @@ def test_adding_one_operand_renders_one_chip(qapp):
     dlg._add_source_chip(pool)
     assert dlg._source_chips == [(JOIN_OR, pool)]
     # The chip widget actually exists in the row.
-    from mira.ui.pages.new_recipe_dialog import _SourceChip
+    from mira.ui.pages.new_cut_dialog import _SourceChip
     chips = [
         dlg._source_row.itemAt(i).widget()
         for i in range(dlg._source_row.count())
@@ -160,7 +160,7 @@ def test_adding_two_operands_inserts_a_join_chevron(qapp):
     a, b = dlg._ctx.available_pools[0], dlg._ctx.available_pools[1]
     dlg._add_source_chip(a)
     dlg._add_source_chip(b)
-    from mira.ui.pages.new_recipe_dialog import _JoinChevron
+    from mira.ui.pages.new_cut_dialog import _JoinChevron
     join_chevrons = []
     for i in range(dlg._source_row.count()):
         w = dlg._source_row.itemAt(i).widget()

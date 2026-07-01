@@ -355,7 +355,7 @@ def test_events_page_new_dc_signal_opens_list_dialog(qapp, tmp_path,
 def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
                                                     monkeypatch):
     """Clicking Pin → Cut on a DC row opens the New Collection face of
-    :class:`NewRecipeDialog`, pre-seeded with that DC as the Source.
+    :class:`NewCutDialog`, pre-seeded with that DC as the Source.
 
     spec/90 Phase 4f swapped the legacy
     :class:`NewCrossEventCutDialog` for the new dialog; spec/94 Phase
@@ -368,10 +368,10 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     from mira.gateway.library_gateway import LibraryGateway
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     from mira.ui.pages.events_page import EventsPage
-    from mira.ui.pages.new_recipe_dialog import (
+    from mira.ui.pages.new_cut_dialog import (
         FLAVOUR_COLLECTION,
         INVENTORY_LIBRARY,
-        NewRecipeDialog,
+        NewCutDialog,
     )
     from mira.user_store import models as um
 
@@ -380,13 +380,13 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     sf = lg.create_dc("hero", expr=[["+", "exported"]])
 
     cut_dialogs: list = []
-    orig_cut_init = NewRecipeDialog.__init__
+    orig_cut_init = NewCutDialog.__init__
 
     def _capture(self, *a, **kw):
         orig_cut_init(self, *a, **kw)
         cut_dialogs.append(self)
-    monkeypatch.setattr(NewRecipeDialog, "__init__", _capture)
-    monkeypatch.setattr(NewRecipeDialog, "exec", lambda self: 0)
+    monkeypatch.setattr(NewCutDialog, "__init__", _capture)
+    monkeypatch.setattr(NewCutDialog, "exec", lambda self: 0)
     monkeypatch.setattr(CrossEventDcsDialog, "exec", lambda self: 0)
 
     page = EventsPage(gateway=gw)

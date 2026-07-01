@@ -472,7 +472,7 @@ class EventsPage(QWidget):
         the event contributing the most resolved members, and commit
         via the anchor event's gateway.
 
-        spec/90 Phase 4f: routes through :class:`NewRecipeDialog`'s
+        spec/90 Phase 4f: routes through :class:`NewCutDialog`'s
         Collection face (the cut-flavour equivalent in spec/61 §2 routes
         through the same dialog at the event scope). The legacy
         :class:`NewCrossEventCutDialog` retired with this phase."""
@@ -485,12 +485,12 @@ class EventsPage(QWidget):
         from mira.ui.pages.cross_event_picker_dialog import (
             CrossEventPickerDialog,
         )
-        from mira.ui.pages.new_recipe_dialog import (
+        from mira.ui.pages.new_cut_dialog import (
             FLAVOUR_COLLECTION,
             INVENTORY_LIBRARY,
             JOIN_OR,
             NewRecipeContext,
-            NewRecipeDialog,
+            NewCutDialog,
             OperandOption,
         )
 
@@ -537,7 +537,7 @@ class EventsPage(QWidget):
         # spec/106 — music inventory + empty-state hint for the
         # cross-event dialog (so the soundtrack picker isn't blank
         # there). Mirrors the per-event ShareCutsPage._dialog_kwargs
-        # path; both surfaces use the same NewRecipeDialog.
+        # path; both surfaces use the same NewCutDialog.
         from core import audio_library, cut_overlay as _co
         from mira.ui.i18n import tr as _tr
         audio_path = getattr(
@@ -712,7 +712,7 @@ class EventsPage(QWidget):
                 return ""
             return (entry or {}).get("name") or ""
 
-        dlg = NewRecipeDialog(
+        dlg = NewCutDialog(
             flavour=FLAVOUR_COLLECTION,
             show_scope=True,
             # spec/94 Phase 4b (2026-06-21) — the gear / EXIF

@@ -1,4 +1,4 @@
-"""spec/90 Phase 4a — :class:`NewRecipeDialog` scaffold visibility tests.
+"""spec/90 Phase 4a — :class:`NewCutDialog` scaffold visibility tests.
 
 Pins the four constructor flags (``flavour`` / ``show_scope`` /
 ``show_hardware`` / ``inventory_scope``) drive the section visibility per
@@ -12,13 +12,13 @@ import pytest
 
 from PyQt6.QtWidgets import QLabel
 
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_COLLECTION,
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 
@@ -60,7 +60,7 @@ def _ctx(
     )
 
 
-def _cut_dialog(qapp, **over) -> NewRecipeDialog:
+def _cut_dialog(qapp, **over) -> NewCutDialog:
     kw = dict(
         flavour=FLAVOUR_CUT,
         show_scope=False,
@@ -69,10 +69,10 @@ def _cut_dialog(qapp, **over) -> NewRecipeDialog:
         ctx=_ctx(),
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
-def _collection_dialog(qapp, **over) -> NewRecipeDialog:
+def _collection_dialog(qapp, **over) -> NewCutDialog:
     kw = dict(
         flavour=FLAVOUR_COLLECTION,
         show_scope=True,
@@ -84,7 +84,7 @@ def _collection_dialog(qapp, **over) -> NewRecipeDialog:
         ),
     )
     kw.update(over)
-    return NewRecipeDialog(**kw)
+    return NewCutDialog(**kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +94,7 @@ def _collection_dialog(qapp, **over) -> NewRecipeDialog:
 
 def test_invalid_flavour_raises(qapp):
     with pytest.raises(ValueError, match="flavour"):
-        NewRecipeDialog(
+        NewCutDialog(
             flavour="mix", show_scope=False, show_hardware=False,
             inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
         )
@@ -102,7 +102,7 @@ def test_invalid_flavour_raises(qapp):
 
 def test_invalid_inventory_scope_raises(qapp):
     with pytest.raises(ValueError, match="inventory_scope"):
-        NewRecipeDialog(
+        NewCutDialog(
             flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
             inventory_scope="elsewhere", ctx=_ctx(),
         )
@@ -168,7 +168,7 @@ def test_collection_dialog_shows_style_and_media(qapp):
 # --------------------------------------------------------------------------- #
 
 
-def _find_placeholder(dlg: NewRecipeDialog, text_marker: str) -> bool:
+def _find_placeholder(dlg: NewCutDialog, text_marker: str) -> bool:
     """True when at least one QLabel in the dialog carries ``text_marker``
     in its text. Placeholder rows are plain QLabels with "Faint"
     object name."""

@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         """spec/94 Phase 4a-iii — the Library page's '+ New Cut' button.
         Routes to the events page's existing Collection-list flow:
         from there the user picks a Collection and clicks **Pin → Cut**,
-        which opens the Collection face of NewRecipeDialog. v1 keeps
+        which opens the Collection face of NewCutDialog. v1 keeps
         the routing one-hop; a future slice may surface the Pin dialog
         from the Library page directly."""
         self.events_page._open_new_cross_event_dc()

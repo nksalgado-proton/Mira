@@ -1,4 +1,4 @@
-"""Block 6 — the binding badge inside NewRecipeDialog (spec/93 §7).
+"""Block 6 — the binding badge inside NewCutDialog (spec/93 §7).
 
 The badge is a read-only chip in the Recipe toolbar that reports the
 placement spec/93 §5 computes. The dialog calls
@@ -19,11 +19,11 @@ from core.placement_classifier import (
     PLACEMENT_CROSS_BOUND,
     PLACEMENT_GLOBAL,
 )
-from mira.ui.pages.new_recipe_dialog import (
+from mira.ui.pages.new_cut_dialog import (
     FLAVOUR_CUT,
     INVENTORY_EVENT,
     NewRecipeContext,
-    NewRecipeDialog,
+    NewCutDialog,
     OperandOption,
 )
 
@@ -39,7 +39,7 @@ def _ctx() -> NewRecipeContext:
 
 
 def _dialog_with_classifier(qapp, classifier, *, event_name=None):
-    return NewRecipeDialog(
+    return NewCutDialog(
         flavour=FLAVOUR_CUT,
         show_scope=False,
         show_hardware=False,

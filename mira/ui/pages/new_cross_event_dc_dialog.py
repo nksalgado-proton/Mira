@@ -1,6 +1,6 @@
 """The cross-event "New Collection" dialog (spec/81 Phase 2 — Item 5).
 
-The cross-event counterpart of :mod:`mira.ui.pages.new_recipe_dialog`. Builds a
+The cross-event counterpart of :mod:`mira.ui.pages.new_cut_dialog`. Builds a
 cross-event Dynamic Collection — a ``saved_filter`` row in ``mira.db`` — by
 combining one origin (the ladder rung the user wants to reach) with the full
 spec/32 §2 facet catalogue. The result is the cross-event DC the

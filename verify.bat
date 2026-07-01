@@ -19,15 +19,6 @@ REM    deep fix is its own session - spec/PROGRESS.md carries the full
 REM    record and the one-command reproducer.
 cd /d "%~dp0"
 
-REM Force Qt to use its offscreen platform so no test can pop a
-REM real desktop window that blocks the suite. Tests calling exec()
-REM on a custom QDialog still block on the modal loop, but no window
-REM is rendered on-screen for the human to hunt-and-close. The env
-REM var is left overridable so a debugging run can do
-REM   set QT_QPA_PLATFORM=windows && verify.bat tests\test_thing.py
-REM to see the dialog again.
-if not defined QT_QPA_PLATFORM set QT_QPA_PLATFORM=offscreen
-
 if "%~1"=="" goto fullsuite
 
 python -m pytest -q %* > verify_output.txt 2>&1

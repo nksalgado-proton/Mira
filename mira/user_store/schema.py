@@ -19,9 +19,14 @@ three saved-noun substrates the rule-list Recipe model needs: ``recipe`` (the
 saved Cut/Collection configuration, the unified noun §5.1), ``event_collection``
 (saved event sets — the cross-event analogue of a DC at the event level, §5.3),
 and ``representative_face_id`` on the existing ``person`` table (pointer to a
-``face`` row in event.db, §5.2). All four tables stay empty in this slice; the
-resolver / dialog / UI work lands in later phases. Existing files migrate in
-place on open; fresh files are created at the current version.
+``face`` row in event.db, §5.2). **v8 (spec/94 Phase 4a-ii / spec/93 §3)**
+re-introduces the ``cut`` table — this time scoped to *cross-event* Cuts (event
+Cuts still live in event.db per the v2 split; the v8 return covers the
+cross-event surface spec/81 §3.1 laid out) — plus its sibling ``cut_member``
+membership table (one row per source event × file). **v9 (spec/111)** adds
+``cut.aspect`` for the slideshow canvas shape. **v10 (spec/162 §9)** adds
+``recipe.scope``. **v11** — see the migration ladder below. Existing files
+migrate in place on open; fresh files are created at the current version.
 """
 from __future__ import annotations
 

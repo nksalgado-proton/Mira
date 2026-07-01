@@ -134,7 +134,17 @@ def test_focus_guarded_line_edit_accepts_click_and_tab(qapp):
         e = _FocusGuardedLineEdit()
         try:
             e.show()
+            # A previous test's teardown can leave the platform
+            # window-manager state pointing at a dying widget; without
+            # an explicit activation, setFocus on this bare top-level
+            # silently fails under Qt's headless-ish test env on
+            # Windows. Drain twice so the FocusIn from setFocus lands
+            # before the assertion (the guard's deferred paths run on
+            # QTimer.singleShot(0)).
+            e.activateWindow()
+            qapp.processEvents()
             e.setFocus(reason)
+            qapp.processEvents()
             # Allowed: hasFocus stays True (no deferred clearFocus).
             assert e.hasFocus() is True, (
                 f"reason {reason} should keep the field focused")

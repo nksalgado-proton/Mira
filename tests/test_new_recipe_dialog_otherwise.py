@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     NewRecipeContext,
     NewCutDialog,
@@ -33,7 +33,7 @@ def _dialog(qapp, *, otherwise=VERDICT_SKIP) -> NewCutDialog:
         otherwise=otherwise,
     )
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -81,7 +81,7 @@ def test_otherwise_invalid_seed_falls_back_to_skip(qapp):
         otherwise="maybe",   # not a valid verdict
     )
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     assert dlg.otherwise_verdict() == VERDICT_SKIP

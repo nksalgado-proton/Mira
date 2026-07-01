@@ -269,17 +269,19 @@ class Recipe:
 
     id: str
     name: str
-    flavour: str                              # 'cut' | 'collection'
-    composition_json: str
-    created_at: str
-    updated_at: str
+    # spec/162 Round 2d.D — ``flavour`` gained a ``'cut'`` default.
+    # After Round 2d.A's collection sweep every surviving row is
+    # ``'cut'``; the column stays at the schema layer as a
+    # cheap-and-reversible artifact per spec/162 §2 but no caller
+    # needs to spell it out any more.
+    flavour: str = 'cut'                       # 'cut' | 'collection'
+    composition_json: str = '{}'
+    created_at: str = ''
+    updated_at: str = ''
     extras_json: str = '{}'
     # spec/162 §9 — 'event' | 'cross-event'. The Load Recipe picker
     # filters by the current dialog's scope; every pre-v10 row is
-    # backfilled to 'event' by _migrate_v9_to_v10. New field appended
-    # after ``extras_json`` so positional Recipe(id, name, flavour,
-    # composition_json, created_at, updated_at) call-sites remain
-    # source-compatible.
+    # backfilled to 'event' by _migrate_v9_to_v10.
     scope: str = 'event'
 
 

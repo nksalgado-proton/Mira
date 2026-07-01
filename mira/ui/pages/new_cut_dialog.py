@@ -70,8 +70,6 @@ from core.placement_classifier import (
     Placement,
 )
 from mira.shared.recipe_store import (
-    FLAVOUR_COLLECTION as _STORE_FLAVOUR_COLLECTION,
-    FLAVOUR_CUT as _STORE_FLAVOUR_CUT,
     RecipeNameTakenError,
     RecipeStore,
 )
@@ -96,31 +94,14 @@ from mira.ui.palette import PALETTE
 log = logging.getLogger(__name__)
 
 
-# Flavour constants (mirror :data:`mira.shared.recipe_store.FLAVOUR_*`).
-# Legacy — retire alongside the Save/Load-Collection surface in Round 2
-# of spec/162; new call-sites should use SCOPE_EVENT / SCOPE_CROSS_EVENT
-# below.
-FLAVOUR_CUT = "cut"
-FLAVOUR_COLLECTION = "collection"
-
-# spec/162 §2 — the two-flavour split collapses into a single scope
-# parameter. The dialog composes a Cut at either scope; the old
-# "compose a standalone Collection" mode retires with the Save/Load-
-# Collection retirement in Round 2. During the transition round both
-# argument names are accepted on :class:`NewCutDialog.__init__`; the
-# scope drives the dialog behaviour and the equivalent flavour is
-# derived for downstream code that still expects a ``flavour`` field
-# (RecipeStore, recipe_draft_adapter, cross-flavour banner).
+# spec/162 §2 — the dialog's scope enum. Round 2d.D (2026-07-01)
+# retired the legacy ``flavour`` alias + "cut" / "collection"
+# module constants. The dialog now speaks scope directly; the
+# ``recipe`` table's ``flavour`` column stays at the schema layer (a
+# cheap-and-reversible artifact per spec/162 §2) but is derived from
+# scope at write-time in RecipeStore.create(...).
 SCOPE_EVENT = "event"
 SCOPE_CROSS_EVENT = "cross-event"
-
-# Mapping helpers between the two vocabularies. During the transition
-# round the dialog carries both.
-_SCOPE_TO_FLAVOUR = {
-    SCOPE_EVENT: FLAVOUR_CUT,
-    SCOPE_CROSS_EVENT: FLAVOUR_COLLECTION,
-}
-_FLAVOUR_TO_SCOPE = {v: k for k, v in _SCOPE_TO_FLAVOUR.items()}
 
 # spec/162 §5 — the dialog opens in one of two modes.
 MODE_NEW = "new"
@@ -1025,7 +1006,8 @@ class _SaveRecipeNameDialog(QDialog):
         self,
         *,
         default: str = "",
-        flavour: str = FLAVOUR_CUT,
+        flavour: Optional[str] = None,
+        scope: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1033,6 +1015,13 @@ class _SaveRecipeNameDialog(QDialog):
         self.setWindowTitle(tr("Save as Recipe"))
         self.setModal(True)
         self.setMinimumWidth(420)
+        # spec/162 Round 2d.D — accept scope= alongside the legacy
+        # flavour= alias; derive one from the other if only one is
+        # provided.
+        if scope is not None and flavour is None:
+            flavour = "cut" if scope == "event" else "collection"
+        elif flavour is None:
+            flavour = "cut"
         self._flavour = flavour
 
         box = QVBoxLayout(self)
@@ -1115,7 +1104,8 @@ class _LoadRecipeDialog(QDialog):
         self,
         *,
         recipes_for: Callable[[bool], Sequence[Any]],
-        flavour: str = FLAVOUR_CUT,
+        flavour: Optional[str] = None,
+        scope: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -1125,6 +1115,12 @@ class _LoadRecipeDialog(QDialog):
         self.setMinimumWidth(460)
         self.setMinimumHeight(380)
         self._recipes_for = recipes_for
+        # spec/162 Round 2d.D — accept scope= alongside the legacy
+        # flavour= alias.
+        if scope is not None and flavour is None:
+            flavour = "cut" if scope == "event" else "collection"
+        elif flavour is None:
+            flavour = "cut"
         self._flavour = flavour
         self._rows: List[Tuple[Any, QListWidgetItem]] = []
 
@@ -1139,8 +1135,8 @@ class _LoadRecipeDialog(QDialog):
         hint.setWordWrap(True)
         outer.addWidget(hint)
 
-        other = (FLAVOUR_COLLECTION if flavour == FLAVOUR_CUT
-                 else FLAVOUR_CUT)
+        other = ("collection" if flavour == "cut"
+                 else "cut")
         self._include_other_cb = QCheckBox(
             tr("Show {other} Recipes too").format(other=other),
             self)
@@ -1193,7 +1189,7 @@ class _LoadRecipeDialog(QDialog):
         flavour = getattr(recipe, "flavour", "") or ""
         if flavour and flavour != self._flavour:
             suffix = (f"  ({tr('Collection')})"
-                      if flavour == FLAVOUR_COLLECTION
+                      if flavour == "collection"
                       else f"  ({tr('Cut')})")
         else:
             suffix = ""
@@ -1485,8 +1481,12 @@ class NewCutDialog(QDialog):
     def __init__(
         self,
         *,
-        flavour: Optional[str] = None,
         scope: Optional[str] = None,
+        flavour: Optional[str] = None,  # legacy alias retired in Round 2d.D
+                                        # but kept as an internal shim so
+                                        # test files that still spell it out
+                                        # don't break; the public API is
+                                        # scope=SCOPE_EVENT/CROSS_EVENT.
         mode: str = MODE_NEW,
         show_scope: bool,
         show_hardware: bool,
@@ -1503,12 +1503,6 @@ class NewCutDialog(QDialog):
         recipe_probe: Optional[Callable[
             [dict], "_recipe_resolver.RecipeResolution"]] = None,
         recipe_store: Optional[RecipeStore] = None,
-        dc_creator: Optional[Callable[
-            [str, list, dict], "OperandOption"]] = None,
-        dc_replacer: Optional[Callable[
-            [str, list, dict], "OperandOption"]] = None,
-        dc_loader: Optional[Callable[
-            ["OperandOption"], Tuple[list, dict]]] = None,
         classify_placement: Optional[Callable[[dict], Placement]] = None,
         event_name_for_id: Optional[Callable[[str], str]] = None,
         recipes_tree_provider: Optional[Callable[[], Any]] = None,
@@ -1519,26 +1513,34 @@ class NewCutDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        # spec/162 §2 — the constructor accepts either the legacy
-        # ``flavour`` or the new ``scope`` and derives the other. Exactly
-        # one must be provided.
-        if flavour is None and scope is None:
+        # spec/162 §2 (Round 2d.D) — scope replaces the public flavour=
+        # alias; the dc_creator / dc_replacer / dc_loader host callbacks
+        # retired with the Save/Load-Collection sub-dialogs in Round
+        # 2d.C. The ``flavour`` kwarg survives as an internal shim so
+        # legacy test call-sites still parse; production callers pass
+        # scope= exclusively.
+        if scope is None and flavour is None:
             raise ValueError(
-                "NewCutDialog requires either scope=SCOPE_EVENT / "
-                "SCOPE_CROSS_EVENT or the legacy flavour= kwarg")
-        if scope is not None:
-            if scope not in (SCOPE_EVENT, SCOPE_CROSS_EVENT):
+                "NewCutDialog requires scope=SCOPE_EVENT or "
+                "SCOPE_CROSS_EVENT")
+        if scope is None:
+            # Derive scope from the legacy flavour kwarg.
+            if flavour == "cut":
+                scope = SCOPE_EVENT
+            elif flavour == "collection":
+                scope = SCOPE_CROSS_EVENT
+            else:
                 raise ValueError(
-                    f"scope must be 'event' or 'cross-event', got {scope!r}")
-            derived_flavour = _SCOPE_TO_FLAVOUR[scope]
-            if flavour is not None and flavour != derived_flavour:
-                raise ValueError(
-                    f"scope={scope!r} + flavour={flavour!r} disagree")
-            flavour = derived_flavour
-        if flavour not in (FLAVOUR_CUT, FLAVOUR_COLLECTION):
+                    f"flavour must be 'cut' or 'collection', got {flavour!r}")
+        if scope not in (SCOPE_EVENT, SCOPE_CROSS_EVENT):
             raise ValueError(
-                f"flavour must be 'cut' or 'collection', got {flavour!r}")
-        self._scope = _FLAVOUR_TO_SCOPE[flavour]
+                f"scope must be 'event' or 'cross-event', got {scope!r}")
+        derived_flavour = "cut" if scope == SCOPE_EVENT else "collection"
+        if flavour is not None and flavour != derived_flavour:
+            raise ValueError(
+                f"scope={scope!r} + flavour={flavour!r} disagree")
+        flavour = derived_flavour
+        self._scope = scope
         # spec/162 §5 — mode drives header title + button labels; the
         # underlying "edit an existing cut" behaviour still rides on
         # ``ctx.is_editing`` (unchanged), so mode="edit" implies
@@ -1584,12 +1586,8 @@ class NewCutDialog(QDialog):
         self._show_totals_for_paths = show_totals_for_paths
         self._recipe_probe = recipe_probe
         self._recipe_store = recipe_store
-        self._dc_creator = dc_creator
-        # spec/98 — Replace-existing host hook for the dc_creator's
-        # "taken" branch. Optional: when unwired, the "Pick another"
-        # fallback path is the only response to a name collision.
-        self._dc_replacer = dc_replacer
-        self._dc_loader = dc_loader
+        # spec/162 Round 2d.C/D — dc_creator / dc_replacer / dc_loader
+        # host callbacks retired with the Save/Load-Collection surface.
         # spec/93 §5 — auto-placement classifier. The host wires this to a
         # callback that uses :func:`core.placement_classifier.classify_placement`
         # over the gateway's DC + Cut lookups; when unwired (early Phase 1
@@ -1755,7 +1753,7 @@ class NewCutDialog(QDialog):
         # The legacy "New Collection" title survives while flavour=
         # collection is still accepted; it retires with Round 2's
         # Save/Load-Collection retirement.
-        is_collection = flavour == FLAVOUR_COLLECTION
+        is_collection = flavour == "collection"
         if mode == MODE_EDIT:
             cut_name = (ctx.name or "").strip()
             base = tr("Edit Cut")
@@ -1818,7 +1816,7 @@ class NewCutDialog(QDialog):
         # Header icon: cut for the event face, cross-event for the
         # Collection face (spec/90 §2.1 vs §2.2 — different audiences).
         glyph = (
-            GLYPH_CROSS_EVENT if self._flavour == FLAVOUR_COLLECTION
+            GLYPH_CROSS_EVENT if self._flavour == "collection"
             else GLYPH_CUT
         )
         tile = QLabel()
@@ -1840,7 +1838,7 @@ class NewCutDialog(QDialog):
             head_text = tr("Edit Cut")
             title = QLabel(
                 f"{head_text} · {cut_name}" if cut_name else head_text)
-        elif self._flavour == FLAVOUR_COLLECTION:
+        elif self._flavour == "collection":
             title = QLabel(tr("New Collection"))
         else:
             title = QLabel(tr("New Cut"))
@@ -2842,8 +2840,9 @@ class NewCutDialog(QDialog):
         )
         popover.chosen.connect(
             lambda operand, r=row: self._on_predicate_operand_chosen(r, operand))
-        self._save_as_dc_context = ("rule_predicate", row)
-        popover.save_as_dc_requested.connect(self._on_save_as_dc_clicked)
+        # spec/162 Round 2d.C/D — the picker's Save-as-DC button retires
+        # with the Save-as-Collection surface; the popover's signal now
+        # has no consumer.
         pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
         popover.move(pos)
         popover.show()
@@ -3887,7 +3886,7 @@ class NewCutDialog(QDialog):
             except RecipeNameTakenError:
                 # spec/98 — offer Replace; Cancel keeps the legacy "pick
                 # another" inline path so the user can still rename.
-                kind = (tr("Collection") if self._flavour == FLAVOUR_COLLECTION
+                kind = (tr("Collection") if self._flavour == "collection"
                         else tr("Cut"))
                 existing = self._recipe_store.by_name(self._flavour, name)
                 if existing is None:
@@ -4403,7 +4402,7 @@ class NewCutDialog(QDialog):
             created_at="",
             updated_at="",
         )
-        if self._flavour == FLAVOUR_COLLECTION:
+        if self._flavour == "collection":
             draft = recipe_to_cross_event_cut_draft(recipe)
         else:
             draft = recipe_to_cut_draft(recipe)
@@ -4460,39 +4459,24 @@ class NewCutDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _refresh_save_button_states(self) -> None:
-        """Gate the items-band + recipe-toolbar buttons:
+        """Gate the Recipe toolbar button:
 
-        * **Save as DC** — needs a non-empty Source (nothing to save
-          otherwise) and a wired :attr:`_dc_creator` (smokes / unit
-          tests without persistence pass ``None``).
         * **Save as Recipe** — needs a non-empty Source (spec/90 §1.1)
           AND a non-empty Name, plus a wired :attr:`_recipe_store`.
-        * **Load DC** — needs at least one DC in the operand inventory
-          and a wired :attr:`_dc_loader`.
 
-        Called from every source / name mutator + the Recipe-load path."""
+        Called from every source / name mutator + the Recipe-load path.
+
+        spec/162 Round 2d.C/D — the Save-as-DC / Load-DC branches
+        retired with the sub-dialogs they enabled."""
         from mira.ui.read_only import disable_if_read_only
 
         has_source = bool(self._source_chips)
-        if hasattr(self, "_save_dc_btn"):
-            self._save_dc_btn.setEnabled(
-                has_source and self._dc_creator is not None)
-            # spec/76 §B.1 — grey the save when the library is read-only,
-            # overriding the has-source enable above. Idempotent in
-            # writeable sessions.
-            disable_if_read_only(self._save_dc_btn)
         if hasattr(self, "_save_recipe_btn"):
             has_name = bool(self._name_edit.text().strip())
             self._save_recipe_btn.setEnabled(
                 has_source and has_name
                 and self._recipe_store is not None)
             disable_if_read_only(self._save_recipe_btn)
-        if hasattr(self, "_load_dc_btn"):
-            has_dcs = any(
-                getattr(p, "kind", "") == "dc"
-                for p in (self._ctx.available_pools or ()))
-            self._load_dc_btn.setEnabled(
-                has_dcs and self._dc_loader is not None)
 
     # ------------------------------------------------------------------ #
     # Public output — spec/90 §5.1 composition shape (read-only in 4a)
@@ -4708,8 +4692,10 @@ class NewCutDialog(QDialog):
 
 
 __all__ = [
-    "FLAVOUR_CUT",
-    "FLAVOUR_COLLECTION",
+    "SCOPE_EVENT",
+    "SCOPE_CROSS_EVENT",
+    "MODE_NEW",
+    "MODE_EDIT",
     "INVENTORY_EVENT",
     "INVENTORY_LIBRARY",
     "JOIN_OR",

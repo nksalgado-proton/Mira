@@ -25,7 +25,7 @@ import pytest
 
 from core.recipe_resolver import RecipeResolution
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
@@ -77,7 +77,7 @@ def _make_dialog(qapp, *, show_hardware=True):
         return _resolution(size)
 
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=show_hardware,
         inventory_scope=INVENTORY_EVENT,
@@ -229,7 +229,7 @@ def test_indicator_quotes_unfiltered_pool_via_second_probe(qapp):
         return _resolution(50 if active else 200)
 
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -335,7 +335,7 @@ def test_indicator_works_for_library_inventory_dialog(qapp):
         return _resolution(40 if active else 120)
 
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_LIBRARY,

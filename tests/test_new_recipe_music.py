@@ -32,7 +32,7 @@ from core import audio_library
 from mira.shared.cut_draft import PIN_PICK_IN
 from mira.shared.recipe_draft_adapter import recipe_to_cut_draft
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     NewRecipeContext,
     NewCutDialog,
@@ -54,7 +54,7 @@ def _dialog(qapp, *, music_categories=None, music_hint=None,
         music_category=music_category,
     )
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -214,9 +214,9 @@ def test_e2e_draft_persists_and_export_builds_playlist(qapp, tmp_path):
     playlist from a fake library."""
     from mira.gateway.event_gateway import EventGateway
     from mira.shared.cut_export import export_cut
-    from mira.shared.recipe_store import (
-        FLAVOUR_CUT as _STORE_FLAVOUR_CUT,
-    )
+    # spec/162 Round 2d.D — recipe_store no longer exports FLAVOUR_CUT;
+    # the literal 'cut' inlined here.
+    _STORE_FLAVOUR_CUT = 'cut'
     from mira.store.repo import EventStore
     from mira.user_store import models as um
 

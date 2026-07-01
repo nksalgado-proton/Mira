@@ -18,11 +18,12 @@ import json
 import pytest
 
 from mira.shared.recipe_store import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
+
     RecipeStore,
 )
 from mira.ui.pages.new_cut_dialog import (
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
@@ -70,13 +71,13 @@ def _dialog(
     qapp,
     store: RecipeStore,
     *,
-    flavour: str = FLAVOUR_CUT,
+    scope: str = SCOPE_EVENT,
     show_hardware: bool = False,
     show_scope: bool = False,
     ctx: NewRecipeContext = None,
 ) -> NewCutDialog:
     return NewCutDialog(
-        flavour=flavour,
+        scope=scope,
         show_scope=show_scope,
         show_hardware=show_hardware,
         inventory_scope=INVENTORY_EVENT,
@@ -99,9 +100,9 @@ def test_save_flow_writes_through_recipe_store(qapp, store):
     composition = dlg.composition()
     assert composition["source"]                    # non-empty
     recipe = store.create(
-        name="short", flavour=FLAVOUR_CUT, composition=composition)
+        name="short", scope=SCOPE_EVENT, composition=composition)
     assert recipe.name == "short"
-    assert recipe.flavour == FLAVOUR_CUT
+    assert recipe.flavour == "cut"
     assert json.loads(recipe.composition_json)["source"]
 
 
@@ -122,7 +123,7 @@ def test_save_button_disabled_when_no_store(qapp):
     """No store wired (smokes / unit tests) → button stays disabled
     regardless of Source / Name."""
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
     )
     dlg._name_edit.setText("anything")
@@ -149,8 +150,8 @@ def test_save_button_disabled_when_source_empty(qapp, store):
 def test_save_name_conflict_shows_inline_error(qapp, store):
     """A :class:`RecipeNameTakenError` keeps the name dialog open with
     an inline error message (the user retries without retyping)."""
-    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
-    dlg = _SaveRecipeNameDialog(default="short", flavour=FLAVOUR_CUT)
+    store.create(name="short", scope=SCOPE_EVENT, composition={})
+    dlg = _SaveRecipeNameDialog(default="short", scope=SCOPE_EVENT)
     dlg.show_error("A Cut Recipe named 'short' already exists. Pick another.")
     # ``isHidden`` is the right check here — ``isVisible`` returns False
     # unless the widget tree is on-screen (it isn't in tests).
@@ -165,13 +166,13 @@ def test_save_name_conflict_shows_inline_error(qapp, store):
 def test_save_name_dialog_defaults_to_current_name(qapp, store):
     """The naming dialog opens with the main dialog's Name field as
     the default."""
-    dlg = _SaveRecipeNameDialog(default="trip_best", flavour=FLAVOUR_CUT)
+    dlg = _SaveRecipeNameDialog(default="trip_best", scope=SCOPE_EVENT)
     assert dlg.recipe_name() == "trip_best"
 
 
 def test_save_name_dialog_gates_ok_on_text(qapp, store):
     """Empty input keeps OK disabled."""
-    dlg = _SaveRecipeNameDialog(default="", flavour=FLAVOUR_CUT)
+    dlg = _SaveRecipeNameDialog(default="", scope=SCOPE_EVENT)
     assert not dlg._ok.isEnabled()
     dlg._edit.setText("  My Recipe  ")
     assert dlg._ok.isEnabled()
@@ -191,34 +192,28 @@ def test_load_button_enabled_when_store_wired(qapp, store):
 def test_load_picker_lists_same_flavour_by_default(qapp, store):
     """The picker calls :meth:`RecipeStore.list` with the dialog's
     flavour; ``include_other=False`` filters out cross-flavour rows."""
-    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
-    store.create(name="curated_macro", flavour=FLAVOUR_COLLECTION,
+    store.create(name="short", scope=SCOPE_EVENT, composition={})
+    store.create(name="curated_macro", scope=SCOPE_CROSS_EVENT,
                  composition={})
     picker = _LoadRecipeDialog(
         recipes_for=lambda include_other: store.list(
-            flavour=FLAVOUR_CUT, include_other=include_other),
-        flavour=FLAVOUR_CUT,
+            scope=SCOPE_EVENT, include_other=include_other),
+        scope=SCOPE_EVENT,
     )
     rows = [picker._list.item(i).text() for i in range(picker._list.count())]
     assert any("short" in r for r in rows)
     assert not any("curated_macro" in r for r in rows)
 
 
+@pytest.mark.skip(
+    reason="spec/162 §6 — the Load Recipe picker now filters by the "
+           "dialog's scope unconditionally; the legacy spec/90 §5.5 "
+           "include_other cross-flavour toggle is orthogonal but no "
+           "longer changes the pool at cross-scope. Test retires with "
+           "the spec/90 include_other semantic.")
 def test_load_picker_include_other_appends_cross_flavour(qapp, store):
-    """Toggling the checkbox repopulates with cross-flavour Recipes
-    appended after — same-flavour first per spec/90 §5.5."""
-    store.create(name="short", flavour=FLAVOUR_CUT, composition={})
-    store.create(name="curated_macro", flavour=FLAVOUR_COLLECTION,
-                 composition={})
-    picker = _LoadRecipeDialog(
-        recipes_for=lambda include_other: store.list(
-            flavour=FLAVOUR_CUT, include_other=include_other),
-        flavour=FLAVOUR_CUT,
-    )
-    picker._include_other_cb.setChecked(True)
-    rows = [picker._list.item(i).text() for i in range(picker._list.count())]
-    assert any("short" in r for r in rows)
-    assert any("curated_macro" in r for r in rows)
+    """Retired — see the skip reason above."""
+    ...
 
 
 def test_apply_recipe_populates_source_and_kicks_probe(qapp, store):
@@ -234,7 +229,7 @@ def test_apply_recipe_populates_source_and_kicks_probe(qapp, store):
         "otherwise": "skip",
         "filters": {"styles": ["macro"], "media_type": "photo"},
     }
-    recipe = store.create(name="my_short", flavour=FLAVOUR_CUT,
+    recipe = store.create(name="my_short", scope=SCOPE_EVENT,
                           composition=composition)
     dlg = _dialog(qapp, store)
     dlg._apply_recipe(recipe)
@@ -265,9 +260,9 @@ def test_apply_collection_recipe_into_cut_dialog_shows_banner(qapp, store):
         "otherwise": "skip",
     }
     recipe = store.create(name="curated_pedro",
-                          flavour=FLAVOUR_COLLECTION,
+                          scope=SCOPE_CROSS_EVENT,
                           composition=composition)
-    dlg = _dialog(qapp, store, flavour=FLAVOUR_CUT)
+    dlg = _dialog(qapp, store, scope=SCOPE_EVENT)
     dlg._apply_recipe(recipe)
     assert dlg._cross_flavour_fields                # non-empty
     assert not dlg._metrics_banner.isHidden()
@@ -286,8 +281,8 @@ def test_apply_same_flavour_recipe_does_not_show_cross_flavour_banner(
         "otherwise": "skip",
         "filters": {"styles": ["macro"], "media_type": "both"},
     }
-    recipe = store.create(name="same", flavour=FLAVOUR_CUT,
+    recipe = store.create(name="same", scope=SCOPE_EVENT,
                           composition=composition)
-    dlg = _dialog(qapp, store, flavour=FLAVOUR_CUT)
+    dlg = _dialog(qapp, store, scope=SCOPE_EVENT)
     dlg._apply_recipe(recipe)
     assert dlg._cross_flavour_fields == []

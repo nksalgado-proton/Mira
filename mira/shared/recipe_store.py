@@ -43,10 +43,14 @@ from mira.user_store.repo import UserStore
 log = logging.getLogger(__name__)
 
 
-#: Closed enum for Recipe flavours (spec/90 §5.1). Mirrors the DDL CHECK.
-FLAVOUR_CUT = "cut"
-FLAVOUR_COLLECTION = "collection"
-FLAVOURS = frozenset({FLAVOUR_CUT, FLAVOUR_COLLECTION})
+# spec/162 Round 2d.D (2026-07-01) — the ``"cut"`` /
+# ``"collection"`` / ``FLAVOURS`` public constants retired here.
+# The ``flavour`` column still exists at the schema layer (a
+# cheap-and-reversible artifact per spec/162 §2), so the store still
+# writes / reads it, but the module no longer exposes the closed-enum
+# vocabulary as a public API. Internal checks compare against the
+# private ``_FLAVOURS`` tuple below directly.
+_FLAVOURS = ("cut", "collection")
 
 
 def _utc_now_iso() -> str:
@@ -108,10 +112,10 @@ class RecipeStore:
             return {}
 
     def _check_flavour(self, flavour: str) -> None:
-        if flavour not in FLAVOURS:
+        if flavour not in _FLAVOURS:
             raise ValueError(
                 f"invalid recipe flavour: {flavour!r} "
-                f"(expected one of {sorted(FLAVOURS)})")
+                f"(expected one of {sorted(_FLAVOURS)})")
 
     def _check_unique(self, flavour: str, name: str,
                       excluding_id: Optional[str] = None) -> None:
@@ -129,8 +133,8 @@ class RecipeStore:
     def create(
         self,
         name: str,
-        flavour: str,
-        composition: Mapping[str, Any],
+        flavour: Optional[str] = None,
+        composition: Optional[Mapping[str, Any]] = None,
         *,
         scope: str = 'event',
     ) -> um.Recipe:
@@ -142,9 +146,19 @@ class RecipeStore:
         spec/162 §9 — ``scope`` defaults to ``'event'`` so pre-spec/162
         call-sites (SaveRecipe path in event-scope NewCutDialog) don't
         need touching. Round 3's cross-event dialog surface will pass
-        ``scope='cross-event'`` explicitly."""
+        ``scope='cross-event'`` explicitly.
+
+        spec/162 Round 2d.D — ``flavour`` gained a ``None`` default; when
+        omitted it derives from ``scope`` (``'event'`` → ``'cut'``,
+        ``'cross-event'`` → ``'collection'``). Callers can still pass an
+        explicit flavour for edge cases (schema-preserving migrations,
+        legacy tests) but new UI paths just spell out scope."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("recipe name must be a non-empty string")
+        if flavour is None:
+            flavour = 'cut' if scope == 'event' else 'collection'
+        if composition is None:
+            composition = {}
         self._check_flavour(flavour)
         if scope not in ('event', 'cross-event'):
             raise ValueError(
@@ -212,7 +226,7 @@ class RecipeStore:
         """Project a :class:`DefinitionFile` (JSON-backed) onto a
         :class:`Recipe` so existing callers see the same row shape."""
         payload = dict(df.payload or {})
-        flavour = payload.pop("flavour", FLAVOUR_CUT)
+        flavour = payload.pop("flavour", "cut")
         # spec/162 §9 — scope is 'event' by default when the payload
         # predates the column (pre-Round 2c JSON files). Round 3's
         # cross-event save path writes 'cross-event' explicitly.
@@ -469,9 +483,6 @@ class RecipeStore:
 
 
 __all__ = [
-    "FLAVOUR_CUT",
-    "FLAVOUR_COLLECTION",
-    "FLAVOURS",
     "RecipeNameTakenError",
     "RecipeStore",
 ]

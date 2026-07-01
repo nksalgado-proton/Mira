@@ -13,8 +13,6 @@ import pytest
 from PyQt6.QtWidgets import QLabel
 
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     MODE_EDIT,
@@ -66,7 +64,7 @@ def _ctx(
 
 def _cut_dialog(qapp, **over) -> NewCutDialog:
     kw = dict(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -78,7 +76,7 @@ def _cut_dialog(qapp, **over) -> NewCutDialog:
 
 def _collection_dialog(qapp, **over) -> NewCutDialog:
     kw = dict(
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
@@ -96,10 +94,12 @@ def _collection_dialog(qapp, **over) -> NewCutDialog:
 # --------------------------------------------------------------------------- #
 
 
-def test_invalid_flavour_raises(qapp):
-    with pytest.raises(ValueError, match="flavour"):
+def test_invalid_scope_raises(qapp):
+    """spec/162 Round 2d.D — the ``flavour=`` alias retired; invalid
+    scope now surfaces as ValueError."""
+    with pytest.raises(ValueError, match="scope"):
         NewCutDialog(
-            flavour="mix", show_scope=False, show_hardware=False,
+            scope="mix", show_scope=False, show_hardware=False,
             inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
         )
 
@@ -107,7 +107,7 @@ def test_invalid_flavour_raises(qapp):
 def test_invalid_inventory_scope_raises(qapp):
     with pytest.raises(ValueError, match="inventory_scope"):
         NewCutDialog(
-            flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+            scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
             inventory_scope="elsewhere", ctx=_ctx(),
         )
 
@@ -352,18 +352,18 @@ def test_initial_resize_accommodates_widest_header_row(qapp):
 
 def test_scope_event_maps_to_flavour_cut(qapp):
     """spec/162 §2 — `scope=SCOPE_EVENT` resolves to the same behaviour
-    as the legacy `flavour=FLAVOUR_CUT` code path."""
+    as the legacy `scope=SCOPE_EVENT` code path."""
     dlg = NewCutDialog(
         scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
     )
     assert dlg._scope == SCOPE_EVENT
-    assert dlg._flavour == FLAVOUR_CUT
+    assert dlg._flavour == "cut"
 
 
 def test_scope_cross_event_maps_to_flavour_collection(qapp):
     """spec/162 §2 — `scope=SCOPE_CROSS_EVENT` resolves to the legacy
-    `flavour=FLAVOUR_COLLECTION` code path (until Round 2 retires the
+    `scope=SCOPE_CROSS_EVENT` code path (until Round 2 retires the
     Collection flavour surface)."""
     dlg = NewCutDialog(
         scope=SCOPE_CROSS_EVENT, show_scope=True, show_hardware=True,
@@ -371,20 +371,19 @@ def test_scope_cross_event_maps_to_flavour_collection(qapp):
         ctx=_ctx(cameras=("Pana+G9M2",), lenses=("100-500mm",)),
     )
     assert dlg._scope == SCOPE_CROSS_EVENT
-    assert dlg._flavour == FLAVOUR_COLLECTION
+    assert dlg._flavour == "collection"
 
 
-def test_scope_and_flavour_together_when_disagreeing_raises(qapp):
-    with pytest.raises(ValueError, match="disagree"):
-        NewCutDialog(
-            scope=SCOPE_EVENT, flavour=FLAVOUR_COLLECTION,
-            show_scope=False, show_hardware=False,
-            inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
-        )
+# spec/162 Round 2d.D — the ``flavour=`` alias retired; the two tests
+# that checked scope/flavour disagreement + neither-passed raise
+# retire alongside it.
 
 
-def test_neither_scope_nor_flavour_raises(qapp):
-    with pytest.raises(ValueError, match="scope|flavour"):
+def test_missing_scope_raises(qapp):
+    """spec/162 Round 2d.D — scope= is the public API; the internal
+    flavour= shim survives so legacy tests still parse. Passing
+    neither raises ValueError."""
+    with pytest.raises(ValueError, match="scope"):
         NewCutDialog(
             show_scope=False, show_hardware=False,
             inventory_scope=INVENTORY_EVENT, ctx=_ctx(),

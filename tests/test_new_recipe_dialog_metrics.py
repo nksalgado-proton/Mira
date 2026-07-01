@@ -20,7 +20,7 @@ from core.recipe_resolver import (
     RuleMatchInfo,
 )
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
@@ -50,7 +50,7 @@ def _dialog(qapp, *, recipe_probe=None, **over) -> NewCutDialog:
         available_styles=["macro"],
     )
     kw = dict(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -446,7 +446,7 @@ def test_composition_no_budget_emits_null_target_and_max(qapp):
         has_budget=False,
     )
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     presentation = dlg.composition()["presentation"]
@@ -461,7 +461,7 @@ def test_budget_checkbox_unchecked_disables_target_and_max_spinners(qapp):
     ctx = NewRecipeContext(
         available_pools=_pools(), has_budget=False)
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     assert dlg._budget_check.isChecked() is False
@@ -495,7 +495,7 @@ def test_metrics_line_drops_target_suffix_when_no_budget(qapp):
         has_budget=False,
     )
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
         recipe_probe=lambda _c: _fake_resolution(pool_size=386, picked=11),
     )
@@ -547,7 +547,7 @@ def test_apply_composition_with_budget_checks_box(qapp):
     populates the spinners."""
     ctx = NewRecipeContext(available_pools=_pools(), has_budget=False)
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     assert dlg._budget_check.isChecked() is False

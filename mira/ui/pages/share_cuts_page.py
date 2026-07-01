@@ -71,7 +71,7 @@ from mira.ui.shared.cut_session_page import CutSessionPage
 # :attr:`NewCutDialog.start_requested` to receive it.
 from mira.shared.recipe_store import RecipeStore
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     NewRecipeContext,
     NewCutDialog,
@@ -1506,7 +1506,7 @@ class ShareCutsPage(QWidget):
         # per spec/90 §2.1. ``recipe_probe`` returns a RecipeResolution so the
         # metrics + Start gate use the resolver's pool/seed map directly.
         dlg = NewCutDialog(
-            flavour=FLAVOUR_CUT,
+            scope=SCOPE_EVENT,
             show_scope=False,
             show_hardware=False,
             inventory_scope=INVENTORY_EVENT,
@@ -1523,8 +1523,8 @@ class ShareCutsPage(QWidget):
             recipe_probe=(lambda comp: eg.resolve_recipe(comp))
                           if eg is not None else None,
             recipe_store=self._recipe_store(),
-            dc_creator=self._make_dc_creator(),
-            dc_loader=self._make_dc_loader(),
+            # spec/162 Round 2d.C/D — dc_creator + dc_loader retired
+            # with the Save/Load-Collection surface.
             classify_placement=self._make_placement_classifier(),
             event_name_for_id=self._make_event_name_lookup(),
             recipes_tree_provider=self._make_recipes_tree_provider(),

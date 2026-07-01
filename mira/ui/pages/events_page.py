@@ -477,7 +477,7 @@ class EventsPage(QWidget):
             CrossEventPickerDialog,
         )
         from mira.ui.pages.new_cut_dialog import (
-            FLAVOUR_COLLECTION,
+    SCOPE_CROSS_EVENT,
             INVENTORY_LIBRARY,
             JOIN_OR,
             NewRecipeContext,
@@ -704,7 +704,7 @@ class EventsPage(QWidget):
             return (entry or {}).get("name") or ""
 
         dlg = NewCutDialog(
-            flavour=FLAVOUR_COLLECTION,
+            scope=SCOPE_CROSS_EVENT,
             show_scope=True,
             # spec/94 Phase 4b (2026-06-21) — the gear / EXIF
             # filters are now wired end-to-end. The Collection face

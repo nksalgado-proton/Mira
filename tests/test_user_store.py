@@ -130,7 +130,7 @@ def test_ddl_creates_every_spec53_table(tmp_path):
         "person",
         "user_camera",
         "gear_profile",
-        "cut",
+
         "cut_member",
         "feature_flag",
     }

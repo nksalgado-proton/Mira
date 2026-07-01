@@ -58,8 +58,8 @@ def _render(app, dlg, name: str, mode: str) -> None:
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     from mira.ui.pages.new_cut_dialog import (
-        FLAVOUR_COLLECTION,
-        FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
         INVENTORY_EVENT,
         INVENTORY_LIBRARY,
         NewCutDialog,
@@ -70,7 +70,7 @@ def main() -> int:
         apply_theme(app, mode)
 
         cut = NewCutDialog(
-            flavour=FLAVOUR_CUT,
+            scope=SCOPE_EVENT,
             show_scope=False,
             show_hardware=False,
             inventory_scope=INVENTORY_EVENT,
@@ -79,7 +79,7 @@ def main() -> int:
         _render(app, cut, "cut", mode)
 
         coll = NewCutDialog(
-            flavour=FLAVOUR_COLLECTION,
+            scope=SCOPE_CROSS_EVENT,
             show_scope=True,
             show_hardware=True,
             inventory_scope=INVENTORY_LIBRARY,

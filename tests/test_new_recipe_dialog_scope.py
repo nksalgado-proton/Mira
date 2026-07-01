@@ -17,8 +17,8 @@ import pytest
 
 from mira.ui.pages import new_cut_dialog as nrd
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
@@ -60,7 +60,7 @@ def _collection_dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
             available_styles=["macro"],
         )
     kw = dict(
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
@@ -78,7 +78,7 @@ def _cut_dialog(qapp, **over) -> NewCutDialog:
         available_styles=["macro"],
     )
     kw = dict(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,

@@ -33,7 +33,7 @@ sys.path.insert(0, str(_REPO))
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     from mira.ui.pages.new_cut_dialog import (
-        FLAVOUR_CUT,
+    SCOPE_EVENT,
         INVENTORY_EVENT,
         JOIN_OR,
         NewRecipeContext,
@@ -68,7 +68,7 @@ def main() -> int:
             per_photo_seconds=6.5,
         )
         dlg = NewCutDialog(
-            flavour=FLAVOUR_CUT,
+            scope=SCOPE_EVENT,
             show_scope=False,
             show_hardware=False,
             inventory_scope=INVENTORY_EVENT,

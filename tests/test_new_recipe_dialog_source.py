@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     JOIN_OR,
     NewRecipeContext,
@@ -35,7 +35,7 @@ def _make_ctx(**over) -> NewRecipeContext:
 
 def _dialog(qapp, *, ctx=None, **over) -> NewCutDialog:
     kw = dict(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,

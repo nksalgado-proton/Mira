@@ -19,8 +19,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QPushButton
 
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_AND,
@@ -61,7 +61,7 @@ def _events():
 
 def _cut_dialog(qapp) -> NewCutDialog:
     return NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
         ctx=NewRecipeContext(
             available_pools=_pools(),
@@ -72,7 +72,7 @@ def _cut_dialog(qapp) -> NewCutDialog:
 
 def _collection_dialog(qapp) -> NewCutDialog:
     return NewCutDialog(
-        flavour=FLAVOUR_COLLECTION, show_scope=True, show_hardware=True,
+        scope=SCOPE_CROSS_EVENT, show_scope=True, show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
         ctx=NewRecipeContext(
             available_pools=_pools(),

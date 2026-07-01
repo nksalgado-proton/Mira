@@ -172,8 +172,7 @@ def test_make_new_recipe_dialog_wires_recipe_store(qapp, gw, tmp_path):
     dlg._name_edit.setText("clean_exports")
     assert dlg._save_recipe_btn.isEnabled() is True
     # The Cut face hides Scope + hardware.
-    from mira.ui.pages.new_cut_dialog import FLAVOUR_CUT
-    assert dlg._flavour == FLAVOUR_CUT
+    assert dlg._flavour == "cut"
     assert dlg._show_scope is False
     assert dlg._show_hardware is False
     dlg.deleteLater()
@@ -273,7 +272,6 @@ def test_adjust_prefill_with_real_budget_keeps_has_budget_true(qapp, gw,
     showing the right numbers."""
     from types import SimpleNamespace
     from mira.ui.pages.new_cut_dialog import (
-        FLAVOUR_CUT,
         INVENTORY_EVENT,
         NewRecipeContext,
     )

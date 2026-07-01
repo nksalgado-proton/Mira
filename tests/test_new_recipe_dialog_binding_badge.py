@@ -20,7 +20,7 @@ from core.placement_classifier import (
     PLACEMENT_GLOBAL,
 )
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     NewRecipeContext,
     NewCutDialog,
@@ -40,7 +40,7 @@ def _ctx() -> NewRecipeContext:
 
 def _dialog_with_classifier(qapp, classifier, *, event_name=None):
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,

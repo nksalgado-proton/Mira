@@ -376,7 +376,6 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     from mira.ui.pages.cross_event_dcs_dialog import CrossEventDcsDialog
     from mira.ui.pages.events_page import EventsPage
     from mira.ui.pages.new_cut_dialog import (
-        FLAVOUR_COLLECTION,
         INVENTORY_LIBRARY,
         NewCutDialog,
     )
@@ -404,7 +403,7 @@ def test_events_page_pin_requested_opens_cut_dialog(qapp, tmp_path,
     # Phase 4b (2026-06-21) lifted the gear / EXIF gate now that the
     # projection reconcile is wired. Faces stay deferred (spec/91 is
     # its own track) — ``show_faces`` defaults False.
-    assert dlg._flavour == FLAVOUR_COLLECTION
+    assert dlg._flavour == "collection"
     assert dlg._show_scope is True
     assert dlg._show_hardware is True
     assert dlg._show_faces is False

@@ -25,8 +25,8 @@ from mira.shared.cut_draft import (
     PIN_WEED_OUT,
 )
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
@@ -65,11 +65,11 @@ def _ctx(*, with_source: bool = False) -> NewRecipeContext:
 
 
 def _dialog(qapp, *, recipe_probe=None, ctx=None,
-            flavour=FLAVOUR_CUT, show_scope=False,
+            scope=SCOPE_EVENT, show_scope=False,
             show_hardware=False,
             inventory_scope=INVENTORY_EVENT) -> NewCutDialog:
     return NewCutDialog(
-        flavour=flavour,
+        scope=scope,
         show_scope=show_scope,
         show_hardware=show_hardware,
         inventory_scope=inventory_scope,
@@ -128,7 +128,7 @@ def test_show_filters_false_drops_the_filter_section(qapp):
     builds no Style / Camera / Lens / Media widgets, and composition carries
     empty filters (the pinned Collection filters via the source operand)."""
     dlg = NewCutDialog(
-        flavour=FLAVOUR_COLLECTION, show_scope=True, show_hardware=True,
+        scope=SCOPE_CROSS_EVENT, show_scope=True, show_hardware=True,
         show_filters=False, inventory_scope=INVENTORY_LIBRARY,
         ctx=_ctx(with_source=True))
     assert dlg._style_chips == {}
@@ -220,7 +220,7 @@ def test_collection_flavour_start_emits_cross_event_cut_draft(qapp):
     dlg = _dialog(
         qapp,
         ctx=ctx,
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
@@ -254,7 +254,7 @@ def test_collection_flavour_start_uses_pin_mode_from_otherwise(qapp):
     dlg = _dialog(
         qapp,
         ctx=ctx,
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
@@ -327,7 +327,7 @@ def test_collection_flavour_start_accepts_dialog(qapp):
     dlg = _dialog(
         qapp,
         ctx=ctx,
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,

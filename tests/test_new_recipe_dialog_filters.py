@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_COLLECTION,
-    FLAVOUR_CUT,
+    SCOPE_CROSS_EVENT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
@@ -37,7 +37,7 @@ def _cut_dialog(
         include_videos=include_videos,
     )
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,
@@ -61,7 +61,7 @@ def _collection_dialog(
         selected_lenses=list(selected_lenses),
     )
     return NewCutDialog(
-        flavour=FLAVOUR_COLLECTION,
+        scope=SCOPE_CROSS_EVENT,
         show_scope=True,
         show_hardware=True,
         inventory_scope=INVENTORY_LIBRARY,
@@ -98,7 +98,7 @@ def test_initial_selected_styles_round_trip(qapp):
         selected_styles=["macro"],
     )
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT, show_scope=False, show_hardware=False,
+        scope=SCOPE_EVENT, show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=ctx,
     )
     assert dlg._style_chips["macro"].isChecked()

@@ -13,13 +13,14 @@ import pytest
 from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from mira.shared.recipe_store import (
-    FLAVOUR_CUT,
+
     RecipeNameTakenError,
     RecipeStore,
 )
 from mira.user_store.repo import UserStore
 from mira.ui.pages import new_cut_dialog as nrd_mod
 from mira.ui.pages.new_cut_dialog import (
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     JOIN_OR,
@@ -86,7 +87,7 @@ class _RecipeStoreStub:
         self.update_calls.append({
             "id": id, "name": name, "composition": composition})
         return self._um.Recipe(
-            id=id, name="short", flavour=FLAVOUR_CUT,
+            id=id, name="short", scope=SCOPE_EVENT,
             composition_json=json.dumps(composition or {}),
             created_at=NOW, updated_at=NOW)
 
@@ -97,7 +98,7 @@ class _RecipeStoreStub:
 def _existing_recipe() -> "any":
     from mira.user_store import models as um
     return um.Recipe(
-        id="ex1", name="short", flavour=FLAVOUR_CUT,
+        id="ex1", name="short", scope=SCOPE_EVENT,
         composition_json="{}", created_at=NOW, updated_at=NOW)
 
 
@@ -105,7 +106,7 @@ def _open_save_dialog(qapp, store):
     """Build NewCutDialog with the stub store + drive
     _on_save_recipe_clicked by patching the inner naming dialog exec."""
     dlg = NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False, show_hardware=False,
         inventory_scope=INVENTORY_EVENT, ctx=_ctx(),
         recipe_store=store,

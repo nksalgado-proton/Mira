@@ -27,7 +27,8 @@ from core.cut_aspect import (
     ASPECT_1_1, ASPECT_3_2, ASPECT_4_3, ASPECT_16_9,
 )
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT, INVENTORY_EVENT,
+    SCOPE_EVENT,
+    INVENTORY_EVENT,
     NewRecipeContext, NewCutDialog, OperandOption,
 )
 from mira.ui.pages.share_cuts_page import ShareCutsPage
@@ -44,7 +45,7 @@ def _ctx() -> NewRecipeContext:
 
 def _dialog(qapp, ctx: NewRecipeContext) -> NewCutDialog:
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=INVENTORY_EVENT,

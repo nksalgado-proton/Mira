@@ -27,7 +27,7 @@ from mira.gateway.library_gateway import LibraryGateway
 from mira.shared.cut_export import export_cut
 from mira.store.repo import EventStore
 from mira.ui.pages.new_cut_dialog import (
-    FLAVOUR_CUT,
+    SCOPE_EVENT,
     INVENTORY_EVENT,
     INVENTORY_LIBRARY,
     NewRecipeContext,
@@ -71,7 +71,7 @@ def _dialog(qapp, *, overlay_field_options=None,
         source_label=source_label,
     )
     return NewCutDialog(
-        flavour=FLAVOUR_CUT,
+        scope=SCOPE_EVENT,
         show_scope=False,
         show_hardware=False,
         inventory_scope=inventory,

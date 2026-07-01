@@ -1583,9 +1583,10 @@ class NewCutDialog(QDialog):
         # so the dialog drops the (redundant, non-scaling) inline Style /
         # Camera / Lens / Media wall; the pinned Collection already carries
         # its filters and they apply through the source operand. The rich
-        # "+ New Collection" dialog (NewCrossEventDcDialog + _filter_family)
-        # is where filters are authored. Event-scope Cuts keep their thin
-        # Style + Media filters (default True).
+        # "+ New Collection" dialog retired in spec/162 Round 3e; the
+        # cross-event source composition (spec/162 §7.1) is where filters
+        # live now. Event-scope Cuts keep their thin Style + Media filters
+        # (default True).
         self._show_filters = bool(show_filters)
         self._inventory_scope = inventory_scope
         self._ctx = ctx

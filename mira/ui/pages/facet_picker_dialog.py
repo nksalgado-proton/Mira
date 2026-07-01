@@ -1,8 +1,10 @@
 """High-cardinality facet picker dialog (spec/83 §4).
 
-Modal per-facet picker that opens from the cross-event DC dialog when a
-multi-select facet has more options than :data:`mira.ui.pages.new_cross_event_dc_dialog.INLINE_PICKER_THRESHOLD`
-can comfortably render inline. The dialog shows every option as
+Modal per-facet picker that used to open from the cross-event DC dialog
+(spec/162 Round 3e retired ``NewCrossEventDcDialog`` along with the
+``INLINE_PICKER_THRESHOLD`` constant it lived beside). The dialog stays
+because its shape may be adopted by a future cross-event source picker.
+Shows every option as
 ``value — N`` (count to disambiguate near-identical labels and to hint at
 heavy hitters), supports search filtering, has Select all / Clear, and
 splits its rows into **Main** vs a collapsed **Occasional (N)** section so

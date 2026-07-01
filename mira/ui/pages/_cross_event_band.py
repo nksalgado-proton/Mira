@@ -71,10 +71,12 @@ class CrossEventCutsBand(QFrame):
         submitted(str)  query string entered into the search field
                         (emitted on Search-button click or Return press).
         new_dc_requested()  ghost-button + sigil emit this when the user
-                        asks for the new-cross-event-collection dialog
-                        (spec/81 Phase 2 — Item 5). Host opens
-                        :class:`NewCrossEventDcDialog` and on accept calls
-                        :meth:`LibraryGateway.create_dc`.
+                        asks for the new-cross-event-collection dialog.
+                        The retired :class:`NewCrossEventDcDialog` was
+                        replaced by :class:`NewCutDialog` at cross-event
+                        scope in spec/162 Round 3e — the signal survives
+                        for the widget's tests + smoke scripts, but no
+                        production surface wires it today.
     """
 
     submitted = pyqtSignal(str)

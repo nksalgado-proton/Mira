@@ -58,7 +58,12 @@ def test_parse_aspect_forms_and_fallback():
 
 def test_card_colors_deterministic_and_styled(qapp):
     """Nelson round 3: random-LOOKING colours, deterministic from the
-    seed — the grid tile, the rehearsal and the export always agree."""
+    seed — the grid tile, the rehearsal and the export always agree.
+
+    spec/155 (Nelson 2026-06-30) — the per-Cut 'single' / per-card
+    'multi' palettes swapped from a deep-saturated, medium-dark shape
+    to LIGHT PASTELS (value 218–245 of 255) with DARK text inverting
+    on the same hue. The 'black' style keeps the classic dark card."""
     from mira.ui.shared.separator_card import card_colors
     black = card_colors("black", "anything")
     assert black[0].name() == "#15171b"
@@ -69,8 +74,13 @@ def test_card_colors_deterministic_and_styled(qapp):
     assert a1[0].name() != b[0].name()            # days differ
     single = card_colors("single", "cut1")
     assert single[0].name() != black[0].name()    # actually colourful
-    # backgrounds stay dark enough for the light text
-    assert a1[0].value() <= 150 and single[0].value() <= 150
+    # spec/155 pastel band — bg lands in the 218..245 value range.
+    assert 218 <= a1[0].value() <= 245
+    assert 218 <= single[0].value() <= 245
+    # Text darkens on the same hue so contrast carries — title value
+    # is deep enough to read against the light bg (55 in the palette).
+    assert a1[1].value() < 100
+    assert single[1].value() < 100
 
 
 def test_render_separator_image_shape(qapp):

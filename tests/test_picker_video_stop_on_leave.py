@@ -53,13 +53,30 @@ def _land_on_video(page: PickerPage, tmp_path) -> None:
 # ── Picker ──────────────────────────────────────────────────────────────
 
 
+def _tracked_shutdown_factory(page, called: list[bool]):
+    """Wrap the real ``viewport.shutdown_video`` so the stub records the
+    call AND still runs the real cleanup — a bare no-op stub leaves
+    QMediaPlayer state armed and a queued teardown handler trips on
+    freed callbacks at fixture teardown."""
+    original = page.viewport.shutdown_video
+
+    def _stub() -> None:
+        called.append(True)
+        try:
+            original()
+        except Exception:                                          # noqa: BLE001
+            pass
+
+    return _stub
+
+
 def test_picker_back_calls_shutdown_video(picker_page, tmp_path):
     """``_on_back`` (the Esc / Back handler) must call
     ``viewport.shutdown_video()`` so the player stops + the source
     clears. Without this fix the audio bleeds off the surface."""
     called: list[bool] = []
     picker_page.viewport.shutdown_video = (   # type: ignore[assignment]
-        lambda: called.append(True))
+        _tracked_shutdown_factory(picker_page, called))
     _land_on_video(picker_page, tmp_path)
     picker_page._on_back()
     assert called == [True]
@@ -70,7 +87,7 @@ def test_picker_esc_calls_shutdown_video(picker_page, tmp_path):
     fullscreen); the same shutdown_video call fires."""
     called: list[bool] = []
     picker_page.viewport.shutdown_video = (   # type: ignore[assignment]
-        lambda: called.append(True))
+        _tracked_shutdown_factory(picker_page, called))
     _land_on_video(picker_page, tmp_path)
     picker_page._on_esc()
     assert called == [True]
@@ -81,22 +98,8 @@ def test_picker_hide_event_calls_shutdown_video(picker_page, tmp_path):
     (programmatic navigation, page-stack swap, window close) stops
     the video. ``hideEvent`` is the catch-all."""
     called: list[bool] = []
-    original_shutdown = picker_page.viewport.shutdown_video
-
-    def _tracked_shutdown() -> None:
-        called.append(True)
-        try:
-            original_shutdown()
-        except Exception:                                          # noqa: BLE001
-            pass
-
-    # Delegate to the real shutdown_video AFTER recording the call so
-    # QMediaPlayer state actually clears before the fixture's
-    # deleteLater — a bare no-op stub leaves queued teardown callbacks
-    # tripping on freed Qt objects and pytest reports a TypeError in
-    # the event loop.
     picker_page.viewport.shutdown_video = (   # type: ignore[assignment]
-        _tracked_shutdown)
+        _tracked_shutdown_factory(picker_page, called))
     picker_page.show()
     _land_on_video(picker_page, tmp_path)
     picker_page.hide()

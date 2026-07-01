@@ -45,6 +45,7 @@ from mira.ui.design.dialogs import (
     show_success,
 )
 from mira.ui.design.donut import Donut, DonutSlice
+from mira.ui.design.form_field import SectionHeader, field as form_field
 from mira.ui.design.chips import (
     chip_closed,
     chip_done,
@@ -108,6 +109,7 @@ __all__ = [
     "apply_density",
     "DonutSlice",
     "Filmstrip",
+    "form_field",
     "GLYPHS_DIR",
     "GLYPH_CHECK",
     "GLYPH_CROSS",
@@ -132,6 +134,7 @@ __all__ = [
     "PhotoCycler",
     "ProgressDialog",
     "RecipeContainer",
+    "SectionHeader",
     "StableMediaStage",
     "StageProgress",
     "StatTile",

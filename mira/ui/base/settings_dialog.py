@@ -56,9 +56,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCursor
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -126,6 +134,138 @@ def reset_settings_to_defaults() -> dict:
 
 
 log = logging.getLogger(__name__)
+
+
+# ── Rating-meaning swatches (used only by the "Ratings" tab) ─────────
+#
+# Small non-interactive glyphs that visually anchor each row of the
+# rating-meanings editor. Colours come from
+# :data:`mira.ui.exported.rating_widgets.COLOR_LABEL_HEX` so the swatch
+# here matches what the review dialog actually paints — not a hand-
+# picked emoji stand-in.
+
+
+def _rating_swatch_palette() -> dict[str, str]:
+    from mira.ui.palette import PALETTE
+    app = QApplication.instance()
+    mode = (app.property("theme") if app else None) or "dark"
+    return PALETTE.get(mode, PALETTE["dark"])
+
+
+class _RatingColorSwatch(QWidget):
+    """22 px rounded chip filled with the real
+    ``COLOR_LABEL_HEX[name]`` colour."""
+
+    _PX = 22
+    _PAD = 3
+
+    def __init__(self, hex_color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._hex = hex_color
+        self.setFixedSize(self._PX + self._PAD * 2,
+                          self._PX + self._PAD * 2)
+
+    def paintEvent(self, _ev) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self._PAD, self._PAD, self._PX, self._PX)
+        p.setBrush(QBrush(QColor(self._hex)))
+        p.setPen(QPen(QColor(0, 0, 0, 110), 1))
+        p.drawRoundedRect(r, 5, 5)
+        p.end()
+
+
+class _RatingStarSwatch(QWidget):
+    """N gold stars (1..5), matching the review dialog's star gold."""
+
+    _STAR = 18
+    _GAP = 3
+    _PAD = 3
+
+    def __init__(self, count: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._n = max(1, min(5, int(count)))
+        w = self._PAD * 2 + self._STAR * 5 + self._GAP * 4
+        h = self._PAD * 2 + self._STAR
+        self.setFixedSize(w, h)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.size()
+
+    def paintEvent(self, _ev) -> None:  # noqa: N802
+        from mira.ui.exported.rating_widgets import _star_polygon
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = _rating_swatch_palette()
+        gold = QColor("#F2C84A")
+        gold_dark = QColor("#B88A1E")
+        empty_pen = QColor(pal.get("ink_faint", "#8a8a8a"))
+        for i in range(5):
+            cx = self._PAD + i * (self._STAR + self._GAP) + self._STAR / 2
+            cy = self._PAD + self._STAR / 2
+            r = self._STAR / 2 - 1
+            path = _star_polygon(cx, cy, r)
+            if i < self._n:
+                p.setBrush(QBrush(gold))
+                p.setPen(QPen(gold_dark, 1.2))
+            else:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(empty_pen, 1.0))
+            p.drawPath(path)
+        p.end()
+
+
+class _RatingFlagSwatch(QWidget):
+    """Flag glyph — on = saturated amber, off = ghost outline. Matches
+    the geometry of :class:`FlagToggle` in ``rating_widgets``."""
+
+    _PX = 26
+    _PAD = 3
+
+    def __init__(self, on: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._on = bool(on)
+        self.setFixedSize(self._PX + self._PAD * 2,
+                          self._PX + self._PAD * 2)
+
+    def paintEvent(self, _ev) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pad = self._PAD
+        size = self._PX
+        x = pad + size * 0.30
+        y = pad + size * 0.06
+        pole_h = size * 0.86
+        pal = _rating_swatch_palette()
+        ink_faint = QColor(pal.get("ink_faint", "#8a8a8a"))
+        if self._on:
+            amber = QColor("#F5B042")
+            cloth_fill = amber
+            cloth_pen = QPen(QColor("#7A4A12"), 1.2)
+            pole_pen = QPen(amber, 1.8)
+        else:
+            cloth_fill = QColor(0, 0, 0, 0)
+            cloth_pen = QPen(ink_faint, 1.4)
+            pole_pen = QPen(ink_faint, 1.6)
+        path = QPainterPath()
+        cw = size * 0.58
+        ch = size * 0.50
+        tx = x
+        ty = y + 1
+        path.moveTo(tx, ty)
+        path.lineTo(tx + cw,        ty + ch * 0.25)
+        path.lineTo(tx + cw * 0.78, ty + ch * 0.50)
+        path.lineTo(tx + cw,        ty + ch * 0.78)
+        path.lineTo(tx,             ty + ch * 0.85)
+        path.closeSubpath()
+        p.setBrush(QBrush(cloth_fill))
+        p.setPen(cloth_pen)
+        p.drawPath(path)
+        p.setPen(pole_pen)
+        p.drawLine(QPointF(x, y), QPointF(x, y + pole_h))
+        p.setBrush(QBrush(pole_pen.color()))
+        p.drawEllipse(QPointF(x, y), 1.5, 1.5)
+        p.end()
 
 
 # Default settings schema. Empty tabs render a placeholder so the
@@ -630,6 +770,25 @@ SETTINGS_SCHEMA: list[dict] = [
                     ("street", "Street"),
                     ("landscape", "Landscape"),
                 ],
+                "restart_required": False,
+            },
+        ],
+    },
+    {
+        "tab": "Ratings",
+        "fields": [
+            {
+                "key": "rating_meanings",
+                "label": "",
+                "widget": "rating_meanings",
+                "tooltip": (
+                    "Free-text meaning you assign to each rating value. "
+                    "Color labels are the subject (World Trips, Family, "
+                    "…), stars are the quality (Baseline → Masterpiece), "
+                    "the portfolio flag is the destination (In Portfolio "
+                    "/ Exclude). Purely display metadata — the rating "
+                    "itself is still the raw colour / star count / bool."
+                ),
                 "restart_required": False,
             },
         ],
@@ -1244,7 +1403,12 @@ class SettingsDialog(QDialog):
             widget, reader, writer = self._build_field_widget(entry)
             if entry.get("tooltip"):
                 widget.setToolTip(tr(entry["tooltip"]))
-            form.addRow(QLabel(label_text), widget)
+            # Full-width widgets (e.g. the rating_meanings tab) skip the
+            # QFormLayout label column and span the whole row.
+            if entry.get("full_width") or not label_text:
+                form.addRow(widget)
+            else:
+                form.addRow(QLabel(label_text), widget)
             self._bindings.append(_FieldBinding(
                 key=entry["key"], widget=widget, read=reader, write=writer,
             ))
@@ -1365,6 +1529,8 @@ class SettingsDialog(QDialog):
             return self._build_checkbox(entry)
         if kind == "overlay_fields":
             return self._build_overlay_fields(entry)
+        if kind == "rating_meanings":
+            return self._build_rating_meanings(entry)
         if kind == "genre_pair":
             return self._build_genre_pair(entry)
         if kind == "tz_picker":
@@ -1469,6 +1635,116 @@ class SettingsDialog(QDialog):
                 if idx >= 0 and value[1] == value[0]:
                     idx = (idx + 1) % combo_b.count()
                 combo_b.setCurrentIndex(idx if idx >= 0 else 0)
+
+        return host, _read, _write
+
+    def _build_rating_meanings(
+        self, _entry: dict,
+    ) -> tuple[QWidget, Callable[[], Any], Callable[[Any], None]]:
+        """spec/159 free-text semantics — the whole Ratings tab in one
+        widget: 5 colour rows (The Subject), 5 star rows (The Quality),
+        2 flag rows (The Destination). Each row shows the real-colour
+        swatch / star glyph / flag glyph next to a QLineEdit; ``read``
+        returns a ``dict[str, str]`` keyed by rating id."""
+        from mira.ui.exported.rating_widgets import (
+            COLOR_LABEL_HEX, COLOR_LABEL_ORDER,
+        )
+
+        host = QWidget()
+        outer = QVBoxLayout(host)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        edits: dict[str, QLineEdit] = {}
+
+        def _section_header(title: str, category_key: str) -> QWidget:
+            """Two-line section header: fixed bold title on line 1,
+            EDITABLE tag line on line 2 (stored under
+            ``category_key``)."""
+            box = QWidget()
+            v = QVBoxLayout(box)
+            v.setContentsMargins(0, 6, 0, 2)
+            v.setSpacing(4)
+            title_lbl = QLabel(title)
+            f = title_lbl.font()
+            f.setBold(True)
+            title_lbl.setFont(f)
+            v.addWidget(title_lbl)
+            sub_row = QHBoxLayout()
+            sub_row.setContentsMargins(0, 0, 0, 0)
+            sub_row.setSpacing(6)
+            sub_edit = QLineEdit()
+            sub_edit.setPlaceholderText(tr("What this category means…"))
+            sub_edit.setToolTip(tr(
+                "The tag line under the section title (e.g. 'The "
+                "Subject'). Also shown in hover tooltips wherever this "
+                "kind of rating appears."))
+            sub_row.addWidget(sub_edit, stretch=1)
+            v.addLayout(sub_row)
+            edits[category_key] = sub_edit
+            return box
+
+        def _add_row(
+            glyph: QWidget, key: str, placeholder: str,
+        ) -> None:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(16, 0, 0, 0)
+            h.setSpacing(10)
+            glyph_host = QWidget()
+            glyph_lay = QHBoxLayout(glyph_host)
+            glyph_lay.setContentsMargins(0, 0, 0, 0)
+            glyph_lay.addWidget(glyph)
+            glyph_host.setFixedWidth(120)
+            h.addWidget(glyph_host)
+            edit = QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            h.addWidget(edit, stretch=1)
+            edits[key] = edit
+            outer.addWidget(row)
+
+        # ── Colour labels — The Subject ──
+        outer.addWidget(_section_header(
+            tr("Color labels"), "category_color"))
+        for name in COLOR_LABEL_ORDER:
+            _add_row(
+                _RatingColorSwatch(COLOR_LABEL_HEX[name]),
+                f"color_{name}",
+                tr("What this colour means to you…"),
+            )
+
+        # ── Stars — The Quality ──
+        outer.addWidget(_section_header(
+            tr("Star rating"), "category_stars"))
+        for n in range(1, 6):
+            _add_row(
+                _RatingStarSwatch(n),
+                f"stars_{n}",
+                tr("What this star rating means to you…"),
+            )
+
+        # ── Flag — The Destination ──
+        outer.addWidget(_section_header(
+            tr("Portfolio flag"), "category_flag"))
+        _add_row(
+            _RatingFlagSwatch(on=True),
+            "flag_on",
+            tr("What a raised flag means to you…"),
+        )
+        _add_row(
+            _RatingFlagSwatch(on=False),
+            "flag_off",
+            tr("What no flag means to you…"),
+        )
+
+        def _read() -> Any:
+            return {k: e.text().strip() for k, e in edits.items()}
+
+        def _write(value: Any) -> None:
+            data = value if isinstance(value, dict) else {}
+            for k, e in edits.items():
+                raw = data.get(k, "")
+                e.setText(str(raw) if raw else "")
 
         return host, _read, _write
 
@@ -1700,6 +1976,15 @@ class SettingsDialog(QDialog):
                    for k in changed):
                 from core.photo_auto import invalidate_tone_scaling_cache
                 invalidate_tone_scaling_cache()
+            # Rating-meanings tooltip cache — drop it whenever the
+            # user edits any of the 15 label / category strings so
+            # an already-open review dialog / grid picks up the
+            # fresh labels on the next hover.
+            if "rating_meanings" in changed:
+                from mira.ui.exported.rating_widgets import (
+                    invalidate_rating_meanings_cache,
+                )
+                invalidate_rating_meanings_cache()
             self.changes_applied(changed)
         else:
             log.debug("Settings dialog Apply with no changes")
@@ -1738,6 +2023,12 @@ class SettingsDialog(QDialog):
         # Trims back to 0 — drop the engine cache (spec/54 §4.1).
         from core.photo_auto import invalidate_tone_scaling_cache
         invalidate_tone_scaling_cache()
+        # Meanings back to their table — drop the tooltip cache so any
+        # open review dialog picks up the reset labels immediately.
+        from mira.ui.exported.rating_widgets import (
+            invalidate_rating_meanings_cache,
+        )
+        invalidate_rating_meanings_cache()
         if changed:
             self.changes_applied(changed)
 

@@ -212,6 +212,12 @@ class Thumb(QWidget):
         self._blurred_cache: QPixmap | None = None
         self.setFixedSize(size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # spec/159 hover-meaning tooltip. Composed from
+        # (color_label, stars, flag) using the user's rating_meanings
+        # dictionary from Settings — so parking the mouse on a photo
+        # explains what its rating means without opening the review
+        # dialog.
+        self._refresh_rating_tooltip()
 
     def setPixmap(self, pixmap: QPixmap | None) -> None:
         self._pixmap = pixmap
@@ -281,12 +287,14 @@ class Thumb(QWidget):
     def setStars(self, stars: int | None) -> None:
         """spec/159 — star rating 1..5 or None (no rating)."""
         self._stars = stars
+        self._refresh_rating_tooltip()
         self.update()
 
     def setColorLabel(self, label: str | None) -> None:
         """spec/159 — LRC-style colour label or None (no label).
         Accepted: 'red'/'yellow'/'green'/'blue'/'purple'."""
         self._color_label = label
+        self._refresh_rating_tooltip()
         self.update()
 
     def setToDeleteSplit(
@@ -312,7 +320,59 @@ class Thumb(QWidget):
     def setFlag(self, flag: bool) -> None:
         """spec/159 — portfolio flag toggle."""
         self._flag = bool(flag)
+        self._refresh_rating_tooltip()
         self.update()
+
+    def _refresh_rating_tooltip(self) -> None:
+        """Compose the whole-tile tooltip from the tile's current
+        (color_label, stars, flag), using the user's rating meanings.
+        Empty when the tile carries no rating chrome — the tile stays
+        silent instead of showing a stray dash.
+
+        Lazy-imports :func:`_load_rating_meanings` from
+        ``mira.ui.exported.rating_widgets`` to keep the design →
+        exported dependency at runtime only (no import-time cycle)."""
+        has_any = bool(self._color_label) or (self._stars is not None) or self._flag
+        if not has_any:
+            self.setToolTip("")
+            return
+        try:
+            from mira.ui.exported.rating_widgets import _load_rating_meanings
+            meanings = _load_rating_meanings()
+        except Exception:                                   # noqa: BLE001
+            meanings = {}
+        lines: list[str] = []
+        if self._color_label:
+            name = str(self._color_label).title()
+            meaning = (meanings.get(f"color_{self._color_label}") or "").strip()
+            category = (meanings.get("category_color") or "").strip()
+            line = name
+            if meaning:
+                line = f"{line} — {meaning}"
+            if category:
+                line = f"{line}  ({category})"
+            lines.append(line)
+        if self._stars is not None:
+            n = int(self._stars)
+            header = "1 star" if n == 1 else f"{n} stars"
+            meaning = (meanings.get(f"stars_{n}") or "").strip()
+            category = (meanings.get("category_stars") or "").strip()
+            line = header
+            if meaning:
+                line = f"{line} — {meaning}"
+            if category:
+                line = f"{line}  ({category})"
+            lines.append(line)
+        if self._flag:
+            meaning = (meanings.get("flag_on") or "").strip()
+            category = (meanings.get("category_flag") or "").strip()
+            line = "Portfolio flag"
+            if meaning:
+                line = f"{line} — {meaning}"
+            if category:
+                line = f"{line}  ({category})"
+            lines.append(line)
+        self.setToolTip("\n".join(lines))
 
     def setToDelete(self, to_delete: bool) -> None:
         """spec/159 — "Marked for deletion" badge toggle. True paints

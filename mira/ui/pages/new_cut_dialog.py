@@ -1763,9 +1763,12 @@ class NewCutDialog(QDialog):
         self._min_stars: Optional[int] = None
         self._colour_labels: set = set()
         self._flag: str = "any"
-        self._star_combo: Optional[QComboBox] = None
+        # spec/159 (Nelson 2026-07-01) — the star / flag pickers are now
+        # click widgets, not QComboBoxes. Kept as ``Optional`` so the
+        # dialog can still be built with ``show_rating_filters=False``.
+        self._star_row = None
         self._colour_row = None
-        self._flag_combo: Optional[QComboBox] = None
+        self._flag_toggle = None
 
         # spec/162 relayout B — cross-event filter widgets. Only built
         # when ``show_hardware=True`` (cross-event scope); event scope
@@ -2790,24 +2793,17 @@ class NewCutDialog(QDialog):
     # -- individual filter widgets (spec/162 relayout B) ------------ #
 
     def _build_stars_widget(self) -> QWidget:
-        """spec/159 §4.5 — the STARS combo. ``Any`` = no filter; ``1+``
-        through ``5`` narrow to lineage with at least that many stars."""
-        self._star_combo = QComboBox()
-        self._star_combo.setObjectName("FilterStarsCombo")
-        self._star_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        for label, value in (
-            (tr("Any"), None),
-            ("★ 1+", 1),
-            ("★ 2+", 2),
-            ("★ 3+", 3),
-            ("★ 4+", 4),
-            ("★ 5", 5),
-        ):
-            self._star_combo.addItem(label, value)
-        idx = max(0, self._star_combo.findData(self._min_stars))
-        self._star_combo.setCurrentIndex(idx)
-        self._star_combo.activated.connect(self._on_stars_picked)
-        return self._star_combo
+        """spec/159 (Nelson 2026-07-01) — the STARS click row. Reuses
+        :class:`StarRow`: click Nth star to require ≥N; click already-
+        Nth to clear back to Any. Replaces the QComboBox picker."""
+        from mira.ui.exported.rating_widgets import StarRow
+        self._star_row = StarRow()
+        self._star_row.setToolTip(tr(
+            "Click a star to require at least that many. Click the "
+            "same star again to clear."))
+        self._star_row.setValue(self._min_stars)
+        self._star_row.value_changed.connect(self._on_stars_picked)
+        return self._star_row
 
     def _build_colours_widget(self) -> QWidget:
         """spec/159 §4.5 — the COLOURS multi-swatch row. Reuses the
@@ -2820,20 +2816,17 @@ class NewCutDialog(QDialog):
         return self._colour_row
 
     def _build_flag_widget(self) -> QWidget:
-        """spec/159 §4.5 — the FLAGS tri-state combo."""
-        self._flag_combo = QComboBox()
-        self._flag_combo.setObjectName("FilterFlagCombo")
-        self._flag_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        for label, value in (
-            (tr("Any"), "any"),
-            (tr("⚑ Flagged"), "yes"),
-            (tr("Unflagged"), "no"),
-        ):
-            self._flag_combo.addItem(label, value)
-        idx = max(0, self._flag_combo.findData(self._flag))
-        self._flag_combo.setCurrentIndex(idx)
-        self._flag_combo.activated.connect(self._on_flag_picked)
-        return self._flag_combo
+        """spec/159 (Nelson 2026-07-01) — the FLAG click toggle. Off =
+        Any; On = require the portfolio flag. Replaces the QComboBox
+        picker; the ``"no"`` (only-unflagged) case remains reachable
+        programmatically but not from the UI."""
+        from mira.ui.exported.rating_widgets import FlagToggle
+        self._flag_toggle = FlagToggle()
+        self._flag_toggle.setToolTip(tr(
+            "Click to require the portfolio flag. Click again to clear."))
+        self._flag_toggle.setValue(self._flag == "yes")
+        self._flag_toggle.toggled.connect(self._on_flag_toggled)
+        return self._flag_toggle
 
     def _build_style_widget(self) -> QWidget:
         """spec/119 — Style filter chips are real :class:`QCheckBox`es
@@ -2923,21 +2916,24 @@ class NewCutDialog(QDialog):
         row.addStretch()
         return host
 
-    def _on_stars_picked(self, _index: int = 0) -> None:
-        if self._star_combo is None:
+    def _on_stars_picked(self, value=None) -> None:
+        """Signal handler for :class:`StarRow`. ``value`` arrives as
+        ``Optional[int]`` (1..5 or None for cleared)."""
+        if self._star_row is None:
             return
-        self._min_stars = self._star_combo.currentData()
+        self._min_stars = value if value in (1, 2, 3, 4, 5) else None
         self._on_filter_chip_toggled()
 
     def _on_colours_changed(self, value) -> None:
         self._colour_labels = set(value or ())
         self._on_filter_chip_toggled()
 
-    def _on_flag_picked(self, _index: int = 0) -> None:
-        if self._flag_combo is None:
+    def _on_flag_toggled(self, on: bool) -> None:
+        """Signal handler for :class:`FlagToggle`. Two-state UI: on →
+        require the flag; off → clear the filter to Any."""
+        if self._flag_toggle is None:
             return
-        value = self._flag_combo.currentData()
-        self._flag = value if value in ("any", "yes", "no") else "any"
+        self._flag = "yes" if on else "any"
         self._on_filter_chip_toggled()
 
     def _build_filter_indicator_row(self) -> QWidget:
@@ -4073,12 +4069,13 @@ class NewCutDialog(QDialog):
                     chip.blockSignals(False)
                     changed = True
         # spec/162 relayout B — rating dimensions reset with the rest.
+        # spec/159 (Nelson 2026-07-01) — click widgets replace the old
+        # combos; StarRow.setValue is programmatic (no signal),
+        # FlagToggle needs blockSignals so the reset doesn't re-emit.
         if self._min_stars is not None:
             self._min_stars = None
-            if self._star_combo is not None:
-                self._star_combo.blockSignals(True)
-                self._star_combo.setCurrentIndex(0)
-                self._star_combo.blockSignals(False)
+            if self._star_row is not None:
+                self._star_row.setValue(None)
             changed = True
         if self._colour_labels:
             self._colour_labels = set()
@@ -4087,11 +4084,12 @@ class NewCutDialog(QDialog):
             changed = True
         if self._flag != "any":
             self._flag = "any"
-            if self._flag_combo is not None:
-                self._flag_combo.blockSignals(True)
-                idx = self._flag_combo.findData("any")
-                self._flag_combo.setCurrentIndex(max(0, idx))
-                self._flag_combo.blockSignals(False)
+            if self._flag_toggle is not None:
+                self._flag_toggle.blockSignals(True)
+                try:
+                    self._flag_toggle.setValue(False)
+                finally:
+                    self._flag_toggle.blockSignals(False)
             changed = True
         # Hide the indicator immediately; the re-probe will keep it
         # hidden (no filter is active) but a snappy local update beats
@@ -4343,26 +4341,30 @@ class NewCutDialog(QDialog):
         if self._videos_cb is not None:
             self._videos_cb.setChecked(media_type in ("both", "video"))
         # spec/162 relayout B — rating dimensions round-trip through
-        # ``filters``.
+        # ``filters``. spec/159 (Nelson 2026-07-01) — click widgets
+        # replace the combos.
         raw_stars = filters.get("min_stars")
         self._min_stars = (
             int(raw_stars) if isinstance(raw_stars, (int, float)) else None)
-        if self._star_combo is not None:
-            idx = self._star_combo.findData(self._min_stars)
-            self._star_combo.blockSignals(True)
-            self._star_combo.setCurrentIndex(max(0, idx))
-            self._star_combo.blockSignals(False)
+        if self._star_row is not None:
+            self._star_row.setValue(self._min_stars)
         raw_colours = filters.get("colour_labels") or []
         self._colour_labels = {str(c) for c in raw_colours if c}
         if self._colour_row is not None:
             self._colour_row.setValue(self._colour_labels)
         raw_flag = filters.get("flag") or "any"
         self._flag = raw_flag if raw_flag in ("any", "yes", "no") else "any"
-        if self._flag_combo is not None:
-            idx = self._flag_combo.findData(self._flag)
-            self._flag_combo.blockSignals(True)
-            self._flag_combo.setCurrentIndex(max(0, idx))
-            self._flag_combo.blockSignals(False)
+        if self._flag_toggle is not None:
+            # The toggle only expresses on/off — a legacy "no" load
+            # falls back to off (Any) since the two-state UI can't
+            # reach only-unflagged. The predicate value stays "no" so
+            # the underlying filter still narrows correctly if the
+            # user doesn't touch the toggle.
+            self._flag_toggle.blockSignals(True)
+            try:
+                self._flag_toggle.setValue(self._flag == "yes")
+            finally:
+                self._flag_toggle.blockSignals(False)
         if self._show_hardware:
             cams = filters.get("camera_ids") or []
             for cam, chip in self._camera_chips.items():

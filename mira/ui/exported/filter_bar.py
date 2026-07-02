@@ -10,10 +10,14 @@ The :class:`FilterBar` widget:
     Edit phase's adjustment groups use, so the visual language is
     consistent.
   * Inner group boxes, one per knob:
-      - Min stars   — QComboBox  (Any / ★1+ / ★2+ / ★3+ / ★4+ / ★5)
+      - Min stars   — :class:`StarRow` — click Nth = ≥N stars, click
+                       already-Nth = clear (Any). Same LRC convention
+                       :class:`StarRow` uses as a rating input.
       - Colour      — :class:`ColorLabelMultiRow` (5 swatches, multi-
                        select; clicked swatch gets a white halo + ✓)
-      - Flag        — QComboBox  (Any / Flagged / Unflagged)
+      - Flag        — :class:`FlagToggle` — off = Any, on = only
+                       flagged. The tri-state predicate still supports
+                       ``flag="no"`` for programmatic callers.
       - Deletion    — QComboBox  (Any / Show only / Hide)
   * A right-aligned "Showing N of M" indicator + a "Clear" ghost
     button.
@@ -58,7 +62,11 @@ from PyQt6.QtWidgets import (
 
 from mira.ui.design import ghost_button
 from mira.ui.exported.filter_popup import LineageFilter
-from mira.ui.exported.rating_widgets import ColorLabelMultiRow
+from mira.ui.exported.rating_widgets import (
+    ColorLabelMultiRow,
+    FlagToggle,
+    StarRow,
+)
 from mira.ui.i18n import tr
 
 SCOPE_EVENT = "event"
@@ -227,23 +235,19 @@ class FilterBar(QWidget):
         outer_col.addLayout(row)
         outer_v.addWidget(outer_box)
 
-        # — Min stars dropdown ——————————————————————————————
+        # — Min stars click row ——————————————————————————————
+        # spec/159 (Nelson 2026-07-01) — clickable stars replace the
+        # old QComboBox. Click Nth → filter to items with ≥ N stars
+        # (paints 1..N filled). Click the already-filled Nth → clear
+        # (Any). Same LRC convention as :class:`StarRow` uses for
+        # rating input elsewhere.
         star_box, star_col = _group(tr("Min stars"))
-        self._star_combo = QComboBox()
-        self._star_combo.setObjectName("ProcessStyleCombo")
-        self._star_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._star_combo.setCursor(
-            QCursor(Qt.CursorShape.PointingHandCursor))
-        for label, value in (
-            (tr("Any"), None),
-            ("★ 1+", 1), ("★ 2+", 2), ("★ 3+", 3),
-            ("★ 4+", 4), ("★ 5", 5),
-        ):
-            self._star_combo.addItem(label, value)
-        self._star_combo.activated.connect(
-            lambda _i: self._on_stars_picked(
-                self._star_combo.currentData()))
-        star_col.addWidget(self._star_combo)
+        self._star_row = StarRow()
+        self._star_row.setToolTip(tr(
+            "Click a star to filter items rated that many stars or "
+            "more. Click the same star again to clear."))
+        self._star_row.value_changed.connect(self._on_stars_picked)
+        star_col.addWidget(self._star_row)
         row.addWidget(star_box)
 
         # — Colour label swatches ——————————————————————————————
@@ -253,23 +257,20 @@ class FilterBar(QWidget):
         colour_col.addWidget(self._colour_row)
         row.addWidget(colour_box)
 
-        # — Flag dropdown ——————————————————————————————
+        # — Flag click toggle ——————————————————————————————
+        # spec/159 (Nelson 2026-07-01) — clickable flag toggle
+        # replaces the old QComboBox. Off = don't filter (Any); On =
+        # show only flagged items. The predicate still supports the
+        # "no" (only-unflagged) case for programmatic callers, but
+        # the two-state toggle intentionally exposes only Any / Yes
+        # — the common triage moves.
         flag_box, flag_col = _group(tr("Flag"))
-        self._flag_combo = QComboBox()
-        self._flag_combo.setObjectName("ProcessStyleCombo")
-        self._flag_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._flag_combo.setCursor(
-            QCursor(Qt.CursorShape.PointingHandCursor))
-        for label, value in (
-            (tr("Any"), "any"),
-            (tr("⚑ Flagged"), "yes"),
-            (tr("Unflagged"), "no"),
-        ):
-            self._flag_combo.addItem(label, value)
-        self._flag_combo.activated.connect(
-            lambda _i: self._on_flag_picked(
-                self._flag_combo.currentData()))
-        flag_col.addWidget(self._flag_combo)
+        self._flag_toggle = FlagToggle()
+        self._flag_toggle.setToolTip(tr(
+            "Click to filter to items with the portfolio flag raised. "
+            "Click again to clear."))
+        self._flag_toggle.toggled.connect(self._on_flag_toggled)
+        flag_col.addWidget(self._flag_toggle)
         row.addWidget(flag_box)
 
         # — Marked for deletion dropdown ——————————————————————
@@ -458,6 +459,13 @@ class FilterBar(QWidget):
         self._filter.flag = value
         self._after_change()
 
+    def _on_flag_toggled(self, on: bool) -> None:
+        """Two-state UI handler. On → filter for flagged items only;
+        off → clear the filter (Any). Keeps :meth:`_on_flag_picked`
+        alive for callers that push the tri-state value (tests,
+        programmatic set_filter with ``flag="no"``)."""
+        self._on_flag_picked("yes" if on else "any")
+
     def _on_delete_picked(self, value: str) -> None:
         if value not in ("any", "only", "hide"):
             value = "any"
@@ -501,24 +509,20 @@ class FilterBar(QWidget):
 
     def _sync_controls(self) -> None:
         """Re-tick / re-select every control to match
-        ``self._filter``. Uses :meth:`QComboBox.blockSignals` so the
-        re-sync doesn't re-enter :meth:`_after_change`."""
-        # Stars combo.
-        idx = max(0, self._star_combo.findData(self._filter.min_stars))
-        self._star_combo.blockSignals(True)
-        try:
-            self._star_combo.setCurrentIndex(idx)
-        finally:
-            self._star_combo.blockSignals(False)
+        ``self._filter``. Uses :meth:`QComboBox.blockSignals` (or
+        :meth:`StarRow.setValue`, which never emits) so the re-sync
+        doesn't re-enter :meth:`_after_change`."""
+        # Stars click row — StarRow.setValue is programmatic (no signal).
+        self._star_row.setValue(self._filter.min_stars)
         # Colour swatches.
         self._colour_row.setValue(self._filter.colour_labels)
-        # Flag combo.
-        idx = max(0, self._flag_combo.findData(self._filter.flag))
-        self._flag_combo.blockSignals(True)
+        # Flag toggle — treat both "any" and the legacy "no" case as
+        # off (the toggle can't express "only unflagged"); "yes" is on.
+        self._flag_toggle.blockSignals(True)
         try:
-            self._flag_combo.setCurrentIndex(idx)
+            self._flag_toggle.setValue(self._filter.flag == "yes")
         finally:
-            self._flag_combo.blockSignals(False)
+            self._flag_toggle.blockSignals(False)
         # Deletion combo.
         idx = max(0, self._del_combo.findData(self._filter.to_delete))
         self._del_combo.blockSignals(True)

@@ -49,6 +49,56 @@ def _theme_palette() -> dict[str, str]:
     mode = (app.property("theme") if app else None) or "dark"
     return PALETTE.get(mode, PALETTE["dark"])
 
+
+_MEANINGS_CACHE: dict[str, str] | None = None
+
+
+def _load_rating_meanings() -> dict[str, str]:
+    """Return the user's per-rating meanings, cached at module level so
+    a grid of 1 000 thumbs doesn't hit the settings JSON 1 000 times.
+    Silent fallback to ``{}`` when settings are unavailable (e.g. first
+    launch before the wizard writes settings.json). Call
+    :func:`invalidate_rating_meanings_cache` to force a reload after
+    the user applies a settings change."""
+    global _MEANINGS_CACHE
+    if _MEANINGS_CACHE is None:
+        try:
+            from mira.settings.repo import SettingsRepo
+            _MEANINGS_CACHE = dict(
+                SettingsRepo().load().rating_meanings or {})
+        except Exception:                                   # noqa: BLE001
+            _MEANINGS_CACHE = {}
+    return _MEANINGS_CACHE
+
+
+def invalidate_rating_meanings_cache() -> None:
+    """Drop the cached meanings dict — next widget-side tooltip refresh
+    reads the on-disk settings again. Called from
+    :class:`~mira.ui.base.settings_dialog.SettingsDialog` after Apply
+    / Reset so an in-flight review dialog picks up the fresh labels
+    without a restart."""
+    global _MEANINGS_CACHE
+    _MEANINGS_CACHE = None
+
+
+def _compose_meaning_tooltip(
+    meanings: dict[str, str],
+    header: str,
+    meaning_key: str,
+    category_key: str,
+) -> str:
+    """Format the standard hover tooltip: ``<header> — <meaning>
+    (<category>)`` with empty parts omitted so we never render a bare
+    dash or trailing parens."""
+    meaning = (meanings.get(meaning_key) or "").strip()
+    category = (meanings.get(category_key) or "").strip()
+    text = header
+    if meaning:
+        text = f"{text} — {meaning}"
+    if category:
+        text = f"{text}  ({category})"
+    return text
+
 # ── colour vocabulary (matches the Thumb cell-chrome palette) ─────────
 
 #: LRC label hex values — kept in sync with
@@ -190,6 +240,7 @@ class StarRow(QWidget):
         n = self._star_at(ev.position().x())
         if n != self._hover_n:
             self._hover_n = n
+            self._refresh_tooltip(n)
             self.update()
 
     def leaveEvent(self, _ev) -> None:  # noqa: N802
@@ -208,6 +259,17 @@ class StarRow(QWidget):
             self._set_value(None)
         else:
             self._set_value(n)
+
+    def _refresh_tooltip(self, n: int) -> None:
+        """Per-star tooltip carrying the user's own meaning + category
+        tag (e.g. "3 stars — Excellent  (The Quality)")."""
+        if n == 0:
+            self.setToolTip("")
+            return
+        header = tr("1 star") if n == 1 else tr("N stars").replace("N", str(n))
+        self.setToolTip(_compose_meaning_tooltip(
+            _load_rating_meanings(), header,
+            f"stars_{n}", "category_stars"))
 
     # ── paint ─────────────────────────────────────────────────────
 
@@ -304,6 +366,7 @@ class ColorLabelRow(QWidget):
         key = self._key_at(ev.position().x())
         if key != self._hover_key:
             self._hover_key = key
+            self._refresh_tooltip(key)
             self.update()
 
     def leaveEvent(self, _ev) -> None:  # noqa: N802
@@ -321,6 +384,16 @@ class ColorLabelRow(QWidget):
             self._set_value(None)
         else:
             self._set_value(key)
+
+    def _refresh_tooltip(self, key: Optional[str]) -> None:
+        """Per-swatch tooltip: '<Colour> — <meaning>  (<category>)'."""
+        if key is None:
+            self.setToolTip("")
+            return
+        header = tr(key.title())
+        self.setToolTip(_compose_meaning_tooltip(
+            _load_rating_meanings(), header,
+            f"color_{key}", "category_color"))
 
     def paintEvent(self, _ev) -> None:  # noqa: N802
         p = QPainter(self)
@@ -422,6 +495,7 @@ class ColorLabelMultiRow(QWidget):
         key = self._key_at(ev.position().x())
         if key != self._hover_key:
             self._hover_key = key
+            self._refresh_tooltip(key)
             self.update()
 
     def leaveEvent(self, _ev) -> None:  # noqa: N802
@@ -436,6 +510,18 @@ class ColorLabelMultiRow(QWidget):
         if key is None:
             return
         self._toggle(key)
+
+    def _refresh_tooltip(self, key: Optional[str]) -> None:
+        """Per-swatch tooltip carrying the user's meaning + category tag,
+        so the filter-bar swatch reads as, e.g., ``Red — World Trips
+        (The Subject)`` on hover."""
+        if key is None:
+            self.setToolTip("")
+            return
+        header = tr(key.title())
+        self.setToolTip(_compose_meaning_tooltip(
+            _load_rating_meanings(), header,
+            f"color_{key}", "category_color"))
 
     def paintEvent(self, _ev) -> None:  # noqa: N802
         p = QPainter(self)
@@ -482,7 +568,7 @@ class FlagToggle(QWidget):
         self._on: bool = False
         self._hover: bool = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(tr("Portfolio flag (K)"))
+        self._refresh_tooltip()
         self.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
@@ -493,6 +579,7 @@ class FlagToggle(QWidget):
         on = bool(on)
         if on != self._on:
             self._on = on
+            self._refresh_tooltip()
             self.update()
 
     def _set_value(self, on: bool) -> None:
@@ -500,8 +587,18 @@ class FlagToggle(QWidget):
         if on == self._on:
             return
         self._on = on
+        self._refresh_tooltip()
         self.toggled.emit(on)
         self.update()
+
+    def _refresh_tooltip(self) -> None:
+        """Tooltip: 'Portfolio flag (K) — <meaning>  (<category>)'.
+        Meaning reflects the current on/off state."""
+        header = tr("Portfolio flag (K)")
+        meaning_key = "flag_on" if self._on else "flag_off"
+        self.setToolTip(_compose_meaning_tooltip(
+            _load_rating_meanings(), header,
+            meaning_key, "category_flag"))
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(self._SIZE_PX, self._SIZE_PX)

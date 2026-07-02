@@ -370,6 +370,43 @@ class Settings:
         "How many days of rotated log files to keep.",
         14)
 
+    # ── Rating meanings (user) — spec/159 free-text semantics ────────────
+    # User-defined labels behind each rating value: what a red color
+    # label / a 4-star / the portfolio flag *means* in the user's own
+    # workflow. Pure display metadata — the rating value is still the
+    # colour key / star count / bool. Empty strings are allowed (an
+    # unlabelled rating just shows its glyph). Keys:
+    #   color_red / color_yellow / color_green / color_blue / color_purple
+    #   stars_1 / stars_2 / stars_3 / stars_4 / stars_5
+    #   flag_on / flag_off
+    rating_meanings: Dict[str, str] = _u(
+        "Free-text meaning the user assigns to each rating value "
+        "(color label = 'the subject', stars = 'the quality', "
+        "portfolio flag = 'the destination'). Purely display metadata; "
+        "the stored rating stays the raw colour / star count / bool.",
+        default_factory=lambda: {
+            # Category tag lines (shown as subtitles under each section
+            # header in the Ratings tab; also used in hover tooltips).
+            "category_color": "The Subject",
+            "category_stars": "The Quality",
+            "category_flag":  "The Destination",
+            # Colour labels — The Subject.
+            "color_red":    "World Trips",
+            "color_yellow": "Family",
+            "color_green":  "Friends",
+            "color_blue":   "Nature & Wildlife",
+            "color_purple": "Special Projects",
+            # Stars — The Quality.
+            "stars_1": "Baseline",
+            "stars_2": "Good",
+            "stars_3": "Excellent",
+            "stars_4": "Exceptional",
+            "stars_5": "Masterpiece",
+            # Portfolio flag — The Destination.
+            "flag_on":  "In Portfolio",
+            "flag_off": "Exclude",
+        })
+
     # ── Diagnostics (user) ────────────────────────────────────────────────
     log_level: str = _u("Logging verbosity: DEBUG / INFO / WARNING / ERROR / CRITICAL.", "INFO")
 

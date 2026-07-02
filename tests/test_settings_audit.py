@@ -25,7 +25,7 @@ def test_tab_structure_matches_app_menu_vocab():
     titles = [t["tab"] for t in SETTINGS_SCHEMA]
     assert titles == [
         "General", "Appearance", "Paths", "Backups", "Collect",
-        "Pick", "Edit", "Calibration", "Share", "Video", "Advanced",
+        "Pick", "Ratings", "Edit", "Calibration", "Share", "Video", "Advanced",
     ]
     # Legacy vocab must NOT survive.
     for old in ("Picker", "Select", "Process", "Curate", "Import"):

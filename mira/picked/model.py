@@ -707,6 +707,19 @@ def day_grid_cells(
                     item_id=ci.item_id,
                     item_kind=ci.kind,
                     visited=ci.item_id in visited_items,
+                    # spec/89 §4.1 — the video-bucket branch handles
+                    # every video cell on the day grid (the flatten
+                    # branch below is for moment / individual / etc.).
+                    # ``exported_ids`` arrives already unioned with
+                    # parent video ids via
+                    # :meth:`EventGateway.exported_item_ids_with_video_parents`,
+                    # so trust it and stamp the chip on any video whose
+                    # id is in the set (Nelson 2026-07-02 — pre-fix the
+                    # branch omitted ``exported`` entirely, so videos
+                    # never lit up regardless of shipped children).
+                    exported=bool(
+                        exported_ids
+                        and ci.item_id in exported_ids),
                 ))
         else:
             # moment / individual / video_moment / unknown → flatten.

@@ -753,6 +753,21 @@ class ExportPreviewDialog(QDialog):
 
     # ── verbs (locked keymap, spec/63) ──────────────────────────────────
 
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt
+        """Disarm the viewport's ``QMediaPlayer`` on any close path
+        (Esc / Close button / window X / Alt+F4). Without this the
+        player keeps running after the dialog is gone and audio
+        continues out of the app — the player is owned by the
+        viewport widget, but the dialog is the surface that armed it.
+        The viewport's ``shutdown_video`` is a no-op when no clip is
+        armed, so photo previews pay nothing.
+        """
+        try:
+            self._viewport.shutdown_video()
+        except Exception:                                          # noqa: BLE001
+            log.exception("preview-dialog: shutdown_video on close")
+        super().closeEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt
         """The viewport owns most of spec/63 (P / X / Space / F10 /
         Esc); the dialog handles the remainder — ← →, F11, F (the

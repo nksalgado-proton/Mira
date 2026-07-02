@@ -348,7 +348,24 @@ class DayRow(Card):
         top.setSpacing(10)
         title_block = QHBoxLayout()
         title_block.setSpacing(8)
-        title = QLabel(snapshot.title or f"Day {snapshot.day_number}")
+        # Nelson 2026-07-02 — prefix the actual calendar date onto the
+        # row so the tile reads "2023-03-29 — Wanaka, Otago" instead of
+        # relying on the day-number badge alone. Applies across every
+        # phase identity (Pick / Edit / Export) since the whole page is
+        # shared. Falls back to date-only when the description is
+        # empty; and to "Day N" only when neither the date nor the
+        # description is available.
+        _desc = (snapshot.title or "").strip()
+        _iso = (snapshot.date_iso or "").strip()
+        if _iso and _desc:
+            _title_text = f"{_iso} — {_desc}"
+        elif _iso:
+            _title_text = _iso
+        elif _desc:
+            _title_text = _desc
+        else:
+            _title_text = f"Day {snapshot.day_number}"
+        title = QLabel(_title_text)
         title.setObjectName("DayRowTitle")
         # Mockup `.info h3{font-size:14.5px;letter-spacing:-.2px}` — smaller
         # + tighter than CardTitle (18/700) so the day badge + title

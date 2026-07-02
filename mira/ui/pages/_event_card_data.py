@@ -125,13 +125,20 @@ def _sample_pixmap_paths(eg, collected) -> list:
     if eg.event_root is None:
         return []
     try:
+        # spec/132 (Nelson 2026-07-01) — narrow further: prefer the
+        # CREATIVELY-EDITED subset so the closed tile's ambient
+        # slideshow never shows a straight-through-baseline export.
+        # ``exported_edited_files`` filters to lineage whose source
+        # adjustment is off the unedited baseline. Empty result → the
+        # PhotoCycler's built-in "no photos yet" placeholder.
         return [
             eg.event_root / lin.export_relpath
-            for lin in eg.exported_files()[:_SAMPLE_PIXMAP_CAP]
+            for lin in eg.exported_edited_files()[:_SAMPLE_PIXMAP_CAP]
             if lin.export_relpath
         ]
     except Exception:                                          # noqa: BLE001
-        log.exception("exported_files() failed for sample paths")
+        log.exception(
+            "exported_edited_files() failed for sample paths")
         return []
 
 

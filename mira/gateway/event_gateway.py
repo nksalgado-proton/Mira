@@ -1053,11 +1053,40 @@ class EventGateway:
         )
         return self.store.query_raw(m.Lineage, sql)
 
+    def exported_edited_files(self) -> List[m.Lineage]:
+        """Strict twin of :meth:`exported_files` restricted to exports
+        whose source item carries a **creatively-edited** adjustment
+        (per :data:`core.edit_status.EDITED_SQL` — off the unedited
+        baseline: a non-Original look, a creative filter, a crop or
+        rotation, a non-Original aspect).
+
+        The ambient photo surfaces (startup splash, closed-event tile
+        :class:`PhotoCycler`) prefer this over :meth:`exported_files`
+        so the picked frame is one the user actually **developed** —
+        not a straight-through export of the untouched baseline.
+        Row shape and ordering match :meth:`exported_files` (item-
+        sourced rows go through ``visible_item``; bracket-sourced rows
+        join the adjustment via the merged output item).
+        """
+        from core.edit_status import EDITED_SQL
+        sql = (
+            "SELECT l.* FROM lineage l "
+            + self._CUT_SOURCE_JOIN +
+            "JOIN adjustment a "
+            "  ON a.item_id = COALESCE(l.source_item_id, oi.id) "
+            "WHERE l.phase = 'edit' "
+            "AND l.export_relpath LIKE 'Exported Media/%' "
+            "AND (l.source_kind = 'bracket' OR si.id IS NOT NULL) "
+            f"AND {EDITED_SQL} "
+            + self._CUT_SHOW_ORDER
+        )
+        return self.store.query_raw(m.Lineage, sql)
+
     def exported_files_all(self) -> List[m.Lineage]:
         """Lenient twin of :meth:`exported_files`: every shipped
-        lineage row under ``Exported Media/``, in chronological
-        order — but WITHOUT the ``visible_item`` filter that strips
-        hidden-day sources.
+        lineage row under ``Exported Media/``, in capture-time
+        chronological order — but WITHOUT the ``visible_item`` filter
+        that strips hidden-day sources.
 
         Used by the Pool detail surface so the on-disk reality of
         ``Exported Media/`` matches the file set the user sees here
@@ -1073,14 +1102,31 @@ class EventGateway:
         the item / day didn't pass the ``visible_item`` view); the
         watermark query never filtered those out, so the two views
         diverged. The Pool now mirrors the watermark.
+
+        Nelson 2026-07-02: reordered from ``exported_at`` (ship time)
+        to ``capture_time_corrected`` (shot time) so the DC detail
+        grid reads strictly chronologically — a user who exported
+        Day 5 before Day 3 was seeing Day 5 first. Item-sourced rows
+        read ``item.capture_time_corrected`` (lenient JOIN — plain
+        ``item``, not ``visible_item``); bracket-sourced rows read
+        the merged output item's timestamp. Ship time stays as a
+        tie-breaker for pre-timestamp / clock-corrected-at-import
+        rows.
         """
-        return self.store.query_raw(
-            m.Lineage,
-            "SELECT * FROM lineage "
-            "WHERE phase = 'edit' "
-            "AND export_relpath LIKE 'Exported Media/%' "
-            "ORDER BY COALESCE(exported_at, ''), export_relpath",
+        sql = (
+            "SELECT l.* FROM lineage l "
+            "LEFT JOIN item si ON si.id = l.source_item_id "
+            "LEFT JOIN stack_bracket sb "
+            "  ON sb.bracket_id = l.source_bracket_id "
+            "LEFT JOIN item oi ON oi.id = sb.output_item_id "
+            "WHERE l.phase = 'edit' "
+            "AND l.export_relpath LIKE 'Exported Media/%' "
+            "ORDER BY COALESCE("
+            "si.capture_time_corrected, "
+            "oi.capture_time_corrected, "
+            "l.exported_at, ''), l.export_relpath"
         )
+        return self.store.query_raw(m.Lineage, sql)
 
     def cuts(self) -> List[m.Cut]:
         """All user Cut definitions, oldest first (the list page's order).

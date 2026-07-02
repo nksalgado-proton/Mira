@@ -189,8 +189,10 @@ def test_exported_files_all_matches_watermark_when_day_is_hidden(
 
 def test_exported_files_all_is_chronological_and_only_edit_phase(gw):
     """The lenient query honours phase='edit' + the Exported Media/
-    prefix and orders by ``exported_at`` (chronological show order).
-    A share-phase row never sneaks in."""
+    prefix and orders by ``capture_time_corrected`` (Nelson 2026-07-02
+    — shot-time chronology, not ship-time). ``exported_at`` remains as
+    a tie-breaker for pre-timestamp rows. A share-phase row never
+    sneaks in."""
     # Plant a share-phase row to prove it's excluded.
     gw.record_lineage(m.Lineage(
         export_relpath="Cuts/share-only.jpg", phase="share",
@@ -198,7 +200,9 @@ def test_exported_files_all_is_chronological_and_only_edit_phase(gw):
         exported_at="t0_early"))
     rels = [ln.export_relpath for ln in gw.exported_files_all()]
     assert "Cuts/share-only.jpg" not in rels
-    # exported_at: t1 < t2 < t3 in the fixture; chronology preserved.
+    # capture_time_corrected: p1 (08:00) < p2 (09:00) < v1's seg (10:00);
+    # matches the previous ship-order because the fixture assigned
+    # exported_at monotonically in the same direction.
     assert rels == [
         "Exported Media/Dia 1/p1.jpg",
         "Exported Media/Dia 1/p2.jpg",

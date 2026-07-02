@@ -6,8 +6,9 @@ Reads all tags needed for mode classification in a single batch call.
 import json
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 
 def _get_exiftool_path() -> Path:
@@ -263,32 +264,69 @@ def _pick_capture_timestamp(entry: dict) -> str:
 def _parse_timestamp(s: str) -> datetime | None:
     """Parse an EXIF / QuickTime timestamp string into a naive datetime.
 
-    Tolerates the trailers QuickTime / iOS / GoPro CreationDate writes
-    alongside the wall-clock time: fractional seconds (".123") AND any
-    timezone designator ("+02:00" / "-03:00" / "Z" / "+0200").
+    Thin wrapper over :func:`_parse_timestamp_and_tz` that drops the
+    trailing TZ offset. Kept for the callers that only want the wall
+    clock (tests, direct EXIF probes). ``_read_photos_batch`` uses the
+    detailed function so it can shift UTC-tagged timestamps into
+    camera-local wall clock at parse time."""
+    dt, _ = _parse_timestamp_and_tz(s)
+    return dt
 
-    Nelson 2026-06-13: the prior implementation hardcoded ``.split("-07:00")``
-    to strip the negative-TZ trailer, which only handled US-Mountain. Any
-    other negative offset (``-03:00`` Brazil, ``-04:00`` East Coast, etc.)
-    survived the splits, failed ``strptime``, and routed the item to the
-    no-timestamp quarantine — exactly the "GoPro videos landed without a
-    date in Brazil 2023" symptom.
 
-    The calendar timestamp is always the first 19 characters of the
-    string (``YYYY:MM:DD HH:MM:SS`` or ``YYYY-MM-DD HH:MM:SS``); we
-    truncate there and parse, which handles every TZ + every fractional
-    by construction. Matches the rest of the codebase's "treat as naive
-    local wall-clock" convention (see ``bucket_scanner._parse_timestamp``
-    for the TZ-aware sibling)."""
+def _parse_timestamp_and_tz(
+    s: str,
+) -> tuple[datetime | None, Optional[int]]:
+    """Parse a timestamp string and return ``(naive_dt, tz_offset_seconds)``.
+
+    The returned ``naive_dt`` is ALWAYS wall-clock naive (no ``tzinfo``);
+    the second element carries the timezone information the string
+    carried:
+
+    * ``None`` — string had no TZ trailer (naive local wall-clock,
+      like a photo's ``DateTimeOriginal``).
+    * ``0`` — ``Z`` designator (UTC).
+    * signed int — offset in seconds (``+02:00`` → ``7200``,
+      ``-03:00`` → ``-10800``).
+
+    Tolerates fractional seconds (``.123``) between the calendar and
+    the TZ. Unrecognised trailers fall back to ``None`` so the caller
+    keeps the "naive local wall-clock" semantics the rest of the
+    codebase relies on. Introduced 2026-07-02 as the parsing half of
+    the QuickTimeUTC handoff — see :func:`read_exif_batch`."""
+    import re
     if not s:
-        return None
-    s = str(s).strip()[:19]
+        return None, None
+    s = str(s).strip()
+    cal_part = s[:19]
+    naive_dt: datetime | None = None
     for fmt in ('%Y:%m:%d %H:%M:%S', '%Y-%m-%d %H:%M:%S'):
         try:
-            return datetime.strptime(s, fmt)
+            naive_dt = datetime.strptime(cal_part, fmt)
+            break
         except ValueError:
             continue
-    return None
+    if naive_dt is None:
+        return None, None
+
+    trailer = s[19:]
+    # Skip fractional seconds (``.NNN``).
+    if trailer.startswith('.'):
+        i = 1
+        while i < len(trailer) and trailer[i].isdigit():
+            i += 1
+        trailer = trailer[i:]
+    trailer = trailer.strip()
+    if not trailer:
+        return naive_dt, None
+    if trailer.upper() == 'Z':
+        return naive_dt, 0
+    m = re.match(r'^([+-])(\d{2}):?(\d{2})$', trailer)
+    if m:
+        sign = 1 if m.group(1) == '+' else -1
+        hours = int(m.group(2))
+        minutes = int(m.group(3))
+        return naive_dt, sign * (hours * 3600 + minutes * 60)
+    return naive_dt, None
 
 
 def _extract_focal(raw_val: str) -> float:
@@ -422,6 +460,17 @@ def read_exif_batch(files: list[Path]) -> list[PhotoExif]:
 
     cmd = [
         str(_get_exiftool_path()),
+        # Nelson 2026-07-02 — mark QuickTime timestamps (CreateDate /
+        # MediaCreateDate / TrackCreateDate) as UTC in the JSON output
+        # instead of silently converting them to the machine's local
+        # time. Without this flag, an MP4 whose only capture-time hint
+        # is the mvhd atom's UTC seconds would come back as
+        # machine-local — and when the machine's TZ differs from the
+        # camera's TZ (traveling with a laptop that's still on home
+        # time), the video lands on a different day than a photo shot
+        # a second later. See ``_read_photos_batch``'s TZ-shift block
+        # below for the reconciliation into camera-local wall clock.
+        '-api', 'QuickTimeUTC=1',
         '-json',
         '-charset', 'filename=UTF8',
         '-charset', 'UTF8',
@@ -449,6 +498,47 @@ def read_exif_batch(files: list[Path]) -> list[PhotoExif]:
         except Exception:
             pass
 
+    # Look up per-camera and home TZ once per batch (Nelson 2026-07-02).
+    # Used to reconcile QuickTime UTC timestamps into camera-local wall
+    # clock at parse time — the buggy case where a video's mvhd atom
+    # gave us the shooting moment in UTC but the machine was on a
+    # different TZ than the camera. Settings unavailable → falls back
+    # to leaving the timestamp untouched (equivalent to pre-2026-07-02
+    # behaviour).
+    _saved_camera_tz: dict[str, float] = {}
+    _home_tz_hours: Optional[float] = None
+    try:
+        from mira.settings.repo import SettingsRepo
+        _s = SettingsRepo().load()
+        _saved_camera_tz = dict(getattr(_s, 'saved_camera_tz', {}) or {})
+        _raw_home = getattr(_s, 'home_timezone', None)
+        if isinstance(_raw_home, (int, float)):
+            _home_tz_hours = float(_raw_home)
+    except Exception:                                              # noqa: BLE001
+        pass
+
+    def _camera_local_naive(
+        raw: str, camera_model: str,
+    ) -> datetime | None:
+        """Return a naive datetime in the camera's local wall clock.
+
+        When ``raw`` came from a TZ-tagged source (``Z`` or explicit
+        offset — typically an MP4 ``CreateDate`` with QuickTimeUTC on),
+        shift it into the camera's TZ (looked up in
+        ``saved_camera_tz`` by model, or ``home_timezone`` as a
+        fallback). Naive-input strings pass through unchanged, so a
+        photo's ``DateTimeOriginal`` stays exactly as it was."""
+        dt, tz_seconds = _parse_timestamp_and_tz(raw)
+        if dt is None or tz_seconds is None:
+            return dt
+        tz_hours = _saved_camera_tz.get(camera_model) if camera_model else None
+        if not isinstance(tz_hours, (int, float)):
+            tz_hours = _home_tz_hours
+        if tz_hours is None:
+            return dt                       # honest — no way to reconcile
+        camera_tz_seconds = int(float(tz_hours) * 3600)
+        return dt + timedelta(seconds=camera_tz_seconds - tz_seconds)
+
     photos = []
     for entry in data:
         source = Path(entry.get('SourceFile', ''))
@@ -462,7 +552,8 @@ def read_exif_batch(files: list[Path]) -> list[PhotoExif]:
         ts_raw = _pick_capture_timestamp(entry)
         photo = PhotoExif(
             path=source,
-            timestamp=_parse_timestamp(ts_raw),
+            timestamp=_camera_local_naive(
+                ts_raw, str(entry.get('Model', '')).strip()),
             model=str(entry.get('Model', '')),
             lens=str(entry.get('LensModel', '')).strip(),
             focal_length=_extract_focal(entry.get('FocalLength', '')),

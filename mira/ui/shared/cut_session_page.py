@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QCursor, QFont, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -43,7 +43,9 @@ from PyQt6.QtWidgets import (
 from mira.shared.cut_session import CutSession, SessionFile
 from mira.ui.base.shortcuts import show_shortcuts
 from mira.ui.base.surface import back_button
-from mira.ui.design import ThumbGrid, ThumbGridItem, confirm, ghost_button
+from mira.ui.design import (
+    Card, ThumbGrid, ThumbGridItem, confirm, ghost_button,
+)
 from mira.ui.i18n import tr
 from mira.ui.media.photo_viewport import PhotoViewport, ViewportItem
 from mira.ui.pages.days_grid_page import _DayNavigatorPill
@@ -304,9 +306,132 @@ class CutBudgetLine(QWidget):
                 self._repolish(w)
 
 
+class _DayTile(Card):
+    """One day tile in the Cut session's day list (Nelson 2026-07-02).
+
+    Visually mirrors :class:`~mira.ui.pages.days_lists_page.DayRow`:
+    40×40 ``#DayBadge`` on the left, ``#DayRowTitle`` composed as
+    ``"YYYY-MM-DD — description"`` on top, ``#Sub`` counter beneath.
+    Reuses the same QSS roles so the tile picks up whatever theme
+    styling DayRow does — Pick/Edit/Export identity styling doesn't
+    apply here (this is a Cut ledger, not a phase), but the base
+    card + badge + title chrome match one-for-one."""
+
+    activated = pyqtSignal(int)                     # group index
+
+    def __init__(
+        self,
+        group_index: int,
+        day_number: int,
+        date_iso: str,
+        description: str,
+        picked: int,
+        total: int,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent, padded=True)
+        self._group_index = int(group_index)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip(tr("Open this day's exported files in a grid."))
+        # Padded Card owns a QVBoxLayout — mirror DayRow's margins /
+        # spacing so the two surfaces read as siblings.
+        self.layout().setContentsMargins(16, 14, 16, 14)
+        self.layout().setSpacing(8)
+
+        row = QHBoxLayout()
+        row.setSpacing(14)
+
+        # Day-number badge — DayRow uses ``str(n)``; Undated groups
+        # (``day_number == 0`` here) get a middle dot.
+        badge = QLabel(str(day_number) if day_number > 0 else "·")
+        badge.setObjectName("DayBadge")
+        badge.setFixedSize(40, 40)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(badge)
+
+        # Composed title + counter subtitle.
+        _iso = (date_iso or "").strip()
+        _desc = (description or "").strip()
+        if _iso and _desc:
+            _title_text = f"{_iso} — {_desc}"
+        elif _iso:
+            _title_text = _iso
+        elif _desc:
+            _title_text = _desc
+        elif day_number > 0:
+            _title_text = tr("Day {n}").replace("{n}", str(day_number))
+        else:
+            _title_text = tr("Undated")
+        title = QLabel(_title_text)
+        title.setObjectName("DayRowTitle")
+        f = QFont(title.font())
+        f.setPixelSize(14)
+        f.setWeight(QFont.Weight.DemiBold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.2)
+        title.setFont(f)
+        self._title_label = title
+
+        subtitle = QLabel(
+            tr("{p} of {t} picked")
+            .replace("{p}", str(picked))
+            .replace("{t}", str(total)))
+        subtitle.setObjectName("Sub")
+        self._subtitle_label = subtitle
+
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        row.addLayout(title_col, stretch=1)
+
+        self.layout().addLayout(row)
+
+    def text(self) -> str:
+        """Backwards-compat with the pre-tile ``QPushButton.text()``
+        callers (mostly tests that scan the days list). Combines the
+        composed title and the counter subtitle into one string with
+        the same visible content the tile shows."""
+        return f"{self._title_label.text()}   —   {self._subtitle_label.text()}"
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802 — Qt
+        # QAbstractButton-shaped semantics (Nelson 2026-07-02): capture
+        # the press but DON'T emit yet. Emitting on press would switch
+        # the parent :class:`~mira.ui.shared.cut_session_page.CutSessionPage`
+        # stack to the grid mid-click, so the release event lands on
+        # whatever grid widget shares this Y coordinate — typically the
+        # inline ``‹ Back`` button, which then reads as clicked and
+        # bounces the user right back to the days list.
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._press_captured = True
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 — Qt
+        if (ev.button() == Qt.MouseButton.LeftButton
+                and getattr(self, "_press_captured", False)):
+            self._press_captured = False
+            if self.rect().contains(ev.pos()):
+                self.activated.emit(self._group_index)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def keyPressEvent(self, ev) -> None:  # noqa: N802 — Qt
+        # Enter / Space open the tile — matches DayRow's activation grammar.
+        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.activated.emit(self._group_index)
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
 class _DaysPanel(QWidget):
-    """The session's days list — lean rows (Day N · date · picked/total),
-    not the Pick navigator (no buckets, no pass machinery)."""
+    """The session's days list — DayRow-style tiles (Nelson 2026-07-02
+    replaced the flat ``QPushButton`` per day), not the Pick navigator
+    (no buckets, no pass machinery)."""
 
     day_activated = pyqtSignal(int)     # index into session.days()
 
@@ -325,39 +450,36 @@ class _DaysPanel(QWidget):
         self._rows_box.setSpacing(6)
         box.addLayout(self._rows_box)
         box.addStretch(1)
-        self._buttons: List[QPushButton] = []
+        self._tiles: List[_DayTile] = []
 
     def set_days(
         self,
         groups: List[Tuple[Optional[int], List[SessionFile]]],
         session: CutSession,
-        day_labels: Dict[int, str],
+        day_labels: Dict[int, Tuple[str, str]],
     ) -> None:
         while self._rows_box.count():
             item = self._rows_box.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        self._buttons = []
+        self._tiles = []
         for idx, (day, files) in enumerate(groups):
             picked = sum(1 for f in files if session.is_picked(f.export_relpath))
             if day is None:
-                title = tr("Undated")
+                date_iso = ""
+                description = ""
+                day_number = 0
             else:
-                title = tr("Day {n}").replace("{n}", str(day))
-                extra = day_labels.get(day, "")
-                if extra:
-                    title += f" · {extra}"
-            btn = QPushButton(
-                f"{title}   —   "
-                + tr("{p} of {t} picked").replace(
-                    "{p}", str(picked)).replace("{t}", str(len(files))))
-            btn.setObjectName("CutSessionDayRow")
-            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            btn.setToolTip(tr("Open this day's exported files in a grid."))
-            btn.clicked.connect(lambda _=False, i=idx: self.day_activated.emit(i))
-            self._rows_box.addWidget(btn)
-            self._buttons.append(btn)
+                date_iso, description = day_labels.get(day, ("", ""))
+                day_number = int(day)
+            tile = _DayTile(
+                idx, day_number, date_iso, description,
+                picked, len(files),
+            )
+            tile.activated.connect(self.day_activated.emit)
+            self._rows_box.addWidget(tile)
+            self._tiles.append(tile)
 
 
 class _SingleView(QWidget):
@@ -777,12 +899,20 @@ class CutSessionPage(QWidget):
         except Exception:                                          # noqa: BLE001
             return 2.0
 
-    def _load_day_labels(self) -> Dict[int, str]:
-        labels: Dict[int, str] = {}
+    def _load_day_labels(self) -> Dict[int, Tuple[str, str]]:
+        """Nelson 2026-07-02 — return ``(date_iso, description)`` per
+        day_number so the tile can compose the same "date — description"
+        title format DayRow uses. Previously returned a single
+        pre-joined ``"date · location"`` string; the tuple lets the
+        tile own the formatting (badge on the left, date+description
+        stacked on the right) instead of squeezing everything into a
+        flat button label."""
+        labels: Dict[int, Tuple[str, str]] = {}
         try:
             for d in self._gw.trip_days():
-                bits = [b for b in (d.date, d.location) if b]
-                labels[d.day_number] = " · ".join(bits)
+                date_iso = str(d.date) if d.date else ""
+                description = (getattr(d, "location", "") or "").strip()
+                labels[d.day_number] = (date_iso, description)
         except Exception:  # noqa: BLE001 — labels are decoration
             pass
         return labels
@@ -843,16 +973,16 @@ class CutSessionPage(QWidget):
         files = self._files_of_open_group()
         day, _ = self._groups[group_index]
         items = [self._grid_item_for(f) for f in files]
-        # The pill takes (day_number, title, date_iso, item_count) and
-        # joins the truthy bits. We pass ``_day_labels`` (the joined
-        # "date · location" string) as the date slot and leave the
-        # title empty; the pill formats them identically to the
-        # DaysGridPage Pick/Edit chrome.
+        # Nelson 2026-07-02 — ``_day_labels`` is now ``(date_iso,
+        # description)``. The pill takes them as separate slots — join
+        # them for the display slot the pill picked up before.
         day_number = day if day is not None else 0
+        _date_iso, _description = self._day_labels.get(day or -1, ("", ""))
+        _joined = " · ".join(b for b in (_date_iso, _description) if b)
         self._grid_header.set_day(
             day_number=day_number,
             title="",
-            date_iso=self._day_labels.get(day or -1, ""),
+            date_iso=_joined,
             item_count=len(files),
         )
         self._grid_header.set_nav_state(

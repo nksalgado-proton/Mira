@@ -42,11 +42,17 @@ def _page(gw, tmp_path, **draft_over) -> CutSessionPage:
 
 
 def test_days_panel_rows_with_pick_counts(qapp, gw, tmp_path):
+    # Nelson 2026-07-02 — flat QPushButtons swapped for DayRow-style
+    # ``_DayTile`` cards; the ``.text()`` helper on the tile returns
+    # the composed "{title}   —   {p} of {t} picked" content. The
+    # title now leads with the day's date_iso when a trip_days row
+    # supplies one (which the fixture does), so we assert against
+    # the fixture's dates instead of the legacy "Day N" fallback.
     page = _page(gw, tmp_path, pin_mode=PIN_WEED_OUT)   # weed-out = all-picked
-    texts = [b.text() for b in page._days._buttons]
+    texts = [t.text() for t in page._days._tiles]
     assert len(texts) == 2
-    assert "Day 1" in texts[0] and "1 of 1 picked" in texts[0]
-    assert "Day 2" in texts[1] and "3 of 3 picked" in texts[1]
+    assert "2026-04-01" in texts[0] and "1 of 1 picked" in texts[0]
+    assert "2026-04-02" in texts[1] and "3 of 3 picked" in texts[1]
 
 
 def test_start_lands_on_the_day_list_when_multi_day(qapp, gw, tmp_path):

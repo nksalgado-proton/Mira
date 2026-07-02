@@ -2,10 +2,12 @@
 bundled fallback).
 
 The picker is read-only and Qt-free: opens each candidate event.db
-through an injectable opener, walks ``exported_files()``, prefers the
-cached proxy of the source item when present, and falls back through
-the export JPEG to the bundled mark on no closed events / no exports
-/ load failure / deadline overrun.
+through an injectable opener, walks ``exported_edited_files()`` (spec/136
+Nelson 2026-07-01 — narrowed from ``exported_files`` so the splash
+shows only frames the user actually developed), prefers the cached
+proxy of the source item when present, and falls back through the
+export JPEG to the bundled mark on no closed events / no exports /
+load failure / deadline overrun.
 """
 from __future__ import annotations
 
@@ -49,9 +51,10 @@ class _StubEg:
         self._raises = raises_exported
         self.closed = False
 
-    def exported_files(self):
+    def exported_edited_files(self):
         if self._raises:
-            raise RuntimeError("simulated exported_files() failure")
+            raise RuntimeError(
+                "simulated exported_edited_files() failure")
         return list(self._exports)
 
     def item(self, item_id):
@@ -176,7 +179,7 @@ def test_returns_none_when_no_exports(tmp_path):
     assert eg.closed
 
 
-def test_returns_none_when_exported_files_raises(tmp_path):
+def test_returns_none_when_exported_edited_files_raises(tmp_path):
     """The picker absorbs per-event failures so one broken event.db
     can't poison the whole splash path."""
     root = tmp_path / "evt"
@@ -352,4 +355,9 @@ def test_build_splash_pixmap_decodes_proxy_when_available(qapp, tmp_path):
         pix = splash.build_splash_pixmap(
             _StubGateway([]), bundled_fallback=bundled, max_edge=128)
     assert pix is not None and not pix.isNull()
-    assert max(pix.width(), pix.height()) <= 128
+    # HiDPI splash: check the LOGICAL long edge (device-independent
+    # size). The raw ``pix.width()`` is physical pixels scaled by DPR
+    # so a 125 % Windows scaling display yields ``160 = 128 × 1.25``
+    # even though the splash still paints at 128 logical px.
+    logical = pix.deviceIndependentSize()
+    assert max(logical.width(), logical.height()) <= 128

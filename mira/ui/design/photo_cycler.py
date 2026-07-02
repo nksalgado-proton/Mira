@@ -240,40 +240,69 @@ class PhotoCycler(QWidget):
             painter.end()
             return
 
+        # HiDPI-aware sizing (Nelson 2026-07-01):
+        # ``QPixmap.scaled`` in Qt 6 preserves the source's DPR, so a
+        # target ``QSize`` is interpreted as PHYSICAL pixels. On a
+        # widget with devicePixelRatio 2 that means passing
+        # ``self.size()`` (logical 248×186) yields a pixmap only 124×93
+        # logical — half the widget in both dimensions, so the backdrop
+        # stops at the tile's midline and the photo shrinks. Scale to
+        # ``logical × widget_dpr`` PHYSICAL pixels instead, then stamp
+        # the widget's DPR on the result so its device-independent size
+        # matches the intended logical extent.
+        widget_dpr = max(1.0, float(self.devicePixelRatioF()))
+
         # Blurred-fill backdrop covering the whole tile.
         tiny = self._backdrop_for(self._index)
         if tiny is not None:
+            cover_target = QSize(
+                int(self.width() * widget_dpr),
+                int(self.height() * widget_dpr),
+            )
             cover = tiny.scaled(
-                self.size(),
+                cover_target,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            bx = (self.width() - cover.width()) // 2
-            by = (self.height() - cover.height()) // 2
+            cover.setDevicePixelRatio(widget_dpr)
+            cover_w_logical = cover.width() / widget_dpr
+            cover_h_logical = cover.height() / widget_dpr
+            bx = int((self.width() - cover_w_logical) // 2)
+            by = int((self.height() - cover_h_logical) // 2)
             painter.drawPixmap(bx, by, cover)
 
         # Contained photo — full, uncropped, inset a few px so the blurred
         # backdrop reads as a frame.
         src = self._pixmaps[self._index]
-        avail = QSize(
+        avail_logical = QSize(
             max(1, self.width() - _PHOTO_INSET * 2),
             max(1, self.height() - _PHOTO_INSET * 2),
         )
+        photo_target = QSize(
+            int(avail_logical.width() * widget_dpr),
+            int(avail_logical.height() * widget_dpr),
+        )
         scaled = src.scaled(
-            avail,
+            photo_target,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        x = (self.width() - scaled.width()) // 2
-        y = (self.height() - scaled.height()) // 2
+        scaled.setDevicePixelRatio(widget_dpr)
+        scaled_w_logical = scaled.width() / widget_dpr
+        scaled_h_logical = scaled.height() / widget_dpr
+        x = int((self.width() - scaled_w_logical) // 2)
+        y = int((self.height() - scaled_h_logical) // 2)
         painter.drawPixmap(x, y, scaled)
 
         # Hairline frame on the contained photo so its edge reads off the
         # darkened backdrop — the same affordance the legacy carousel used.
+        # Use LOGICAL widths so the frame aligns with the drawn pixmap on
+        # HiDPI displays (see the centering note above).
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(255, 255, 255, 50), 1))
         frame = QRectF(
-            x + 0.5, y + 0.5, scaled.width() - 1.0, scaled.height() - 1.0
+            x + 0.5, y + 0.5,
+            scaled_w_logical - 1.0, scaled_h_logical - 1.0,
         )
         painter.drawRoundedRect(frame, 3.0, 3.0)
 

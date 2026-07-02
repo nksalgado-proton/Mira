@@ -30,20 +30,11 @@ APP_NAME = "Mira"
 ORG_NAME = "Mira"
 
 
-def _setup_logging(data_dir: Path) -> logging.Logger:
-    log_dir = data_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s %(levelname)s:%(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_dir / "mira.log", encoding="utf-8"),
-        ],
-    )
-    log = logging.getLogger("mira")
-    log.setLevel(logging.INFO)
-    return log
+# Logging setup moved entirely to ``core.logging_setup`` (Nelson
+# 2026-07-02). The previous private shell here — plus a separate
+# excepthook install below — had the app disagreeing with itself on
+# both the log directory and whether to truncate. Call sites now go
+# through the single owner.
 
 
 # Keeps the installed Qt message handler alive for the process lifetime
@@ -119,46 +110,9 @@ def _install_qt_message_handler() -> None:
     qInstallMessageHandler(handler)
 
 
-def _install_excepthook(log: logging.Logger, log_path: Path) -> None:
-    """Route uncaught Python exceptions to the log + a dialog.
-
-    Without this, an unhandled exception — including one raised inside a Qt
-    slot (PyQt6 funnels those through ``sys.excepthook`` and then aborts) —
-    writes its traceback only to stderr. In the packaged build
-    (``--windows-console-mode=disable``) there is no stderr, so the app dies
-    silently and the crash is undiagnosable. This is exactly what hid the
-    2026-06-17 ``database disk image is malformed`` crash. We log the full
-    traceback to ``mira.log`` and, if a QApplication exists, show a dialog
-    pointing at the log, then chain to the previous hook.
-    """
-    import traceback
-
-    prev_hook = sys.excepthook
-
-    def hook(exc_type, exc, tb) -> None:
-        if issubclass(exc_type, KeyboardInterrupt):
-            prev_hook(exc_type, exc, tb)
-            return
-        log.critical(
-            "UNCAUGHT EXCEPTION\n%s",
-            "".join(traceback.format_exception(exc_type, exc, tb)),
-        )
-        try:
-            from PyQt6.QtWidgets import QApplication, QMessageBox
-            if QApplication.instance() is not None:
-                QMessageBox.critical(
-                    None,
-                    "Mira — unexpected error",
-                    f"Mira hit an unexpected error and may be unstable. "
-                    f"Please restart it.\n\n"
-                    f"{exc_type.__name__}: {exc}\n\n"
-                    f"Full details were written to:\n{log_path}",
-                )
-        except Exception:  # noqa: BLE001 — a dialog failure must not mask the crash
-            pass
-        prev_hook(exc_type, exc, tb)
-
-    sys.excepthook = hook
+# The excepthook install now lives in ``core.logging_setup``
+# (:func:`install_excepthook`) — one owner, one call site. Nelson
+# 2026-07-02.
 
 
 def _silence_libav_stderr() -> None:
@@ -453,12 +407,22 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = user_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    log = _setup_logging(data_dir)
+    # One owner (Nelson 2026-07-02): file+console handlers, the
+    # overwrite-on-launch truncate, the session-start marker, and the
+    # log-path resolution ALL come from core.logging_setup. The old
+    # in-file ``_setup_logging`` + ``_install_excepthook`` shells
+    # disagreed with each other on both directory and mode; they're
+    # gone.
+    from core.logging_setup import install_excepthook, setup_logging
+    setup_logging(force=True)
+    log = logging.getLogger("mira")
+    log.setLevel(logging.INFO)
     log.info("Mira (new UI) starting up")
 
-    # Capture uncaught exceptions (incl. Qt-slot crashes) to the log + a
-    # dialog, instead of dying silently in the windowed build.
-    _install_excepthook(log, data_dir / "logs" / "mira.log")
+    # Capture uncaught exceptions (incl. Qt-slot crashes) to the log
+    # AND show a dialog pointing the user at the log path — the
+    # friendly failure mode for the packaged windowed build.
+    install_excepthook(dialog=True)
 
     # Quieten the multimedia backend's per-clip console chatter (see
     # each helper's docstring). Both must run before the QApplication

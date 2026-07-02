@@ -713,7 +713,18 @@ class EventsPage(QWidget):
         if not cd.sample_pixmap_paths:
             return []
         from PyQt6.QtCore import Qt as _Qt
-        from PyQt6.QtGui import QPixmap as _QPixmap
+        from PyQt6.QtGui import QGuiApplication as _QGA, QPixmap as _QPixmap
+        # Cap at ~card-carousel native size, DPR-scaled so a 200 % HiDPI
+        # panel gets 2× the source detail (crisp when the cycler paints
+        # into a 4:3 tile ~248 logical px wide). Non-HiDPI keeps the
+        # 480×320 budget so memory doesn't balloon on 100 % DPI. The
+        # PhotoCycler paints in logical coords via QPainter, so setting
+        # devicePixelRatio on the resulting pixmap lets Qt route the
+        # extra pixels straight to the device transform.
+        screen = _QGA.primaryScreen()
+        dpr = max(1.0, float(screen.devicePixelRatio())) if screen is not None else 1.0
+        target_w = int(480 * dpr)
+        target_h = int(320 * dpr)
         out = []
         for path in cd.sample_pixmap_paths:
             try:
@@ -722,13 +733,12 @@ class EventsPage(QWidget):
                 pm = _QPixmap(str(path))
                 if pm.isNull():
                     continue
-                # Cap at ~card-carousel native size; rescale on render
-                # handles the rest.
                 pm = pm.scaled(
-                    480, 320,
+                    target_w, target_h,
                     _Qt.AspectRatioMode.KeepAspectRatio,
                     _Qt.TransformationMode.SmoothTransformation,
                 )
+                pm.setDevicePixelRatio(dpr)
                 out.append(pm)
             except Exception:                                  # noqa: BLE001
                 log.exception(

@@ -54,7 +54,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QObject, QRunnable, QSize, Qt, QThreadPool, pyqtSignal, pyqtSlot,
+)
 from PyQt6.QtGui import QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -97,6 +99,56 @@ SCOPE_CROSS_EVENT = "cross-event"
 #: entry holds the deleted file's bytes in memory, so ~16 × ~5 MB
 #: = ~80 MB ceiling.
 _UNDO_MAX = 16
+
+
+class _VideoPosterExtractor(QObject):
+    """Off-thread video-poster extractor for the exported grid.
+
+    Nelson 2026-07-02: the exported grid can contain video clips
+    (spec/56 workshop, spec/138 export) whose ``.mp4`` files the image
+    loader can't decode. This helper wraps :func:`core.thumb_cache.
+    ensure_thumb` on a :class:`QThreadPool` runnable so ffmpeg's
+    per-video ~200–500 ms extraction doesn't freeze the UI when the
+    grid opens with N video cells at once. The resulting JPEG path is
+    then submitted to :class:`PhotoCache` like any photo thumb, so
+    caching / native-size probing / decode-off-thread all reuse the
+    existing pipeline.
+    """
+
+    #: Emitted on the GUI thread when a poster is ready OR failed.
+    #: ``poster_path`` is ``None`` on failure.
+    poster_ready = pyqtSignal(str, object)     # (video_rel, poster_path | None)
+
+    def start(
+        self,
+        event_root: Path,
+        video_rel: str,
+        source_video: Path,
+    ) -> None:
+        """Fire-and-forget: schedule the extraction on the shared
+        thread pool. :data:`poster_ready` fires on the GUI thread
+        when the runnable finishes."""
+        def _run() -> None:
+            try:
+                from core.thumb_cache import ensure_thumb
+                poster = ensure_thumb(
+                    event_root=event_root,
+                    source_video=source_video,
+                    source_rel_path=Path(video_rel),
+                    item_id="dcgrid",           # cache namespace
+                    position_ms=1000,
+                    fallback_position_ms=0,
+                )
+                self.poster_ready.emit(video_rel, poster)
+            except Exception as exc:                    # noqa: BLE001
+                log.warning(
+                    "video poster extract failed for %s: %s",
+                    video_rel, exc,
+                )
+                self.poster_ready.emit(video_rel, None)
+
+        runnable = QRunnable.create(_run)
+        QThreadPool.globalInstance().start(runnable)
 
 #: spec/159 — center-click placeholder until Session B lands the
 #: review-mode editor. Set to True to log the would-be open; False
@@ -241,6 +293,31 @@ class DCDetailPage(QWidget):
         from mira.ui.media.photo_cache import photo_cache
         self._cache = photo_cache()
         self._cache.scaled_pixmap_ready.connect(self._on_thumb_ready)
+        # spec/159 (Nelson 2026-07-02) — decode failures used to fall
+        # into the void: the tile stayed blank forever, no log line, and
+        # ``_request_missing_thumbs`` kept re-submitting on every rebuild
+        # because the failure never populated ``_thumbs``. Listen for
+        # ``decode_failed`` so we log the culprit with a file-existence
+        # probe AND cache a null sentinel that stops the retry storm.
+        self._cache.decode_failed.connect(self._on_thumb_failed)
+        # Relpaths whose decode returned null. Used ONLY to short-circuit
+        # ``_request_missing_thumbs`` — the cell paints its normal
+        # placeholder plus a small "missing" glyph (see
+        # ``_make_grid_item`` / ``ThumbGridItem``).
+        self._thumb_failures: set[str] = set()
+
+        # spec/159 (Nelson 2026-07-02) — video exports (.mp4 clips in
+        # ``Exported Media/``) route through the ffmpeg poster path
+        # instead of a direct QPixmap decode. ``_video_poster_pending``
+        # maps the poster JPEG path back to the video's cover relpath
+        # so ``_on_thumb_ready`` can attribute the arriving pixmap to
+        # the right cell. ``_video_poster_inflight`` dedupes concurrent
+        # extraction requests for the same video across grid rebuilds.
+        self._video_poster_pending: Dict[Path, str] = {}
+        self._video_poster_inflight: set[str] = set()
+        self._video_poster_extractor = _VideoPosterExtractor(self)
+        self._video_poster_extractor.poster_ready.connect(
+            self._on_video_poster_ready)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -862,6 +939,24 @@ class DCDetailPage(QWidget):
         for rel in wanted:
             if rel in self._thumbs:
                 continue
+            if rel in self._thumb_failures:
+                # spec/159 (Nelson 2026-07-02) — skip files whose decode
+                # already failed this session. Prevents an infinite
+                # request storm on missing / undecodable exports.
+                continue
+            suffix = Path(rel).suffix.lower()
+            if suffix in VIDEO_EXTENSIONS:
+                # Videos → ffmpeg poster JPEG (spec/56 / spec/138 clips
+                # in Exported Media/). Extraction runs off-thread; the
+                # resulting JPEG lands in the on-disk thumb cache and
+                # gets submitted to PhotoCache via
+                # ``_on_video_poster_ready`` on the GUI thread.
+                if rel in self._video_poster_inflight:
+                    continue
+                self._video_poster_inflight.add(rel)
+                self._video_poster_extractor.start(
+                    self._root, rel, self._root / rel)
+                continue
             self._cache.request_scaled_pixmap(
                 self._root / rel, _GRID_THUMB_TARGET,
                 priority=1)
@@ -869,10 +964,17 @@ class DCDetailPage(QWidget):
     def _on_thumb_ready(self, path: Path, _pm: QPixmap, _native) -> None:
         if self._root is None:
             return
-        try:
-            rel = Path(path).relative_to(self._root).as_posix()
-        except ValueError:
-            return
+        # Video-poster path: the incoming pixmap is the poster JPEG
+        # under the on-disk thumb cache, NOT under Exported Media/, so
+        # ``relative_to(self._root)`` would give the wrong key. Consult
+        # the pending-poster map first and remap to the VIDEO's cover
+        # relpath so ``_thumbs`` + the cell lookup below stay coherent.
+        rel: Optional[str] = self._video_poster_pending.pop(path, None)
+        if rel is None:
+            try:
+                rel = Path(path).relative_to(self._root).as_posix()
+            except ValueError:
+                return
         hit = self._cache.get_scaled_pixmap_if_cached(
             path, _GRID_THUMB_TARGET)
         if hit is None:
@@ -882,6 +984,73 @@ class DCDetailPage(QWidget):
         for idx, cell in enumerate(getattr(self, "_cells", [])):
             if cell.cover_relpath == rel:
                 self._grid.set_pixmap(idx, hit[0])
+
+    @pyqtSlot(str, object)
+    def _on_video_poster_ready(
+        self, video_rel: str, poster_path: Optional[Path],
+    ) -> None:
+        """GUI-thread callback fired by :class:`_VideoPosterExtractor`
+        once ``ensure_thumb`` finishes for a video export. On success we
+        register the mapping and enqueue the poster JPEG through
+        :class:`PhotoCache` — the normal ``scaled_pixmap_ready`` signal
+        then routes back into :meth:`_on_thumb_ready`. On failure we
+        cache the failure so the retry loop stops."""
+        self._video_poster_inflight.discard(video_rel)
+        if self._root is None:
+            return
+        if poster_path is None:
+            self._thumb_failures.add(video_rel)
+            log.warning(
+                "exported grid: video poster failed for %s — "
+                "cell will paint as missing", video_rel)
+            return
+        poster_path = Path(poster_path)
+        self._video_poster_pending[poster_path] = video_rel
+        self._cache.request_scaled_pixmap(
+            poster_path, _GRID_THUMB_TARGET, priority=1)
+
+    def _on_thumb_failed(self, path: Path) -> None:
+        """spec/159 (Nelson 2026-07-02) — an exported file failed to
+        decode (deleted / moved / unsupported / corrupt). Log the
+        culprit with a file-existence probe so the user can act, and
+        cache the relpath so the retry loop stops.
+
+        Video posters go through their own extraction pipeline; if a
+        poster JPEG (under the on-disk thumb cache) fails to decode we
+        log the poster path but blacklist the VIDEO's relpath instead
+        so future rebuilds skip the whole poster round-trip too."""
+        if self._root is None:
+            return
+        # Poster-JPEG remap: PhotoCache's ``decode_failed`` reports the
+        # poster path, but the "failed" slot in ``_thumb_failures``
+        # should be keyed by the video's cover relpath.
+        video_rel = self._video_poster_pending.pop(path, None)
+        if video_rel is not None:
+            log.warning(
+                "exported grid: video-poster decode failed for %s "
+                "(poster=%s) — cell will paint as missing",
+                video_rel, path,
+            )
+            self._thumb_failures.add(video_rel)
+            return
+        try:
+            rel = Path(path).relative_to(self._root).as_posix()
+        except ValueError:
+            rel = str(path)
+        try:
+            exists = Path(path).is_file()
+        except OSError:
+            exists = False
+        try:
+            size = Path(path).stat().st_size if exists else 0
+        except OSError:
+            size = -1
+        log.warning(
+            "exported grid: decode failed for %s "
+            "(exists=%s, size=%d bytes) — cell will paint as missing",
+            rel, exists, size,
+        )
+        self._thumb_failures.add(rel)
 
     # ── selection ─────────────────────────────────────────────────────
 

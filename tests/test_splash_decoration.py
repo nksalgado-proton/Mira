@@ -467,7 +467,7 @@ def test_pick_calls_frame_provenance_on_event_gateway(qapp, tmp_path):
             self.closed = False
             self.provenance_calls: list[str] = []
 
-        def exported_files(self):
+        def exported_edited_files(self):
             return [lineage]
 
         def frame_provenance(self, relpath):

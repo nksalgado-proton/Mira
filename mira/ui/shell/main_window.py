@@ -708,6 +708,15 @@ class MainWindow(QMainWindow):
             tooltip=tr(
                 "Roll back settings, library index and templates "
                 "to an earlier snapshot."))
+        # Nelson 2026-07-02 — surface a way to reach the log file
+        # without having to know where user_data_dir/logs lives. Opens
+        # File Explorer with the current log file pre-selected.
+        self._add_menu_action(
+            app_menu, tr("Access &log file"),
+            self._open_log_file_location,
+            tooltip=tr(
+                "Open the folder containing Mira's log file, with "
+                "the current log file highlighted."))
         app_menu.addSeparator()
         self._add_menu_action(
             app_menu, tr("A&udit…"),
@@ -2936,6 +2945,77 @@ class MainWindow(QMainWindow):
                     "Restart Mira so it re-opens against the "
                     "restored file.{saved}"
                 ).replace("{saved}", saved_line),
+                parent=self,
+            ).exec()
+
+    def _open_log_file_location(self) -> None:
+        """Open the folder containing Mira's log file with the current
+        log file highlighted (Nelson 2026-07-02).
+
+        Windows: uses ``explorer /select,<path>`` — the shell command
+        that opens File Explorer at the file's parent AND selects the
+        file itself, so the user reads the current log without having
+        to hunt through ``%APPDATA%`` for the directory. Falls back to
+        a plain folder open (``QDesktopServices.openUrl``) on any
+        error and on non-Windows hosts (dev environments only —
+        production ships Windows).
+
+        Never raises. When the log file doesn't exist yet (very early
+        launch race), opens the parent directory anyway so the user
+        can watch it fill.
+        """
+        from core.logging_setup import log_file_path, logs_dir
+        from mira.ui.design.dialogs import MessageDialog
+
+        try:
+            log_path = log_file_path()
+        except Exception:                                       # noqa: BLE001
+            log.exception("could not resolve log_file_path()")
+            log_path = None
+        if log_path is None:
+            MessageDialog.error(
+                tr("Can't open log location"),
+                tr("Mira couldn't resolve the log file path."),
+                parent=self,
+            ).exec()
+            return
+
+        # Windows shell: /select, opens Explorer at the file's parent
+        # and highlights the file. Use subprocess so the child detaches
+        # from Mira's process (no wait, no console flash).
+        import platform
+        import subprocess
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        try:
+            if platform.system() == "Windows":
+                if log_path.is_file():
+                    # ``/select,`` needs a normalised backslash path;
+                    # ``str(Path)`` handles that on Windows.
+                    subprocess.Popen(
+                        ["explorer", f"/select,{log_path}"],
+                        close_fds=True,
+                    )
+                    return
+                # File doesn't exist yet — just open the parent dir.
+                subprocess.Popen(
+                    ["explorer", str(logs_dir())],
+                    close_fds=True,
+                )
+                return
+            # Non-Windows fallback (dev environments).
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(logs_dir())))
+        except Exception:                                       # noqa: BLE001
+            log.exception(
+                "could not open log file location %s", log_path)
+            MessageDialog.error(
+                tr("Can't open log location"),
+                tr(
+                    "Mira couldn't open the log folder. The log file "
+                    "is at:\n{path}"
+                ).replace("{path}", str(log_path)),
                 parent=self,
             ).exec()
 

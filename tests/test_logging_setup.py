@@ -72,12 +72,63 @@ def test_log_file_path(tmp_path):
 def test_setup_logging_attaches_file_handler(tmp_path):
     setup_logging(level="DEBUG")
     root = logging.getLogger()
-    # At least one file-backed handler should be present
+    # At least one plain FileHandler (overwrite-on-launch, Nelson
+    # 2026-07-02) should be present. FileHandler is the parent class
+    # of the older TimedRotatingFileHandler, so this asserts against
+    # both should we ever switch back.
     file_handlers = [
         h for h in root.handlers
-        if isinstance(h, logging.handlers.TimedRotatingFileHandler)
+        if isinstance(h, logging.FileHandler)
     ]
     assert len(file_handlers) >= 1
+
+
+def test_setup_logging_truncates_existing_log(tmp_path):
+    """Every run overwrites the log — a leftover file from a prior
+    session must NOT survive into this one (Nelson 2026-07-02)."""
+    log_path = tmp_path / "logs" / LOG_FILE_NAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("STALE FROM A PREVIOUS RUN\n", encoding="utf-8")
+
+    setup_logging(level="INFO")
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    content = log_path.read_text(encoding="utf-8")
+    assert "STALE FROM A PREVIOUS RUN" not in content
+    # Session-start marker is emitted at INFO regardless of settings.
+    assert "Session started" in content
+
+
+def test_setup_logging_creates_file_when_nothing_else_logs(tmp_path):
+    """Even when the app never emits an INFO+ line, the freshly-
+    truncated log file must exist — the session-start marker
+    guarantees it."""
+    setup_logging(level="INFO")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    log_path = tmp_path / "logs" / LOG_FILE_NAME
+    assert log_path.exists()
+    assert log_path.stat().st_size > 0
+
+
+def test_setup_logging_sweeps_stale_files(tmp_path):
+    """The logs directory belongs to the app — a stale ``miracraft.log``
+    from the pre-fork ancestor + one-off diagnostic files must be
+    gone after startup, leaving only ``mira.log`` (Nelson 2026-07-02)."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "miracraft.log").write_text("stale ancestor log")
+    (log_dir / "native_spawn_diag.txt").write_text("retired diagnostic")
+    (log_dir / "subprocess_diag.txt").write_text("retired diagnostic")
+    (log_dir / "mira.log.1").write_text("old rotated log")
+
+    setup_logging(level="INFO")
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    survivors = sorted(p.name for p in log_dir.iterdir())
+    assert survivors == [LOG_FILE_NAME]
 
 
 def test_setup_logging_respects_explicit_level():

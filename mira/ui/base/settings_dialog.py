@@ -1209,19 +1209,11 @@ SETTINGS_SCHEMA: list[dict] = [
                 ],
                 "restart_required": False,
             },
-            # Nelson 2026-06-09 audit — log retention promotion.
-            {
-                "key": "log_rotate_keep_days",
-                "label": "Log retention",
-                "widget": "spinbox",
-                "tooltip": (
-                    "How many days of rotated log files to keep on disk. "
-                    "Older logs are deleted at startup. 14 days is plenty "
-                    "for typical debugging; shorter saves disk space."
-                ),
-                "min": 1, "max": 365, "step": 1,
-                "decimals": 0, "suffix": " days",
-            },
+            # 2026-06-09 audit's ``log_rotate_keep_days`` retired on
+            # 2026-07-02 with the switch to overwrite-on-launch logging
+            # (core.logging_setup._make_file_handler). The Settings
+            # field survives for JSON-compat but is no longer exposed
+            # in the dialog — rotation no longer exists to configure.
             # spec/63 slice 7 — proxy-tier disk honesty. Read-only;
             # the value provider + clear action are injected by
             # MainWindow (they need the open event).

@@ -38,8 +38,11 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 
 log = logging.getLogger(__name__)
 
-# Splash pixmap long-edge target. ~720 px keeps the on-screen size
-# pleasant on a typical laptop without forcing a full-res decode.
+# Splash pixmap long-edge target — expressed in LOGICAL pixels so it
+# stays visually consistent across DPRs. The runtime multiplies this by
+# the active screen's devicePixelRatio to pick a physical-pixel decode
+# target, then stamps the DPR on the pixmap so Qt paints it at the same
+# logical size but with sharp physical pixels on HiDPI panels.
 DEFAULT_SPLASH_EDGE = 720
 
 # Wall-clock budget for the WHOLE sourcing step (pick + decode + scale).
@@ -67,16 +70,35 @@ SPLASH_TITLE = "Mira by NKS starting…"
 _FALLBACK_CANVAS_W = 540
 _FALLBACK_CANVAS_H = 360
 
-# White frame painted around the splash perimeter — a thin border
-# that lifts the splash off the desktop without competing with the
-# photo. Pixel-aligned (no anti-aliased fractional stroke) so the
-# frame reads as crisp at any pixmap size.
-_SPLASH_FRAME_PX = 4
+# White frame painted around the splash perimeter — lifts the splash
+# off the desktop and gives the photo a printed-photo feel. Pixel-
+# aligned (no anti-aliased fractional stroke) so the frame reads as
+# crisp at any pixmap size. Bumped from 4 → 10 logical px (Nelson
+# 2026-07-01) so the frame reads as a real border rather than an
+# easy-to-miss hairline.
+_SPLASH_FRAME_PX = 10
 
 _IMAGE_EXPORT_SUFFIXES = frozenset({
     ".jpg", ".jpeg", ".tif", ".tiff", ".png",
     ".bmp", ".webp", ".heic", ".heif",
 })
+
+
+def _screen_device_pixel_ratio() -> float:
+    """Return the primary screen's devicePixelRatio, or ``1.0`` when Qt
+    is not initialised (unit tests import this module without a
+    ``QGuiApplication``). Callers use this to size the pixmap so it
+    decodes at *physical* pixels on HiDPI panels — otherwise a 720 px
+    splash renders from 720 real pixels stretched over 1440 physical
+    pixels on a 200 % HiDPI display and reads soft."""
+    try:
+        from PyQt6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            return max(1.0, float(screen.devicePixelRatio()))
+    except Exception:                                              # noqa: BLE001
+        pass
+    return 1.0
 
 
 @dataclass(frozen=True)
@@ -192,9 +214,17 @@ def _try_event(
         if not budget_left():
             return None
         try:
-            exports = list(eg.exported_files())
+            # spec/136 — only sample frames the user actually
+            # DEVELOPED. A straight-through export of the untouched
+            # baseline is technically in Exported Media/ but reads as
+            # a non-choice on the splash; the strict twin
+            # ``exported_edited_files`` narrows to rows off the
+            # unedited baseline (look / crop / rotation / creative
+            # filter set).
+            exports = list(eg.exported_edited_files())
         except Exception:                                          # noqa: BLE001
-            log.exception("splash: exported_files(%s) failed", event_root)
+            log.exception(
+                "splash: exported_edited_files(%s) failed", event_root)
             return None
         if not exports:
             return None
@@ -395,14 +425,21 @@ def _decode_to_pixmap(path: Path, edge: int) -> Optional["object"]:
     return pix
 
 
-def _bundled_canvas_pixmap() -> "object":
+def _bundled_canvas_pixmap(dpr: float = 1.0) -> "object":
     """Build the bundled-mark splash canvas: a fixed-size dark surface
     that :func:`decorate_splash_pixmap` paints the title (with the
     icon to its left) and the white frame onto. No caption — we have
-    no source photo to read provenance from."""
+    no source photo to read provenance from.
+
+    ``dpr`` scales the physical pixel dimensions AND stamps the
+    devicePixelRatio on the resulting pixmap so the canvas paints at
+    the same *logical* size regardless of the display's HiDPI ratio."""
     from PyQt6.QtGui import QColor, QPixmap
-    canvas = QPixmap(_FALLBACK_CANVAS_W, _FALLBACK_CANVAS_H)
+    scale = max(1.0, float(dpr))
+    canvas = QPixmap(int(_FALLBACK_CANVAS_W * scale),
+                     int(_FALLBACK_CANVAS_H * scale))
     canvas.fill(QColor(18, 18, 22))
+    canvas.setDevicePixelRatio(scale)
     return canvas
 
 
@@ -516,8 +553,16 @@ def decorate_splash_pixmap(
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-        w = out.width()
-        h = out.height()
+        # Layout math runs in LOGICAL pixels so the font/pad caps stay
+        # visually consistent across DPRs. ``QPixmap.width()`` returns
+        # device pixels — on a DPR=2 splash that's 2× the logical
+        # canvas and would push ``int(w * 0.045)`` past the 34-px title
+        # cap, shrinking the title in half on HiDPI. ``QPainter`` on a
+        # DPR-stamped pixmap uses a LOGICAL coord system, so drawing
+        # at these logical dims paints at the right visual size.
+        logical_size = out.deviceIndependentSize()
+        w = float(logical_size.width())
+        h = float(logical_size.height())
 
         # ── Title row — icon (optional) + large bold title ─────────
         title_font = QFont(painter.font())
@@ -681,6 +726,12 @@ def build_splash_pixmap(
     the deadline.
     """
     icon_render = _build_icon_renderer(bundled_fallback)
+    # Decode at PHYSICAL pixels so HiDPI panels get a sharp source; the
+    # DPR gets stamped on the pixmap so the decorator + display code
+    # treat it as a ``max_edge``-logical-px canvas (same visual size,
+    # 2× the pixel detail on a 200 % panel).
+    dpr = _screen_device_pixel_ratio()
+    physical_edge = int(max_edge * dpr)
     if photo_enabled and gateway is not None:
         try:
             chosen = pick_random_exported_frame(
@@ -690,18 +741,19 @@ def build_splash_pixmap(
             chosen = None
         if chosen is not None:
             candidate = chosen.proxy_path or chosen.export_path
-            pix = _decode_to_pixmap(candidate, max_edge)
+            pix = _decode_to_pixmap(candidate, physical_edge)
             if pix is None and chosen.proxy_path is not None:
                 # Proxy missing or unreadable → fall back to the export
                 # JPEG before giving up on the photo path entirely.
-                pix = _decode_to_pixmap(chosen.export_path, max_edge)
+                pix = _decode_to_pixmap(chosen.export_path, physical_edge)
             if pix is not None:
+                pix.setDevicePixelRatio(dpr)
                 caption = format_caption(chosen.provenance)
                 return decorate_splash_pixmap(
                     pix, title=title, caption=caption or None,
                     icon_render=icon_render)
     return decorate_splash_pixmap(
-        _bundled_canvas_pixmap(), title=title, caption=None,
+        _bundled_canvas_pixmap(dpr), title=title, caption=None,
         icon_render=icon_render)
 
 

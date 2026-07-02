@@ -37,9 +37,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QKeyEvent, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -135,6 +136,17 @@ class ReviewMediaDialog(QDialog):
         self._index = max(0, min(start_index, len(self._items) - 1))
         self._was_fullscreen = False
         self._first_show_pending = True
+        # spec/159 (Nelson 2026-07-02) — mouse-wheel navigation.
+        # ``PhotoViewport``'s own ``wheelEvent`` only walks its
+        # internal item list (we hand it one item at a time), and a
+        # native ``QVideoWidget`` on Windows swallows wheels sent to
+        # the dialog. An app-level event filter installed while the
+        # modal is up catches the wheel wherever it lands and routes
+        # it into ``_go_prev`` / ``_go_next``. 120-unit accumulation
+        # mirrors :class:`PhotoViewport` so mouse notches and high-
+        # precision touchpad scrolls both feel consistent.
+        self._wheel_units = 0
+        self._app_filter_installed = False
         self._build_ui()
         # Push the chrome state now (the rating controls don't depend
         # on widget size); the photo viewport waits for the first show
@@ -230,27 +242,56 @@ class ReviewMediaDialog(QDialog):
         outer.addWidget(nav_w)
 
         # ── keyboard shortcuts ──────────────────────────────────────
+        # ApplicationShortcut context (Nelson 2026-07-02) — the default
+        # WindowShortcut misses key events when :class:`PhotoViewport`'s
+        # embedded ``QVideoWidget`` (a native HWND on Windows) has
+        # focus: key events land in the native window and never reach
+        # Qt's shortcut manager. Application-scoped shortcuts fire on
+        # every keystroke while any Mira window is active, and the
+        # dialog is modal so no other Mira surface can steal them.
+        app_ctx = Qt.ShortcutContext.ApplicationShortcut
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self,
-                  activated=self.close)
+                  activated=self.close, context=app_ctx)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self,
-                  activated=self._go_prev)
+                  activated=self._go_prev, context=app_ctx)
         QShortcut(QKeySequence(Qt.Key.Key_Right), self,
-                  activated=self._go_next)
+                  activated=self._go_next, context=app_ctx)
         QShortcut(QKeySequence(Qt.Key.Key_F11), self,
-                  activated=self._toggle_fullscreen)
+                  activated=self._toggle_fullscreen, context=app_ctx)
         QShortcut(QKeySequence(Qt.Key.Key_F), self,
-                  activated=self._toggle_fullscreen)
+                  activated=self._toggle_fullscreen, context=app_ctx)
         # K → flag toggle
         QShortcut(QKeySequence(Qt.Key.Key_K), self,
                   activated=lambda: self._on_flag_toggled(
-                      not self._current_or_blank().flag))
+                      not self._current_or_blank().flag),
+                  context=app_ctx)
         # D → to-delete toggle
         QShortcut(QKeySequence(Qt.Key.Key_D), self,
                   activated=lambda: self._on_delete_toggled(
-                      not self._current_or_blank().to_delete))
+                      not self._current_or_blank().to_delete),
+                  context=app_ctx)
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self,
                   activated=lambda: self._on_delete_toggled(
-                      not self._current_or_blank().to_delete))
+                      not self._current_or_blank().to_delete),
+                  context=app_ctx)
+
+        # Number keys → stars / colour label. QShortcut (rather than
+        # keyPressEvent) so the ApplicationShortcut context reaches
+        # keystrokes even while a native ``QVideoWidget`` has focus.
+        for n in range(1, 6):
+            QShortcut(QKeySequence(str(n)), self,
+                      activated=lambda n=n: self._set_stars_from_key(n),
+                      context=app_ctx)
+            QShortcut(QKeySequence(f"Shift+{n}"), self,
+                      activated=lambda n=n: self._set_color_from_key(
+                          COLOR_LABEL_ORDER[n - 1]),
+                      context=app_ctx)
+        QShortcut(QKeySequence("0"), self,
+                  activated=lambda: self._set_stars_from_key(None),
+                  context=app_ctx)
+        QShortcut(QKeySequence("Shift+0"), self,
+                  activated=lambda: self._set_color_from_key(None),
+                  context=app_ctx)
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -260,16 +301,29 @@ class ReviewMediaDialog(QDialog):
         return ReviewItem("", Path("."))
 
     def _load_index(self) -> None:
-        """Show the photo at ``self._index`` and repaint the chrome so
-        the rating widgets reflect the current item's values."""
+        """Show the media at ``self._index`` and repaint the chrome so
+        the rating widgets reflect the current item's values.
+
+        Video exports (spec/56 clips, spec/138 exports) route through
+        :class:`PhotoViewport`'s ``kind='video'`` branch (Nelson
+        2026-07-02) — QMediaPlayer + QVideoWidget play the clip inline
+        with the rating chrome intact. Photos keep the ``kind='photo'``
+        pixmap path unchanged.
+        """
+        from core.video_discovery import VIDEO_EXTENSIONS
         from mira.ui.media.photo_viewport import ViewportItem
 
         if not self._items:
             return
         idx = self._index
         item = self._items[idx]
+        kind = (
+            "video"
+            if item.abs_path.suffix.lower() in VIDEO_EXTENSIONS
+            else "photo"
+        )
         self._viewport.set_items(
-            [ViewportItem(path=item.abs_path, kind="photo")],
+            [ViewportItem(path=item.abs_path, kind=kind)],
             current=0,
         )
         self._counter.setText(f"{idx + 1} / {len(self._items)}")
@@ -413,9 +467,44 @@ class ReviewMediaDialog(QDialog):
         every show.
         """
         super().showEvent(ev)
+        if not self._app_filter_installed:
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+                self._app_filter_installed = True
         if self._first_show_pending:
             self._first_show_pending = False
             QTimer.singleShot(0, self._first_show_load)
+
+    def closeEvent(self, ev) -> None:  # noqa: N802 — Qt
+        """Uninstall the app-level wheel filter on close so it doesn't
+        leak into other Mira surfaces after the modal dismisses."""
+        if self._app_filter_installed:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self._app_filter_installed = False
+        super().closeEvent(ev)
+
+    def eventFilter(self, obj, ev) -> bool:  # noqa: N802 — Qt
+        """Route wheel events anywhere in the modal into prev / next.
+
+        Accumulates 120 units per notch (mirrors
+        :class:`~mira.ui.media.photo_viewport.PhotoViewport`) so a
+        single mouse-wheel click walks one item and a high-precision
+        touchpad scrolls smoothly. Photos and videos both go through
+        this path — the native ``QVideoWidget`` swallows key + wheel
+        events sent to the dialog otherwise (Windows HWND focus)."""
+        if ev.type() == QEvent.Type.Wheel and self.isVisible():
+            self._wheel_units += ev.angleDelta().y()
+            while self._wheel_units >= 120:
+                self._wheel_units -= 120
+                self._go_prev()
+            while self._wheel_units <= -120:
+                self._wheel_units += 120
+                self._go_next()
+            return True
+        return super().eventFilter(obj, ev)
 
     def _first_show_load(self) -> None:
         try:
@@ -423,31 +512,11 @@ class ReviewMediaDialog(QDialog):
         except Exception:                                      # noqa: BLE001
             log.exception("ReviewMediaDialog: first-show load failed")
 
-    # ── number-key handling (1..5 stars + Shift+1..5 colour) ──────
-
-    def keyPressEvent(self, ev: QKeyEvent) -> None:  # noqa: N802 — Qt
-        key = ev.key()
-        mods = ev.modifiers()
-        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-        # Block all-modifier paths (Ctrl, Alt, Meta) — only Shift counts.
-        bare_mods = mods & ~Qt.KeyboardModifier.ShiftModifier
-        if bare_mods == Qt.KeyboardModifier.NoModifier:
-            if Qt.Key.Key_1 <= key <= Qt.Key.Key_5:
-                n = key - Qt.Key.Key_0
-                if shift:
-                    self._set_color_from_key(COLOR_LABEL_ORDER[n - 1])
-                else:
-                    self._set_stars_from_key(n)
-                ev.accept()
-                return
-            if key == Qt.Key.Key_0:
-                if shift:
-                    self._set_color_from_key(None)
-                else:
-                    self._set_stars_from_key(None)
-                ev.accept()
-                return
-        super().keyPressEvent(ev)
+    # spec/159 (Nelson 2026-07-02) — the previous ``keyPressEvent``
+    # number-key handler was replaced by the ApplicationShortcut
+    # QShortcuts above. Native ``QVideoWidget`` focus meant
+    # ``keyPressEvent`` never fired for photos-inside-videos runs; the
+    # shortcut route is uniform for both photo and video items.
 
     def _set_stars_from_key(self, n: Optional[int]) -> None:
         item = self._current_or_blank()

@@ -1,7 +1,7 @@
 """Application logging setup and helpers.
 
 Call setup_logging() once at startup (from ui/app.py) to initialize the
-rotating file handler and apply the user's configured log level.
+per-session file handler and apply the user's configured log level.
 
 Usage in modules:
 
@@ -19,12 +19,17 @@ The log_activity context manager emits:
   - DEBUG "loading something completed in 0.012s"  (on success)
   - ERROR "loading something failed after 0.003s: <exc>" (on exception, then re-raises)
 
-Log file location: {user_data_dir}/logs/mira.log (daily rotation, 14 days kept).
+Log file location: {user_data_dir}/logs/mira.log
+Overwrite-on-launch (Nelson 2026-07-02): each app run TRUNCATES the log
+file so it always contains this session's output only. No rotation, no
+accumulation. A "session started" INFO line at the top guarantees the
+file exists after startup even when nothing else logs.
 
 Troubleshooting a silent crash:
   1. Open settings.json, set "log_level": "DEBUG"
   2. Re-run the app, reproduce the problem
   3. Open {user_data_dir}/logs/mira.log — search for ERROR lines
+     (App menu → "Access log file" opens it directly)
 """
 
 import logging
@@ -35,10 +40,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from core.settings import load_settings, user_data_dir
+from core.settings import load_settings
 
 
 LOG_FILE_NAME = "mira.log"
+# Kept as a module-level constant for backwards-compat with the two
+# call sites that still reference the name (tests, settings audit),
+# but rotation itself was retired 2026-07-02: each run truncates
+# ``mira.log`` on open. Nothing reads this constant at runtime.
 LOG_ROTATE_KEEP_DAYS = 14
 LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-8s [%(name)s] %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -51,7 +60,17 @@ _HANDLERS_ATTACHED = False
 
 
 def logs_dir() -> Path:
-    """Directory where log files are stored."""
+    """Directory where log files are stored.
+
+    Uses :func:`mira.paths.user_data_dir` (Nelson 2026-07-02) so this
+    module resolves to the same directory the app-startup logging in
+    ``mira/ui/app.py`` writes to. That path is library-root-aware
+    (``<library_root>/.mira/logs`` when a library pointer is set,
+    otherwise the AppData fallback). Previously this used
+    :func:`core.settings.user_data_dir` — the non-library-aware variant
+    — so ``App → Access log file`` opened an empty AppData directory
+    while the actual log lived under the library."""
+    from mira.paths import user_data_dir
     d = user_data_dir() / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -73,21 +92,56 @@ def _resolve_level(raw: str) -> int:
     return getattr(logging, normalized)
 
 
-def _make_file_handler(level: int) -> logging.Handler:
-    # Read the user-tunable retention setting (Nelson 2026-06-09 audit);
-    # fall back to LOG_ROTATE_KEEP_DAYS if Settings can't be read.
+def _sweep_stale_log_files() -> None:
+    """Delete anything in ``logs_dir()`` that isn't the current log file
+    (Nelson 2026-07-02).
+
+    Historical leftovers accumulate here: the pre-fork ``miracraft.log``
+    from the ancestor repo, one-off ``native_spawn_diag.txt`` /
+    ``subprocess_diag.txt`` files a since-retired diagnostic wrote, and
+    any ``mira.log.<N>`` rotation siblings from before the switch to
+    overwrite-on-launch. The user's rule is one log file, and this
+    module owns the directory — so we sweep every other entry on each
+    startup. Best-effort: any file that can't be removed (locked, no
+    permission) is logged after the file handler attaches and the app
+    keeps starting."""
+    d = logs_dir()
     try:
-        from mira.settings.repo import SettingsRepo
-        keep_days = int(SettingsRepo().load().log_rotate_keep_days)
-    except Exception:                                           # noqa: BLE001
-        keep_days = LOG_ROTATE_KEEP_DAYS
-    handler = logging.handlers.TimedRotatingFileHandler(
+        entries = list(d.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name == LOG_FILE_NAME:
+            continue
+        if not entry.is_file():
+            continue
+        try:
+            entry.unlink()
+        except OSError as exc:
+            # Deferred: the file handler isn't attached yet, so we
+            # stash the failure and log it after setup_logging finishes.
+            _SWEEP_FAILURES.append((entry, str(exc)))
+
+
+_SWEEP_FAILURES: list[tuple[Path, str]] = []
+
+
+def _make_file_handler(level: int) -> logging.Handler:
+    """Overwrite-on-launch file handler (Nelson 2026-07-02).
+
+    Opens ``mira.log`` in ``mode='w'`` so every app run truncates the
+    file — the log always contains just this session's output, no
+    accumulation across launches. ``delay=False`` means the file is
+    created immediately on handler attach, so a session that never
+    emits anything still leaves an empty (but existing) log for
+    ``App → Access log file`` to open. Retired the previous
+    TimedRotatingFileHandler + the ``log_rotate_keep_days`` setting.
+    """
+    handler = logging.FileHandler(
         filename=str(log_file_path()),
-        when="midnight",
-        interval=1,
-        backupCount=max(1, keep_days),
+        mode="w",
         encoding="utf-8",
-        delay=True,  # don't create empty file until first emit
+        delay=False,
     )
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
@@ -113,18 +167,23 @@ def _is_interactive_terminal() -> bool:
         return False
 
 
-def _install_excepthook() -> None:
+def install_excepthook(*, dialog: bool = False) -> None:
     """Route uncaught Python exceptions through the root logger.
 
-    PyQt6 invokes ``sys.excepthook`` when a slot raises and nothing
-    catches it. Default behaviour prints to stderr — invisible under
+    Consolidates the two competing installs that used to live here and
+    in ``mira/ui/app.py`` (Nelson 2026-07-02). PyQt6 invokes
+    ``sys.excepthook`` when a slot raises and nothing catches it;
+    default behaviour prints to stderr — invisible under
     ``pythonw.exe`` / a Nuitka windows-console-disabled build, which
     is exactly when silent crashes are hardest to diagnose. Routing
     through the logger means the traceback lands in ``mira.log``
     every time.
 
-    Pre-existing hook is preserved as fallback so we don't break
-    debugger integrations.
+    ``dialog=True`` also shows a ``QMessageBox`` pointing the user at
+    the log file — the friendly failure mode for production runs. Off
+    by default so tests + headless callers don't reach for Qt.
+    Pre-existing hook is preserved as fallback so debugger
+    integrations keep working.
     """
     prior = sys.excepthook
     log = logging.getLogger("mira.unhandled")
@@ -134,17 +193,35 @@ def _install_excepthook() -> None:
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
-        log.error(
+        level = logging.CRITICAL if dialog else logging.ERROR
+        log.log(
+            level,
             "Unhandled exception: %s: %s",
             exc_type.__name__,
             exc_value,
             exc_info=(exc_type, exc_value, exc_tb),
         )
+        if dialog:
+            try:
+                from PyQt6.QtWidgets import QApplication, QMessageBox
+                if QApplication.instance() is not None:
+                    QMessageBox.critical(
+                        None,
+                        "Mira — unexpected error",
+                        f"Mira hit an unexpected error and may be "
+                        f"unstable. Please restart it.\n\n"
+                        f"{exc_type.__name__}: {exc_value}\n\n"
+                        f"Full details were written to:\n"
+                        f"{log_file_path()}",
+                    )
+            except Exception:                                # noqa: BLE001
+                # A dialog failure must not mask the crash.
+                pass
         # Chain to prior hook (typically sys.__excepthook__) so dev
         # consoles still see the traceback.
         try:
             prior(exc_type, exc_value, exc_tb)
-        except Exception:  # noqa: BLE001
+        except Exception:                                    # noqa: BLE001
             pass
 
     sys.excepthook = _hook
@@ -188,6 +265,13 @@ def setup_logging(
     numeric_level = _resolve_level(level)
     root.setLevel(numeric_level)
 
+    # Sweep the logs dir BEFORE attaching the handler so leftover
+    # ``miracraft.log`` / one-off diagnostic files don't clutter the
+    # directory. Failures (if any) are drained into the fresh log
+    # immediately after the handler attaches.
+    _SWEEP_FAILURES.clear()
+    _sweep_stale_log_files()
+
     # File handler — always present
     try:
         root.addHandler(_make_file_handler(numeric_level))
@@ -200,16 +284,33 @@ def setup_logging(
     if _is_interactive_terminal():
         root.addHandler(_make_console_handler(numeric_level))
 
-    # Route uncaught exceptions (Qt-slot crashes especially) through
-    # the file logger so silent crashes leave a paper trail.
-    _install_excepthook()
+    # The excepthook install is caller-driven (spec/logging consolidation,
+    # Nelson 2026-07-02): startup calls :func:`install_excepthook` with
+    # ``dialog=True`` after Qt exists; tests / headless callers can
+    # opt in without a dialog or skip the hook entirely.
 
     _HANDLERS_ATTACHED = True
-    root.debug(
-        "Logging initialized: level=%s, file=%s",
+    # Session-start marker (Nelson 2026-07-02). Emitted at INFO so it
+    # always lands in the freshly-truncated log — otherwise a run whose
+    # every log call is DEBUG-level with log_level=INFO would leave an
+    # empty file, making "did the log capture anything?" ambiguous.
+    from datetime import datetime as _dt
+    root.info(
+        "── Session started at %s (level=%s, file=%s) ──",
+        _dt.now().isoformat(timespec="seconds"),
         logging.getLevelName(numeric_level),
         log_file_path(),
     )
+    # Drain sweep failures (rare — locked / read-only files) into the
+    # freshly-attached handler so the user sees which leftovers
+    # couldn't be removed.
+    for path, reason in _SWEEP_FAILURES:
+        root.warning(
+            "logs sweep: could not remove %s (%s) — the app owns this "
+            "directory, please delete the file manually",
+            path, reason,
+        )
+    _SWEEP_FAILURES.clear()
     return root
 
 

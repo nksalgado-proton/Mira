@@ -8,6 +8,12 @@ reel": it would parade frames the user **explicitly did not export**.
 After spec/132 the function returns ONLY ``eg.exported_files()``:
 empty (or an exception) returns ``[]``, and PhotoCycler renders its
 built-in "no photos" placeholder — never a non-exported capture.
+
+Nelson 2026-07-01: narrowed further to the CREATIVELY-EDITED subset
+via :meth:`~mira.gateway.event_gateway.EventGateway.exported_edited_files`,
+so the closed tile never parades a straight-through-baseline export
+either. The stub gateway below implements the strict method; the
+contract (exported-only, no fallthrough) is unchanged.
 """
 from __future__ import annotations
 
@@ -37,9 +43,10 @@ def _item(relpath: str) -> SimpleNamespace:
 
 class _StubEg:
     """Minimal EventGateway stand-in. Wires the two surfaces
-    ``_sample_pixmap_paths`` reads (``event_root``, ``exported_files``)
-    and one (``items``) only to prove the spec/132 contract — that the
-    function NEVER reaches for picked/any-capture even when they exist."""
+    ``_sample_pixmap_paths`` reads (``event_root``,
+    ``exported_edited_files``) and one (``items``) only to prove the
+    spec/132 contract — that the function NEVER reaches for picked /
+    any-capture even when they exist."""
 
     def __init__(
         self, root: Path, *,
@@ -53,9 +60,10 @@ class _StubEg:
         self._items_calls: list = []
         self._items_should_not_be_called = items_should_not_be_called
 
-    def exported_files(self):
+    def exported_edited_files(self):
         if self._exported_raises:
-            raise RuntimeError("simulated exported_files() failure")
+            raise RuntimeError(
+                "simulated exported_edited_files() failure")
         return list(self._exported)
 
     def items(self, **kw):
@@ -149,8 +157,8 @@ def test_only_captures_returns_empty(tmp_path):
 
 
 def test_exported_files_exception_returns_empty(tmp_path):
-    """spec/132 — when ``exported_files()`` raises, we return empty.
-    No silent fallthrough to picked / any-capture."""
+    """spec/132 — when ``exported_edited_files()`` raises, we return
+    empty. No silent fallthrough to picked / any-capture."""
     root = tmp_path / "evt"
     root.mkdir()
     eg = _StubEg(

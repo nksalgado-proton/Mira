@@ -1143,7 +1143,12 @@ class DaysGridPage(QWidget):
             log.exception("DaysGridPage: settings.load failed; "
                           "defaulting to show watermark")
         try:
-            return self._eg.exported_item_ids()
+            # spec/89 §4.1 (Nelson 2026-07-02) — include parent video
+            # ids so a source video whose ONLY ship is a clip render
+            # OR a snapshot render still lights up the badge on its
+            # own cell. Pre-fix, videos silently skipped the "Exported"
+            # / "Has file" chip while photos got both.
+            return self._eg.exported_item_ids_with_video_parents()
         except Exception:                                          # noqa: BLE001
             log.exception("DaysGridPage: exported_item_ids failed")
             return set()

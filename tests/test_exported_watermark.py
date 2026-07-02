@@ -417,15 +417,26 @@ def _fake_gateway():
     )
 
 
-def test_day_grid_cells_stamps_exported_photos_only():
+def test_day_grid_cells_stamps_exported_photos_and_videos():
+    """spec/89 §4.1 (Nelson 2026-07-02) — a video counts as a keeper
+    unit and its cell wears the "Exported" / "Has file" chip too when
+    ANY of its clips or snapshots shipped. The caller
+    (``DaysGridPage._exported_ids_for_grid``) feeds a set already
+    unioned with parent video ids via
+    :meth:`EventGateway.exported_item_ids_with_video_parents`, so the
+    reshape just trusts the set.
+
+    Pre-fix (retired 2026-07-02), video cells were photos-only via a
+    ``ci.kind == 'photo'`` guard — photos got the chip, videos never
+    did, which read inconsistent to the user.
+    """
     cells = day_grid_cells(
         _fake_gateway(), 1, phase="edit", days=_fake_day(),
         default_state="picked", exported_ids={"p1", "v1"},
     )
     by_id = {c.item_id: c for c in cells}
     assert by_id["p1"].exported is True
-    # Videos never wear the watermark, even when their id has lineage.
-    assert by_id["v1"].exported is False
+    assert by_id["v1"].exported is True
 
 
 def test_day_grid_cells_default_stamps_nothing():

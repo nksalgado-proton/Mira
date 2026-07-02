@@ -718,10 +718,16 @@ def day_grid_cells(
                     item_id=ci.item_id,
                     item_kind=ci.kind,
                     visited=ci.item_id in visited_items,
-                    # Photos only (spec/59 §8) — video cells carry the
-                    # aggregate status grammar, never the watermark.
+                    # spec/89 §4.1 (Nelson 2026-07-02) — videos count
+                    # too. A source video whose ONLY ship is a clip
+                    # render or a snapshot render still deserves the
+                    # "Exported" / "Has file" chip, because at the
+                    # keeper-unit level the video IS shipped. Callers
+                    # feed a set that already unions parent video ids
+                    # via
+                    # :meth:`EventGateway.exported_item_ids_with_video_parents`.
                     exported=bool(
-                        exported_ids and ci.kind == "photo"
+                        exported_ids
                         and ci.item_id in exported_ids),
                 ))
 

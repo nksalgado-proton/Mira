@@ -1026,6 +1026,38 @@ class EventGateway:
         ).fetchall()
         return {r["source_item_id"] for r in rows}
 
+    def exported_item_ids_with_video_parents(self) -> set:
+        """:meth:`exported_item_ids` unioned with the parent source
+        video id of every shipped clip / snapshot — spec/89 §4.1's
+        "one source video = one keeper unit, shipped if at least one
+        of its segments / snapshots shipped" rule projected onto the
+        ``exported`` badge (Nelson 2026-07-02).
+
+        Pre-fix, only child ids landed in the shipped set, so a video
+        cell whose only ship was a clip render never lit up the
+        Export watermark or the "Has file" destructive chip; photos
+        got both, videos got neither, which read as inconsistent to
+        the user. Videos also count as keeper units at the ship
+        level, so their cells should carry the same visual signal.
+        The extra ``item.parent_item_id`` JOIN scans only shipped
+        rows (already tight), so the cost is negligible.
+        """
+        rows = self.store.conn.execute(
+            "SELECT DISTINCT source_item_id, parent_item_id "
+            "FROM lineage "
+            "LEFT JOIN item ON item.id = lineage.source_item_id "
+            "WHERE lineage.phase = 'edit' "
+            "AND lineage.source_item_id IS NOT NULL "
+            "AND lineage.export_relpath LIKE 'Exported Media/%'"
+        ).fetchall()
+        out: set = set()
+        for r in rows:
+            if r["source_item_id"]:
+                out.add(r["source_item_id"])
+            if r["parent_item_id"]:
+                out.add(r["parent_item_id"])
+        return out
+
     # ----- share / cuts queries (spec/61) ---------------------------------- #
     # Membership is FILE-based: cut_member rows reference lineage (exported
     # finals), never items. The built-in #exported is a live query, not data.

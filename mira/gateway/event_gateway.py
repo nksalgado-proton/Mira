@@ -927,18 +927,30 @@ class EventGateway:
     def items_with_mira_intent(self) -> set:
         """spec/89 Slice 5+ (Nelson 2026-06-19) — item ids whose
         ``adjustment`` row carries a non-default look / filter / crop /
-        rotation. These count as **virtual Mira-render versions** even
-        when no JPEG has been materialised under ``Exported Media/`` yet:
-        the cluster threshold is "intent to ship two or more versions,"
-        not "two files already exist on disk." Reuses the same
-        :data:`core.edit_status.EDITED_SQL` the Edit / Days List bars
-        already filter by, so a Mira intent enters the cluster only
-        when the user has changed something off the unedited baseline.
+        rotation AND whose Mira render has not yet been materialised.
+        These count as **virtual Mira-render versions** so the versions
+        cluster surface can present them alongside third-party returns
+        BEFORE the JPEG lands. Once a ``mira_render`` lineage row
+        exists for the source, the intent has been fulfilled by that
+        file — it stops being a virtual member and only the on-disk
+        row counts (Nelson 2026-07-02: pre-fix, every exported item
+        with a non-default adjustment kept firing the intent forever,
+        so the same item showed as a 2-version cluster {virtual Mira
+        + on-disk Mira render} for identical pixels). Staleness of the
+        on-disk render is handled by the "Adjustments changed" chip
+        in the preview viewer, not by manufacturing a ghost cluster.
         """
         from core.edit_status import EDITED_SQL
         rows = self.store.conn.execute(
             "SELECT a.item_id FROM adjustment a "
-            f"WHERE {EDITED_SQL}"
+            f"WHERE {EDITED_SQL} "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM lineage l "
+            "  WHERE l.source_item_id = a.item_id "
+            "    AND l.phase = 'edit' "
+            "    AND l.provenance = 'mira_render' "
+            "    AND l.export_relpath LIKE 'Exported Media/%'"
+            ")"
         ).fetchall()
         return {r["item_id"] for r in rows}
 

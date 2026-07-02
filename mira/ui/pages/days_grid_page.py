@@ -1484,7 +1484,17 @@ class DaysGridPage(QWidget):
         """spec/89 §2.1 — group every ``Exported Media/`` lineage row by
         source item id. The badge layer reads this to pick a per-cell
         origin label (or to count versions for the cluster cover chip).
-        Returns an empty dict when the gateway is unreachable."""
+        Returns an empty dict when the gateway is unreachable.
+
+        Rows within each source's list are sorted **newest first** by
+        ``exported_at`` so ``rows[0]`` is the cluster cover's most
+        recent version (spec/89 §1.3) and single-row flat cells always
+        show their own row's badge deterministically. Pre-fix
+        (Nelson 2026-07-02) the list inherited ``lineage()`` order
+        (``export_relpath`` ASC), so ``rows[0]`` was arbitrary — the
+        same cluster could pick a different cover thumb across
+        refreshes.
+        """
         out: dict = {}
         if self._eg is None:
             return out
@@ -1499,6 +1509,11 @@ class DaysGridPage(QWidget):
             if not row.source_item_id:
                 continue
             out.setdefault(row.source_item_id, []).append(row)
+        for source_id, group in out.items():
+            group.sort(
+                key=lambda r: (getattr(r, "exported_at", "") or ""),
+                reverse=True,
+            )
         return out
 
     def _export_pool_filter(self):
@@ -1963,6 +1978,19 @@ class DaysGridPage(QWidget):
         if is_versions_cluster and self._eg is not None:
             self._open_versions_cluster(cluster)
             return
+        # spec/89 §6.1 UX polish (Nelson 2026-07-02) — a video cluster
+        # with a single greened member (one segment OR one snapshot)
+        # skips the pointless 1-item drill-in and opens the preview
+        # viewer on that member directly. Pre-fix, clicking a video
+        # with a lone picked segment landed on a sub-grid holding
+        # exactly one tile: a dead-end forcing the user to click
+        # again to actually watch the clip. This short-circuit keeps
+        # the structural cluster model intact (§6.1 unchanged for
+        # multi-member videos) while stripping the pointless hop.
+        if (self._export_mode and is_video_cluster
+                and len(cluster.members) == 1):
+            self._preview_solo_video_member(cluster)
+            return
         if self._eg is None:
             members: list[GridItem] = []
             lookup = self._paths_state_lookup
@@ -2083,6 +2111,52 @@ class DaysGridPage(QWidget):
                 log.exception(
                     "DaysGridPage: export button refresh on cluster open")
         self._refresh()
+
+    def _preview_solo_video_member(self, cluster) -> None:
+        """spec/89 §6.1 UX polish — open the export preview viewer
+        on a video cluster's sole segment / snapshot without going
+        through cluster mode. A synthetic single-item ``self._items``
+        is swapped in so
+        :meth:`_open_export_preview` finds exactly the sole member
+        as its neighbour list (its verb handlers reference
+        ``self._items`` while the modal dialog is open), and the
+        original day-grid list is restored on close.
+        """
+        sole = cluster.members[0]
+        event_root = (
+            Path(self._eg.event_root) if self._eg and self._eg.event_root
+            else Path("."))
+        path = (
+            sole.path if sole.path.is_absolute()
+            else event_root / sole.path)
+        # Resolve state so the preview's Intent chip reads correctly.
+        # Video segment / snapshot state lives in phase_state(edit);
+        # spec/89 §6.2 default is 'picked' when no explicit row exists
+        # (workshop pick = enough commitment). Wrong-chip-on-open is
+        # cosmetic — the P / X verbs write the correct row either way.
+        state = "picked"
+        try:
+            ps = self._eg.phase_state(sole.item_id, self._phase)
+            if ps is not None and ps.state:
+                state = ps.state
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "solo-video preview: state resolve failed for %s",
+                sole.item_id)
+        stub = GridItem(
+            item_id=sole.item_id,
+            item_kind=sole.kind,
+            state=state,
+            visited=False,
+            exported=False,
+            _path=path,
+        )
+        saved_items = self._items
+        self._items = [stub]
+        try:
+            self._open_export_preview(stub)
+        finally:
+            self._items = saved_items
 
     def _open_versions_cluster(self, cluster: CullCluster) -> None:
         """spec/89 Slice 5 — drill into a versions cluster. Surfaces
@@ -2410,6 +2484,36 @@ class DaysGridPage(QWidget):
         from mira.ui.exported.staleness import is_cell_stale
         return is_cell_stale(self._eg, item.item_id)
 
+    def _preview_video_speed(self, item) -> Optional[float]:
+        """Read the segment's baked playback speed from
+        ``video_adjustment.speed`` so the preview dialog can push it
+        into the transport bar AND the viewport engine on landing
+        (spec/56 + spec/138 WYSIWYG-of-export contract; mirrors
+        :meth:`EditorPage._bind_panel_to_selection`).
+
+        Returns ``None`` for anything that isn't a video segment: the
+        dialog then falls back to the viewport's sticky rate, which is
+        what photos + snapshots want. A missing / default
+        ``VideoAdjustment`` row also returns ``None`` — treating an
+        unset speed as "no override" matches how the export walker
+        reads it (a missing row means default 1×, applied at render
+        time).
+        """
+        if self._eg is None:
+            return None
+        if getattr(item, "item_kind", "photo") != "video":
+            return None
+        try:
+            vadj = self._eg.video_adjustment(item.item_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "preview-video-speed: video_adjustment(%s) failed",
+                item.item_id)
+            return None
+        if vadj is None or not vadj.speed:
+            return None
+        return float(vadj.speed)
+
     def _preview_develop_kwargs(self, item, path) -> dict:
         """spec/89 §11.3 polish — decide whether the preview viewer
         should pipe ``path`` through Mira's develop pipeline (so the
@@ -2430,8 +2534,14 @@ class DaysGridPage(QWidget):
         ``Exported Media/`` file (versions sub-grid members, shipped
         Mira renders) — the file IS the answer, the pipeline would
         re-render the same recipe at preview cost for nothing.
+
+        Also skipped for videos (Nelson 2026-07-02) — the develop
+        pipeline is photo-only; a video segment plays through the
+        viewport's QMediaPlayer, so there's nothing to render on top.
         """
         empty: dict = {"develop_for_preview": False}
+        if getattr(item, "item_kind", "photo") == "video":
+            return empty
         if self._eg is None:
             return empty
         try:
@@ -2512,10 +2622,12 @@ class DaysGridPage(QWidget):
             PreviewItem(
                 item_id=it.item_id,
                 path=path,
+                kind=it.item_kind if it.item_kind in ("photo", "video") else "photo",
                 state=it.state,
                 has_shipped_file=bool(it.exported),
                 title=it.item_id.split("/")[-1] if "/" in it.item_id else "",
                 is_stale=self._is_preview_item_stale(it),
+                video_speed=self._preview_video_speed(it),
                 **self._preview_develop_kwargs(it, path),
             )
             for it, path in neighbours
@@ -2528,8 +2640,6 @@ class DaysGridPage(QWidget):
             lambda iid: self._on_preview_intent(dlg, iid, "skip"))
         dlg.intent_toggle_requested.connect(
             lambda iid: self._on_preview_intent(dlg, iid, "toggle"))
-        dlg.open_editor_requested.connect(
-            lambda iid: self._on_preview_open_editor(dlg, iid))
         dlg.export_this_requested.connect(
             lambda iid: self._on_preview_export_this(dlg, iid))
         # Stored so tests can introspect; the headless-mode flag lets
@@ -2617,21 +2727,6 @@ class DaysGridPage(QWidget):
         # user needing to close + reopen.
         new_state = self._items[idx].state
         dlg.set_intent_state(item_id, new_state or "")
-
-    def _on_preview_open_editor(self, dlg, item_id: str) -> None:
-        """spec/89 §3.2 D4.C — "Open in Editor" button. Closes the
-        preview and emits ``item_activated`` so MainWindow routes
-        the user to the Editor for last-minute tone / crop tweaks."""
-        dlg.accept()
-        # For versions sub-grid members the item_id is the
-        # export_relpath, not a source item; fall back to the cluster's
-        # source item id so the Editor opens something it can render.
-        target_id = item_id
-        if (self._mode == "cluster" and self._cluster is not None
-                and self._cluster.kind == "versions"
-                and ":" in self._cluster.bucket_key):
-            target_id = self._cluster.bucket_key.split(":", 1)[1]
-        self.item_activated.emit(target_id)
 
     def _refresh_compare_btn(self, in_versions_subgrid: bool) -> None:
         """Visibility + label routing for the Compare button. Inside a
@@ -2833,7 +2928,17 @@ class DaysGridPage(QWidget):
 
         Disabled-when-red contract (D5.A) is enforced at the button
         level inside :class:`ExportPreviewDialog`; this handler is
-        defensive about the cell still being green at submit time."""
+        defensive about the cell still being green at submit time.
+
+        Video segments (Nelson 2026-07-02) — routed through the
+        segment lane (:func:`submit_export_batch` ``segment_rows``)
+        rather than the photo cell lane. Segment items are virtual
+        (``origin_relpath is None``); the source_path resolves against
+        the segment's **parent video** and the walker rebuilds the
+        clip's in/out bounds from marker order at submit time. Pre-fix
+        the segment tried to go through the photo cell lane, tripped
+        the ``not origin_relpath`` guard, and closed the dialog with
+        nothing rendered."""
         from mira.ui.exported.batch import (
             ExportCell, day_label_for, submit_export_batch,
         )
@@ -2857,10 +2962,28 @@ class DaysGridPage(QWidget):
         except Exception:                                          # noqa: BLE001
             log.exception(
                 "Export this: item(%s) failed", source_item_id)
-        if src_item is None or not src_item.origin_relpath:
+        if src_item is None:
             log.warning(
-                "Export this: no source item / origin path for %s",
-                source_item_id)
+                "Export this: no source item for %s", source_item_id)
+            dlg.accept()
+            return
+
+        # Video segment lane — segments are virtual items (their
+        # ``origin_relpath`` is ``None``); render through the source
+        # video's file + the marker-derived clip bounds.
+        is_video_segment = (
+            src_item.kind == "video"
+            and (src_item.provenance or "") == "clip"
+            and src_item.parent_item_id
+        )
+        if is_video_segment:
+            self._submit_video_segment_export_this(
+                dlg, src_item, submit_export_batch, day_label_for)
+            return
+
+        if not src_item.origin_relpath:
+            log.warning(
+                "Export this: no origin path for %s", source_item_id)
             dlg.accept()
             return
 
@@ -2950,6 +3073,127 @@ class DaysGridPage(QWidget):
         except Exception as exc:                                   # noqa: BLE001
             log.exception("Export this: submit failed for %s",
                           source_item_id)
+            show_error(
+                self,
+                tr("Could not start the export"),
+                tr("The batch could not be queued.\n\n{err}")
+                .replace("{err}", str(exc)),
+            )
+            return
+        dlg.accept()
+
+    def _submit_video_segment_export_this(
+            self, dlg, seg_item, submit_export_batch, day_label_for,
+    ) -> None:
+        """Single-item Export this for a video segment (spec/56 clip).
+
+        Reversed from :meth:`_on_preview_export_this`'s photo path:
+        the segment goes through ``segment_rows``, not ``cells``. The
+        walker at :func:`core.edit_export_walker.build_clip_units`
+        pulls the segment's marker bounds + parent video's origin
+        path, so this helper just resolves those inputs, runs the
+        Overwrite / Keep both dialog against any existing clip
+        lineage, and submits.
+
+        Any failure closes the dialog quietly (matching the photo
+        path's contract) so a bad state doesn't strand the user in a
+        modal they can't back out of.
+        """
+        event_root = Path(self._eg.event_root)
+        parent_video_id = seg_item.parent_item_id
+        parent_video = self._eg.item(parent_video_id)
+        if parent_video is None or not parent_video.origin_relpath:
+            log.warning(
+                "Export this (segment): source video missing for %s",
+                seg_item.id)
+            dlg.accept()
+            return
+        source_path = event_root / parent_video.origin_relpath
+        if not source_path.is_file():
+            show_error(
+                self,
+                tr("Source missing"),
+                tr(
+                    "The source video isn't on disk — Mira can't "
+                    "render this clip.\n\n{path}"
+                ).replace("{path}", str(source_path)),
+            )
+            dlg.accept()
+            return
+        # Pull the concrete VideoSegment row so build_clip_units can
+        # read seg_index (used for the in/out geometry).
+        try:
+            segs = self._eg.video_segments(parent_video_id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Export this (segment): video_segments(%s) failed",
+                parent_video_id)
+            dlg.accept()
+            return
+        seg_row = next(
+            (s for s in segs if s.item_id == seg_item.id), None)
+        if seg_row is None:
+            log.warning(
+                "Export this (segment): no VideoSegment row for %s "
+                "under parent %s", seg_item.id, parent_video_id)
+            dlg.accept()
+            return
+
+        # spec/118 §3 — Overwrite / Keep both / Cancel, same as photos.
+        try:
+            versions = self._eg.versions_for_item(seg_item.id)
+        except Exception:                                          # noqa: BLE001
+            log.exception(
+                "Export this (segment): versions_for_item(%s) failed",
+                seg_item.id)
+            versions = []
+        existing_mira_row = next(
+            (v for v in versions
+             if (getattr(v, "provenance", "") or "") == "mira_render"),
+            None,
+        )
+        collision = "unique"
+        if existing_mira_row is not None:
+            from mira.ui.exported.collision_dialog import (
+                ask_overwrite_or_keep_both,
+            )
+            choice = ask_overwrite_or_keep_both(self)
+            if choice is None:
+                return
+            collision = choice
+
+        batch_queue = getattr(self.window(), "batch_queue", None)
+        if batch_queue is None:
+            show_error(
+                self,
+                tr("Batch queue unavailable"),
+                tr(
+                    "The app's batch queue isn't reachable — try "
+                    "restarting Mira."),
+            )
+            return
+
+        # The segment's day follows the parent video's day (matches
+        # _expand_video in _collect_ship_cells at line ~3600).
+        day_number = (
+            getattr(parent_video, "day_number", None)
+            or self._day_number
+        )
+        day_labels = {day_number: day_label_for(self._eg, day_number)}
+        try:
+            submit_export_batch(
+                self._eg, self.gateway.settings, batch_queue,
+                event_name=self._event_name,
+                cells=[],
+                segment_rows=[seg_row],
+                day_labels=day_labels,
+                parent_widget=self,
+                collision=collision,
+            )
+        except Exception as exc:                                   # noqa: BLE001
+            log.exception(
+                "Export this (segment): submit failed for %s",
+                seg_item.id)
             show_error(
                 self,
                 tr("Could not start the export"),

@@ -22,10 +22,13 @@ What the user sees:
   :func:`core.preview_render.develop_photo_array` and hands the
   developed pixmap in through :class:`ViewportItem.pixmap`.
 * A small action row with the current intent ("Will export" /
-  "Set aside" / "Undecided"), an **Open in Editor** button (spec/89
-  §3.2 D4.C), an **Export this** button (spec/89 §5.2, disabled
-  until the cell is Will export per D5.A), and the **Full Resolution
-  F10** / **Full Screen F11** centre pair.
+  "Set aside" / "Undecided"), an **Export this** button (spec/89
+  §5.2, disabled until the cell is Will export per D5.A), and the
+  **Full Resolution F10** / **Full Screen F11** centre pair. The
+  spec/89 §3.2 D4.C "Open in Editor" button was retired 2026-07-02
+  — the extra hop confused users and always routed back through the
+  Editor's Export-phase entry anyway; a user who needs to change
+  something goes through the Editor directly.
 * The locked keymap (spec/63): **P** sets intent to ``picked``, **X**
   to ``skipped``, **Space** toggles between the two, **F10** opens
   the full-resolution inspection lens, **F/F11** toggles the
@@ -37,10 +40,10 @@ What the user sees:
 
 The dialog never mutates the gateway itself — it emits high-level
 signals (``intent_pick_requested`` / ``intent_skip_requested`` /
-``open_editor_requested`` / ``export_this_requested``) that the
-host wires to its existing verb path. The host pushes back the new
-state via :meth:`set_intent_state` so the chrome stays accurate
-without the dialog needing a gateway reference.
+``export_this_requested``) that the host wires to its existing verb
+path. The host pushes back the new state via :meth:`set_intent_state`
+so the chrome stays accurate without the dialog needing a gateway
+reference.
 """
 from __future__ import annotations
 
@@ -79,6 +82,8 @@ class PreviewItem:
 
     item_id: str
     path: Path
+    kind: str = "photo"              # 'photo' | 'video' — drives viewport
+                                     # kind + video transport reveal
     state: Optional[str] = None      # 'picked' / 'skipped' / 'compare' / None
     has_shipped_file: bool = False   # drives "Export this" enable + label
     title: str = ""                  # header label (e.g. filename)
@@ -99,6 +104,14 @@ class PreviewItem:
     develop_for_preview: bool = False
     develop_adjustment: Any = None
     develop_style_fallback: str = "general"
+    # spec/56 + spec/138 — the baked segment speed (video_adjustment.
+    # speed) from the gateway. Used to drive the transport bar AND the
+    # viewport's playback rate on landing so the preview plays at the
+    # WYSIWYG-of-export speed instead of the viewport's sticky default
+    # (Settings.default_video_speed, seeded per session). ``None`` = no
+    # override; the viewport's current rate wins (useful for photos and
+    # for tests that don't populate this field).
+    video_speed: Optional[float] = None
 
 
 _STATE_LABEL = {
@@ -115,7 +128,6 @@ class ExportPreviewDialog(QDialog):
     intent_pick_requested = pyqtSignal(str)     # item_id
     intent_skip_requested = pyqtSignal(str)     # item_id
     intent_toggle_requested = pyqtSignal(str)   # item_id (Space)
-    open_editor_requested = pyqtSignal(str)     # item_id
     export_this_requested = pyqtSignal(str)     # item_id
     # spec/147 §3 — single-item Delete this, parallel to Export this.
     # Enabled only when the current item is Set aside (red) AND has
@@ -138,6 +150,15 @@ class ExportPreviewDialog(QDialog):
         self._index = max(0, min(start_index, len(self._items) - 1))
         self._was_fullscreen = False
         self._build_ui()
+        # Seed the viewport's playback rate to the focused item's
+        # persisted segment speed BEFORE _load_viewport arms the video.
+        # Otherwise ``_arm_video`` uses the sticky
+        # ``Settings.default_video_speed`` at first frame and the
+        # engine plays at that rate even though we push the correct
+        # rate later (setPlaybackRate on an already-playing QMediaPlayer
+        # is racy on Windows). This is what made the "combo says 1×,
+        # audio plays at 2×" report — the arm won before the override.
+        self._seed_initial_video_rate()
         self._load_viewport()
         self._render_chrome()
         # Size to most of the parent window; the user can drag the
@@ -197,10 +218,32 @@ class ExportPreviewDialog(QDialog):
         # closes it instead of stacking another window.
         self._inspect_window = None
 
-        # Action row: state chip + stale chip + step indicator + Open
-        # in Editor + Export this + Full Resolution + Full Screen + Close.
+        # Video review transport — Export preview is a review surface,
+        # NOT an editor, so it gets ONE control: a Play / Pause toggle
+        # (Nelson 2026-07-02: the workshop bar with seek + volume +
+        # speed combo + mute + jump belonged in Edit, not here). Speed
+        # is fixed to the segment's persisted ``video_adjustment.speed``
+        # via ``_seed_initial_video_rate`` before the viewport arms,
+        # then re-pushed on step. No autoplay — the user hits play
+        # when they want to watch.
+        self._viewport.set_video_autoplay(False)
+        self._play_pause_btn = QPushButton("▶  Play")
+        self._play_pause_btn.setToolTip(
+            "Play / pause this clip. Speed is fixed to the value "
+            "saved in the Editor.")
+        self._play_pause_btn.clicked.connect(
+            self._viewport.video_toggle_play)
+        self._viewport.video_playing_changed.connect(
+            self._on_video_playing_changed)
+        self._play_pause_btn.setVisible(False)
+
+        # Action row: play/pause (videos only) + state chip + stale
+        # chip + step indicator + Export this + Full Resolution +
+        # Full Screen + Close.
         actions = QHBoxLayout()
         actions.setSpacing(10)
+
+        actions.addWidget(self._play_pause_btn)
 
         self._state_chip = QLabel("")
         self._state_chip.setObjectName("Sub")
@@ -225,10 +268,6 @@ class ExportPreviewDialog(QDialog):
         actions.addWidget(self._step_label)
 
         actions.addStretch(1)
-
-        self._open_editor_btn = QPushButton("Open in Editor")
-        self._open_editor_btn.clicked.connect(self._on_open_editor)
-        actions.addWidget(self._open_editor_btn)
 
         self._export_this_btn = QPushButton("Export this")
         self._export_this_btn.clicked.connect(self._on_export_this)
@@ -298,7 +337,7 @@ class ExportPreviewDialog(QDialog):
         for it in self._items:
             viewport_items.append(ViewportItem(
                 path=Path(it.path) if it.path else None,
-                kind="photo",
+                kind=it.kind,
                 payload=it.item_id,
                 pixmap=None,
             ))
@@ -316,11 +355,13 @@ class ExportPreviewDialog(QDialog):
         """Kick the develop pipeline for the currently-focused item
         after the dialog has painted. No-op for items that don't
         need developing (on-disk versions render straight from
-        ``ViewportItem.path``)."""
+        ``ViewportItem.path``) and for videos (the develop pipeline
+        is photo-only — a video segment's viewport plays the source
+        clip; there's nothing to render on top)."""
         if not (0 <= self._index < len(self._items)):
             return
         item = self._items[self._index]
-        if not item.develop_for_preview:
+        if item.kind != "photo" or not item.develop_for_preview:
             return
         # Cache hit — paint immediately.
         cached = self._develop_cache.get(item.item_id)
@@ -397,6 +438,12 @@ class ExportPreviewDialog(QDialog):
             except Exception:                                       # noqa: BLE001
                 pass
             self._inspect_window = None
+            return
+        # F10 is photo-only — Picker hides the button on videos (the
+        # inspection lens is a still-image tool). The chrome hides the
+        # button on video items too, but keep this guard so a stray
+        # keypress on a video doesn't crash the develop pipeline.
+        if item.kind != "photo":
             return
 
         base = None
@@ -563,7 +610,71 @@ class ExportPreviewDialog(QDialog):
         # makes the verb a no-op or a noise click.
         self._delete_this_btn.setEnabled(
             item.state == "skipped" and bool(item.has_shipped_file))
-        self._open_editor_btn.setEnabled(True)
+        # Video-vs-photo reveal: F10 inspection lens is a still-image
+        # tool (Picker hides it on videos), and the Play / Pause
+        # button only appears when a video lands.
+        is_video = (item.kind == "video")
+        self._fullres_btn.setVisible(not is_video)
+        self._refresh_video_transport(item, is_video)
+
+    def _seed_initial_video_rate(self) -> None:
+        """Push the focused item's persisted speed onto the viewport
+        BEFORE :meth:`_load_viewport` triggers the first ``_arm_video``.
+        The arm reads ``_video_rate`` at line 1298 to call
+        ``QMediaPlayer.setPlaybackRate``; pushing afterwards races
+        against the player's just-loaded source (setPlaybackRate on
+        an already-playing player is unreliable on Windows).
+
+        **Always seed an explicit rate on videos (Nelson 2026-07-02).**
+        Pre-fix, the seed was skipped when the clip had no persisted
+        ``video_adjustment.speed`` row and the viewport fell through
+        to ``Settings.default_video_speed`` — a **sticky per-session
+        preference** (last used by the Workshop; commonly 2× after a
+        review scrub). Result: clips without a persisted speed
+        played the export preview at 2× despite the export walker
+        rendering at 1×. Seed 1.0 when no override lands so the
+        preview always matches WYSIWYG-of-export; ``video_adjustment.
+        speed`` still wins when set.
+        """
+        if not (0 <= self._index < len(self._items)):
+            return
+        item = self._items[self._index]
+        if item.kind != "video":
+            return
+        rate = (
+            float(item.video_speed)
+            if item.video_speed is not None else 1.0)
+        self._viewport.video_set_playback_rate(rate)
+
+    def _refresh_video_transport(
+            self, item: "PreviewItem", is_video: bool) -> None:
+        """Show / hide the Play / Pause button in sync with the current
+        item's kind and reset its label. On a step to a NEW video the
+        engine re-arms via :meth:`PhotoViewport.show_index`, which reads
+        ``_video_rate`` at arm time; push the segment's persisted speed
+        first so the arm carries it. The button starts on "Play" since
+        autoplay is off (:meth:`_build_ui` calls
+        ``set_video_autoplay(False)``); the user hits play deliberately.
+        """
+        if not is_video:
+            self._play_pause_btn.setVisible(False)
+            return
+        # Always push an explicit rate on step (Nelson 2026-07-02) —
+        # a clip without ``video_adjustment.speed`` would otherwise
+        # inherit whatever rate the previous video ran at, or the
+        # sticky ``Settings.default_video_speed``. Preview matches
+        # what the walker will render: 1.0 unless a per-clip
+        # override lands.
+        rate = (
+            float(item.video_speed)
+            if item.video_speed is not None else 1.0)
+        self._viewport.video_set_playback_rate(rate)
+        self._play_pause_btn.setVisible(True)
+        self._on_video_playing_changed(
+            self._viewport.video_is_playing())
+
+    def _on_video_playing_changed(self, playing: bool) -> None:
+        self._play_pause_btn.setText("⏸  Pause" if playing else "▶  Play")
 
     # ── intent updates from the host ────────────────────────────────────
 
@@ -576,6 +687,7 @@ class ExportPreviewDialog(QDialog):
             if it.item_id == item_id:
                 self._items[i] = PreviewItem(
                     item_id=it.item_id, path=it.path,
+                    kind=it.kind,
                     state=new_state,
                     has_shipped_file=it.has_shipped_file,
                     title=it.title,
@@ -583,6 +695,7 @@ class ExportPreviewDialog(QDialog):
                     develop_for_preview=it.develop_for_preview,
                     develop_adjustment=it.develop_adjustment,
                     develop_style_fallback=it.develop_style_fallback,
+                    video_speed=it.video_speed,
                 )
                 if i == self._index:
                     self._render_chrome()
@@ -664,11 +777,6 @@ class ExportPreviewDialog(QDialog):
         super().keyPressEvent(event)
 
     # ── button handlers ─────────────────────────────────────────────────
-
-    def _on_open_editor(self) -> None:
-        target = self._current_item_id()
-        if target is not None:
-            self.open_editor_requested.emit(target)
 
     def _on_export_this(self) -> None:
         target = self._current_item_id()

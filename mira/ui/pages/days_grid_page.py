@@ -1742,7 +1742,15 @@ class DaysGridPage(QWidget):
             item_kind="cluster",
             state=_CELL_TO_THUMB_STATE.get(color),
             visited=bool(video_item.visited),
-            exported=False,
+            # spec/89 §4.1 follow-up (Nelson 2026-07-02) — carry
+            # through the flat video's exported flag so the Export-
+            # mode cluster cover still lights up "Has file" (and
+            # "Exported" outside destructive mode). The flat item
+            # was built by _items_from_cells with the video-parent-
+            # aware exported_ids set from
+            # exported_item_ids_with_video_parents, so trusting it
+            # is enough — no per-child fan-out here.
+            exported=bool(video_item.exported),
             cluster_type="video",
             cluster_count=len(members),
             cluster_split=split,
